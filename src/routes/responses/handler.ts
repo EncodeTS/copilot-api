@@ -3,6 +3,7 @@ import type { Context } from "hono"
 import { streamSSE } from "hono/streaming"
 
 import { awaitApproval } from "~/lib/approval"
+import { getConfig } from "~/lib/config"
 import { createHandlerLogger } from "~/lib/logger"
 import { checkRateLimit } from "~/lib/rate-limit"
 import { state } from "~/lib/state"
@@ -23,6 +24,8 @@ export const handleResponses = async (c: Context) => {
 
   const payload = await c.req.json<ResponsesPayload>()
   logger.debug("Responses request payload:", JSON.stringify(payload))
+
+  useFunctionApplyPatch(payload)
 
   const selectedModel = state.models?.data.find(
     (model) => model.id === payload.model,
@@ -78,3 +81,35 @@ const isAsyncIterable = <T>(value: unknown): value is AsyncIterable<T> =>
 
 const isStreamingRequested = (payload: ResponsesPayload): boolean =>
   Boolean(payload.stream)
+
+const useFunctionApplyPatch = (payload: ResponsesPayload): void => {
+  const config = getConfig()
+  const useFunctionApplyPatch = config.useFunctionApplyPatch ?? true
+  if (useFunctionApplyPatch) {
+    logger.debug("Using function tool apply_patch for responses")
+    if (Array.isArray(payload.tools)) {
+      const toolsArr = payload.tools
+      for (let i = 0; i < toolsArr.length; i++) {
+        const t = toolsArr[i]
+        if (t.type === "custom" && t.name === "apply_patch") {
+          toolsArr[i] = {
+            type: "function",
+            name: t.name,
+            description: "Use the `apply_patch` tool to edit files",
+            parameters: {
+              type: "object",
+              properties: {
+                input: {
+                  type: "string",
+                  description: "The entire contents of the apply_patch command",
+                },
+              },
+              required: ["input"],
+            },
+            strict: false,
+          }
+        }
+      }
+    }
+  }
+}
