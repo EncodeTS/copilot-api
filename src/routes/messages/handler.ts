@@ -33,7 +33,6 @@ import {
   type AnthropicStreamState,
   type AnthropicTextBlock,
   type AnthropicToolResultBlock,
-  type AnthropicUserContentBlock,
 } from "./anthropic-types"
 import {
   translateToAnthropic,
@@ -58,7 +57,7 @@ export async function handleCompletion(c: Context) {
   }
 
   // Merge tool_result and text blocks into tool_result to avoid consuming premium requests
-  // (caused by skill invocations, edit hooks or to do reminders)
+  // (caused by skill invocations, edit hooks, plan or to do reminders)
   // e.g. {"role":"user","content":[{"type":"tool_result","content":"Launching skill: xxx"},{"type":"text","text":"xxx"}]}
   mergeToolResultForClaude(anthropicBeta, anthropicPayload)
 
@@ -235,17 +234,29 @@ const isAsyncIterable = <T>(value: unknown): value is AsyncIterable<T> =>
   Boolean(value)
   && typeof (value as AsyncIterable<T>)[Symbol.asyncIterator] === "function"
 
-const formatTextForSkill = (toolContent: string, text: string): string =>
-  toolContent.startsWith("Launching skill") ?
-    `Please execute skill now:${text}`
-  : text
+const mergeContentWithText = (
+  tr: AnthropicToolResultBlock,
+  textBlock: AnthropicTextBlock,
+): AnthropicToolResultBlock => {
+  if (typeof tr.content === "string") {
+    return { ...tr, content: `${tr.content}\n\n${textBlock.text}` }
+  }
+  return {
+    ...tr,
+    content: [...tr.content, textBlock],
+  }
+}
 
-type ToolResultWithText = AnthropicToolResultBlock & { content: string }
-
-const isToolResultWithText = (
-  block: AnthropicUserContentBlock,
-): block is ToolResultWithText =>
-  block.type === "tool_result" && typeof block.content === "string"
+const mergeContentWithTexts = (
+  tr: AnthropicToolResultBlock,
+  textBlocks: Array<AnthropicTextBlock>,
+): AnthropicToolResultBlock => {
+  if (typeof tr.content === "string") {
+    const appendedTexts = textBlocks.map((tb) => tb.text).join("\n\n")
+    return { ...tr, content: `${tr.content}\n\n${appendedTexts}` }
+  }
+  return { ...tr, content: [...tr.content, ...textBlocks] }
+}
 
 const mergeToolResultForClaude = (
   anthropicBeta: string | undefined,
@@ -256,12 +267,12 @@ const mergeToolResultForClaude = (
   for (const msg of anthropicPayload.messages) {
     if (msg.role !== "user" || !Array.isArray(msg.content)) continue
 
-    const toolResults: Array<ToolResultWithText> = []
+    const toolResults: Array<AnthropicToolResultBlock> = []
     const textBlocks: Array<AnthropicTextBlock> = []
     let valid = true
 
     for (const block of msg.content) {
-      if (isToolResultWithText(block)) {
+      if (block.type === "tool_result") {
         toolResults.push(block)
       } else if (block.type === "text") {
         textBlocks.push(block)
@@ -278,26 +289,17 @@ const mergeToolResultForClaude = (
 }
 
 const mergeToolResult = (
-  toolResults: Array<ToolResultWithText>,
+  toolResults: Array<AnthropicToolResultBlock>,
   textBlocks: Array<AnthropicTextBlock>,
 ): Array<AnthropicToolResultBlock> => {
   // equal lengths -> pairwise merge
   if (toolResults.length === textBlocks.length) {
-    return toolResults.map((tr, i) => ({
-      ...tr,
-      content: `${tr.content}\n\n${formatTextForSkill(tr.content, textBlocks[i].text)}`,
-    }))
+    return toolResults.map((tr, i) => mergeContentWithText(tr, textBlocks[i]))
   }
 
   // lengths differ -> append all textBlocks to the last tool_result
-  const last = toolResults.at(-1)
-  if (!last) return toolResults
-  const appendedTexts = textBlocks
-    .map((tb) => formatTextForSkill(last.content, tb.text))
-    .join("\n\n")
-
-  return [
-    ...toolResults.slice(0, -1),
-    { ...last, content: `${last.content}\n\n${appendedTexts}` },
-  ]
+  const lastIndex = toolResults.length - 1
+  return toolResults.map((tr, i) =>
+    i === lastIndex ? mergeContentWithTexts(tr, textBlocks) : tr,
+  )
 }
