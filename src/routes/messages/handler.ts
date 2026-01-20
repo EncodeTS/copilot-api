@@ -59,7 +59,8 @@ export async function handleCompletion(c: Context) {
   // Merge tool_result and text blocks into tool_result to avoid consuming premium requests
   // (caused by skill invocations, edit hooks, plan or to do reminders)
   // e.g. {"role":"user","content":[{"type":"tool_result","content":"Launching skill: xxx"},{"type":"text","text":"xxx"}]}
-  mergeToolResultForClaude(anthropicBeta, anthropicPayload)
+  // not only for claude, but also for opencode
+  mergeToolResultForClaude(anthropicPayload)
 
   const useResponsesApi = shouldUseResponsesApi(anthropicPayload.model)
 
@@ -259,11 +260,8 @@ const mergeContentWithTexts = (
 }
 
 const mergeToolResultForClaude = (
-  anthropicBeta: string | undefined,
   anthropicPayload: AnthropicMessagesPayload,
 ): void => {
-  if (!anthropicBeta) return
-
   for (const msg of anthropicPayload.messages) {
     if (msg.role !== "user" || !Array.isArray(msg.content)) continue
 
