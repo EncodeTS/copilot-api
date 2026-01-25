@@ -22,6 +22,7 @@ import {
   type ChatCompletionChunk,
   type ChatCompletionResponse,
 } from "~/services/copilot/create-chat-completions"
+import { createMessages } from "~/services/copilot/create-messages"
 import {
   createResponses,
   type ResponsesResult,
@@ -51,6 +52,7 @@ export async function handleCompletion(c: Context) {
   // fix claude code 2.0.28+ warmup request consume premium request, forcing small model if no tools are used
   // set "CLAUDE_CODE_SUBAGENT_MODEL": "you small model" also can avoid this
   const anthropicBeta = c.req.header("anthropic-beta")
+  logger.debug("Anthropic Beta header:", anthropicBeta)
   const noTools = !anthropicPayload.tools || anthropicPayload.tools.length === 0
   if (anthropicBeta && noTools) {
     anthropicPayload.model = getSmallModel()
@@ -62,13 +64,15 @@ export async function handleCompletion(c: Context) {
   // not only for claude, but also for opencode
   mergeToolResultForClaude(anthropicPayload)
 
-  const useResponsesApi = shouldUseResponsesApi(anthropicPayload.model)
-
   if (state.manualApprove) {
     await awaitApproval()
   }
 
-  if (useResponsesApi) {
+  if (shouldUseMessagesApi(anthropicPayload.model)) {
+    return await handleWithMessagesApi(c, anthropicPayload, anthropicBeta)
+  }
+
+  if (shouldUseResponsesApi(anthropicPayload.model)) {
     return await handleWithResponsesApi(c, anthropicPayload)
   }
 
@@ -76,6 +80,7 @@ export async function handleCompletion(c: Context) {
 }
 
 const RESPONSES_ENDPOINT = "/responses"
+const MESSAGES_ENDPOINT = "/v1/messages"
 
 const handleWithChatCompletions = async (
   c: Context,
@@ -220,10 +225,46 @@ const handleWithResponsesApi = async (
   return c.json(anthropicResponse)
 }
 
+const handleWithMessagesApi = async (
+  c: Context,
+  anthropicPayload: AnthropicMessagesPayload,
+  anthropicBetaHeader?: string,
+) => {
+  const response = await createMessages(anthropicPayload, anthropicBetaHeader)
+
+  if (isAsyncIterable(response)) {
+    logger.debug("Streaming response from Copilot (Messages API)")
+    return streamSSE(c, async (stream) => {
+      for await (const event of response) {
+        const eventName = event.event
+        const data = event.data ?? ""
+        logger.debug("Messages raw stream event:", data)
+        await stream.writeSSE({
+          event: eventName,
+          data,
+        })
+      }
+    })
+  }
+
+  logger.debug(
+    "Non-streaming Messages result:",
+    JSON.stringify(response).slice(-400),
+  )
+  return c.json(response)
+}
+
 const shouldUseResponsesApi = (modelId: string): boolean => {
   const selectedModel = state.models?.data.find((model) => model.id === modelId)
   return (
     selectedModel?.supported_endpoints?.includes(RESPONSES_ENDPOINT) ?? false
+  )
+}
+
+const shouldUseMessagesApi = (modelId: string): boolean => {
+  const selectedModel = state.models?.data.find((model) => model.id === modelId)
+  return (
+    selectedModel?.supported_endpoints?.includes(MESSAGES_ENDPOINT) ?? false
   )
 }
 
