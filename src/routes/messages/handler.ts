@@ -243,6 +243,22 @@ const handleWithMessagesApi = async (
   anthropicPayload: AnthropicMessagesPayload,
   anthropicBetaHeader?: string,
 ) => {
+  // Pre-request processing: filter thinking blocks for Claude models so only
+  // valid thinking blocks are sent to the Copilot Messages API.
+  for (const msg of anthropicPayload.messages) {
+    if (msg.role === "assistant" && Array.isArray(msg.content)) {
+      msg.content = msg.content.filter((block) => {
+        if (block.type !== "thinking") return true
+        return (
+          block.thinking
+          && block.thinking !== "Thinking..."
+          && block.signature
+          && !block.signature.includes("@")
+        )
+      })
+    }
+  }
+
   const response = await createMessages(anthropicPayload, anthropicBetaHeader)
 
   if (isAsyncIterable(response)) {
