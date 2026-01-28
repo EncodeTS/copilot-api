@@ -3,7 +3,7 @@ import type { Context } from "hono"
 import { streamSSE } from "hono/streaming"
 
 import { awaitApproval } from "~/lib/approval"
-import { getSmallModel } from "~/lib/config"
+import { getSmallModel, shouldCompactUseSmallModel } from "~/lib/config"
 import { createHandlerLogger } from "~/lib/logger"
 import { checkRateLimit } from "~/lib/rate-limit"
 import { state } from "~/lib/state"
@@ -43,26 +43,40 @@ import { translateChunkToAnthropicEvents } from "./stream-translation"
 
 const logger = createHandlerLogger("messages-handler")
 
+const compactSystemPromptStart =
+  "You are a helpful AI assistant tasked with summarizing conversations"
+
 export async function handleCompletion(c: Context) {
   await checkRateLimit(state)
 
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
   logger.debug("Anthropic request payload:", JSON.stringify(anthropicPayload))
 
+  // claude code and opencode compact request detection
+  const isCompact = isCompactRequest(anthropicPayload)
+
   // fix claude code 2.0.28+ warmup request consume premium request, forcing small model if no tools are used
   // set "CLAUDE_CODE_SUBAGENT_MODEL": "you small model" also can avoid this
   const anthropicBeta = c.req.header("anthropic-beta")
   logger.debug("Anthropic Beta header:", anthropicBeta)
   const noTools = !anthropicPayload.tools || anthropicPayload.tools.length === 0
-  if (anthropicBeta && noTools) {
+  if (anthropicBeta && noTools && !isCompact) {
     anthropicPayload.model = getSmallModel()
   }
 
-  // Merge tool_result and text blocks into tool_result to avoid consuming premium requests
-  // (caused by skill invocations, edit hooks, plan or to do reminders)
-  // e.g. {"role":"user","content":[{"type":"tool_result","content":"Launching skill: xxx"},{"type":"text","text":"xxx"}]}
-  // not only for claude, but also for opencode
-  mergeToolResultForClaude(anthropicPayload)
+  if (isCompact) {
+    logger.debug("Is compact request:", isCompact)
+    if (shouldCompactUseSmallModel()) {
+      anthropicPayload.model = getSmallModel()
+    }
+  } else {
+    // Merge tool_result and text blocks into tool_result to avoid consuming premium requests
+    // (caused by skill invocations, edit hooks, plan or to do reminders)
+    // e.g. {"role":"user","content":[{"type":"tool_result","content":"Launching skill: xxx"},{"type":"text","text":"xxx"}]}
+    // not only for claude, but also for opencode
+    // compact requests are excluded from this processing
+    mergeToolResultForClaude(anthropicPayload)
+  }
 
   if (state.manualApprove) {
     await awaitApproval()
@@ -230,6 +244,22 @@ const handleWithMessagesApi = async (
   anthropicPayload: AnthropicMessagesPayload,
   anthropicBetaHeader?: string,
 ) => {
+  // Pre-request processing: filter thinking blocks for Claude models so only
+  // valid thinking blocks are sent to the Copilot Messages API.
+  for (const msg of anthropicPayload.messages) {
+    if (msg.role === "assistant" && Array.isArray(msg.content)) {
+      msg.content = msg.content.filter((block) => {
+        if (block.type !== "thinking") return true
+        return (
+          block.thinking
+          && block.thinking !== "Thinking..."
+          && block.signature
+          && !block.signature.includes("@")
+        )
+      })
+    }
+  }
+
   const response = await createMessages(anthropicPayload, anthropicBetaHeader)
 
   if (isAsyncIterable(response)) {
@@ -275,6 +305,22 @@ const isNonStreaming = (
 const isAsyncIterable = <T>(value: unknown): value is AsyncIterable<T> =>
   Boolean(value)
   && typeof (value as AsyncIterable<T>)[Symbol.asyncIterator] === "function"
+
+const isCompactRequest = (
+  anthropicPayload: AnthropicMessagesPayload,
+): boolean => {
+  const system = anthropicPayload.system
+  if (typeof system === "string") {
+    return system.startsWith(compactSystemPromptStart)
+  }
+  if (!Array.isArray(system)) return false
+
+  return system.some(
+    (msg) =>
+      typeof msg.text === "string"
+      && msg.text.startsWith(compactSystemPromptStart),
+  )
+}
 
 const mergeContentWithText = (
   tr: AnthropicToolResultBlock,
