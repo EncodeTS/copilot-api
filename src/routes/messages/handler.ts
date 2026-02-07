@@ -2,8 +2,14 @@ import type { Context } from "hono"
 
 import { streamSSE } from "hono/streaming"
 
+import type { Model } from "~/services/copilot/get-models"
+
 import { awaitApproval } from "~/lib/approval"
-import { getSmallModel, shouldCompactUseSmallModel } from "~/lib/config"
+import {
+  getSmallModel,
+  shouldCompactUseSmallModel,
+  getReasoningEffortForModel,
+} from "~/lib/config"
 import { createHandlerLogger } from "~/lib/logger"
 import { checkRateLimit } from "~/lib/rate-limit"
 import { state } from "~/lib/state"
@@ -82,11 +88,18 @@ export async function handleCompletion(c: Context) {
     await awaitApproval()
   }
 
-  if (shouldUseMessagesApi(anthropicPayload.model)) {
-    return await handleWithMessagesApi(c, anthropicPayload, anthropicBeta)
+  const selectedModel = state.models?.data.find(
+    (m) => m.id === anthropicPayload.model,
+  )
+
+  if (shouldUseMessagesApi(selectedModel)) {
+    return await handleWithMessagesApi(c, anthropicPayload, {
+      anthropicBetaHeader: anthropicBeta,
+      selectedModel,
+    })
   }
 
-  if (shouldUseResponsesApi(anthropicPayload.model)) {
+  if (shouldUseResponsesApi(selectedModel)) {
     return await handleWithResponsesApi(c, anthropicPayload)
   }
 
@@ -242,8 +255,9 @@ const handleWithResponsesApi = async (
 const handleWithMessagesApi = async (
   c: Context,
   anthropicPayload: AnthropicMessagesPayload,
-  anthropicBetaHeader?: string,
+  options?: { anthropicBetaHeader?: string; selectedModel?: Model },
 ) => {
+  const { anthropicBetaHeader, selectedModel } = options ?? {}
   // Pre-request processing: filter thinking blocks for Claude models so only
   // valid thinking blocks are sent to the Copilot Messages API.
   for (const msg of anthropicPayload.messages) {
@@ -260,12 +274,12 @@ const handleWithMessagesApi = async (
     }
   }
 
-  if (anthropicPayload.model === "claude-opus-4.6") {
+  if (selectedModel?.capabilities.supports.adaptive_thinking) {
     anthropicPayload.thinking = {
       type: "adaptive",
     }
     anthropicPayload.output_config = {
-      effort: "max",
+      effort: getAnthropicEffortForModel(anthropicPayload.model),
     }
   }
 
@@ -295,15 +309,13 @@ const handleWithMessagesApi = async (
   return c.json(response)
 }
 
-const shouldUseResponsesApi = (modelId: string): boolean => {
-  const selectedModel = state.models?.data.find((model) => model.id === modelId)
+const shouldUseResponsesApi = (selectedModel: Model | undefined): boolean => {
   return (
     selectedModel?.supported_endpoints?.includes(RESPONSES_ENDPOINT) ?? false
   )
 }
 
-const shouldUseMessagesApi = (modelId: string): boolean => {
-  const selectedModel = state.models?.data.find((model) => model.id === modelId)
+const shouldUseMessagesApi = (selectedModel: Model | undefined): boolean => {
   return (
     selectedModel?.supported_endpoints?.includes(MESSAGES_ENDPOINT) ?? false
   )
@@ -316,6 +328,17 @@ const isNonStreaming = (
 const isAsyncIterable = <T>(value: unknown): value is AsyncIterable<T> =>
   Boolean(value)
   && typeof (value as AsyncIterable<T>)[Symbol.asyncIterator] === "function"
+
+const getAnthropicEffortForModel = (
+  model: string,
+): "low" | "medium" | "high" | "max" => {
+  const reasoningEffort = getReasoningEffortForModel(model)
+
+  if (reasoningEffort === "xhigh") return "max"
+  if (reasoningEffort === "none" || reasoningEffort === "minimal") return "low"
+
+  return reasoningEffort
+}
 
 const isCompactRequest = (
   anthropicPayload: AnthropicMessagesPayload,

@@ -33,6 +33,7 @@ interface ModelSupports {
   streaming?: boolean
   structured_outputs?: boolean
   vision?: boolean
+  adaptive_thinking?: boolean
 }
 
 interface ModelCapabilities {
