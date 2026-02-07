@@ -260,6 +260,17 @@ const handleWithMessagesApi = async (
     }
   }
 
+  if (anthropicPayload.model === "claude-opus-4.6") {
+    anthropicPayload.thinking = {
+      type: "adaptive",
+    }
+    anthropicPayload.output_config = {
+      effort: "max",
+    }
+  }
+
+  logger.debug("Translated Messages payload:", JSON.stringify(anthropicPayload))
+
   const response = await createMessages(anthropicPayload, anthropicBetaHeader)
 
   if (isAsyncIterable(response)) {
