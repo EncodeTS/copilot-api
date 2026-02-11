@@ -183,6 +183,9 @@ The following command line options are available for the `start` command:
 - **Default shape:**
   ```json
   {
+    "auth": {
+      "apiKeys": []
+    },
     "extraPrompts": {
       "gpt-5-mini": "<built-in exploration prompt>",
       "gpt-5.1-codex-max": "<built-in exploration prompt>"
@@ -195,6 +198,7 @@ The following command line options are available for the `start` command:
     "compactUseSmallModel": true
   }
   ```
+- **auth.apiKeys:** API keys used for request authentication. Supports multiple keys for rotation. Requests can authenticate with either `x-api-key: <key>` or `Authorization: Bearer <key>`. If empty or omitted, authentication is disabled.
 - **extraPrompts:** Map of `model -> prompt` appended to the first system prompt when translating Anthropic-style requests to Copilot. Use this to inject guardrails or guidance per model. Missing default entries are auto-added without overwriting your custom prompts.
 - **smallModel:** Fallback model used for tool-less warmup messages (e.g., Claude Code probe requests) to avoid spending premium requests; defaults to `gpt-5-mini`.
 - **modelReasoningEfforts:** Per-model `reasoning.effort` sent to the Copilot Responses API. Allowed values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`. If a model isn’t listed, `high` is used by default.
@@ -202,6 +206,22 @@ The following command line options are available for the `start` command:
 - **compactUseSmallModel:** When `true`, detected "compact" requests (e.g., from Claude Code or Opencode compact mode) will automatically use the configured `smallModel` to avoid consuming premium model usage for short/background tasks. Defaults to `true`.
 
 Edit this file to customize prompts or swap in your own fast model. Restart the server (or rerun the command) after changes so the cached config is refreshed.
+
+## API Authentication
+
+- **Protected routes:** All routes except `/` require authentication when `auth.apiKeys` is configured and non-empty.
+- **Allowed auth headers:**
+  - `x-api-key: <your_key>`
+  - `Authorization: Bearer <your_key>`
+- **CORS preflight:** `OPTIONS` requests are always allowed.
+- **When no keys are configured:** Server starts normally and allows requests (authentication disabled).
+
+Example request:
+
+```sh
+curl http://localhost:4141/v1/models \
+  -H "x-api-key: your_api_key"
+```
 
 ## API Endpoints
 
