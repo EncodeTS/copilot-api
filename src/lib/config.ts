@@ -4,6 +4,9 @@ import fs from "node:fs"
 import { PATHS } from "./paths"
 
 export interface AppConfig {
+  auth?: {
+    apiKeys?: Array<string>
+  }
   extraPrompts?: Record<string, string>
   smallModel?: string
   modelReasoningEfforts?: Record<
@@ -22,6 +25,9 @@ const gpt5ExplorationPrompt = `## Exploration and reading files
 - **Workflow:** (a) plan all needed reads → (b) issue one parallel batch → (c) analyze results → (d) repeat if new, unpredictable reads arise.`
 
 const defaultConfig: AppConfig = {
+  auth: {
+    apiKeys: [],
+  },
   extraPrompts: {
     "gpt-5-mini": gpt5ExplorationPrompt,
     "gpt-5.1-codex-max": gpt5ExplorationPrompt,
