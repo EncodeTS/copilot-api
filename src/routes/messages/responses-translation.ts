@@ -44,6 +44,7 @@ import {
 } from "./anthropic-types"
 
 const MESSAGE_TYPE = "message"
+const CODEX_PHASE_MODEL = "gpt-5.3-codex"
 
 export const THINKING_TEXT = "Thinking..."
 
@@ -53,7 +54,7 @@ export const translateAnthropicMessagesToResponsesPayload = (
   const input: Array<ResponseInputItem> = []
 
   for (const message of payload.messages) {
-    input.push(...translateMessage(message))
+    input.push(...translateMessage(message, payload.model))
   }
 
   const translatedTools = convertAnthropicTools(payload.tools)
@@ -90,12 +91,13 @@ export const translateAnthropicMessagesToResponsesPayload = (
 
 const translateMessage = (
   message: AnthropicMessage,
+  model: string,
 ): Array<ResponseInputItem> => {
   if (message.role === "user") {
     return translateUserMessage(message)
   }
 
-  return translateAssistantMessage(message)
+  return translateAssistantMessage(message, model)
 }
 
 const translateUserMessage = (
@@ -114,7 +116,7 @@ const translateUserMessage = (
 
   for (const block of message.content) {
     if (block.type === "tool_result") {
-      flushPendingContent("user", pendingContent, items)
+      flushPendingContent(pendingContent, items, { role: "user" })
       items.push(createFunctionCallOutput(block))
       continue
     }
@@ -125,16 +127,19 @@ const translateUserMessage = (
     }
   }
 
-  flushPendingContent("user", pendingContent, items)
+  flushPendingContent(pendingContent, items, { role: "user" })
 
   return items
 }
 
 const translateAssistantMessage = (
   message: AnthropicAssistantMessage,
+  model: string,
 ): Array<ResponseInputItem> => {
+  const assistantPhase = resolveAssistantPhase(model, message.content)
+
   if (typeof message.content === "string") {
-    return [createMessage("assistant", message.content)]
+    return [createMessage("assistant", message.content, assistantPhase)]
   }
 
   if (!Array.isArray(message.content)) {
@@ -146,7 +151,10 @@ const translateAssistantMessage = (
 
   for (const block of message.content) {
     if (block.type === "tool_use") {
-      flushPendingContent("assistant", pendingContent, items)
+      flushPendingContent(pendingContent, items, {
+        role: "assistant",
+        phase: assistantPhase,
+      })
       items.push(createFunctionToolCall(block))
       continue
     }
@@ -156,7 +164,10 @@ const translateAssistantMessage = (
       && block.signature
       && block.signature.includes("@")
     ) {
-      flushPendingContent("assistant", pendingContent, items)
+      flushPendingContent(pendingContent, items, {
+        role: "assistant",
+        phase: assistantPhase,
+      })
       items.push(createReasoningContent(block))
       continue
     }
@@ -167,7 +178,10 @@ const translateAssistantMessage = (
     }
   }
 
-  flushPendingContent("assistant", pendingContent, items)
+  flushPendingContent(pendingContent, items, {
+    role: "assistant",
+    phase: assistantPhase,
+  })
 
   return items
 }
@@ -202,9 +216,9 @@ const translateAssistantContentBlock = (
 }
 
 const flushPendingContent = (
-  role: ResponseInputMessage["role"],
   pendingContent: Array<ResponseInputContent>,
   target: Array<ResponseInputItem>,
+  message: Pick<ResponseInputMessage, "role" | "phase">,
 ) => {
   if (pendingContent.length === 0) {
     return
@@ -212,18 +226,48 @@ const flushPendingContent = (
 
   const messageContent = [...pendingContent]
 
-  target.push(createMessage(role, messageContent))
+  target.push(createMessage(message.role, messageContent, message.phase))
   pendingContent.length = 0
 }
 
 const createMessage = (
   role: ResponseInputMessage["role"],
   content: string | Array<ResponseInputContent>,
+  phase?: ResponseInputMessage["phase"],
 ): ResponseInputMessage => ({
   type: MESSAGE_TYPE,
   role,
   content,
+  ...(role === "assistant" && phase ? { phase } : {}),
 })
+
+const resolveAssistantPhase = (
+  model: string,
+  content: AnthropicAssistantMessage["content"],
+): ResponseInputMessage["phase"] | undefined => {
+  if (!shouldApplyCodexPhase(model)) {
+    return undefined
+  }
+
+  if (typeof content === "string") {
+    return "final_answer"
+  }
+
+  if (!Array.isArray(content)) {
+    return undefined
+  }
+
+  const hasText = content.some((block) => block.type === "text")
+  if (!hasText) {
+    return undefined
+  }
+
+  const hasToolUse = content.some((block) => block.type === "tool_use")
+  return hasToolUse ? "commentary" : "final_answer"
+}
+
+const shouldApplyCodexPhase = (model: string): boolean =>
+  model === CODEX_PHASE_MODEL
 
 const createTextContent = (text: string): ResponseInputText => ({
   type: "input_text",
