@@ -39,7 +39,7 @@ jobs:
       - name: Setup Node for npm publish
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
       - name: Generate GitHub Release notes
@@ -47,5 +47,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish to npm
+      - name: Publish to npm (Trusted Publisher / OIDC)
         run: npm publish --access public
