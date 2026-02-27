@@ -40,6 +40,7 @@ A reverse-engineered proxy for the GitHub Copilot API that exposes it as an Open
 - **Flexible Authentication**: Authenticate interactively or provide a GitHub token directly, suitable for CI/CD environments.
 - **Support for Different Account Types**: Works with individual, business, and enterprise GitHub Copilot plans.
 - **Opencode OAuth Support**: Use opencode GitHub Copilot authentication by setting `COPILOT_API_OAUTH_APP=opencode` environment variable.
+- **Multi-Provider Anthropic Proxy Routes**: Add global provider configs and call external Anthropic-compatible APIs via `/:provider/v1/messages` and `/:provider/v1/models`.
 
 ## Demo
 
@@ -187,6 +188,14 @@ The following command line options are available for the `start` command:
     "auth": {
       "apiKeys": []
     },
+    "providers": {
+      "openrouter": {
+        "type": "anthropic",
+        "enabled": true,
+        "baseUrl": "https://openrouter.ai/api",
+        "apiKey": "sk-your-provider-key"
+      }
+    },
     "extraPrompts": {
       "gpt-5-mini": "<built-in exploration prompt>",
       "gpt-5.1-codex-max": "<built-in exploration prompt>"
@@ -201,6 +210,10 @@ The following command line options are available for the `start` command:
   ```
 - **auth.apiKeys:** API keys used for request authentication. Supports multiple keys for rotation. Requests can authenticate with either `x-api-key: <key>` or `Authorization: Bearer <key>`. If empty or omitted, authentication is disabled.
 - **extraPrompts:** Map of `model -> prompt` appended to the first system prompt when translating Anthropic-style requests to Copilot. Use this to inject guardrails or guidance per model. Missing default entries are auto-added without overwriting your custom prompts.
+- **providers:** Global upstream provider map. Each provider key (for example `openrouter`) becomes a route prefix (`/openrouter/v1/messages`). Currently only `type: "anthropic"` is supported.
+  - `enabled` defaults to `true` if omitted.
+  - `baseUrl` should be provider API base URL without trailing `/v1/messages`.
+  - `apiKey` is used as upstream `x-api-key`.
 - **smallModel:** Fallback model used for tool-less warmup messages (e.g., Claude Code probe requests) to avoid spending premium requests; defaults to `gpt-5-mini`.
 - **modelReasoningEfforts:** Per-model `reasoning.effort` sent to the Copilot Responses API. Allowed values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`. If a model isn’t listed, `high` is used by default.
 - **useFunctionApplyPatch:** When `true`, the server will convert any custom tool named `apply_patch` in Responses payloads into an OpenAI-style function tool (`type: "function"`) with a parameter schema so assistants can call it using function-calling semantics to edit files. Set to `false` to leave tools unchanged. Defaults to `true`.
@@ -247,6 +260,9 @@ These endpoints are designed to be compatible with the Anthropic Messages API.
 | -------------------------------- | ------ | ------------------------------------------------------------ |
 | `POST /v1/messages`              | `POST` | Creates a model response for a given conversation.           |
 | `POST /v1/messages/count_tokens` | `POST` | Calculates the number of tokens for a given set of messages. |
+| `POST /:provider/v1/messages`       | `POST` | Proxies Anthropic Messages API to the configured provider.   |
+| `GET /:provider/v1/models`          | `GET`  | Proxies Anthropic Models API to the configured provider.     |
+| `POST /:provider/v1/messages/count_tokens` | `POST` | Calculates tokens locally for provider route requests. |
 
 ### Usage Monitoring Endpoints
 
