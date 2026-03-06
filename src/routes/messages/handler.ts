@@ -22,7 +22,11 @@ import {
   translateAnthropicMessagesToResponsesPayload,
   translateResponsesResultToAnthropic,
 } from "~/routes/messages/responses-translation"
-import { getResponsesRequestOptions } from "~/routes/responses/utils"
+import {
+  applyResponsesApiContextManagement,
+  compactInputByLatestCompaction,
+  getResponsesRequestOptions,
+} from "~/routes/responses/utils"
 import {
   createChatCompletions,
   type ChatCompletionChunk,
@@ -108,7 +112,10 @@ export async function handleCompletion(c: Context) {
   }
 
   if (shouldUseResponsesApi(selectedModel)) {
-    return await handleWithResponsesApi(c, anthropicPayload, initiatorOverride)
+    return await handleWithResponsesApi(c, anthropicPayload, {
+      initiatorOverride,
+      selectedModel,
+    })
   }
 
   return await handleWithChatCompletions(c, anthropicPayload, initiatorOverride)
@@ -181,10 +188,23 @@ const handleWithChatCompletions = async (
 const handleWithResponsesApi = async (
   c: Context,
   anthropicPayload: AnthropicMessagesPayload,
-  initiatorOverride?: "agent" | "user",
+  options?: {
+    initiatorOverride?: "agent" | "user"
+    selectedModel?: Model
+  },
 ) => {
+  const { initiatorOverride, selectedModel } = options ?? {}
+
   const responsesPayload =
     translateAnthropicMessagesToResponsesPayload(anthropicPayload)
+
+  applyResponsesApiContextManagement(
+    responsesPayload,
+    selectedModel?.capabilities.limits.max_prompt_tokens,
+  )
+
+  compactInputByLatestCompaction(responsesPayload)
+
   logger.debug(
     "Translated Responses payload:",
     JSON.stringify(responsesPayload),
