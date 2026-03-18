@@ -16,7 +16,6 @@ export interface AppConfig {
     "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
   >
   useFunctionApplyPatch?: boolean
-  compactUseSmallModel?: boolean
   useMessagesApi?: boolean
 }
 
