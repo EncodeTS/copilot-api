@@ -62,7 +62,6 @@ const defaultConfig: AppConfig = {
     "gpt-5.3-codex": "xhigh",
   },
   useFunctionApplyPatch: true,
-  compactUseSmallModel: true,
   useMessagesApi: true,
 }
 
@@ -201,11 +200,6 @@ export function getReasoningEffortForModel(
 ): "none" | "minimal" | "low" | "medium" | "high" | "xhigh" {
   const config = getConfig()
   return config.modelReasoningEfforts?.[model] ?? "high"
-}
-
-export function shouldCompactUseSmallModel(): boolean {
-  const config = getConfig()
-  return config.compactUseSmallModel ?? true
 }
 
 export function isMessagesApiEnabled(): boolean {
