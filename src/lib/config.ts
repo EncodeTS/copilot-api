@@ -78,6 +78,7 @@ const defaultConfig: AppConfig = {
   extraPrompts: {
     "gpt-5-mini": gpt5ExplorationPrompt,
     "gpt-5.3-codex": gpt5CommentaryPrompt,
+    "gpt-5.4-mini": gpt5CommentaryPrompt,
     "gpt-5.4": gpt5CommentaryPrompt,
   },
   smallModel: "gpt-5-mini",
@@ -85,6 +86,7 @@ const defaultConfig: AppConfig = {
   modelReasoningEfforts: {
     "gpt-5-mini": "low",
     "gpt-5.3-codex": "xhigh",
+    "gpt-5.4-mini": "xhigh",
     "gpt-5.4": "xhigh",
   },
   useFunctionApplyPatch: true,
