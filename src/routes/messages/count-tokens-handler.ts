@@ -13,15 +13,17 @@ import { translateToOpenAI } from "./non-stream-translation"
  * Forwards token counting to Anthropic's real /v1/messages/count_tokens endpoint.
  * Returns the result on success, or null to fall through to estimation.
  */
-async function countTokensViaAnthropic(c: Context): Promise<Response | null> {
+async function countTokensViaAnthropic(
+  c: Context,
+  payload: AnthropicMessagesPayload,
+): Promise<Response | null> {
+  if (!payload.model.startsWith("claude")) return null
+
   const apiKey = getAnthropicApiKey()
   if (!apiKey) return null
 
-  const payload = await c.req.json<AnthropicMessagesPayload>()
   // Copilot uses dotted names (claude-opus-4.6) but Anthropic requires dashes (claude-opus-4-6)
   const model = payload.model.replaceAll(".", "-")
-
-  if (!model.startsWith("claude")) return null
 
   const res = await fetch(
     "https://api.anthropic.com/v1/messages/count_tokens",
@@ -61,14 +63,14 @@ async function countTokensViaAnthropic(c: Context): Promise<Response | null> {
  */
 export async function handleCountTokens(c: Context) {
   try {
+    const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
+
     // Try Anthropic's real endpoint first (Claude models only)
-    const anthropicResult = await countTokensViaAnthropic(c)
+    const anthropicResult = await countTokensViaAnthropic(c, anthropicPayload)
     if (anthropicResult) return anthropicResult
 
     // Fallback: GPT tokenizer estimation (also used for non-Claude models)
     const anthropicBeta = c.req.header("anthropic-beta")
-
-    const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
 
     const openAIPayload = translateToOpenAI(anthropicPayload)
 
