@@ -68,6 +68,7 @@ Compared with routing everything through plain Chat Completions compatibility, t
 - **Custom Data Directory**: Change the default data directory (where tokens and config are stored) by setting `COPILOT_API_HOME` environment variable or using `--api-home=/path/to/dir` command line option.
 - **Multi-Provider Anthropic Proxy Routes**: Add global provider configs and call external Anthropic-compatible APIs via `/:provider/v1/messages` and `/:provider/v1/models`.
 - **Accurate Claude Token Counting**: Optionally forward `/v1/messages/count_tokens` requests for Claude models to Anthropic's free token counting endpoint for exact counts instead of GPT tokenizer estimation.
+- **GPT Context Management**: Configurable context compaction for long-running GPT conversations via `responsesApiContextManagementModels`, reducing unnecessary premium requests when approaching token limits. See [Configuration](#configuration-configjson) for details.
 
 ## Better Agent Semantics
 
