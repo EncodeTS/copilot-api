@@ -11,6 +11,16 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/user-prompt-submit-reminder.js\""
+          }
+        ]
+      }
+    ],
     "SubagentStart": [
       {
         "matcher": "*",
