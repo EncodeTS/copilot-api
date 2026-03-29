@@ -30,7 +30,7 @@
 > [!IMPORTANT]
 > **Before using, please be aware of the following:**
 >
-> 1. **Claude Code configuration:** When using with Claude Code, please configure the model ID as `claude-opus-4-6` or `claude-opus-4.6` (without the `[1m]` suffix, exceeding GitHub Copilot's context window limit too much may lead to being banned). If you prefer editing config manually, see [Manual Configuration with `settings.json`](#manual-configuration-with-settingsjson). Please do not enable `ENABLE_TOOL_SEARCH`, as the current Claude Code uses the client tool search mode. In this mode, loading defer tools requires an additional request each time, and cache hit rates are affected, so it does not necessarily save tokens. Only server tool search mode can save tokens. The current project has compatibility issues with client tool search mode, which can also cause errors when used.
+> 1. **Claude Code configuration:** When using with Claude Code, please configure the model ID as `claude-opus-4-6` or `claude-opus-4.6` (without the `[1m]` suffix, exceeding GitHub Copilot's context window limit too much may lead to being banned). Example claude `settings.json` see [Manual Configuration with `settings.json`](#manual-configuration-with-settingsjson). 
 >
 > 2. **Recommend for Opencode:** When using with opencode, we recommend starting with the opencode OAuth app. This approach behaves identically to opencode's built-in GitHub Copilot provider with no Terms of Service risk:
 >    ```sh
@@ -448,25 +448,6 @@ npx @jeffreycao/copilot-api@latest --oauth-app=opencode start
 npx @jeffreycao/copilot-api@latest --api-home=/custom/path --oauth-app=opencode --enterprise-url=company.ghe.com start
 ```
 
-### Opencode OAuth Authentication
-
-You can use opencode GitHub Copilot authentication instead of the default one:
-
-```sh
-# Set environment variable before running any command
-export COPILOT_API_OAUTH_APP=opencode
-
-# Then run start or auth commands
-npx @jeffreycao/copilot-api@latest start
-npx @jeffreycao/copilot-api@latest auth
-```
-
-Or use inline environment variable:
-
-```sh
-COPILOT_API_OAUTH_APP=opencode npx @jeffreycao/copilot-api@latest start
-```
-
 ## Using with OpenCode
 
 OpenCode already has a direct GitHub Copilot provider. Use this section when you want OpenCode to point at this proxy through `@ai-sdk/anthropic` and reuse the agent behaviors described earlier in this README.
@@ -476,7 +457,7 @@ OpenCode already has a direct GitHub Copilot provider. Use this section when you
 Start the proxy with the OpenCode OAuth app:
 
 ```sh
-COPILOT_API_OAUTH_APP=opencode npx @jeffreycao/copilot-api@latest start
+npx @jeffreycao/copilot-api@latest --oauth-app=opencode start
 ```
 
 Then point OpenCode at the proxy with `@ai-sdk/anthropic`.
@@ -623,7 +604,11 @@ Here is an example `.claude/settings.json` file:
 }
 ```
 
-Replace `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL` according to your needs. It is recommended to use gpt-5-mini for ANTHROPIC_DEFAULT_HAIKU_MODEL, as gpt-5-mini does not consume quota. ANTHROPIC_DEFAULT_HAIKU_MODEL is typically used for title generation, explore agents, etc.
+- Replace `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL` according to your needs. It is recommended to use gpt-5-mini for ANTHROPIC_DEFAULT_HAIKU_MODEL, as gpt-5-mini does not consume quota. ANTHROPIC_DEFAULT_HAIKU_MODEL is typically used for title generation, explore agents, etc.
+- Setting CLAUDE_CODE_ATTRIBUTION_HEADER to 0 can prevent Claude code from adding billing and version information in system prompts, thereby avoiding prompt cache invalidation.
+- Turning off CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION can prevent quota from being consumed unnecessarily.
+- Permissions deny WebSearch because the GitHub Copilot API does not support natie websearch (some gpt models support websearch, but the current project has not adapted websearch); it is recommended to install the mcp mcp_server_fetch tool or other search tools as alternatives..
+- Please do not enable `ENABLE_TOOL_SEARCH`, as the current Claude Code uses the client tool search mode. In this mode, loading defer tools requires an additional request each time, and cache hit rates are affected, so it does not necessarily save tokens. Only server tool search mode can save tokens. The current project has compatibility issues with client tool search mode, which can also cause errors when used.
 
 You can find more options here: [Claude Code settings](https://docs.anthropic.com/en/docs/claude-code/settings#environment-variables)
 
