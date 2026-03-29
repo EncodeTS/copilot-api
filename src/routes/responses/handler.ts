@@ -3,7 +3,7 @@ import type { Context } from "hono"
 import { streamSSE } from "hono/streaming"
 
 import { awaitApproval } from "~/lib/approval"
-import { getConfig } from "~/lib/config"
+import { getConfig, isResponsesApiWebSearchEnabled } from "~/lib/config"
 import { createHandlerLogger } from "~/lib/logger"
 import { checkRateLimit } from "~/lib/rate-limit"
 import { state } from "~/lib/state"
@@ -40,8 +40,9 @@ export const handleResponses = async (c: Context) => {
 
   useFunctionApplyPatch(payload)
 
-  // Remove web_search tool as it's not supported by GitHub Copilot
-  removeWebSearchTool(payload)
+  if (!isResponsesApiWebSearchEnabled()) {
+    removeWebSearchTool(payload)
+  }
 
   compactInputByLatestCompaction(payload)
 
