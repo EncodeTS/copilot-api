@@ -337,7 +337,8 @@ const handleWithMessagesApi = async (
     sessionId,
     isCompact,
   } = options
-  // Strip cache_control from system and message content blocks as the
+
+  // Strip cache_control from system content blocks as the
   // Copilot Messages API does not support them (rejects extra fields like scope).
   stripCacheControl(anthropicPayload)
 
