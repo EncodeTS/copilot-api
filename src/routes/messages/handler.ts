@@ -340,6 +340,7 @@ const handleWithMessagesApi = async (
 
   // Strip cache_control from system content blocks as the
   // Copilot Messages API does not support them (rejects extra fields like scope).
+  // commit by nicktogo
   stripCacheControl(anthropicPayload)
 
   // Pre-request processing: filter thinking blocks for Claude models so only
