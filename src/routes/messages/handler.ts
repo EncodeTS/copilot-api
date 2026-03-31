@@ -336,6 +336,12 @@ const handleWithMessagesApi = async (
     sessionId,
     isCompact,
   } = options
+
+  // Strip cache_control from system content blocks as the
+  // Copilot Messages API does not support them (rejects extra fields like scope).
+  // commit by nicktogo
+  stripCacheControl(anthropicPayload)
+
   // Pre-request processing: filter thinking blocks for Claude models so only
   // valid thinking blocks are sent to the Copilot Messages API.
   for (const msg of anthropicPayload.messages) {
@@ -513,4 +519,18 @@ const mergeToolResult = (
   return toolResults.map((tr, i) =>
     i === lastIndex ? mergeContentWithTexts(tr, textBlocks) : tr,
   )
+}
+
+const stripCacheControl = (payload: AnthropicMessagesPayload): void => {
+  // Claude Code only adds unsupported scope field to system block cache_control
+  if (Array.isArray(payload.system)) {
+    for (const block of payload.system) {
+      const b = block as unknown as Record<string, unknown>
+      const cc = b.cache_control
+      if (cc && typeof cc === "object") {
+        const { scope, ...rest } = cc as Record<string, unknown>
+        b.cache_control = rest
+      }
+    }
+  }
 }
