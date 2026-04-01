@@ -11,7 +11,7 @@ import { ensurePaths } from "./lib/paths"
 import { initProxyFromEnv } from "./lib/proxy"
 import { generateEnvScript } from "./lib/shell"
 import { state } from "./lib/state"
-import { setupCopilotToken, setupGitHubToken } from "./lib/token"
+import { logUser, setupCopilotToken, setupGitHubToken } from "./lib/token"
 import {
   cacheMacMachineId,
   cacheModels,
@@ -64,6 +64,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   if (options.githubToken) {
     state.githubToken = options.githubToken
     consola.info("Using provided GitHub token")
+    await logUser()
   } else {
     await setupGitHubToken()
   }

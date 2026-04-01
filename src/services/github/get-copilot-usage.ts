@@ -35,6 +35,7 @@ interface QuotaSnapshots {
 }
 
 interface CopilotUsageResponse {
+  login: string
   access_type_sku: string
   analytics_tracking_id: string
   assigned_date: string
@@ -45,4 +46,8 @@ interface CopilotUsageResponse {
   organization_list: Array<unknown>
   quota_reset_date: string
   quota_snapshots: QuotaSnapshots
+  endpoints: {
+    api: string
+    telemetry: string
+  }
 }
