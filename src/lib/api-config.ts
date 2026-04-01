@@ -131,6 +131,14 @@ export const copilotBaseUrl = (state: State) => {
     return `https://copilot-api.${enterpriseDomain}`
   }
 
+  if (isOpencodeOauthApp()) {
+    return "https://api.githubcopilot.com"
+  }
+
+  if (state.copilotApiUrl) {
+    return state.copilotApiUrl
+  }
+
   return state.accountType === "individual" ?
       "https://api.githubcopilot.com"
     : `https://api.${state.accountType}.githubcopilot.com`
@@ -188,15 +196,21 @@ export const copilotHeaders = (
 }
 
 export const GITHUB_API_BASE_URL = "https://api.github.com"
-export const githubHeaders = (state: State) => ({
-  ...standardHeaders(),
-  authorization: `token ${state.githubToken}`,
-  "editor-version": `vscode/${state.vsCodeVersion}`,
-  "editor-plugin-version": EDITOR_PLUGIN_VERSION,
-  "user-agent": USER_AGENT,
-  "x-github-api-version": API_VERSION,
-  "x-vscode-user-agent-library-version": "electron-fetch",
-})
+export const githubHeaders = (state: State) => {
+  if (isOpencodeOauthApp()) {
+    return {
+      Authorization: `Bearer ${state.githubToken}`,
+      ...getOpencodeOauthHeaders(),
+    }
+  }
+  return {
+    ...standardHeaders(),
+    authorization: `token ${state.githubToken}`,
+    "user-agent": USER_AGENT,
+    "x-github-api-version": "2025-04-01",
+    "x-vscode-user-agent-library-version": "electron-fetch",
+  }
+}
 
 export const GITHUB_BASE_URL = "https://github.com"
 export const GITHUB_CLIENT_ID = "Iv1.b507a08c87ecfe98"

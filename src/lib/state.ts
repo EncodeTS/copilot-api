@@ -19,6 +19,8 @@ export interface State {
   rateLimitSeconds?: number
   lastRequestTimestamp?: number
   verbose: boolean
+
+  copilotApiUrl?: string
 }
 
 export const state: State = {
