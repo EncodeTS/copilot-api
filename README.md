@@ -632,7 +632,7 @@ The Claude Code integration is packaged as a plugin named `claude-plugin`.
 Add the marketplace remotely:
 
 ```sh
-/plugin marketplace add https://github.com/caozhiyuan/copilot-api.git#all
+/plugin marketplace add https://github.com/caozhiyuan/copilot-api.git
 ```
 
 Install the plugin from the marketplace:
