@@ -1,13 +1,13 @@
 {
   "name": "@jeffreycao/copilot-api",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Turn GitHub Copilot into OpenAI/Anthropic API compatible server. Usable with Claude Code Or Codex Or Opencode!",
   "keywords": [
     "proxy",
     "github-copilot",
     "openai-compatible"
   ],
-  "homepage": "https://github.com/caozhiyuan/copilot-api/tree/all",
+  "homepage": "https://github.com/caozhiyuan/copilot-api",
   "bugs": "https://github.com/caozhiyuan/copilot-api/issues",
   "repository": {
     "type": "git",
