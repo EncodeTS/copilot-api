@@ -12,9 +12,11 @@ import {
   copilotHeaders,
   prepareForCompact,
   prepareInteractionHeaders,
+  prepareMessageProxyHeaders,
 } from "~/lib/api-config"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
+import { parseUserIdMetadata } from "~/lib/utils"
 
 export type MessagesStream = ReturnType<typeof events>
 export type CreateMessagesReturn = AnthropicResponse | MessagesStream
@@ -97,6 +99,14 @@ export const createMessages = async (
   )
 
   prepareForCompact(headers, options.isCompact)
+
+  const { safetyIdentifier, sessionId } = parseUserIdMetadata(
+    payload.metadata?.user_id,
+  )
+  // from claude code
+  if (safetyIdentifier && sessionId) {
+    prepareMessageProxyHeaders(headers)
+  }
 
   // align with vscode copilot extension anthropic-beta
   const anthropicBeta = buildAnthropicBetaHeader(

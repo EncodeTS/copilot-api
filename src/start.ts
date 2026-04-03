@@ -17,6 +17,7 @@ import {
   cacheModels,
   cacheVSCodeVersion,
   cacheVsCodeSessionId,
+  cacheVsCodeDeviceId,
 } from "./lib/utils"
 
 interface RunServerOptions {
@@ -60,6 +61,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   await cacheVSCodeVersion()
   cacheMacMachineId()
   cacheVsCodeSessionId()
+  await cacheVsCodeDeviceId()
 
   if (options.githubToken) {
     state.githubToken = options.githubToken
@@ -113,6 +115,8 @@ export async function runServer(options: RunServerOptions): Promise<void> {
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
         CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
         CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false",
+        CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "true",
+        CLAUDE_PLUGIN_ENABLE_QUESTION_RULES: "true",
       },
       "claude",
     )
