@@ -44,6 +44,7 @@ import {
 import type { SubagentMarker } from "./subagent-marker"
 
 import {
+  type AnthropicMessage,
   type AnthropicMessagesPayload,
   type AnthropicStreamState,
   type AnthropicTextBlock,
@@ -60,6 +61,11 @@ const logger = createHandlerLogger("messages-handler")
 
 const compactSystemPromptStart =
   "You are a helpful AI assistant tasked with summarizing conversations"
+const compactTextOnlyGuard =
+  "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
+const compactSummaryPromptStart =
+  "Your task is to create a detailed summary of the conversation so far"
+const compactMessageSections = ["Pending Tasks:", "Current Work:"] as const
 
 export async function handleCompletion(c: Context) {
   await checkRateLimit(state)
@@ -439,9 +445,45 @@ const getAnthropicEffortForModel = (
   return reasoningEffort
 }
 
-const isCompactRequest = (
+const getCompactCandidateText = (message: AnthropicMessage): string => {
+  if (message.role !== "user") {
+    return ""
+  }
+
+  if (typeof message.content === "string") {
+    return message.content
+  }
+
+  return message.content
+    .filter((block): block is AnthropicTextBlock => block.type === "text")
+    .map((block) =>
+      block.text.startsWith("<system-reminder>") ? "" : block.text,
+    )
+    .filter((text) => text.length > 0)
+    .join("\n\n")
+}
+
+const isCompactMessage = (lastMessage: AnthropicMessage): boolean => {
+  const text = getCompactCandidateText(lastMessage)
+  if (!text) {
+    return false
+  }
+
+  return (
+    text.includes(compactTextOnlyGuard)
+    && text.includes(compactSummaryPromptStart)
+    && compactMessageSections.some((section) => text.includes(section))
+  )
+}
+
+export const isCompactRequest = (
   anthropicPayload: AnthropicMessagesPayload,
 ): boolean => {
+  const lastMessage = anthropicPayload.messages.at(-1)
+  if (lastMessage && isCompactMessage(lastMessage)) {
+    return true
+  }
+
   const system = anthropicPayload.system
   if (typeof system === "string") {
     return system.startsWith(compactSystemPromptStart)
