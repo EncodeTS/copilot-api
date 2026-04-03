@@ -1,7 +1,7 @@
 # Copilot API Proxy
 
 > [!WARNING]
-> This is a reverse-engineered proxy of GitHub Copilot API. It is not supported by GitHub, and may break unexpectedly. Use at your own risk.
+> This is a reverse-engineered proxy of GitHub Copilot API. It is not supported by GitHub, and may break unexpectedly. Use at your own risk. In the current version, if not using opencode OAuth, the device ID and machine ID will be sent to GitHub Copilot. It is not recommended to use a large number of accounts on a single device; if necessary, it is advised to run them in Docker containers.
 
 > [!WARNING]
 > **GitHub Security Notice:**  
@@ -598,7 +598,9 @@ Here is an example `.claude/settings.json` file:
     "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-    "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false"
+    "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false",
+    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "true",
+    "CLAUDE_PLUGIN_ENABLE_QUESTION_RULES": "true"
   },
   "permissions": {
     "deny": [
@@ -608,7 +610,7 @@ Here is an example `.claude/settings.json` file:
 }
 ```
 
-- Replace `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL` according to your needs. It is recommended to use gpt-5-mini for ANTHROPIC_DEFAULT_HAIKU_MODEL, as gpt-5-mini does not consume quota. ANTHROPIC_DEFAULT_HAIKU_MODEL is typically used for title generation, explore agents, etc.
+- Replace `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL` according to your needs. After configuration, please install the claude code plugin [Plugin Integrations](#plugin-integrations). If configuring the claude model, it is recommended to set all model configurations the same, so as to remain consistent with github-copilot claude agent behavior. 
 - Setting CLAUDE_CODE_ATTRIBUTION_HEADER to 0 can prevent Claude code from adding billing and version information in system prompts, thereby avoiding prompt cache invalidation.
 - Turning off CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION can prevent quota from being consumed unnecessarily.
 - Permissions deny WebSearch because the GitHub Copilot API does not support natie websearch (some gpt models support websearch, but the current project has not adapted websearch); it is recommended to install the mcp mcp_server_fetch tool or other search tools as alternatives..
