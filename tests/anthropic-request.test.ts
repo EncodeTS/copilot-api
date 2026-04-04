@@ -3,8 +3,8 @@ import { z } from "zod"
 
 import type { AnthropicMessagesPayload } from "~/routes/messages/anthropic-types"
 
-import { isCompactRequest } from "../src/routes/messages/handler"
 import { translateToOpenAI } from "../src/routes/messages/non-stream-translation"
+import { isCompactRequest } from "../src/routes/messages/preprocess"
 
 // Zod schema for a single message in the chat completion request.
 const messageSchema = z.object({
