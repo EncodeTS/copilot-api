@@ -72,11 +72,16 @@ export const createMessages = async (
 ): Promise<CreateMessagesReturn> => {
   if (!state.copilotToken) throw new Error("Copilot token not found")
 
-  const enableVision = payload.messages.some(
-    (message) =>
-      Array.isArray(message.content)
-      && message.content.some((block) => block.type === "image"),
-  )
+  const enableVision = payload.messages.some((message) => {
+    if (!Array.isArray(message.content)) return false
+    return message.content.some(
+      (block) =>
+        block.type === "image"
+        || (block.type === "tool_result"
+          && Array.isArray(block.content)
+          && block.content.some((inner) => inner.type === "image")),
+    )
+  })
 
   let isInitiateRequest = false
   const lastMessage = payload.messages.at(-1)
