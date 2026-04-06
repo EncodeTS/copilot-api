@@ -14,5 +14,6 @@ node_modules/
 dist/
 
 .opencode/plans
+.opencode/package-lock.json
 
 *.vsix

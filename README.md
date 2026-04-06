@@ -614,7 +614,7 @@ Here is an example `.claude/settings.json` file:
 - Setting CLAUDE_CODE_ATTRIBUTION_HEADER to 0 can prevent Claude code from adding billing and version information in system prompts, thereby avoiding prompt cache invalidation.
 - Turning off CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION can prevent quota from being consumed unnecessarily.
 - Permissions deny WebSearch because the GitHub Copilot API does not support natie websearch (some gpt models support websearch, but the current project has not adapted websearch); it is recommended to install the mcp mcp_server_fetch tool or other search tools as alternatives..
-- Please do not enable `ENABLE_TOOL_SEARCH`, as the current Claude Code uses the client tool search mode. In this mode, loading defer tools requires an additional request each time, and cache hit rates are affected, so it does not necessarily save tokens. Only server tool search mode can save tokens. The current project has compatibility issues with client tool search mode, which can also cause errors when used.
+- Please do not enable `ENABLE_TOOL_SEARCH`, as the current Claude Code uses the client tool search mode. In this mode, loading defer tools requires an additional request each time, and cache hit rates are affected, so it does not necessarily save tokens. Only server tool search mode can save tokens. If using the gpt model, do not enable it either.
 
 You can find more options here: [Claude Code settings](https://docs.anthropic.com/en/docs/claude-code/settings#environment-variables)
 

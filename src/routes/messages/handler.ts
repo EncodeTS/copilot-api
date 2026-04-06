@@ -16,7 +16,11 @@ import {
   handleWithMessagesApi,
   handleWithResponsesApi,
 } from "./api-flows"
-import { isCompactRequest, mergeToolResultForClaude } from "./preprocess"
+import {
+  isCompactRequest,
+  mergeToolResultForClaude,
+  stripToolReferenceTurnBoundary,
+} from "./preprocess"
 import { parseSubagentMarkerFromFirstUser } from "./subagent-marker"
 
 const logger = createHandlerLogger("messages-handler")
@@ -50,6 +54,8 @@ export async function handleCompletion(c: Context) {
   if (isCompact) {
     logger.debug("Is compact request:", isCompact)
   } else {
+    stripToolReferenceTurnBoundary(anthropicPayload)
+
     // Merge tool_result and text blocks into tool_result to avoid consuming premium requests
     // (caused by skill invocations, edit hooks, plan or to do reminders)
     // e.g. {"role":"user","content":[{"type":"tool_result","content":"Launching skill: xxx"},{"type":"text","text":"xxx"}]}
