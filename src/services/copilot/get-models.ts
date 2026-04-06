@@ -1,10 +1,10 @@
-import { copilotBaseUrl, copilotHeaders } from "~/lib/api-config"
+import { copilotBaseUrl, copilotModelsHeaders } from "~/lib/api-config"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
 
 export const getModels = async () => {
   const response = await fetch(`${copilotBaseUrl(state)}/models`, {
-    headers: copilotHeaders(state),
+    headers: copilotModelsHeaders(state),
   })
 
   if (!response.ok) throw new HTTPError("Failed to get models", response)
