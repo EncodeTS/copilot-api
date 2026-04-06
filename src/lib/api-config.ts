@@ -206,7 +206,12 @@ export const copilotModelsHeaders = (state: State) => {
       "User-Agent": getOpencodeVersion(),
     }
   }
-  return githubCopilotHeaders(state)
+  const headers = githubCopilotHeaders(state)
+  headers["x-interaction-type"] = "model-access"
+  headers["openai-intent"] = "model-access"
+  delete headers["x-interaction-id"]
+  delete headers["content-type"]
+  return headers
 }
 
 export const copilotHeaders = (
@@ -281,7 +286,7 @@ const githubCopilotHeaders = (
 }
 
 export const GITHUB_API_BASE_URL = "https://api.github.com"
-export const githubHeaders = (state: State) => {
+export const githubHeaders = (state: State): Record<string, string> => {
   if (isOpencodeOauthApp()) {
     return {
       Authorization: `Bearer ${state.githubToken}`,
@@ -289,7 +294,6 @@ export const githubHeaders = (state: State) => {
     }
   }
   return {
-    ...standardHeaders(),
     authorization: `token ${state.githubToken}`,
     "user-agent": USER_AGENT,
     "x-github-api-version": "2025-04-01",
