@@ -28,11 +28,14 @@ export interface ModelConfig {
   topK?: number
 }
 
+export type ProviderAuthType = "authorization" | "x-api-key"
+
 export interface ProviderConfig {
   type?: string
   enabled?: boolean
   baseUrl?: string
   apiKey?: string
+  authType?: ProviderAuthType
   models?: Record<string, ModelConfig>
   adjustInputTokens?: boolean
 }
@@ -42,6 +45,7 @@ export interface ResolvedProviderConfig {
   type: "anthropic"
   baseUrl: string
   apiKey: string
+  authType: ProviderAuthType
   models?: Record<string, ModelConfig>
   adjustInputTokens?: boolean
 }
@@ -238,6 +242,24 @@ export function normalizeProviderBaseUrl(url: string): string {
   return url.trim().replace(/\/+$/u, "")
 }
 
+function resolveProviderAuthType(
+  providerName: string,
+  authType: string | undefined,
+): ProviderAuthType {
+  if (authType === undefined || authType === "x-api-key") {
+    return "x-api-key"
+  }
+
+  if (authType === "authorization") {
+    return authType
+  }
+
+  consola.warn(
+    `Provider ${providerName} has invalid authType '${authType}', falling back to x-api-key`,
+  )
+  return "x-api-key"
+}
+
 export function getProviderConfig(name: string): ResolvedProviderConfig | null {
   const providerName = name.trim()
   if (!providerName) {
@@ -264,6 +286,7 @@ export function getProviderConfig(name: string): ResolvedProviderConfig | null {
 
   const baseUrl = normalizeProviderBaseUrl(provider.baseUrl ?? "")
   const apiKey = (provider.apiKey ?? "").trim()
+  const authType = resolveProviderAuthType(providerName, provider.authType)
   if (!baseUrl || !apiKey) {
     consola.warn(
       `Provider ${providerName} is enabled but missing baseUrl or apiKey`,
@@ -276,6 +299,7 @@ export function getProviderConfig(name: string): ResolvedProviderConfig | null {
     type,
     baseUrl,
     apiKey,
+    authType,
     models: provider.models,
     adjustInputTokens: provider.adjustInputTokens,
   }
