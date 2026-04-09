@@ -24,11 +24,6 @@
 
 ---
 
-> [!NOTE]
-> This repository is now maintained independently from the original [`ericc-ch/copilot-api`](https://github.com/ericc-ch/copilot-api) project. For project lineage and acknowledgements, see [NOTICE.md](./NOTICE.md).
-
----
-
 ## Important Notes
 
 > [!IMPORTANT]
