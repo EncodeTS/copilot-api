@@ -17,14 +17,18 @@
 >
 > Use this proxy responsibly to avoid account restrictions.
 
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/E1E519XS7W)
-
 ---
 
 > [!NOTE]
 > [opencode](https://github.com/sst/opencode) already ships with a built-in GitHub Copilot provider, so you may not need this project for basic usage. This proxy is still useful if you want OpenCode to talk to Copilot through `@ai-sdk/anthropic`, preserve Anthropic Messages semantics for tool use, prefer the native Messages API over Chat Completions API for Claude-family models, use gpt phase-aware commentary, or optimize premium requests.
 
 ---
+
+> [!NOTE]
+> This repository is now maintained independently from the original [`ericc-ch/copilot-api`](https://github.com/ericc-ch/copilot-api) project. For project lineage and acknowledgements, see [NOTICE.md](./NOTICE.md).
+
+---
+
 ## Important Notes
 
 > [!IMPORTANT]
