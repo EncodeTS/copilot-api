@@ -44,7 +44,7 @@ export const setupCopilotToken = async () => {
     return
   }
 
-  const { token, expires_at } = await getCopilotToken()
+  const { token, refresh_in } = await getCopilotToken()
   state.copilotToken = token
 
   // Display the Copilot token to the screen
@@ -58,7 +58,7 @@ export const setupCopilotToken = async () => {
   const controller = new AbortController()
   copilotRefreshLoopController = controller
 
-  runCopilotRefreshLoop(expires_at, controller.signal)
+  runCopilotRefreshLoop(refresh_in, controller.signal)
     .catch(() => {
       consola.warn("Copilot token refresh loop stopped")
     })
@@ -69,49 +69,54 @@ export const setupCopilotToken = async () => {
     })
 }
 
-// How often we wake up to check wall-clock time against the token expiry.
-// Keeping this short ensures we recover quickly after a system sleep/wake cycle
-// where the monotonic clock (used by setTimeout) does not advance.
-const REFRESH_POLL_INTERVAL_MS = 30_000
+const REFRESH_POLL_INTERVAL_MS = 15_000
+const EARLY_REFRESH_BUFFER_MS = 60_000
+const RETRY_REFRESH_DELAY_MS = 15_000
+const MIN_REFRESH_DELAY_MS = 1_000
+
+export const getRefreshDeadlineMs = (
+  refreshIn: number,
+  nowMs: number = Date.now(),
+) =>
+  nowMs
+  + Math.max(refreshIn * 1000 - EARLY_REFRESH_BUFFER_MS, MIN_REFRESH_DELAY_MS)
+
+// Use short wall-clock chunks so the next wake after sleep notices elapsed time
+// quickly, without relying on the server's absolute expires_at matching local time.
+export const getRefreshPollDelayMs = (
+  refreshAtMs: number,
+  nowMs: number = Date.now(),
+) => Math.min(Math.max(refreshAtMs - nowMs, 0), REFRESH_POLL_INTERVAL_MS)
 
 const runCopilotRefreshLoop = async (
-  expiresAt: number,
+  refreshIn: number,
   signal: AbortSignal,
 ) => {
-  // expiresAt is a Unix timestamp in seconds from the GitHub API.
-  // Refresh 60 seconds before expiry to avoid using a token that is about to expire.
-  let refreshAtMs = expiresAt * 1000 - 60_000
+  let refreshAtMs = getRefreshDeadlineMs(refreshIn)
 
   while (!signal.aborted) {
-    // Sleep in short chunks so a wake-from-sleep is detected within REFRESH_POLL_INTERVAL_MS.
-    // setTimeout uses the monotonic clock on Linux (Docker), which does not advance during
-    // system sleep, so a single long sleep would never fire after the laptop wakes up.
-    const msUntilRefresh = refreshAtMs - Date.now()
-    if (msUntilRefresh > 0) {
-      await delay(
-        Math.min(msUntilRefresh, REFRESH_POLL_INTERVAL_MS),
-        undefined,
-        {
-          signal,
-        },
-      )
+    const nextDelayMs = getRefreshPollDelayMs(refreshAtMs)
+    if (nextDelayMs > 0) {
+      await delay(nextDelayMs, undefined, { signal })
       continue
     }
 
     consola.debug("Refreshing Copilot token")
 
     try {
-      const { token, expires_at } = await getCopilotToken()
+      const { token, refresh_in } = await getCopilotToken()
       state.copilotToken = token
-      refreshAtMs = expires_at * 1000 - 60_000
+      refreshAtMs = getRefreshDeadlineMs(refresh_in)
       consola.debug("Copilot token refreshed")
       if (state.showToken) {
         consola.info("Refreshed Copilot token:", token)
       }
     } catch (error) {
       consola.error("Failed to refresh Copilot token:", error)
-      refreshAtMs = Date.now() + 15_000
-      consola.warn("Retrying Copilot token refresh in 15s")
+      refreshAtMs = Date.now() + RETRY_REFRESH_DELAY_MS
+      consola.warn(
+        `Retrying Copilot token refresh in ${RETRY_REFRESH_DELAY_MS / 1000}s`,
+      )
     }
   }
 }
