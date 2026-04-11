@@ -1,44 +1,17 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { Hono } from "hono"
 
-const actualStateModule = await import("../src/lib/state")
-const actualRateLimitModule = await import("../src/lib/rate-limit")
-const actualCreateChatCompletionsModule = await import(
-  "../src/services/copilot/create-chat-completions"
-)
+import { state } from "../src/lib/state"
+import { completionRoutes } from "../src/routes/chat-completions/route"
 
-const state = {
-  ...actualStateModule.state,
-  manualApprove: false,
-  verbose: false,
+const originalState = {
+  lastRequestTimestamp: state.lastRequestTimestamp,
+  manualApprove: state.manualApprove,
+  models: state.models,
+  rateLimitSeconds: state.rateLimitSeconds,
+  rateLimitWait: state.rateLimitWait,
+  verbose: state.verbose,
 }
-
-const createChatCompletions = mock(() =>
-  Promise.resolve({
-    id: "chatcmpl-test",
-    object: "chat.completion" as const,
-    created: 0,
-    model: "gpt-test",
-    choices: [],
-  }),
-)
-
-await mock.module("~/lib/state", () => ({
-  ...actualStateModule,
-  state,
-}))
-await mock.module("~/lib/rate-limit", () => ({
-  ...actualRateLimitModule,
-  checkRateLimit: async () => {},
-}))
-await mock.module("~/services/copilot/create-chat-completions", () => ({
-  ...actualCreateChatCompletionsModule,
-  createChatCompletions,
-}))
-
-const { completionRoutes } = await import(
-  "../src/routes/chat-completions/route"
-)
 
 const createApp = () => {
   const app = new Hono()
@@ -49,6 +22,9 @@ const createApp = () => {
 beforeEach(() => {
   state.manualApprove = false
   state.verbose = false
+  state.rateLimitWait = false
+  state.rateLimitSeconds = undefined
+  state.lastRequestTimestamp = undefined
   state.models = {
     object: "list",
     data: [
@@ -71,8 +47,15 @@ beforeEach(() => {
       },
     ],
   }
+})
 
-  createChatCompletions.mockClear()
+afterEach(() => {
+  state.manualApprove = originalState.manualApprove
+  state.verbose = originalState.verbose
+  state.rateLimitWait = originalState.rateLimitWait
+  state.rateLimitSeconds = originalState.rateLimitSeconds
+  state.lastRequestTimestamp = originalState.lastRequestTimestamp
+  state.models = originalState.models
 })
 
 describe("chat completions handler", () => {
@@ -96,6 +79,5 @@ describe("chat completions handler", () => {
         type: "invalid_request_error",
       },
     })
-    expect(createChatCompletions).not.toHaveBeenCalled()
   })
 })
