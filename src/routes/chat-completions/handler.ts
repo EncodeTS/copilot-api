@@ -27,7 +27,15 @@ export async function handleCompletion(c: Context) {
   )
 
   if (selectedModel?.id === "gpt-5.4") {
-    throw new Error("Please use `/v1/responses` or `/v1/messages` API")
+    return c.json(
+      {
+        error: {
+          message: "Please use `/v1/responses` or `/v1/messages` API",
+          type: "invalid_request_error",
+        },
+      },
+      400,
+    )
   }
 
   if (state.manualApprove) await awaitApproval()
