@@ -1,17 +1,64 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Hono } from "hono"
 
 import { state } from "../src/lib/state"
 import { completionRoutes } from "../src/routes/chat-completions/route"
 
+const originalFetch = globalThis.fetch
 const originalState = {
+  accountType: state.accountType,
+  copilotToken: state.copilotToken,
   lastRequestTimestamp: state.lastRequestTimestamp,
   manualApprove: state.manualApprove,
   models: state.models,
   rateLimitSeconds: state.rateLimitSeconds,
   rateLimitWait: state.rateLimitWait,
   verbose: state.verbose,
+  vsCodeVersion: state.vsCodeVersion,
 }
+
+const fetchMock = mock(() =>
+  Promise.resolve(
+    new Response(
+      JSON.stringify({
+        id: "chatcmpl-test",
+        object: "chat.completion",
+        created: 0,
+        model: "gpt-test",
+        choices: [],
+      }),
+      {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+        },
+      },
+    ),
+  ),
+)
+
+const createModels = () => ({
+  object: "list" as const,
+  data: [
+    {
+      capabilities: {
+        family: "gpt",
+        limits: {},
+        object: "model_capabilities" as const,
+        supports: {},
+        tokenizer: "o200k_base",
+        type: "chat" as const,
+      },
+      id: "gpt-5.4",
+      model_picker_enabled: true,
+      name: "gpt-5.4",
+      object: "model" as const,
+      preview: false,
+      vendor: "openai",
+      version: "1",
+    },
+  ],
+})
 
 const createApp = () => {
   const app = new Hono()
@@ -20,42 +67,32 @@ const createApp = () => {
 }
 
 beforeEach(() => {
+  state.accountType = "individual"
+  state.copilotToken = "test-token"
   state.manualApprove = false
   state.verbose = false
+  state.vsCodeVersion = "1.0.0"
   state.rateLimitWait = false
   state.rateLimitSeconds = undefined
   state.lastRequestTimestamp = undefined
-  state.models = {
-    object: "list",
-    data: [
-      {
-        capabilities: {
-          family: "gpt",
-          limits: {},
-          object: "model_capabilities",
-          supports: {},
-          tokenizer: "o200k_base",
-          type: "chat",
-        },
-        id: "gpt-5.4",
-        model_picker_enabled: true,
-        name: "gpt-5.4",
-        object: "model",
-        preview: false,
-        vendor: "openai",
-        version: "1",
-      },
-    ],
-  }
+  state.models = createModels()
+
+  fetchMock.mockClear()
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
 })
 
 afterEach(() => {
+  state.accountType = originalState.accountType
+  state.copilotToken = originalState.copilotToken
   state.manualApprove = originalState.manualApprove
   state.verbose = originalState.verbose
+  state.vsCodeVersion = originalState.vsCodeVersion
   state.rateLimitWait = originalState.rateLimitWait
   state.rateLimitSeconds = originalState.rateLimitSeconds
   state.lastRequestTimestamp = originalState.lastRequestTimestamp
   state.models = originalState.models
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
 })
 
 describe("chat completions handler", () => {
@@ -79,5 +116,6 @@ describe("chat completions handler", () => {
         type: "invalid_request_error",
       },
     })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
