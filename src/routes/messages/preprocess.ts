@@ -1,7 +1,5 @@
 import type { Model } from "~/services/copilot/get-models"
 
-import { getReasoningEffortForModel } from "~/lib/config"
-
 import type {
   AnthropicMessage,
   AnthropicMessagesPayload,
@@ -17,17 +15,6 @@ const compactSummaryPromptStart =
   "Your task is to create a detailed summary of the conversation so far"
 const compactMessageSections = ["Pending Tasks:", "Current Work:"] as const
 export const TOOL_REFERENCE_TURN_BOUNDARY = "Tool loaded."
-
-const getAnthropicEffortForModel = (
-  model: string,
-): "low" | "medium" | "high" | "max" => {
-  const reasoningEffort = getReasoningEffortForModel(model)
-
-  if (reasoningEffort === "xhigh") return "max"
-  if (reasoningEffort === "none" || reasoningEffort === "minimal") return "low"
-
-  return reasoningEffort
-}
 
 const getCompactCandidateText = (message: AnthropicMessage): string => {
   if (message.role !== "user") {
@@ -81,52 +68,6 @@ export const isCompactRequest = (
   )
 }
 
-const mergeContentWithText = (
-  tr: AnthropicToolResultBlock,
-  textBlock: AnthropicTextBlock,
-): AnthropicToolResultBlock => {
-  if (typeof tr.content === "string") {
-    return { ...tr, content: `${tr.content}\n\n${textBlock.text}` }
-  }
-  // Unable to merge, discard other text blocks, wait for the next round of re-request
-  if (hasToolRef(tr)) {
-    return tr
-  }
-  return {
-    ...tr,
-    content: [...tr.content, textBlock],
-  }
-}
-
-const mergeContentWithTexts = (
-  tr: AnthropicToolResultBlock,
-  textBlocks: Array<AnthropicTextBlock>,
-): AnthropicToolResultBlock => {
-  if (typeof tr.content === "string") {
-    const appendedTexts = textBlocks.map((tb) => tb.text).join("\n\n")
-    return { ...tr, content: `${tr.content}\n\n${appendedTexts}` }
-  }
-  // Unable to merge, discard other text blocks, wait for the next round of re-request
-  if (hasToolRef(tr)) {
-    return tr
-  }
-  return { ...tr, content: [...tr.content, ...textBlocks] }
-}
-
-const mergeToolResult = (
-  toolResults: Array<AnthropicToolResultBlock>,
-  textBlocks: Array<AnthropicTextBlock>,
-): Array<AnthropicToolResultBlock> => {
-  if (toolResults.length === textBlocks.length) {
-    return toolResults.map((tr, i) => mergeContentWithText(tr, textBlocks[i]))
-  }
-
-  const lastIndex = toolResults.length - 1
-  return toolResults.map((tr, i) =>
-    i === lastIndex ? mergeContentWithTexts(tr, textBlocks) : tr,
-  )
-}
-
 export const stripToolReferenceTurnBoundary = (
   anthropicPayload: AnthropicMessagesPayload,
 ): void => {
@@ -143,33 +84,6 @@ export const stripToolReferenceTurnBoundary = (
         block.type !== "text"
         || block.text.trim() !== TOOL_REFERENCE_TURN_BOUNDARY,
     )
-  }
-}
-
-export const mergeToolResultForClaude = (
-  anthropicPayload: AnthropicMessagesPayload,
-): void => {
-  for (const msg of anthropicPayload.messages) {
-    if (msg.role !== "user" || !Array.isArray(msg.content)) continue
-
-    const toolResults: Array<AnthropicToolResultBlock> = []
-    const textBlocks: Array<AnthropicTextBlock> = []
-    let valid = true
-
-    for (const block of msg.content) {
-      if (block.type === "tool_result") {
-        toolResults.push(block)
-      } else if (block.type === "text") {
-        textBlocks.push(block)
-      } else {
-        valid = false
-        break
-      }
-    }
-
-    if (!valid || toolResults.length === 0 || textBlocks.length === 0) continue
-
-    msg.content = mergeToolResult(toolResults, textBlocks)
   }
 }
 
@@ -231,11 +145,21 @@ export const prepareMessagesApiPayload = (
   const disableThink = toolChoice?.type === "any" || toolChoice?.type === "tool"
 
   if (selectedModel?.capabilities.supports.adaptive_thinking && !disableThink) {
-    payload.thinking = {
-      type: "adaptive",
+    // Only inject adaptive thinking as default when client didn't specify thinking
+    if (!payload.thinking) {
+      payload.thinking = {
+        type: "adaptive",
+      }
     }
-    payload.output_config = {
-      effort: getAnthropicEffortForModel(payload.model),
+
+    // When thinking is active (not disabled), temperature must be omitted
+    // and effort should be set
+    if (payload.thinking.type !== "disabled") {
+      delete payload.temperature
+      payload.output_config = {
+        ...payload.output_config,
+        effort: payload.output_config?.effort ?? "high",
+      }
     }
   }
 }

@@ -19,12 +19,17 @@ export interface AnthropicMessagesPayload {
     name?: string
   }
   thinking?: {
-    type: "enabled" | "adaptive"
+    type: "enabled" | "adaptive" | "disabled"
     budget_tokens?: number
+    display?: "summarized" | "omitted"
   }
   service_tier?: "auto" | "standard_only"
   output_config?: {
     effort?: "low" | "medium" | "high" | "max"
+    format?: {
+      type: "json_schema"
+      schema: Record<string, unknown>
+    }
   }
 }
 

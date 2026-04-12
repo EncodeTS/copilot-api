@@ -28,13 +28,19 @@ This is a reverse-engineered proxy that exposes the GitHub Copilot API as both a
 2. Parse Anthropic payload
 3. Detect subagent marker (`__SUBAGENT_MARKER__` in `<system-reminder>`) → sets `x-initiator: agent`
 4. Detect compact requests (Claude Code context compaction)
-5. Force `smallModel` for tool-less warmup/probe requests
-6. Merge mixed `tool_result` + text blocks to avoid fresh premium request
-7. Normalize model ID → look up Copilot model
-8. Route to one of three upstream flows:
+5. Resolve model: detect `context-1m-2025-08-07` in `anthropic-beta` header → try `-1m` suffix first (e.g. `claude-opus-4-6` → `claude-opus-4.6-1m`), fallback to base model
+6. Route to one of three upstream flows:
    - `handleWithMessagesApi` — Copilot native `/v1/messages` (Claude models, preferred)
    - `handleWithResponsesApi` — Copilot `/responses` (GPT models)
    - `handleWithChatCompletions` — fallback for everything else
+
+### Adaptive thinking (Messages API path only)
+
+`src/routes/messages/preprocess.ts` — `prepareMessagesApiPayload`: when the model supports `adaptive_thinking` and `tool_choice` is not `any`/`tool`:
+- Injects `thinking: { type: "adaptive" }` only when client didn't specify thinking; preserves client's thinking config (enabled/adaptive/disabled/display) when set
+- Uses client's `output_config.effort` if provided, defaults to `high`; preserves other `output_config` fields (e.g. `format`)
+- Deletes `temperature` from payload when thinking is active (not disabled)
+- `context-1m-2025-08-07` beta header is NOT forwarded to upstream (filtered by `allowedAnthropicBetas` whitelist)
 
 ### Key directories
 
@@ -48,11 +54,22 @@ This is a reverse-engineered proxy that exposes the GitHub Copilot API as both a
 
 ### Middleware stack (in order)
 
-`traceIdMiddleware` → `logger()` → `cors()` → `createAuthMiddleware` (API key validation via `x-api-key` or `Authorization: Bearer`; unauthenticated paths: `/`, `/usage-viewer`)
+`traceIdMiddleware` → `logger(customPrintFn)` → `cors()` → `createAuthMiddleware` (API key validation via `x-api-key` or `Authorization: Bearer`; unauthenticated paths: `/`, `/usage-viewer`)
+
+The custom logger appends model route info (e.g. `claude-opus-4-6 -> claude-opus-4.6-1m`) to response lines via `RequestContext.modelRoute`.
+
+### Logging
+
+- **`[req]`** (always): incoming request — model, thinking, effort, stream, tools, context1m
+- **Response line** (always): `-->` line includes model route info when available
+- **`--verbose` mode** enables additional console output:
+  - `[route]` — model routing result, API flow, compact status
+  - `[messages-api]` — thinking type, effort, temperature after payload preparation
+- **Handler file logs**: written to `~/.local/share/copilot-api/logs/` via `createHandlerLogger`, debug-level details per request
 
 ### Model routing
 
-`src/lib/models.ts` normalizes Claude model IDs via 5 regex patterns (handles variants like `claude-opus-4-6`, `claude-opus-4.6`). The `useMessagesApi` config flag (default `true`) controls whether Claude-family models use the native Messages API or fall back to Chat Completions.
+`src/lib/models.ts` normalizes Claude model IDs via 5 regex patterns (handles variants like `claude-opus-4-6`, `claude-opus-4.6`). Supports an optional `suffix` parameter for context-window variants (e.g. `-1m`). The `useMessagesApi` config flag (default `true`) controls whether Claude-family models use the native Messages API or fall back to Chat Completions.
 
 ### Config and state
 

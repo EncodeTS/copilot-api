@@ -3,9 +3,9 @@ import type { Context } from "hono"
 import consola from "consola"
 
 import { getAnthropicApiKey, getClaudeTokenMultiplier } from "~/lib/config"
+import { findEndpointModel } from "~/lib/models"
 import { getTokenCount } from "~/lib/tokenizer"
 
-import { findEndpointModel } from "../../lib/models"
 import { type AnthropicMessagesPayload } from "./anthropic-types"
 import { translateToOpenAI } from "./non-stream-translation"
 
@@ -74,7 +74,12 @@ export async function handleCountTokens(c: Context) {
 
     const openAIPayload = translateToOpenAI(anthropicPayload)
 
-    const selectedModel = findEndpointModel(anthropicPayload.model)
+    const CONTEXT_1M_BETA = "context-1m-2025-08-07"
+    const hasContext1m = anthropicBeta?.includes(CONTEXT_1M_BETA)
+    const selectedModel = findEndpointModel(
+      anthropicPayload.model,
+      hasContext1m ? "-1m" : undefined,
+    )
     anthropicPayload.model = selectedModel?.id ?? anthropicPayload.model
 
     if (!selectedModel) {

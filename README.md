@@ -20,6 +20,19 @@
 ---
 
 > [!NOTE]
+> **About this fork:** This fork is built on [caozhiyuan/copilot-api](https://github.com/caozhiyuan/copilot-api) with modifications focused on **maximum fidelity to native Anthropic behavior** for Claude-family models, rather than minimizing Copilot premium request usage.
+>
+> Key differences from upstream:
+> - Preserves original message structure (no tool_result + text merging)
+> - Respects client-provided thinking config; only injects adaptive thinking as a default when omitted
+> - Routes `context-1m-2025-08-07` beta header to the correct `-1m` model variant
+> - No warmup request downgrade to small models
+>
+> **This fork is intended for GitHub Copilot Enterprise users with unlimited premium requests.** It is not suitable for individual plans with limited quota, as it prioritizes request quality over quota conservation.
+
+---
+
+> [!NOTE]
 > [opencode](https://github.com/sst/opencode) already ships with a built-in GitHub Copilot provider, so you may not need this project for basic usage. This proxy is still useful if you want OpenCode to talk to Copilot through `@ai-sdk/anthropic`, preserve Anthropic Messages semantics for tool use, prefer the native Messages API over Chat Completions API for Claude-family models, use gpt phase-aware commentary, or optimize premium requests.
 
 ---
@@ -44,13 +57,13 @@
 
 A reverse-engineered proxy for the GitHub Copilot API that exposes it as an OpenAI and Anthropic compatible service. This allows you to use GitHub Copilot with any tool that supports the OpenAI Chat Completions API or the Anthropic Messages API, including to power [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview).
 
-Compared with routing everything through plain Chat Completions compatibility, this proxy can prefer Copilot's native Anthropic-style Messages API for Claude-family models, preserve more native thinking/tool semantics, reduce unnecessary Premium request consumption on warmup or resumed tool turns, and expose phase-aware `gpt-5.4` / `gpt-5.3-codex` responses that are easier for users to follow.
+Compared with routing everything through plain Chat Completions compatibility, this proxy can prefer Copilot's native Anthropic-style Messages API for Claude-family models, preserve more native thinking/tool semantics, and expose phase-aware `gpt-5.4` / `gpt-5.3-codex` responses that are easier for users to follow.
 
 ## Features
 
 - **OpenAI & Anthropic Compatibility**: Exposes GitHub Copilot as an OpenAI-compatible (`/v1/responses`, `/v1/chat/completions`, `/v1/models`, `/v1/embeddings`) and Anthropic-compatible (`/v1/messages`) API.
 - **Anthropic-First Routing for Claude Models**: When a model supports Copilot's native `/v1/messages` endpoint, the proxy prefers it over `/responses` or `/chat/completions`, preserving Anthropic-style `tool_use` / `tool_result` flows and more Claude-native behavior.
-- **Fewer Unnecessary Premium Requests**: Reduces wasted premium usage by routing warmup requests to `smallModel`, merging `tool_result` follow-ups back into the tool flow, and treating resumed tool turns as continuation traffic instead of fresh premium interactions.
+- **Fewer Unnecessary Premium Requests**: Reduces wasted premium usage by treating resumed tool turns as continuation traffic instead of fresh premium interactions, with `x-initiator` derived from the latest message.
 - **Phase-Aware `gpt-5.4` and `gpt-5.3-codex`**: These models can emit user-friendly commentary before deeper reasoning or tool use, so long-running coding actions are easier to understand instead of appearing as a sudden tool burst.
 - **Claude Native Beta Support**: On the Messages API path, supports Anthropic-native capabilities such as `interleaved-thinking`, `advanced-tool-use`, and `context-management`, which are difficult or unavailable through plain Chat Completions compatibility.
 - **Subagent Marker Integration**: Claude Code and opencode plugins can inject `__SUBAGENT_MARKER__...` and propagate `x-session-id` so subagent traffic keeps the correct root session and agent/user semantics.
@@ -87,8 +100,6 @@ Supported `anthropic-beta` values are filtered and forwarded on the native Messa
 
 The proxy includes request-accounting safeguards designed for tool-heavy coding workflows:
 
-- tool-less warmup or probe requests can be forced onto `smallModel` so background checks do not spend premium usage;
-- mixed `tool_result` + reminder text blocks are merged back into the `tool_result` flow instead of being counted like fresh user turns;
 - `x-initiator` is derived from the latest message or item, not stale assistant history.
 
 This helps resumed tool turns continue the existing workflow instead of consuming an extra Premium request as a brand-new interaction.

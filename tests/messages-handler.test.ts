@@ -30,7 +30,7 @@ type FlowCallOptions = {
 
 let selectedModel: SelectedModel | undefined
 
-const findEndpointModel = mock((_: string) => selectedModel)
+const findEndpointModel = mock((_: string, _suffix?: string) => selectedModel)
 const handleWithMessagesApi = mock(
   (
     _c: unknown,
@@ -63,7 +63,6 @@ await mock.module("~/lib/rate-limit", () => ({
 }))
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
-  getSmallModel: () => "small-model",
   isMessagesApiEnabled: () => messagesApiEnabled,
 }))
 await mock.module("~/lib/models", () => ({
@@ -178,7 +177,7 @@ describe("messages handler orchestration", () => {
     expect(handleWithChatCompletions).toHaveBeenCalledTimes(1)
   })
 
-  test("applies warmup model override and passes request metadata to the selected flow", async () => {
+  test("passes subagent marker and request metadata to the selected flow", async () => {
     selectedModel = {
       id: "messages-model",
       supported_endpoints: ["/v1/messages"],
@@ -215,7 +214,6 @@ describe("messages handler orchestration", () => {
 
     expect(response.status).toBe(200)
     expect(await response.text()).toBe("messages")
-    expect(findEndpointModel).toHaveBeenCalledWith("small-model")
 
     const expectedSessionId = actualUtilsModule.getUUID("session-123")
     const expectedRequestId = actualUtilsModule.generateRequestIdFromPayload(
@@ -232,5 +230,78 @@ describe("messages handler orchestration", () => {
       agent_type: "Explore",
     })
     expect(options.anthropicBetaHeader).toBe("warmup-beta")
+  })
+
+  test("resolves -1m model variant when context-1m beta header is present", async () => {
+    const model1m = {
+      id: "claude-opus-4.6-1m",
+      supported_endpoints: ["/v1/messages"],
+    }
+    findEndpointModel.mockImplementation((_id: string, suffix?: string) =>
+      suffix === "-1m" ? model1m : undefined,
+    )
+
+    const app = createApp()
+    const response = await app.request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "anthropic-beta":
+          "context-1m-2025-08-07,interleaved-thinking-2025-05-14",
+      },
+      body: JSON.stringify(createPayload({ model: "claude-opus-4-6" })),
+    })
+
+    expect(response.status).toBe(200)
+    expect(findEndpointModel).toHaveBeenCalledWith("claude-opus-4-6", "-1m")
+
+    const [, forwardedPayload] = handleWithMessagesApi.mock.calls[0]
+    expect(forwardedPayload.model).toBe("claude-opus-4.6-1m")
+  })
+
+  test("falls back to base model when context-1m is present but no -1m variant exists", async () => {
+    const baseModel = {
+      id: "claude-opus-4.6",
+      supported_endpoints: ["/v1/messages"],
+    }
+    // findEndpointModel now handles fallback internally — when suffix "-1m" is
+    // passed but no -1m model exists, it returns the base model
+    findEndpointModel.mockImplementation(() => baseModel)
+
+    const app = createApp()
+    const response = await app.request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "anthropic-beta": "context-1m-2025-08-07",
+      },
+      body: JSON.stringify(createPayload({ model: "claude-opus-4-6" })),
+    })
+
+    expect(response.status).toBe(200)
+    expect(findEndpointModel).toHaveBeenCalledWith("claude-opus-4-6", "-1m")
+
+    const [, forwardedPayload] = handleWithMessagesApi.mock.calls[0]
+    expect(forwardedPayload.model).toBe("claude-opus-4.6")
+  })
+
+  test("does not try -1m suffix when context-1m beta header is absent", async () => {
+    selectedModel = {
+      id: "claude-opus-4.6",
+      supported_endpoints: ["/v1/messages"],
+    }
+
+    const app = createApp()
+    await app.request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "anthropic-beta": "interleaved-thinking-2025-05-14",
+      },
+      body: JSON.stringify(createPayload({ model: "claude-opus-4-6" })),
+    })
+
+    expect(findEndpointModel).toHaveBeenCalledTimes(1)
+    expect(findEndpointModel).toHaveBeenCalledWith("claude-opus-4-6", undefined)
   })
 })

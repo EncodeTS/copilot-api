@@ -4,6 +4,7 @@ import { logger } from "hono/logger"
 import { readFileSync } from "node:fs"
 
 import { createAuthMiddleware } from "./lib/request-auth"
+import { requestContext } from "./lib/request-context"
 import { traceIdMiddleware } from "./lib/trace"
 import { completionRoutes } from "./routes/chat-completions/route"
 import { embeddingRoutes } from "./routes/embeddings/route"
@@ -18,7 +19,17 @@ import { usageRoute } from "./routes/usage/route"
 export const server = new Hono()
 
 server.use(traceIdMiddleware)
-server.use(logger())
+server.use(
+  logger((message: string, ...rest: Array<string>) => {
+    const ctx = requestContext.getStore()
+    const modelRoute = ctx?.modelRoute
+    if (modelRoute && message.includes("-->")) {
+      console.log(`${message} | ${modelRoute}`, ...rest)
+    } else {
+      console.log(message, ...rest)
+    }
+  }),
+)
 server.use(cors())
 server.use(
   "*",
