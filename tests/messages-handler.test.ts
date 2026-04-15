@@ -109,6 +109,60 @@ beforeEach(() => {
 })
 
 describe("messages handler orchestration", () => {
+  test("removes executeCode and rewrites getDiagnostics before forwarding tools", async () => {
+    selectedModel = {
+      id: "messages-model",
+      supported_endpoints: ["/v1/messages"],
+    }
+
+    const app = createApp()
+    const response = await app.request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(
+        createPayload({
+          tools: [
+            {
+              name: "mcp__ide__executeCode",
+              description: "Execute code in VS Code",
+              input_schema: { type: "object" },
+            },
+            {
+              name: "mcp__ide__getDiagnostics",
+              description: "Old description",
+              input_schema: { type: "object" },
+            },
+            {
+              name: "keep_me",
+              description: "Keep me",
+              input_schema: { type: "object" },
+            },
+          ],
+        }),
+      ),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe("messages")
+
+    const [, forwardedPayload] = handleWithMessagesApi.mock.calls[0]
+    expect(forwardedPayload.tools).toEqual([
+      {
+        name: "mcp__ide__getDiagnostics",
+        description:
+          "Get language diagnostics from VS Code. Returns errors, warnings, information, and hints for files in the workspace.",
+        input_schema: { type: "object" },
+      },
+      {
+        name: "keep_me",
+        description: "Keep me",
+        input_schema: { type: "object" },
+      },
+    ])
+  })
+
   test("delegates to the Messages API flow when the model supports /v1/messages", async () => {
     selectedModel = {
       id: "messages-model",

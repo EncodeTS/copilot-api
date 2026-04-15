@@ -19,6 +19,7 @@ import {
 import {
   getCompactType,
   mergeToolResultForClaude,
+  sanitizeIdeTools,
   stripToolReferenceTurnBoundary,
 } from "./preprocess"
 import { parseSubagentMarkerFromFirstUser } from "./subagent-marker"
@@ -30,6 +31,8 @@ export async function handleCompletion(c: Context) {
 
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
   debugJson(logger, "Anthropic request payload:", anthropicPayload)
+
+  sanitizeIdeTools(anthropicPayload)
 
   const subagentMarker = parseSubagentMarkerFromFirstUser(anthropicPayload)
   if (subagentMarker) {

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 
-import type { CompactType } from "~/lib/compact"
+import { COMPACT_REQUEST, type CompactType } from "~/lib/compact"
 
 import type { State } from "./state"
 
@@ -102,6 +102,10 @@ export const prepareForCompact = (
 ) => {
   if (compactType) {
     headers["x-initiator"] = "agent"
+    if (!isOpencodeOauthApp() && compactType === COMPACT_REQUEST) {
+      headers["x-interaction-type"] = "conversation-other"
+      headers["openai-intent"] = "conversation-other"
+    }
   }
 }
 
@@ -141,11 +145,11 @@ const OPENCODE_VERSION = "opencode/1.3.15"
 const OPENCODE_LLM_USER_AGENT =
   "opencode/1.3.15 ai-sdk/provider-utils/4.0.21 runtime/bun/1.3.11, opencode/1.3.15"
 
-const COPILOT_VERSION = "0.42.3"
+const COPILOT_VERSION = "0.44.0"
 const EDITOR_PLUGIN_VERSION = `copilot-chat/${COPILOT_VERSION}`
 const USER_AGENT = `GitHubCopilotChat/${COPILOT_VERSION}`
 const CLAUDE_AGENT_USER_AGENT =
-  "vscode_claude_code/2.1.81 (external, sdk-ts, agent-sdk/0.2.81)"
+  "vscode_claude_code/2.1.98 (external, sdk-ts, agent-sdk/0.2.98)"
 
 const API_VERSION = "2025-10-01"
 

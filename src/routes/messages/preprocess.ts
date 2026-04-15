@@ -21,6 +21,11 @@ import type {
 
 export const TOOL_REFERENCE_TURN_BOUNDARY = "Tool loaded."
 
+const IDE_EXECUTE_CODE_TOOL = "mcp__ide__executeCode"
+const IDE_GET_DIAGNOSTICS_TOOL = "mcp__ide__getDiagnostics"
+const IDE_GET_DIAGNOSTICS_DESCRIPTION =
+  "Get language diagnostics from VS Code. Returns errors, warnings, information, and hints for files in the workspace."
+
 const getAnthropicEffortForModel = (
   model: string,
 ): "low" | "medium" | "high" | "max" => {
@@ -197,6 +202,30 @@ export const mergeToolResultForClaude = (
   }
 }
 
+// allign with vscode copilot claude agent tools
+export const sanitizeIdeTools = (payload: AnthropicMessagesPayload): void => {
+  if (!payload.tools || payload.tools.length === 0) {
+    return
+  }
+
+  payload.tools = payload.tools.flatMap((tool) => {
+    if (tool.name === IDE_EXECUTE_CODE_TOOL) {
+      return []
+    }
+
+    if (tool.name === IDE_GET_DIAGNOSTICS_TOOL) {
+      return [
+        {
+          ...tool,
+          description: IDE_GET_DIAGNOSTICS_DESCRIPTION,
+        },
+      ]
+    }
+
+    return [tool]
+  })
+}
+
 const hasToolRef = (block: AnthropicToolResultBlock) => {
   return (
     Array.isArray(block.content)
@@ -249,6 +278,8 @@ export const prepareMessagesApiPayload = (
   stripCacheControl(payload)
   filterAssistantThinkingBlocks(payload)
 
+  const hasThinking = Boolean(payload.thinking)
+
   // https://platform.claude.com/docs/en/build-with-claude/extended-thinking#extended-thinking-with-tool-use
   // Using tool_choice: {"type": "any"} or tool_choice: {"type": "tool", "name": "..."} will result in an error because these options force tool use, which is incompatible with extended thinking.
   const toolChoice = payload.tool_choice
@@ -257,6 +288,10 @@ export const prepareMessagesApiPayload = (
   if (selectedModel?.capabilities.supports.adaptive_thinking && !disableThink) {
     payload.thinking = {
       type: "adaptive",
+    }
+    // allign with vscode copilot
+    if (!hasThinking) {
+      payload.thinking.display = "summarized"
     }
     payload.output_config = {
       effort: getAnthropicEffortForModel(payload.model),
