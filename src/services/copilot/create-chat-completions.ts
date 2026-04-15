@@ -1,7 +1,8 @@
 import consola from "consola"
 import { events } from "fetch-event-stream"
 
-import type { SubagentMarker } from "~/routes/messages/subagent-marker"
+import type { CompactType } from "~/lib/compact"
+import type { SubagentMarker } from "~/lib/subagent"
 
 import {
   copilotBaseUrl,
@@ -18,7 +19,7 @@ export const createChatCompletions = async (
     subagentMarker?: SubagentMarker | null
     requestId: string
     sessionId?: string
-    isCompact?: boolean
+    compactType?: CompactType
   },
 ) => {
   if (!state.copilotToken) throw new Error("Copilot token not found")
@@ -52,7 +53,7 @@ export const createChatCompletions = async (
     headers,
   )
 
-  prepareForCompact(headers, options.isCompact)
+  prepareForCompact(headers, options.compactType)
 
   const response = await fetch(`${copilotBaseUrl(state)}/chat/completions`, {
     method: "POST",

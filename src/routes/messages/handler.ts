@@ -17,7 +17,7 @@ import {
   handleWithResponsesApi,
 } from "./api-flows"
 import {
-  isCompactRequest,
+  getCompactType,
   mergeToolResultForClaude,
   stripToolReferenceTurnBoundary,
 } from "./preprocess"
@@ -39,20 +39,20 @@ export async function handleCompletion(c: Context) {
   const sessionId = getRootSessionId(anthropicPayload, c)
   logger.debug("Extracted session ID:", sessionId)
 
-  // claude code and opencode compact request detection
-  const isCompact = isCompactRequest(anthropicPayload)
+  // claude code and opencode compact / auto-continue detection
+  const compactType = getCompactType(anthropicPayload)
 
   // fix claude code 2.0.28+ warmup request consume premium request, forcing small model if no tools are used
   // set "CLAUDE_CODE_SUBAGENT_MODEL": "you small model" also can avoid this
   const anthropicBeta = c.req.header("anthropic-beta")
   logger.debug("Anthropic Beta header:", anthropicBeta)
   const noTools = !anthropicPayload.tools || anthropicPayload.tools.length === 0
-  if (anthropicBeta && noTools && !isCompact) {
+  if (anthropicBeta && noTools && compactType === 0) {
     anthropicPayload.model = getSmallModel()
   }
 
-  if (isCompact) {
-    logger.debug("Is compact request:", isCompact)
+  if (compactType) {
+    logger.debug("Compact request type:", compactType)
   } else {
     stripToolReferenceTurnBoundary(anthropicPayload)
 
@@ -81,7 +81,7 @@ export async function handleCompletion(c: Context) {
       selectedModel,
       requestId,
       sessionId,
-      isCompact,
+      compactType,
       logger,
     })
   }
@@ -92,7 +92,7 @@ export async function handleCompletion(c: Context) {
       selectedModel,
       requestId,
       sessionId,
-      isCompact,
+      compactType,
       logger,
     })
   }
@@ -101,7 +101,7 @@ export async function handleCompletion(c: Context) {
     subagentMarker,
     requestId,
     sessionId,
-    isCompact,
+    compactType,
     logger,
   })
 }

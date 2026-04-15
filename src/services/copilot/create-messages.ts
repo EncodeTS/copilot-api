@@ -1,11 +1,12 @@
 import consola from "consola"
 import { events } from "fetch-event-stream"
 
+import type { CompactType } from "~/lib/compact"
+import type { SubagentMarker } from "~/lib/subagent"
 import type {
   AnthropicMessagesPayload,
   AnthropicResponse,
 } from "~/routes/messages/anthropic-types"
-import type { SubagentMarker } from "~/routes/messages/subagent-marker"
 
 import {
   copilotBaseUrl,
@@ -67,7 +68,7 @@ export const createMessages = async (
     subagentMarker?: SubagentMarker | null
     requestId: string
     sessionId?: string
-    isCompact?: boolean
+    compactType?: CompactType
   },
 ): Promise<CreateMessagesReturn> => {
   if (!state.copilotToken) throw new Error("Copilot token not found")
@@ -103,7 +104,7 @@ export const createMessages = async (
     headers,
   )
 
-  prepareForCompact(headers, options.isCompact)
+  prepareForCompact(headers, options.compactType)
 
   const { safetyIdentifier, sessionId } = parseUserIdMetadata(
     payload.metadata?.user_id,

@@ -3,8 +3,9 @@ import { z } from "zod"
 
 import type { AnthropicMessagesPayload } from "~/routes/messages/anthropic-types"
 
+import { COMPACT_REQUEST } from "../src/lib/compact"
 import { translateToOpenAI } from "../src/routes/messages/non-stream-translation"
-import { isCompactRequest } from "../src/routes/messages/preprocess"
+import { getCompactType } from "../src/routes/messages/preprocess"
 
 // Zod schema for a single message in the chat completion request.
 const messageSchema = z.object({
@@ -266,7 +267,7 @@ describe("compact request detection", () => {
       max_tokens: 1024,
     }
 
-    expect(isCompactRequest(anthropicPayload)).toBe(true)
+    expect(getCompactType(anthropicPayload)).toBe(COMPACT_REQUEST)
   })
 
   test("detects compact prompts in user text blocks while ignoring system reminders", () => {
@@ -290,7 +291,7 @@ describe("compact request detection", () => {
       max_tokens: 1024,
     }
 
-    expect(isCompactRequest(anthropicPayload)).toBe(true)
+    expect(getCompactType(anthropicPayload)).toBe(COMPACT_REQUEST)
   })
 
   test("does not treat ordinary user quotes as compact prompts", () => {
@@ -306,7 +307,7 @@ describe("compact request detection", () => {
       max_tokens: 1024,
     }
 
-    expect(isCompactRequest(anthropicPayload)).toBe(false)
+    expect(getCompactType(anthropicPayload)).toBe(0)
   })
 
   test("keeps legacy system prompt compact detection", () => {
@@ -318,7 +319,7 @@ describe("compact request detection", () => {
       max_tokens: 1024,
     }
 
-    expect(isCompactRequest(anthropicPayload)).toBe(true)
+    expect(getCompactType(anthropicPayload)).toBe(COMPACT_REQUEST)
   })
 })
 

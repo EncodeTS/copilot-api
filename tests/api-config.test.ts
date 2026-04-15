@@ -1,6 +1,10 @@
 import { afterEach, expect, test } from "bun:test"
 
-import { prepareMessageProxyHeaders } from "../src/lib/api-config"
+import {
+  prepareForCompact,
+  prepareMessageProxyHeaders,
+} from "../src/lib/api-config"
+import { COMPACT_AUTO_CONTINUE, COMPACT_REQUEST } from "../src/lib/compact"
 
 const originalOauthApp = process.env.COPILOT_API_OAUTH_APP
 
@@ -45,4 +49,18 @@ test("prepareMessageProxyHeaders leaves opencode headers untouched", () => {
     "Openai-Intent": "conversation-edits",
     "User-Agent": "opencode/1.0.0",
   })
+})
+
+test("prepareForCompact marks compact traffic as agent initiated", () => {
+  const compactHeaders: Record<string, string> = { "x-initiator": "user" }
+  const autoContinueHeaders: Record<string, string> = { "x-initiator": "user" }
+  const normalHeaders: Record<string, string> = { "x-initiator": "user" }
+
+  prepareForCompact(compactHeaders, COMPACT_REQUEST)
+  prepareForCompact(autoContinueHeaders, COMPACT_AUTO_CONTINUE)
+  prepareForCompact(normalHeaders, 0)
+
+  expect(compactHeaders["x-initiator"]).toBe("agent")
+  expect(autoContinueHeaders["x-initiator"]).toBe("agent")
+  expect(normalHeaders["x-initiator"]).toBe("user")
 })

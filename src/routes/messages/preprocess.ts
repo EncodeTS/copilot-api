@@ -1,5 +1,15 @@
 import type { Model } from "~/services/copilot/get-models"
 
+import {
+  COMPACT_AUTO_CONTINUE,
+  COMPACT_REQUEST,
+  compactAutoContinuePromptStarts,
+  compactMessageSections,
+  compactSummaryPromptStart,
+  compactSystemPromptStart,
+  compactTextOnlyGuard,
+  type CompactType,
+} from "~/lib/compact"
 import { getReasoningEffortForModel } from "~/lib/config"
 
 import type {
@@ -9,13 +19,6 @@ import type {
   AnthropicToolResultBlock,
 } from "./anthropic-types"
 
-const compactSystemPromptStart =
-  "You are a helpful AI assistant tasked with summarizing conversations"
-const compactTextOnlyGuard =
-  "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
-const compactSummaryPromptStart =
-  "Your task is to create a detailed summary of the conversation so far"
-const compactMessageSections = ["Pending Tasks:", "Current Work:"] as const
 export const TOOL_REFERENCE_TURN_BOUNDARY = "Tool loaded."
 
 const getAnthropicEffortForModel = (
@@ -60,25 +63,46 @@ const isCompactMessage = (lastMessage: AnthropicMessage): boolean => {
   )
 }
 
-export const isCompactRequest = (
-  anthropicPayload: AnthropicMessagesPayload,
+const isCompactAutoContinueMessage = (
+  lastMessage: AnthropicMessage,
 ): boolean => {
+  const text = getCompactCandidateText(lastMessage)
+  return (
+    Boolean(text)
+    && compactAutoContinuePromptStarts.some((promptStart) =>
+      text.startsWith(promptStart),
+    )
+  )
+}
+
+export const getCompactType = (
+  anthropicPayload: AnthropicMessagesPayload,
+): CompactType => {
   const lastMessage = anthropicPayload.messages.at(-1)
   if (lastMessage && isCompactMessage(lastMessage)) {
-    return true
+    return COMPACT_REQUEST
+  }
+
+  if (lastMessage && isCompactAutoContinueMessage(lastMessage)) {
+    return COMPACT_AUTO_CONTINUE
   }
 
   const system = anthropicPayload.system
   if (typeof system === "string") {
-    return system.startsWith(compactSystemPromptStart)
+    return system.startsWith(compactSystemPromptStart) ? COMPACT_REQUEST : 0
   }
-  if (!Array.isArray(system)) return false
+  if (!Array.isArray(system)) return 0
 
-  return system.some(
+  const hasCompactSystemPrompt = system.some(
     (msg) =>
       typeof msg.text === "string"
       && msg.text.startsWith(compactSystemPromptStart),
   )
+  if (hasCompactSystemPrompt) {
+    return COMPACT_REQUEST
+  }
+
+  return 0
 }
 
 const mergeContentWithText = (

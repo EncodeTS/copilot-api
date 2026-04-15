@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto"
 
+import type { CompactType } from "~/lib/compact"
+
 import type { State } from "./state"
 
 import { getCachedOpencodeVersion } from "./opencode"
@@ -96,9 +98,9 @@ export const getOauthAppConfig = (): OauthAppConfig => {
 
 export const prepareForCompact = (
   headers: Record<string, string>,
-  isCompact?: boolean,
+  compactType?: CompactType,
 ) => {
-  if (isCompact) {
+  if (compactType) {
     headers["x-initiator"] = "agent"
   }
 }
