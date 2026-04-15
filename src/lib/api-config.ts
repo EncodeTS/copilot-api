@@ -187,6 +187,8 @@ export const prepareMessageProxyHeaders = (headers: Record<string, string>) => {
   headers["x-interaction-type"] = "messages-proxy"
   headers["openai-intent"] = "messages-proxy"
   headers["user-agent"] = CLAUDE_AGENT_USER_AGENT
+
+  delete headers["copilot-integration-id"]
 }
 
 export const githubUserHeaders = (state: State): Record<string, string> => {
