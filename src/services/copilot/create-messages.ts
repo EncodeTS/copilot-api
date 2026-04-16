@@ -44,7 +44,7 @@ const buildAnthropicBetaHeader = (
       .filter((item) => allowedAnthropicBetas.has(item))
 
     // in vscode copilot extension, advanced-tool-use is enabled by default
-    // allign header with vscode copilot extension
+    // align header with vscode copilot extension
     const uniqueFilteredBetas = [
       ...new Set([ADVANCED_TOOL_USE_BETA, ...filteredBeta]),
     ]

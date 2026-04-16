@@ -177,8 +177,15 @@ export const stripToolReferenceTurnBoundary = (
 
 export const mergeToolResultForClaude = (
   anthropicPayload: AnthropicMessagesPayload,
+  options?: {
+    skipLastMessage?: boolean
+  },
 ): void => {
-  for (const msg of anthropicPayload.messages) {
+  const lastMessageIndex = anthropicPayload.messages.length - 1
+
+  for (const [index, msg] of anthropicPayload.messages.entries()) {
+    if (options?.skipLastMessage && index === lastMessageIndex) continue
+
     if (msg.role !== "user" || !Array.isArray(msg.content)) continue
 
     const toolResults: Array<AnthropicToolResultBlock> = []
@@ -202,7 +209,7 @@ export const mergeToolResultForClaude = (
   }
 }
 
-// allign with vscode copilot claude agent tools
+// align with vscode copilot claude agent tools
 export const sanitizeIdeTools = (payload: AnthropicMessagesPayload): void => {
   if (!payload.tools || payload.tools.length === 0) {
     return
@@ -289,7 +296,7 @@ export const prepareMessagesApiPayload = (
     payload.thinking = {
       type: "adaptive",
     }
-    // allign with vscode copilot
+    // align with vscode copilot
     if (!hasThinking) {
       payload.thinking.display = "summarized"
     }

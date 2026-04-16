@@ -3,6 +3,7 @@ import type { Context } from "hono"
 import type { Model } from "~/services/copilot/get-models"
 
 import { awaitApproval } from "~/lib/approval"
+import { COMPACT_REQUEST } from "~/lib/compact"
 import { getSmallModel, isMessagesApiEnabled } from "~/lib/config"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { findEndpointModel } from "~/lib/models"
@@ -56,16 +57,18 @@ export async function handleCompletion(c: Context) {
 
   if (compactType) {
     logger.debug("Compact request type:", compactType)
-  } else {
-    stripToolReferenceTurnBoundary(anthropicPayload)
-
-    // Merge tool_result and text blocks into tool_result to avoid consuming premium requests
-    // (caused by skill invocations, edit hooks, plan or to do reminders)
-    // e.g. {"role":"user","content":[{"type":"tool_result","content":"Launching skill: xxx"},{"type":"text","text":"xxx"}]}
-    // not only for claude, but also for opencode
-    // compact requests are excluded from this processing
-    mergeToolResultForClaude(anthropicPayload)
   }
+
+  stripToolReferenceTurnBoundary(anthropicPayload)
+
+  // Merge tool_result and text blocks into tool_result to avoid consuming premium requests
+  // (caused by skill invocations, edit hooks, plan or to do reminders)
+  // e.g. {"role":"user","content":[{"type":"tool_result","content":"Launching skill: xxx"},{"type":"text","text":"xxx"}]}
+  // not only for claude, but also for opencode
+  // compact requests still run this processing, except for the final compact message itself
+  mergeToolResultForClaude(anthropicPayload, {
+    skipLastMessage: compactType === COMPACT_REQUEST,
+  })
 
   const requestId = generateRequestIdFromPayload(anthropicPayload, sessionId)
   logger.debug("Generated request ID:", requestId)
