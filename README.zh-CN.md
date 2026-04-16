@@ -615,7 +615,8 @@ npx @jeffreycao/copilot-api@latest start --claude-code
   },
   "permissions": {
     "deny": [
-      "WebSearch"
+      "WebSearch", 
+      "mcp__ide__executeCode"
     ]
   }
 }

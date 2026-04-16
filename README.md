@@ -609,7 +609,8 @@ Here is an example `.claude/settings.json` file:
   },
   "permissions": {
     "deny": [
-      "WebSearch"
+      "WebSearch", 
+      "mcp__ide__executeCode"
     ]
   }
 }
