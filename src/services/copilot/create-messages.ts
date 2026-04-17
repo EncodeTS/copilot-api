@@ -22,15 +22,30 @@ export type MessagesStream = ReturnType<typeof events>
 export type CreateMessagesReturn = AnthropicResponse | MessagesStream
 
 const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
+const ADVANCED_TOOL_USE_BETA = "advanced-tool-use-2025-11-20"
 const allowedAnthropicBetas = new Set([
   INTERLEAVED_THINKING_BETA,
   "context-management-2025-06-27",
-  "advanced-tool-use-2025-11-20",
+  ADVANCED_TOOL_USE_BETA,
 ])
+
+const TOOL_SEARCH_SUPPORTED_MODELS = [
+  "claude-sonnet-4.5",
+  "claude-sonnet-4.6",
+  "claude-opus-4.5",
+  "claude-opus-4.6",
+] as const
+
+const modelSupportsToolSearch = (modelId: string): boolean => {
+  return TOOL_SEARCH_SUPPORTED_MODELS.some((prefix) =>
+    modelId.toLowerCase().startsWith(prefix),
+  )
+}
 
 const buildAnthropicBetaHeader = (
   anthropicBetaHeader: string | undefined,
   thinking: AnthropicMessagesPayload["thinking"],
+  model: string,
 ): string | undefined => {
   const isAdaptiveThinking = thinking?.type === "adaptive"
 
@@ -40,14 +55,23 @@ const buildAnthropicBetaHeader = (
       .map((item) => item.trim())
       .filter((item) => item.length > 0)
       .filter((item) => allowedAnthropicBetas.has(item))
-    const uniqueFilteredBetas = [...new Set(filteredBeta)]
+
     const finalFilteredBetas =
       isAdaptiveThinking ?
-        uniqueFilteredBetas.filter((item) => item !== INTERLEAVED_THINKING_BETA)
-      : uniqueFilteredBetas
+        filteredBeta.filter((item) => item !== INTERLEAVED_THINKING_BETA)
+      : filteredBeta
 
-    if (finalFilteredBetas.length > 0) {
-      return finalFilteredBetas.join(",")
+    // in vscode copilot extension, advanced-tool-use is enabled by default
+    // align header with vscode copilot extension
+
+    // will remove append ADVANCED_TOOL_USE_BETA in next github copilot extension version (>0.44.1)
+    const copilotHeaderSet =
+      modelSupportsToolSearch(model) ? [ADVANCED_TOOL_USE_BETA] : []
+    const headerSet = new Set([...copilotHeaderSet, ...finalFilteredBetas])
+    const uniqueFilteredBetas = [...headerSet]
+
+    if (uniqueFilteredBetas.length > 0) {
+      return uniqueFilteredBetas.join(",")
     }
 
     return undefined
@@ -117,6 +141,7 @@ export const createMessages = async (
   const anthropicBeta = buildAnthropicBetaHeader(
     anthropicBetaHeader,
     payload.thinking,
+    payload.model,
   )
   if (anthropicBeta) {
     headers["anthropic-beta"] = anthropicBeta
