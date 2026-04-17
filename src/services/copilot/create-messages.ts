@@ -30,9 +30,23 @@ const allowedAnthropicBetas = new Set([
   ADVANCED_TOOL_USE_BETA,
 ])
 
+const TOOL_SEARCH_SUPPORTED_MODELS = [
+  "claude-sonnet-4.5",
+  "claude-sonnet-4.6",
+  "claude-opus-4.5",
+  "claude-opus-4.6",
+] as const
+
+const modelSupportsToolSearch = (modelId: string): boolean => {
+  return TOOL_SEARCH_SUPPORTED_MODELS.some((prefix) =>
+    modelId.toLowerCase().startsWith(prefix),
+  )
+}
+
 const buildAnthropicBetaHeader = (
   anthropicBetaHeader: string | undefined,
   thinking: AnthropicMessagesPayload["thinking"],
+  model: string,
 ): string | undefined => {
   const isAdaptiveThinking = thinking?.type === "adaptive"
 
@@ -45,9 +59,12 @@ const buildAnthropicBetaHeader = (
 
     // in vscode copilot extension, advanced-tool-use is enabled by default
     // align header with vscode copilot extension
-    const uniqueFilteredBetas = [
-      ...new Set([ADVANCED_TOOL_USE_BETA, ...filteredBeta]),
-    ]
+
+    // will remove append ADVANCED_TOOL_USE_BETA in next github copilot extension version (>0.44.1)
+    const copilotHeaderSet =
+      modelSupportsToolSearch(model) ? [ADVANCED_TOOL_USE_BETA] : []
+    const headerSet = new Set([...copilotHeaderSet, ...filteredBeta])
+    const uniqueFilteredBetas = [...headerSet]
 
     if (uniqueFilteredBetas.length > 0) {
       return uniqueFilteredBetas.join(",")
@@ -120,6 +137,7 @@ export const createMessages = async (
   const anthropicBeta = buildAnthropicBetaHeader(
     anthropicBetaHeader,
     payload.thinking,
+    payload.model,
   )
   if (anthropicBeta) {
     headers["anthropic-beta"] = anthropicBeta
