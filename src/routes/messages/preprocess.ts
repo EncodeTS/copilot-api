@@ -16,6 +16,14 @@ const compactSummaryPromptStart =
 const compactMessageSections = ["Pending Tasks:", "Current Work:"] as const
 export const TOOL_REFERENCE_TURN_BOUNDARY = "Tool loaded."
 
+<<<<<<< HEAD
+=======
+const IDE_EXECUTE_CODE_TOOL = "mcp__ide__executeCode"
+const IDE_GET_DIAGNOSTICS_TOOL = "mcp__ide__getDiagnostics"
+const IDE_GET_DIAGNOSTICS_DESCRIPTION =
+  "Get language diagnostics from VS Code. Returns errors, warnings, information, and hints for files in the workspace."
+
+>>>>>>> 096ad2c (feat update model reasoning efforts and configurations)
 const getCompactCandidateText = (message: AnthropicMessage): string => {
   if (message.role !== "user") {
     return ""
@@ -139,6 +147,8 @@ export const prepareMessagesApiPayload = (
   stripCacheControl(payload)
   filterAssistantThinkingBlocks(payload)
 
+  const hasThinking = Boolean(payload.thinking)
+
   // https://platform.claude.com/docs/en/build-with-claude/extended-thinking#extended-thinking-with-tool-use
   // Using tool_choice: {"type": "any"} or tool_choice: {"type": "tool", "name": "..."} will result in an error because these options force tool use, which is incompatible with extended thinking.
   const toolChoice = payload.tool_choice
@@ -156,9 +166,28 @@ export const prepareMessagesApiPayload = (
     // and effort should be set
     if (payload.thinking.type !== "disabled") {
       delete payload.temperature
+
+      // Align with vscode copilot - set display mode when not provided by client
+      if (!hasThinking) {
+        payload.thinking.display = "summarized"
+      }
+      if (payload.model === "claude-opus-4.7") {
+        payload.thinking.display = "summarized"
+      }
+
+      // Calculate effort based on model, with fallback logic
+      let effort = getReasoningEffortForModel(payload.model)
+      if (effort === "none" || effort === "minimal") {
+        effort = "low"
+      }
+      const reasoningEffort = selectedModel.capabilities.supports.reasoning_effort
+      if (reasoningEffort && !reasoningEffort.includes(effort)) {
+        effort = reasoningEffort.at(-1) as "low" | "medium" | "high"
+      }
+
       payload.output_config = {
         ...payload.output_config,
-        effort: payload.output_config?.effort ?? "high",
+        effort: payload.output_config?.effort ?? effort,
       }
     }
   }
