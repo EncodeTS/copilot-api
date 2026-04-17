@@ -1,3 +1,4 @@
+import { getReasoningEffortForModel } from "~/lib/config"
 import type { Model } from "~/services/copilot/get-models"
 
 import type {
@@ -16,14 +17,12 @@ const compactSummaryPromptStart =
 const compactMessageSections = ["Pending Tasks:", "Current Work:"] as const
 export const TOOL_REFERENCE_TURN_BOUNDARY = "Tool loaded."
 
-<<<<<<< HEAD
-=======
-const IDE_EXECUTE_CODE_TOOL = "mcp__ide__executeCode"
-const IDE_GET_DIAGNOSTICS_TOOL = "mcp__ide__getDiagnostics"
-const IDE_GET_DIAGNOSTICS_DESCRIPTION =
-  "Get language diagnostics from VS Code. Returns errors, warnings, information, and hints for files in the workspace."
+// Reserved for future use - IDE tool integration
+// const IDE_EXECUTE_CODE_TOOL = "mcp__ide__executeCode"
+// const IDE_GET_DIAGNOSTICS_TOOL = "mcp__ide__getDiagnostics"
+// const IDE_GET_DIAGNOSTICS_DESCRIPTION =
+//   "Get language diagnostics from VS Code. Returns errors, warnings, information, and hints for files in the workspace."
 
->>>>>>> 096ad2c (feat update model reasoning efforts and configurations)
 const getCompactCandidateText = (message: AnthropicMessage): string => {
   if (message.role !== "user") {
     return ""
