@@ -42,6 +42,7 @@ interface ModelSupports {
   structured_outputs?: boolean
   vision?: boolean
   adaptive_thinking?: boolean
+  reasoning_effort?: Array<string>
 }
 
 interface ModelCapabilities {
