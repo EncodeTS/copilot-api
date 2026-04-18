@@ -13,10 +13,13 @@ import {
 import { getReasoningEffortForModel } from "~/lib/config"
 
 import type {
+  AnthropicDocumentBlock,
+  AnthropicImageBlock,
   AnthropicMessage,
   AnthropicMessagesPayload,
   AnthropicTextBlock,
   AnthropicToolResultBlock,
+  AnthropicUserContentBlock,
 } from "./anthropic-types"
 
 export const TOOL_REFERENCE_TURN_BOUNDARY = "Tool loaded."
@@ -25,6 +28,8 @@ const IDE_EXECUTE_CODE_TOOL = "mcp__ide__executeCode"
 const IDE_GET_DIAGNOSTICS_TOOL = "mcp__ide__getDiagnostics"
 const IDE_GET_DIAGNOSTICS_DESCRIPTION =
   "Get language diagnostics from VS Code. Returns errors, warnings, information, and hints for files in the workspace."
+
+type AnthropicAttachmentBlock = AnthropicImageBlock | AnthropicDocumentBlock
 
 const getCompactCandidateText = (message: AnthropicMessage): string => {
   if (message.role !== "user") {
@@ -131,6 +136,73 @@ const mergeContentWithTexts = (
   return { ...tr, content: [...tr.content, ...textBlocks] }
 }
 
+const mergeContentWithAttachments = (
+  tr: AnthropicToolResultBlock,
+  attachments: Array<AnthropicAttachmentBlock>,
+): AnthropicToolResultBlock => {
+  if (typeof tr.content === "string") {
+    return {
+      ...tr,
+      content: [{ type: "text", text: tr.content }, ...attachments],
+    }
+  }
+
+  return {
+    ...tr,
+    content: [...tr.content, ...attachments],
+  }
+}
+
+const isAttachmentBlock = (
+  block: AnthropicUserContentBlock,
+): block is AnthropicAttachmentBlock => {
+  return block.type === "image" || block.type === "document"
+}
+
+const mergeAttachmentsIntoLastToolResult = (
+  content: Array<AnthropicUserContentBlock>,
+): Array<AnthropicUserContentBlock> => {
+  const attachments = content.filter((block) => isAttachmentBlock(block))
+  if (attachments.length === 0) {
+    return content
+  }
+
+  let lastToolResultIndex = -1
+  let index = 0
+
+  for (const block of content) {
+    if (block.type === "tool_result" && !hasToolRef(block)) {
+      lastToolResultIndex = index
+    }
+    index += 1
+  }
+
+  if (lastToolResultIndex < 0) {
+    return content
+  }
+
+  const mergedContent: Array<AnthropicUserContentBlock> = []
+  index = 0
+
+  for (const block of content) {
+    if (isAttachmentBlock(block)) {
+      index += 1
+      continue
+    }
+
+    if (index === lastToolResultIndex && block.type === "tool_result") {
+      mergedContent.push(mergeContentWithAttachments(block, attachments))
+      index += 1
+      continue
+    }
+
+    mergedContent.push(block)
+    index += 1
+  }
+
+  return mergedContent
+}
+
 const mergeToolResult = (
   toolResults: Array<AnthropicToolResultBlock>,
   textBlocks: Array<AnthropicTextBlock>,
@@ -176,6 +248,8 @@ export const mergeToolResultForClaude = (
     if (options?.skipLastMessage && index === lastMessageIndex) continue
 
     if (msg.role !== "user" || !Array.isArray(msg.content)) continue
+
+    msg.content = mergeAttachmentsIntoLastToolResult(msg.content)
 
     const toolResults: Array<AnthropicToolResultBlock> = []
     const textBlocks: Array<AnthropicTextBlock> = []
