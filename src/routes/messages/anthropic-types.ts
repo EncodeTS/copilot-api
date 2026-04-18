@@ -50,7 +50,6 @@ export interface AnthropicDocumentBlock {
     media_type: "application/pdf"
     data: string
   }
-  context?: string | null
   title?: string | null
 }
 

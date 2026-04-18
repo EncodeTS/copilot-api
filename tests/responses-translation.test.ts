@@ -138,6 +138,51 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
       },
     ])
   })
+
+  it("maps document tool results into function_call_output input_file content", () => {
+    const result = translateAnthropicMessagesToResponsesPayload({
+      model: "gpt-4.1",
+      max_tokens: 1024,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "call_1",
+              content: [
+                {
+                  type: "document",
+                  source: {
+                    type: "base64",
+                    media_type: "application/pdf",
+                    data: "pdf-data",
+                  },
+                  title: "report.pdf",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    })
+
+    const input = result.input as Array<ResponseFunctionCallOutputItem>
+    expect(input).toEqual([
+      {
+        type: "function_call_output",
+        call_id: "call_1",
+        output: [
+          {
+            type: "input_file",
+            filename: "report.pdf",
+            file_data: "data:application/pdf;base64,pdf-data",
+          },
+        ],
+        status: "completed",
+      },
+    ])
+  })
 })
 
 describe("translateResponsesResultToAnthropic", () => {
