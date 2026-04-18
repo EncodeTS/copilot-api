@@ -167,37 +167,51 @@ const mergeAttachmentsIntoLastToolResult = (
     return content
   }
 
-  let lastToolResultIndex = -1
-  let index = 0
-
-  for (const block of content) {
-    if (block.type === "tool_result" && !hasToolRef(block)) {
-      lastToolResultIndex = index
-    }
-    index += 1
-  }
-
-  if (lastToolResultIndex < 0) {
+  const mergeableToolResultIndices = content.flatMap((block, index) =>
+    block.type === "tool_result" && !hasToolRef(block) ? [index] : [],
+  )
+  if (mergeableToolResultIndices.length === 0) {
     return content
   }
 
-  const mergedContent: Array<AnthropicUserContentBlock> = []
-  index = 0
+  const attachmentsByToolResultIndex = new Map<
+    number,
+    Array<AnthropicAttachmentBlock>
+  >()
 
-  for (const block of content) {
+  if (mergeableToolResultIndices.length === attachments.length) {
+    for (const [
+      index,
+      toolResultIndex,
+    ] of mergeableToolResultIndices.entries()) {
+      attachmentsByToolResultIndex.set(toolResultIndex, [attachments[index]])
+    }
+  } else {
+    const lastToolResultIndex = mergeableToolResultIndices.at(-1)
+    if (lastToolResultIndex === undefined) {
+      return content
+    }
+    attachmentsByToolResultIndex.set(lastToolResultIndex, attachments)
+  }
+
+  const mergedContent: Array<AnthropicUserContentBlock> = []
+
+  for (const [index, block] of content.entries()) {
     if (isAttachmentBlock(block)) {
-      index += 1
       continue
     }
 
-    if (index === lastToolResultIndex && block.type === "tool_result") {
-      mergedContent.push(mergeContentWithAttachments(block, attachments))
-      index += 1
-      continue
+    if (block.type === "tool_result") {
+      const matchedAttachments = attachmentsByToolResultIndex.get(index)
+      if (matchedAttachments) {
+        mergedContent.push(
+          mergeContentWithAttachments(block, matchedAttachments),
+        )
+        continue
+      }
     }
 
     mergedContent.push(block)
-    index += 1
   }
 
   return mergedContent
