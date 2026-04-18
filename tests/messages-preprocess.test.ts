@@ -187,6 +187,229 @@ describe("mergeToolResultForClaude", () => {
   })
 })
 
+describe("mergeToolResultForClaude attachments", () => {
+  test("appends image and document blocks to the last tool_result", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4.6",
+      max_tokens: 128,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-1",
+              content: "binary output",
+            },
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: "image/png",
+                data: "image-data",
+              },
+            },
+            {
+              type: "document",
+              source: {
+                type: "base64",
+                media_type: "application/pdf",
+                data: "pdf-data",
+              },
+              title: "report.pdf",
+            },
+          ],
+        },
+      ],
+    }
+
+    mergeToolResultForClaude(payload)
+
+    expect(payload.messages[0]).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "tool-1",
+          content: [
+            {
+              type: "text",
+              text: "binary output",
+            },
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: "image/png",
+                data: "image-data",
+              },
+            },
+            {
+              type: "document",
+              source: {
+                type: "base64",
+                media_type: "application/pdf",
+                data: "pdf-data",
+              },
+              title: "report.pdf",
+            },
+          ],
+        },
+      ],
+    })
+  })
+
+  test("keeps text merging and appends attachments to the last tool_result", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4.6",
+      max_tokens: 128,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-1",
+              content: "first",
+            },
+            {
+              type: "text",
+              text: "first detail",
+            },
+            {
+              type: "tool_result",
+              tool_use_id: "tool-2",
+              content: "second",
+            },
+            {
+              type: "text",
+              text: "second detail",
+            },
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: "image/png",
+                data: "image-data",
+              },
+            },
+          ],
+        },
+      ],
+    }
+
+    mergeToolResultForClaude(payload)
+
+    expect(payload.messages[0]).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "tool-1",
+          content: "first\n\nfirst detail",
+        },
+        {
+          type: "tool_result",
+          tool_use_id: "tool-2",
+          content: [
+            {
+              type: "text",
+              text: "second",
+            },
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: "image/png",
+                data: "image-data",
+              },
+            },
+            {
+              type: "text",
+              text: "second detail",
+            },
+          ],
+        },
+      ],
+    })
+  })
+})
+
+describe("mergeToolResultForClaude attachments with tool_reference", () => {
+  test("falls back to the last tool_result without tool_reference", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4.6",
+      max_tokens: 128,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-1",
+              content: "binary output",
+            },
+            {
+              type: "tool_result",
+              tool_use_id: "tool-2",
+              content: [
+                {
+                  type: "tool_reference",
+                  tool_name: "AskUserQuestion",
+                },
+              ],
+            },
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: "image/png",
+                data: "image-data",
+              },
+            },
+          ],
+        },
+      ],
+    }
+
+    mergeToolResultForClaude(payload)
+
+    expect(payload.messages[0]).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "tool-1",
+          content: [
+            {
+              type: "text",
+              text: "binary output",
+            },
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: "image/png",
+                data: "image-data",
+              },
+            },
+          ],
+        },
+        {
+          type: "tool_result",
+          tool_use_id: "tool-2",
+          content: [
+            {
+              type: "tool_reference",
+              tool_name: "AskUserQuestion",
+            },
+          ],
+        },
+      ],
+    })
+  })
+})
+
 describe("prepareMessagesApiPayload", () => {
   test("strips cache_control scope, filters thinking blocks, and enables adaptive thinking", () => {
     const payload: AnthropicMessagesPayload = {
