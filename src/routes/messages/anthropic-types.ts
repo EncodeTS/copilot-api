@@ -111,6 +111,7 @@ export interface AnthropicTool {
   name: string
   description?: string
   input_schema: Record<string, unknown>
+  defer_loading?: boolean
 }
 
 export interface AnthropicResponse {
