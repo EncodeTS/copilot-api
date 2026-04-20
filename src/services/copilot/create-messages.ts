@@ -60,7 +60,7 @@ const buildAnthropicBetaHeader = (
     // in vscode copilot extension, advanced-tool-use is enabled by default
     // align header with vscode copilot extension
 
-    // will remove append ADVANCED_TOOL_USE_BETA in next github copilot extension version (>0.44.1)
+    // will remove append ADVANCED_TOOL_USE_BETA in next github copilot extension version (>0.44.2)
     const copilotHeaderSet =
       modelSupportsToolSearch(model) ? [ADVANCED_TOOL_USE_BETA] : []
     const headerSet = new Set([...copilotHeaderSet, ...filteredBeta])
@@ -142,6 +142,8 @@ export const createMessages = async (
   if (anthropicBeta) {
     headers["anthropic-beta"] = anthropicBeta
   }
+
+  consola.log(`<-- model: ${payload.model}`)
 
   const response = await fetch(`${copilotBaseUrl(state)}/v1/messages`, {
     method: "POST",
