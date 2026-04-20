@@ -11,7 +11,7 @@ import {
   prepareInteractionHeaders,
 } from "~/lib/api-config"
 import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
-import { HTTPError } from "~/lib/error"
+import { HTTPError, logUpstreamError } from "~/lib/error"
 import { state } from "~/lib/state"
 
 export interface ResponsesPayload {
@@ -407,8 +407,14 @@ export const createResponses = async (
   logCopilotRateLimits(response.headers)
 
   if (!response.ok) {
-    consola.error("Failed to create responses", response)
-    throw new HTTPError("Failed to create responses", response)
+    const debugResponse = await logUpstreamError("POST /responses", response, {
+      requestId: requestId,
+      model: payload.model,
+      stream: Boolean(payload.stream),
+      tools: payload.tools?.length ?? 0,
+      reasoning: payload.reasoning?.effort,
+    })
+    throw new HTTPError("Failed to create responses", debugResponse)
   }
 
   if (payload.stream) {
