@@ -393,7 +393,9 @@ export const createResponses = async (
   prepareForCompact(headers, compactType)
 
   // service_tier is not supported by github copilot
-  payload.service_tier = null
+  payload.service_tier = undefined
+
+  consola.log(`<-- model: ${payload.model}`)
 
   const response = await fetch(`${copilotBaseUrl(state)}/responses`, {
     method: "POST",
