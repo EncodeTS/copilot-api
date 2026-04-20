@@ -11,7 +11,7 @@ import {
   prepareInteractionHeaders,
 } from "~/lib/api-config"
 import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
-import { HTTPError } from "~/lib/error"
+import { HTTPError, logUpstreamError } from "~/lib/error"
 import { state } from "~/lib/state"
 
 export const createChatCompletions = async (
@@ -67,8 +67,17 @@ export const createChatCompletions = async (
   logCopilotRateLimits(response.headers)
 
   if (!response.ok) {
-    consola.error("Failed to create chat completions", response)
-    throw new HTTPError("Failed to create chat completions", response)
+    const debugResponse = await logUpstreamError(
+      "POST /chat/completions",
+      response,
+      {
+        requestId: options.requestId,
+        model: payload.model,
+        stream: Boolean(payload.stream),
+        tools: payload.tools?.length ?? 0,
+      },
+    )
+    throw new HTTPError("Failed to create chat completions", debugResponse)
   }
 
   if (payload.stream) {

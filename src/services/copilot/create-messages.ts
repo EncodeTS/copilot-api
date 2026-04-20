@@ -16,7 +16,7 @@ import {
   prepareMessageProxyHeaders,
 } from "~/lib/api-config"
 import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
-import { HTTPError } from "~/lib/error"
+import { HTTPError, logUpstreamError } from "~/lib/error"
 import { state } from "~/lib/state"
 import { parseUserIdMetadata } from "~/lib/utils"
 
@@ -155,8 +155,20 @@ export const createMessages = async (
   logCopilotRateLimits(response.headers)
 
   if (!response.ok) {
-    consola.error("Failed to create messages", response)
-    throw new HTTPError("Failed to create messages", response)
+    const debugResponse = await logUpstreamError(
+      "POST /v1/messages",
+      response,
+      {
+        requestId: options.requestId,
+        model: payload.model,
+        stream: Boolean(payload.stream),
+        tools: payload.tools?.length ?? 0,
+        thinking: payload.thinking?.type,
+        anthropicBeta: headers["anthropic-beta"],
+        xInitiator: headers["x-initiator"],
+      },
+    )
+    throw new HTTPError("Failed to create messages", debugResponse)
   }
 
   if (payload.stream) {
