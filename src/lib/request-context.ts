@@ -6,6 +6,7 @@ export interface RequestContext {
   userAgent: string
   sessionAffinity: string | undefined
   parentSessionId: string | undefined
+  modelRoute: string | undefined
 }
 
 const TRACE_ID_MAX_LENGTH = 64

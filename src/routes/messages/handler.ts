@@ -1,5 +1,7 @@
 import type { Context } from "hono"
 
+import consola from "consola"
+
 import type { Model } from "~/services/copilot/get-models"
 
 import { awaitApproval } from "~/lib/approval"
@@ -8,6 +10,7 @@ import { getSmallModel, isMessagesApiEnabled } from "~/lib/config"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { findEndpointModel } from "~/lib/models"
 import { checkRateLimit } from "~/lib/rate-limit"
+import { requestContext } from "~/lib/request-context"
 import { state } from "~/lib/state"
 import { generateRequestIdFromPayload, getRootSessionId } from "~/lib/utils"
 
@@ -27,10 +30,66 @@ import { parseSubagentMarkerFromFirstUser } from "./subagent-marker"
 
 const logger = createHandlerLogger("messages-handler")
 
+const formatThinking = (
+  thinking: AnthropicMessagesPayload["thinking"],
+): string => {
+  if (thinking?.type === "enabled") {
+    return `enabled(${thinking.budget_tokens ?? "?"})`
+  }
+  return thinking?.type ?? "none"
+}
+
+const resolveModel = (
+  payload: AnthropicMessagesPayload,
+): { selectedModel: Model | undefined; requestedModel: string } => {
+  const selectedModel = findEndpointModel(payload.model)
+  const requestedModel = payload.model
+  payload.model = selectedModel?.id ?? payload.model
+
+  const ctx = requestContext.getStore()
+  if (ctx) {
+    ctx.modelRoute =
+      requestedModel !== payload.model ?
+        `${requestedModel} -> ${payload.model}`
+      : requestedModel
+  }
+
+  return { selectedModel, requestedModel }
+}
+
+const logRoute = (options: {
+  requestedModel: string
+  payload: AnthropicMessagesPayload
+  selectedModel: Model | undefined
+  compactType: number
+}): void => {
+  const { requestedModel, payload, selectedModel, compactType } = options
+  if (state.verbose) {
+    let apiFlow = "Chat Completions"
+    if (shouldUseMessagesApi(selectedModel)) {
+      apiFlow = "Messages API"
+    } else if (shouldUseResponsesApi(selectedModel)) {
+      apiFlow = "Responses API"
+    }
+    consola.info(
+      `[route] model=${requestedModel} -> ${payload.model}`
+        + ` | flow=${apiFlow}`
+        + ` | compact=${compactType}`,
+    )
+  }
+}
+
 export async function handleCompletion(c: Context) {
   await checkRateLimit(state)
 
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
+  consola.info(
+    `[req] model=${anthropicPayload.model}`
+      + ` | thinking=${formatThinking(anthropicPayload.thinking)}`
+      + ` | effort=${anthropicPayload.output_config?.effort ?? "unset"}`
+      + ` | stream=${anthropicPayload.stream ?? false}`
+      + ` | tools=${anthropicPayload.tools?.length ?? 0}`,
+  )
   debugJson(logger, "Anthropic request payload:", anthropicPayload)
 
   sanitizeIdeTools(anthropicPayload)
@@ -77,8 +136,13 @@ export async function handleCompletion(c: Context) {
     await awaitApproval()
   }
 
-  const selectedModel = findEndpointModel(anthropicPayload.model)
-  anthropicPayload.model = selectedModel?.id ?? anthropicPayload.model
+  const { selectedModel, requestedModel } = resolveModel(anthropicPayload)
+  logRoute({
+    requestedModel,
+    payload: anthropicPayload,
+    selectedModel,
+    compactType,
+  })
 
   if (shouldUseMessagesApi(selectedModel)) {
     return await handleWithMessagesApi(c, anthropicPayload, {

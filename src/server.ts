@@ -4,6 +4,7 @@ import { logger } from "hono/logger"
 import { readFileSync } from "node:fs"
 
 import { createAuthMiddleware } from "./lib/request-auth"
+import { requestContext } from "./lib/request-context"
 import { traceIdMiddleware } from "./lib/trace"
 import { completionRoutes } from "./routes/chat-completions/route"
 import { embeddingRoutes } from "./routes/embeddings/route"
@@ -18,7 +19,13 @@ import { usageRoute } from "./routes/usage/route"
 export const server = new Hono()
 
 server.use(traceIdMiddleware)
-server.use(logger())
+const customPrintFn = (str: string, ...rest: Array<string>) => {
+  const ctx = requestContext.getStore()
+  const route = ctx?.modelRoute
+  const suffix = route ? ` [${route}]` : ""
+  console.log(str + suffix, ...rest)
+}
+server.use(logger(customPrintFn))
 server.use(cors())
 server.use(
   "*",
