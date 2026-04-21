@@ -269,7 +269,7 @@ describe("messages handler orchestration", () => {
 
     expect(response.status).toBe(200)
     expect(await response.text()).toBe("messages")
-    expect(findEndpointModel).toHaveBeenCalledWith("small-model")
+    expect(findEndpointModel).toHaveBeenCalledWith("small-model", undefined)
 
     const expectedSessionId = actualUtilsModule.getUUID("session-123")
     const expectedRequestId = actualUtilsModule.generateRequestIdFromPayload(

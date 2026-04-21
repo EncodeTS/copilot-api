@@ -30,6 +30,8 @@ import { parseSubagentMarkerFromFirstUser } from "./subagent-marker"
 
 const logger = createHandlerLogger("messages-handler")
 
+const CONTEXT_1M_BETA = "context-1m-2025-08-07"
+
 const formatThinking = (
   thinking: AnthropicMessagesPayload["thinking"],
 ): string => {
@@ -41,8 +43,13 @@ const formatThinking = (
 
 const resolveModel = (
   payload: AnthropicMessagesPayload,
+  anthropicBeta: string | undefined,
 ): { selectedModel: Model | undefined; requestedModel: string } => {
-  const selectedModel = findEndpointModel(payload.model)
+  const hasContext1m = anthropicBeta?.includes(CONTEXT_1M_BETA)
+  const selectedModel = findEndpointModel(
+    payload.model,
+    hasContext1m ? "-1m" : undefined,
+  )
   const requestedModel = payload.model
   payload.model = selectedModel?.id ?? payload.model
 
@@ -79,16 +86,29 @@ const logRoute = (options: {
   }
 }
 
+const applyWarmupSmallModel = (
+  payload: AnthropicMessagesPayload,
+  anthropicBeta: string | undefined,
+  compactType: number,
+): void => {
+  const noTools = !payload.tools || payload.tools.length === 0
+  if (anthropicBeta && noTools && compactType === 0) {
+    payload.model = getSmallModel()
+  }
+}
+
 export async function handleCompletion(c: Context) {
   await checkRateLimit(state)
 
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
+  const anthropicBeta = c.req.header("anthropic-beta")
   consola.info(
     `[req] model=${anthropicPayload.model}`
       + ` | thinking=${formatThinking(anthropicPayload.thinking)}`
       + ` | effort=${anthropicPayload.output_config?.effort ?? "unset"}`
       + ` | stream=${anthropicPayload.stream ?? false}`
-      + ` | tools=${anthropicPayload.tools?.length ?? 0}`,
+      + ` | tools=${anthropicPayload.tools?.length ?? 0}`
+      + ` | context1m=${anthropicBeta?.includes(CONTEXT_1M_BETA) ?? false}`,
   )
   debugJson(logger, "Anthropic request payload:", anthropicPayload)
 
@@ -107,12 +127,8 @@ export async function handleCompletion(c: Context) {
 
   // fix claude code 2.0.28+ warmup request consume premium request, forcing small model if no tools are used
   // set "CLAUDE_CODE_SUBAGENT_MODEL": "you small model" also can avoid this
-  const anthropicBeta = c.req.header("anthropic-beta")
   logger.debug("Anthropic Beta header:", anthropicBeta)
-  const noTools = !anthropicPayload.tools || anthropicPayload.tools.length === 0
-  if (anthropicBeta && noTools && compactType === 0) {
-    anthropicPayload.model = getSmallModel()
-  }
+  applyWarmupSmallModel(anthropicPayload, anthropicBeta, compactType)
 
   if (compactType) {
     logger.debug("Compact request type:", compactType)
@@ -136,7 +152,10 @@ export async function handleCompletion(c: Context) {
     await awaitApproval()
   }
 
-  const { selectedModel, requestedModel } = resolveModel(anthropicPayload)
+  const { selectedModel, requestedModel } = resolveModel(
+    anthropicPayload,
+    anthropicBeta,
+  )
   logRoute({
     requestedModel,
     payload: anthropicPayload,

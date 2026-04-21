@@ -74,7 +74,11 @@ export async function handleCountTokens(c: Context) {
 
     const openAIPayload = translateToOpenAI(anthropicPayload)
 
-    const selectedModel = findEndpointModel(anthropicPayload.model)
+    const hasContext1m = anthropicBeta?.includes("context-1m-2025-08-07")
+    const selectedModel = findEndpointModel(
+      anthropicPayload.model,
+      hasContext1m ? "-1m" : undefined,
+    )
     anthropicPayload.model = selectedModel?.id ?? anthropicPayload.model
 
     if (!selectedModel) {

@@ -2,8 +2,20 @@ import type { Model } from "~/services/copilot/get-models"
 
 import { state } from "~/lib/state"
 
-export const findEndpointModel = (sdkModelId: string): Model | undefined => {
+export const findEndpointModel = (
+  sdkModelId: string,
+  suffix?: string,
+): Model | undefined => {
   const models = state.models?.data ?? []
+
+  // When suffix is provided, try suffixed exact match first
+  if (suffix) {
+    const suffixedMatch = models.find((m) => m.id === `${sdkModelId}${suffix}`)
+    if (suffixedMatch) {
+      return suffixedMatch
+    }
+  }
+
   const exactMatch = models.find((m) => m.id === sdkModelId)
   if (exactMatch) {
     return exactMatch
@@ -14,10 +26,16 @@ export const findEndpointModel = (sdkModelId: string): Model | undefined => {
     return undefined
   }
 
-  const modelName = `claude-${normalized.family}-${normalized.version}`
+  const modelName = `claude-${normalized.family}-${normalized.version}${suffix ?? ""}`
   const model = models.find((m) => m.id === modelName)
   if (model) {
     return model
+  }
+
+  // When suffix didn't match via normalization, try without suffix as fallback
+  if (suffix) {
+    const baseName = `claude-${normalized.family}-${normalized.version}`
+    return models.find((m) => m.id === baseName)
   }
 
   return undefined
