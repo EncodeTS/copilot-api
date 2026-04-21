@@ -528,34 +528,44 @@ export const prepareMessagesApiPayload = (
   stripCacheControl(payload)
   filterAssistantThinkingBlocks(payload)
 
-  const hasThinking = Boolean(payload.thinking)
-
   // https://platform.claude.com/docs/en/build-with-claude/extended-thinking#extended-thinking-with-tool-use
   // Using tool_choice: {"type": "any"} or tool_choice: {"type": "tool", "name": "..."} will result in an error because these options force tool use, which is incompatible with extended thinking.
   const toolChoice = payload.tool_choice
   const disableThink = toolChoice?.type === "any" || toolChoice?.type === "tool"
 
   if (selectedModel?.capabilities.supports.adaptive_thinking && !disableThink) {
-    payload.thinking = {
-      type: "adaptive",
-    }
-    // align with vscode copilot
-    if (!hasThinking) {
+    // Only inject adaptive thinking as default when client didn't specify thinking
+    if (!payload.thinking) {
+      payload.thinking = {
+        type: "adaptive",
+      }
+      // align with vscode copilot
       payload.thinking.display = "summarized"
     }
-    if (payload.model === "claude-opus-4.7") {
-      payload.thinking.display = "summarized"
-    }
-    let effort = getReasoningEffortForModel(payload.model)
-    if (effort === "none" || effort === "minimal") {
-      effort = "low"
-    }
-    const reasoningEffort = selectedModel.capabilities.supports.reasoning_effort
-    if (reasoningEffort && !reasoningEffort.includes(effort)) {
-      effort = reasoningEffort.at(-1) as "low" | "medium" | "high"
-    }
-    payload.output_config = {
-      effort: effort,
+
+    // When thinking is active (not disabled), set effort and remove temperature
+    if (payload.thinking.type !== "disabled") {
+      if (payload.model === "claude-opus-4.7") {
+        payload.thinking.display = "summarized"
+      }
+      delete payload.temperature
+      // Respect client-provided effort; compute model default only as fallback.
+      // Spread preserves other output_config fields (e.g. format for structured output).
+      let effort: string =
+        payload.output_config?.effort
+        ?? getReasoningEffortForModel(payload.model)
+      if (effort === "none" || effort === "minimal") {
+        effort = "low"
+      }
+      const reasoningEffort =
+        selectedModel.capabilities.supports.reasoning_effort
+      if (reasoningEffort && !reasoningEffort.includes(effort)) {
+        effort = reasoningEffort.at(-1) as "low" | "medium" | "high"
+      }
+      payload.output_config = {
+        ...payload.output_config,
+        effort: effort as "low" | "medium" | "high" | "xhigh" | "max",
+      }
     }
   }
 }
