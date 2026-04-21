@@ -35,6 +35,9 @@ interface RunServerOptions {
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
+  // Work around unjs/consola#357 until a release includes PR #359.
+  consola.options.throttle = 0
+
   // Ensure config is merged with defaults at startup
   mergeConfigWithDefaults()
 
