@@ -1,6 +1,7 @@
 import type { ConsolaInstance } from "consola"
 import type { Context } from "hono"
 
+import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
 import type { CompactType } from "~/lib/compact"
@@ -8,6 +9,7 @@ import type { SubagentMarker } from "~/lib/subagent"
 import type { Model } from "~/services/copilot/get-models"
 
 import { debugJson, debugJsonTail, debugLazy } from "~/lib/logger"
+import { state } from "~/lib/state"
 import {
   buildErrorEvent,
   createResponsesStreamState,
@@ -236,6 +238,14 @@ export const handleWithMessagesApi = async (
   } = options
 
   prepareMessagesApiPayload(anthropicPayload, selectedModel)
+
+  if (state.verbose) {
+    consola.info(
+      `[messages-api] thinking=${anthropicPayload.thinking?.type ?? "none"}`
+        + ` | effort=${anthropicPayload.output_config?.effort ?? "default"}`
+        + ` | temperature=${anthropicPayload.temperature ?? "unset"}`,
+    )
+  }
 
   debugJson(logger, "Translated Messages payload:", anthropicPayload)
 
