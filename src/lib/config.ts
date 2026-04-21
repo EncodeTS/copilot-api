@@ -20,6 +20,7 @@ export interface AppConfig {
   anthropicApiKey?: string
   useResponsesApiWebSearch?: boolean
   claudeTokenMultiplier?: number
+  parityFirst?: boolean
 }
 
 export interface ModelConfig {
@@ -331,4 +332,9 @@ export function isResponsesApiWebSearchEnabled(): boolean {
 export function getClaudeTokenMultiplier(): number {
   const config = getConfig()
   return config.claudeTokenMultiplier ?? 1.15
+}
+
+export function isParityFirstEnabled(): boolean {
+  const config = getConfig()
+  return config.parityFirst ?? true
 }
