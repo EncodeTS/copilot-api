@@ -232,7 +232,7 @@ describe("messages handler orchestration", () => {
     expect(handleWithChatCompletions).toHaveBeenCalledTimes(1)
   })
 
-  test("applies warmup model override and passes request metadata to the selected flow", async () => {
+  test("preserves original model for warmup requests (parity-first) and passes request metadata to the selected flow", async () => {
     selectedModel = {
       id: "messages-model",
       supported_endpoints: ["/v1/messages"],
@@ -269,7 +269,7 @@ describe("messages handler orchestration", () => {
 
     expect(response.status).toBe(200)
     expect(await response.text()).toBe("messages")
-    expect(findEndpointModel).toHaveBeenCalledWith("small-model", undefined)
+    expect(findEndpointModel).toHaveBeenCalledWith("original-model", undefined)
 
     const expectedSessionId = actualUtilsModule.getUUID("session-123")
     const expectedRequestId = actualUtilsModule.generateRequestIdFromPayload(
