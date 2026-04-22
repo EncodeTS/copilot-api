@@ -10,6 +10,7 @@ import {
   prepareForCompact,
   prepareInteractionHeaders,
 } from "~/lib/api-config"
+import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
 
@@ -62,6 +63,8 @@ export const createChatCompletions = async (
     headers,
     body: JSON.stringify(payload),
   })
+
+  logCopilotRateLimits(response.headers)
 
   if (!response.ok) {
     consola.error("Failed to create chat completions", response)
