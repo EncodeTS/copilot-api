@@ -14,6 +14,7 @@ import {
   prepareInteractionHeaders,
   prepareMessageProxyHeaders,
 } from "~/lib/api-config"
+import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
 import { parseUserIdMetadata } from "~/lib/utils"
@@ -127,6 +128,8 @@ export const createMessages = async (
     headers,
     body: JSON.stringify(payload),
   })
+
+  logCopilotRateLimits(response.headers)
 
   if (!response.ok) {
     consola.error("Failed to create messages", response)

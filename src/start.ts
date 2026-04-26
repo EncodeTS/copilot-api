@@ -35,6 +35,9 @@ interface RunServerOptions {
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
+  // Work around unjs/consola#357 until a release includes PR #359.
+  consola.options.throttle = 0
+
   // Ensure config is merged with defaults at startup
   mergeConfigWithDefaults()
 
@@ -119,6 +122,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
         CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
         CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false",
         CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "true",
+        CLAUDE_CODE_ENABLE_AWAY_SUMMARY: "0",
         CLAUDE_PLUGIN_ENABLE_QUESTION_RULES: "true",
       },
       "claude",
