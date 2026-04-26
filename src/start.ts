@@ -30,6 +30,7 @@ interface RunServerOptions {
   rateLimitWait: boolean
   githubToken?: string
   claudeCode: boolean
+  claudeCodeDisableAwaySummary: boolean
   showToken: boolean
   proxyEnv: boolean
 }
@@ -122,7 +123,9 @@ export async function runServer(options: RunServerOptions): Promise<void> {
         CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
         CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false",
         CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "true",
-        CLAUDE_CODE_ENABLE_AWAY_SUMMARY: "0",
+        ...(options.claudeCodeDisableAwaySummary
+          ? { CLAUDE_CODE_ENABLE_AWAY_SUMMARY: "0" }
+          : {}),
         CLAUDE_PLUGIN_ENABLE_QUESTION_RULES: "true",
       },
       "claude",
@@ -208,6 +211,12 @@ export const start = defineCommand({
       description:
         "Generate a command to launch Claude Code with Copilot API config",
     },
+    "claude-code-disable-away-summary": {
+      type: "boolean",
+      default: false,
+      description:
+        "Disable Claude Code away summaries in the generated launch command",
+    },
     "show-token": {
       type: "boolean",
       default: false,
@@ -234,6 +243,7 @@ export const start = defineCommand({
       rateLimitWait: args.wait,
       githubToken: args["github-token"],
       claudeCode: args["claude-code"],
+      claudeCodeDisableAwaySummary: args["claude-code-disable-away-summary"],
       showToken: args["show-token"],
       proxyEnv: args["proxy-env"],
     })
