@@ -86,8 +86,9 @@ export const logCopilotRateLimits = (headers: HeadersLike): void => {
     }
 
     const resetAt = new Date(usage.resetAt)
+    const resetAtTime = resetAt.getTime()
     const dateStr =
-      Number.isNaN(resetAt.getTime()) ? usage.resetAt : resetAt.toLocaleString()
+      Number.isFinite(resetAtTime) ? resetAt.toLocaleString() : usage.resetAt
     consola.info(
       `Copilot ${usage.type} quota remaining: ${usage.remaining}, resets at: ${dateStr}`,
     )
