@@ -3,7 +3,7 @@
 import { defineCommand } from "citty"
 import clipboard from "clipboardy"
 import consola from "consola"
-import { serve, type ServerHandler } from "srvx"
+import { serve } from "srvx"
 import invariant from "tiny-invariant"
 
 import { mergeConfigWithDefaults } from "./lib/config"
@@ -123,9 +123,9 @@ export async function runServer(options: RunServerOptions): Promise<void> {
         CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
         CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false",
         CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "true",
-        ...(options.claudeCodeDisableAwaySummary
-          ? { CLAUDE_CODE_ENABLE_AWAY_SUMMARY: "0" }
-          : {}),
+        ...(options.claudeCodeDisableAwaySummary ?
+          { CLAUDE_CODE_ENABLE_AWAY_SUMMARY: "0" }
+        : {}),
         CLAUDE_PLUGIN_ENABLE_QUESTION_RULES: "true",
       },
       "claude",
@@ -149,7 +149,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   const { server } = await import("./server")
 
   serve({
-    fetch: server.fetch as ServerHandler,
+    fetch: server.fetch,
     port: options.port,
     bun: {
       idleTimeout: 0,
