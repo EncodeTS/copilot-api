@@ -52,7 +52,7 @@
 
 - **OpenAI 与 Anthropic 双兼容**：以 OpenAI 兼容接口（`/v1/responses`、`/v1/chat/completions`、`/v1/models`、`/v1/embeddings`）和 Anthropic 兼容接口（`/v1/messages`）对外暴露 GitHub Copilot。
 - **Claude 模型优先走 Anthropic 原生路由**：当模型支持 Copilot 原生 `/v1/messages` 端点时，代理会优先使用它，而不是 `/responses` 或 `/chat/completions`，从而保留 Anthropic 风格的 `tool_use` / `tool_result` 流程以及更原生的 Claude 行为。
-- **Parity-First 转发**：原样保留客户端传入的 `thinking`、`output_config.effort`、`temperature` 等 Anthropic 字段，并把 `anthropic-beta: context-1m-2025-08-07` 提示路由到对应的 `-1m` 模型变体。鉴于 GitHub Copilot 已转向按 token 计费而非按请求次数计费，贴近官方 Anthropic API 的行为比节省请求次数更重要。原先的次数节省行为（warmup → `smallModel`、`tool_result` + 文本块合并）仍可通过 `config.parityFirst: false` 启用。
+- **Parity-First 转发**：在兼容时原样保留客户端传入的 `thinking`、`output_config.effort` 等 Anthropic 字段，并在 active thinking 要求时移除 `temperature`，同时把 `anthropic-beta: context-1m-2025-08-07` 提示路由到对应的 `-1m` 模型变体。鉴于 GitHub Copilot 已转向按 token 计费而非按请求次数计费，贴近官方 Anthropic API 的行为比节省请求次数更重要。原先的次数节省行为（warmup → `smallModel`、`tool_result` + 文本块合并）仍可通过 `config.parityFirst: false` 启用。
 - **分阶段的 `gpt-5.4` 与 `gpt-5.3-codex`**：这些模型可以在更深入推理或调用工具前先发出面向用户的 commentary，让长时间运行的编码操作更容易理解，而不是突然开始一串工具调用。
 - **支持 Claude 原生 Beta 能力**：在 Messages API 路径上支持 Anthropic 原生能力，例如 `interleaved-thinking`、`advanced-tool-use` 和 `context-management`；这些能力在普通 Chat Completions 兼容模式下通常很难支持，或根本不可用。
 - **Subagent 标记集成**：Claude Code 与 opencode 插件可以注入 `__SUBAGENT_MARKER__...`，并传递 `x-session-id`，从而让 subagent 流量保留正确的根会话以及 agent/user 语义。
@@ -89,7 +89,7 @@
 
 鉴于 GitHub Copilot 正在从按请求次数计费转为按 token 计费，本代理默认以最小改动透传客户端 payload，让 Copilot 的响应尽量贴近官方 Anthropic API 的返回。具体表现为：
 
-- 原样保留客户端传入的 `thinking`、`output_config.effort`、`temperature` 等 Anthropic 字段，不再用代理默认值覆盖；
+- 在兼容时原样保留客户端传入的 `thinking`、`output_config.effort` 等 Anthropic 字段，不再用代理默认值覆盖；当 thinking 处于 active 状态时，会按 Anthropic/Copilot 约束移除 `temperature`；
 - 当模型存在对应变体时，按 `anthropic-beta: context-1m-2025-08-07` 提示路由到 `-1m` 模型；
 - `x-initiator` 会根据最新一条消息或 item 推导，确保 user / agent 归因准确。
 
@@ -607,12 +607,8 @@ npx @jeffreycao/copilot-api@latest start --claude-code
     "ANTHROPIC_MODEL": "gpt-5.4",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.4",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5-mini",
-    "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
-    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-    "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false",
     "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "true",
-    "CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0",
     "CLAUDE_PLUGIN_ENABLE_QUESTION_RULES": "true"
   },
   "permissions": {
@@ -626,7 +622,7 @@ npx @jeffreycao/copilot-api@latest start --claude-code
 
 - 请根据需要替换 `ANTHROPIC_MODEL`、`ANTHROPIC_DEFAULT_OPUS_MODEL`、`ANTHROPIC_DEFAULT_SONNET_MODEL` 和 `ANTHROPIC_DEFAULT_HAIKU_MODEL`。配置完成后，请安装 claude code 插件，见 [插件集成](#plugin-integrations)。如果你配置的是 Claude 模型，建议把这些模型配置都设为相同，以保持与 github-copilot claude agent 行为一致。
 - 将 `CLAUDE_CODE_ATTRIBUTION_HEADER` 设为 `0` 可以阻止 Claude Code 在 system prompt 中附加计费和版本信息，从而避免 prompt cache 失效。
-- 关闭 `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION` 和 `CLAUDE_CODE_ENABLE_AWAY_SUMMARY` 可以避免不必要地消耗额度。
+- 示例会刻意保留 prompt suggestion、away summary 和 nonessential traffic 的 Claude Code 默认行为，以贴近上游客户端体验。
 - `permissions` 中禁止 `WebSearch`，因为 GitHub Copilot API 不支持原生 web search（部分 gpt 模型支持 websearch，但本项目目前尚未适配）；建议安装 mcp 的 `mcp_server_fetch` 工具或其他搜索工具作为替代。
 - 如果使用的不是 Claude 模型，请不要启用 `ENABLE_TOOL_SEARCH`。如果使用的是 Claude 模型，则可以启用 `ENABLE_TOOL_SEARCH`。当前 Claude Code 使用的是客户端 tool search 模式，在该模式下每次加载 defer tools 都需要额外请求一次。
 

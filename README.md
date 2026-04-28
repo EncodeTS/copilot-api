@@ -52,7 +52,7 @@ Compared with routing everything through plain Chat Completions compatibility, t
 
 - **OpenAI & Anthropic Compatibility**: Exposes GitHub Copilot as an OpenAI-compatible (`/v1/responses`, `/v1/chat/completions`, `/v1/models`, `/v1/embeddings`) and Anthropic-compatible (`/v1/messages`) API.
 - **Anthropic-First Routing for Claude Models**: When a model supports Copilot's native `/v1/messages` endpoint, the proxy prefers it over `/responses` or `/chat/completions`, preserving Anthropic-style `tool_use` / `tool_result` flows and more Claude-native behavior.
-- **Parity-First Forwarding**: Preserves client-supplied `thinking`, `output_config.effort`, `temperature` and other Anthropic fields verbatim, and routes the `anthropic-beta: context-1m-2025-08-07` hint to the matching `-1m` model variant. Now that GitHub Copilot bills by token rather than by request, fidelity to the official Anthropic API behavior matters more than shaving request counts. The legacy request-savings behaviors (warmup → `smallModel`, `tool_result` + text block merging) remain available behind `config.parityFirst: false`.
+- **Parity-First Forwarding**: Preserves client-supplied `thinking`, `output_config.effort`, and other Anthropic fields where compatible, removes `temperature` when active thinking requires it, and routes the `anthropic-beta: context-1m-2025-08-07` hint to the matching `-1m` model variant. Now that GitHub Copilot bills by token rather than by request, fidelity to the official Anthropic API behavior matters more than shaving request counts. The legacy request-savings behaviors (warmup → `smallModel`, `tool_result` + text block merging) remain available behind `config.parityFirst: false`.
 - **Phase-Aware `gpt-5.4` and `gpt-5.3-codex`**: These models can emit user-friendly commentary before deeper reasoning or tool use, so long-running coding actions are easier to understand instead of appearing as a sudden tool burst.
 - **Claude Native Beta Support**: On the Messages API path, supports Anthropic-native capabilities such as `interleaved-thinking`, `advanced-tool-use`, and `context-management`, which are difficult or unavailable through plain Chat Completions compatibility.
 - **Subagent Marker Integration**: Claude Code and opencode plugins can inject `__SUBAGENT_MARKER__...` and propagate `x-session-id` so subagent traffic keeps the correct root session and agent/user semantics.
@@ -89,7 +89,7 @@ Supported `anthropic-beta` values are filtered and forwarded on the native Messa
 
 Now that GitHub Copilot is moving from per-request billing to per-token billing, the proxy defaults to forwarding client payloads with minimal modification, so Copilot responses match what the official Anthropic API would return. In practice this means:
 
-- client-supplied `thinking`, `output_config.effort`, `temperature` and other Anthropic fields are preserved verbatim instead of being overwritten with proxy defaults;
+- client-supplied `thinking`, `output_config.effort`, and other Anthropic fields are preserved where compatible instead of being overwritten with proxy defaults; when thinking is active, `temperature` is omitted to satisfy Anthropic/Copilot constraints;
 - the `anthropic-beta: context-1m-2025-08-07` hint is honored by routing to the matching `-1m` model variant when available;
 - `x-initiator` is derived from the latest message or item to keep accurate user vs agent attribution.
 
@@ -601,12 +601,8 @@ Here is an example `.claude/settings.json` file:
     "ANTHROPIC_MODEL": "gpt-5.4",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.4",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5-mini",
-    "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
-    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-    "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false",
     "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "true",
-    "CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0",
     "CLAUDE_PLUGIN_ENABLE_QUESTION_RULES": "true"
   },
   "permissions": {
@@ -620,8 +616,8 @@ Here is an example `.claude/settings.json` file:
 
 - Replace `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL` according to your needs. After configuration, please install the claude code plugin [Plugin Integrations](#plugin-integrations). If configuring the claude model, it is recommended to set all model configurations the same, so as to remain consistent with github-copilot claude agent behavior. 
 - Setting CLAUDE_CODE_ATTRIBUTION_HEADER to 0 can prevent Claude code from adding billing and version information in system prompts, thereby avoiding prompt cache invalidation.
-- Turning off CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION and CLAUDE_CODE_ENABLE_AWAY_SUMMARY can prevent quota from being consumed unnecessarily.
-- Permissions deny WebSearch because the GitHub Copilot API does not support natie websearch (some gpt models support websearch, but the current project has not adapted websearch); it is recommended to install the mcp mcp_server_fetch tool or other search tools as alternatives..
+- The example intentionally leaves prompt suggestions, away summaries, and nonessential traffic at Claude Code defaults to preserve the upstream client experience.
+- Permissions deny WebSearch because the GitHub Copilot API does not support native websearch (some gpt models support websearch, but the current project has not adapted websearch); it is recommended to install the mcp mcp_server_fetch tool or other search tools as alternatives.
 - If using a non-Claude model, do not enable ENABLE_TOOL_SEARCH. If using the Claude model, can enable ENABLE_TOOL_SEARCH. The current Claude Code uses the client tool search mode. In this mode, loading defer tools requires an additional request each time.
 
 You can find more options here: [Claude Code settings](https://docs.anthropic.com/en/docs/claude-code/settings#environment-variables)
