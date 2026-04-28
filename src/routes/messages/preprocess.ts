@@ -483,9 +483,8 @@ const hasToolRef = (block: AnthropicToolResultBlock) => {
   )
 }
 
-// Strip cache_control from system content blocks as the
-// Copilot Messages API does not support them (rejects extra fields like scope).
-// commit by nicktogo
+// Copilot supports cache_control: ephemeral, but rejects the newer `scope`
+// extension field. Strip only `scope` so prompt caching keeps working.
 const stripCacheControl = (payload: AnthropicMessagesPayload): void => {
   if (Array.isArray(payload.system)) {
     for (const block of payload.system) {
