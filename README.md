@@ -22,7 +22,7 @@ English | [简体中文](./README.zh-CN.md)
 ---
 
 > [!NOTE]
-> [opencode](https://github.com/sst/opencode) already ships with a built-in GitHub Copilot provider, so you may not need this project for basic usage. This proxy is still useful if you want OpenCode to talk to Copilot through `@ai-sdk/anthropic`, preserve Anthropic Messages semantics for tool use, prefer the native Messages API over Chat Completions API for Claude-family models, use gpt phase-aware commentary, or optimize premium requests.
+> [opencode](https://github.com/sst/opencode) already ships with a built-in GitHub Copilot provider, so you may not need this project for basic usage. This proxy is still useful if you want OpenCode to talk to Copilot through `@ai-sdk/anthropic`, preserve Anthropic Messages semantics for tool use, prefer the native Messages API over Chat Completions API for Claude-family models, use gpt phase-aware commentary, or get parity-first forwarding that closely matches the official Anthropic API behavior.
 
 ---
 
@@ -46,17 +46,17 @@ English | [简体中文](./README.zh-CN.md)
 
 A reverse-engineered proxy for the GitHub Copilot API that exposes it as an OpenAI and Anthropic compatible service. This allows you to use GitHub Copilot with any tool that supports the OpenAI Chat Completions / Responses API or the Anthropic Messages API, including to power [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview).
 
-Compared with routing everything through plain Chat Completions compatibility, this proxy can prefer Copilot's native Anthropic-style Messages API for Claude-family models, preserve more native thinking/tool semantics, reduce unnecessary Premium request consumption on warmup or resumed tool turns, and expose phase-aware `gpt-5.4` / `gpt-5.3-codex` responses that are easier for users to follow.
+Compared with routing everything through plain Chat Completions compatibility, this proxy can prefer Copilot's native Anthropic-style Messages API for Claude-family models, preserve more native thinking/tool semantics, forward client payloads with minimal modification ("parity-first") to closely match the official Anthropic API behavior, and expose phase-aware `gpt-5.4` / `gpt-5.3-codex` responses that are easier for users to follow.
 
 ## Features
 
 - **OpenAI & Anthropic Compatibility**: Exposes GitHub Copilot as an OpenAI-compatible (`/v1/responses`, `/v1/chat/completions`, `/v1/models`, `/v1/embeddings`) and Anthropic-compatible (`/v1/messages`) API.
 - **Anthropic-First Routing for Claude Models**: When a model supports Copilot's native `/v1/messages` endpoint, the proxy prefers it over `/responses` or `/chat/completions`, preserving Anthropic-style `tool_use` / `tool_result` flows and more Claude-native behavior.
-- **Fewer Unnecessary Premium Requests**: Reduces wasted premium usage by routing warmup requests to `smallModel`, merging `tool_result` follow-ups back into the tool flow, and treating resumed tool turns as continuation traffic instead of fresh premium interactions.
+- **Parity-First Forwarding**: Preserves client-supplied `thinking`, `output_config.effort`, `temperature` and other Anthropic fields verbatim, and routes the `anthropic-beta: context-1m-2025-08-07` hint to the matching `-1m` model variant. Now that GitHub Copilot bills by token rather than by request, fidelity to the official Anthropic API behavior matters more than shaving request counts. The legacy request-savings behaviors (warmup → `smallModel`, `tool_result` + text block merging) remain available behind `config.parityFirst: false`.
 - **Phase-Aware `gpt-5.4` and `gpt-5.3-codex`**: These models can emit user-friendly commentary before deeper reasoning or tool use, so long-running coding actions are easier to understand instead of appearing as a sudden tool burst.
 - **Claude Native Beta Support**: On the Messages API path, supports Anthropic-native capabilities such as `interleaved-thinking`, `advanced-tool-use`, and `context-management`, which are difficult or unavailable through plain Chat Completions compatibility.
 - **Subagent Marker Integration**: Claude Code and opencode plugins can inject `__SUBAGENT_MARKER__...` and propagate `x-session-id` so subagent traffic keeps the correct root session and agent/user semantics.
-- **OpenCode via `@ai-sdk/anthropic`**: Point OpenCode at this proxy as an Anthropic provider so Anthropic Messages semantics, premium-request optimizations, and Claude-native behavior are preserved end to end.
+- **OpenCode via `@ai-sdk/anthropic`**: Point OpenCode at this proxy as an Anthropic provider so Anthropic Messages semantics and Claude-native behavior are preserved end to end.
 - **Claude Code Integration**: Easily configure and launch [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) to use Copilot as its backend with a simple command-line flag (`--claude-code`).
 - **Usage Dashboard**: A web-based dashboard to monitor your Copilot API usage, view quotas, and see detailed statistics.
 - **Rate Limit Control**: Manage API usage with rate-limiting options (`--rate-limit`) and a waiting mechanism (`--wait`) to prevent errors from rapid requests.
@@ -85,15 +85,15 @@ Compared with using Claude-family models only through Chat Completions compatibi
 
 Supported `anthropic-beta` values are filtered and forwarded on the native Messages path, and `interleaved-thinking` is added automatically when a thinking budget is requested for non-adaptive extended thinking.
 
-### Fewer unnecessary Premium requests
+### Parity-first forwarding
 
-The proxy includes request-accounting safeguards designed for tool-heavy coding workflows:
+Now that GitHub Copilot is moving from per-request billing to per-token billing, the proxy defaults to forwarding client payloads with minimal modification, so Copilot responses match what the official Anthropic API would return. In practice this means:
 
-- tool-less warmup or probe requests can be forced onto `smallModel` so background checks do not spend premium usage;
-- mixed `tool_result` + reminder text blocks are merged back into the `tool_result` flow instead of being counted like fresh user turns;
-- `x-initiator` is derived from the latest message or item, not stale assistant history.
+- client-supplied `thinking`, `output_config.effort`, `temperature` and other Anthropic fields are preserved verbatim instead of being overwritten with proxy defaults;
+- the `anthropic-beta: context-1m-2025-08-07` hint is honored by routing to the matching `-1m` model variant when available;
+- `x-initiator` is derived from the latest message or item to keep accurate user vs agent attribution.
 
-This helps resumed tool turns continue the existing workflow instead of consuming an extra Premium request as a brand-new interaction.
+The earlier request-savings behaviors (warmup → `smallModel`, mixed `tool_result` + text block merging) are gated behind `config.parityFirst: false` and remain available for users who still rely on per-request billing.
 
 ### Phase-aware `gpt-5.4` and `gpt-5.3-codex`
 
@@ -331,7 +331,8 @@ The following command line options are available for the `start` command:
     - `temperature` (optional): Default temperature value used when the request does not specify one.
     - `topP` (optional): Default top_p value used when the request does not specify one.
     - `topK` (optional): Default top_k value used when the request does not specify one.
-- **smallModel:** Fallback model used for tool-less warmup messages (e.g., Claude Code probe requests) to avoid spending premium requests; defaults to gpt-5-mini.
+- **smallModel:** Fallback model used for tool-less warmup messages (e.g., Claude Code probe requests) when `parityFirst` is `false`. Has no effect when `parityFirst` is `true` (the default), since warmup requests are then forwarded as-is. Defaults to `gpt-5-mini`.
+- **parityFirst:** When `true` (default), the proxy forwards client payloads with minimal modification to closely match the official Anthropic API behavior. Set to `false` to re-enable upstream's per-request savings behaviors (warmup → `smallModel` and `tool_result` + text block merging) — useful only if your account is still on per-request billing.
 - **responsesApiContextManagementModels:** List of GPT model IDs that should receive Responses API `context_management` compaction instructions. This defaults to `[]`, so you need to opt in explicitly. A good starting point is `["gpt-5-mini", "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.4"]`. When enabled, the request includes `context_management` in the body and keeps only the latest compaction carrier on follow-up turns. The actual compaction is handled server-side and appears to begin when usage approaches roughly 90% of the model's `maxPromptTokens`, which makes it especially useful for long-running tasks without consuming additional premium requests. In practice, the effective `compact_threshold` also appears to be fixed on the server side, so changing it in this project does not currently alter compaction behavior. At the moment, this optimization is intended for GPT-family models only.
 - **modelReasoningEfforts:** Per-model `reasoning.effort` sent to the Copilot Responses API. Allowed values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`. If a model isn’t listed, `high` is used by default.
 - **useFunctionApplyPatch:** When `true`, the server will convert any custom tool named `apply_patch` in Responses payloads into an OpenAI-style function tool (`type: "function"`) with a parameter schema so assistants can call it using function-calling semantics to edit files. Set to `false` to leave tools unchanged. Defaults to `true`.

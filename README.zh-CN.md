@@ -22,7 +22,7 @@
 ---
 
 > [!NOTE]
-> [opencode](https://github.com/sst/opencode) 已经内置 GitHub Copilot provider，因此在基础使用场景下你未必需要本项目。如果你希望 OpenCode 通过 `@ai-sdk/anthropic` 接入 Copilot、保留 Anthropic Messages 的工具调用语义、对 Claude 系模型优先走原生 Messages API 而不是 Chat Completions API、使用带阶段提示的 gpt commentary，或者优化 premium request 的消耗，这个代理仍然很有价值。
+> [opencode](https://github.com/sst/opencode) 已经内置 GitHub Copilot provider，因此在基础使用场景下你未必需要本项目。如果你希望 OpenCode 通过 `@ai-sdk/anthropic` 接入 Copilot、保留 Anthropic Messages 的工具调用语义、对 Claude 系模型优先走原生 Messages API 而不是 Chat Completions API、使用带阶段提示的 gpt commentary，或者获得贴近官方 Anthropic API 行为的 parity-first 转发体验，这个代理仍然很有价值。
 
 ---
 
@@ -46,17 +46,17 @@
 
 这是一个通过逆向工程实现的 GitHub Copilot API 代理，它将 Copilot 暴露为同时兼容 OpenAI 和 Anthropic 的服务。这样你就可以在任何支持 OpenAI Chat Completions / Responses API 或 Anthropic Messages API 的工具中使用 GitHub Copilot，包括把它作为 [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) 的后端。
 
-相比单纯把所有请求都转成 Chat Completions 兼容模式，这个代理可以对 Claude 系模型优先使用 Copilot 原生的 Anthropic 风格 Messages API，保留更多原生思考与工具调用语义，减少预热或恢复工具轮次时不必要的 Premium 请求消耗，并暴露带阶段感知的 `gpt-5.4` / `gpt-5.3-codex` 响应，让用户更容易跟踪模型正在做什么。
+相比单纯把所有请求都转成 Chat Completions 兼容模式，这个代理可以对 Claude 系模型优先使用 Copilot 原生的 Anthropic 风格 Messages API，保留更多原生思考与工具调用语义，以最小改动透传客户端 payload（"parity-first"）以贴近官方 Anthropic API 的行为，并暴露带阶段感知的 `gpt-5.4` / `gpt-5.3-codex` 响应，让用户更容易跟踪模型正在做什么。
 
 ## 功能特性
 
 - **OpenAI 与 Anthropic 双兼容**：以 OpenAI 兼容接口（`/v1/responses`、`/v1/chat/completions`、`/v1/models`、`/v1/embeddings`）和 Anthropic 兼容接口（`/v1/messages`）对外暴露 GitHub Copilot。
 - **Claude 模型优先走 Anthropic 原生路由**：当模型支持 Copilot 原生 `/v1/messages` 端点时，代理会优先使用它，而不是 `/responses` 或 `/chat/completions`，从而保留 Anthropic 风格的 `tool_use` / `tool_result` 流程以及更原生的 Claude 行为。
-- **减少不必要的 Premium 请求**：通过把预热请求路由到 `smallModel`、将 `tool_result` 的后续消息重新并入工具流，以及把恢复的工具轮次视为延续流量而非全新高级交互，减少浪费的 premium 使用量。
+- **Parity-First 转发**：原样保留客户端传入的 `thinking`、`output_config.effort`、`temperature` 等 Anthropic 字段，并把 `anthropic-beta: context-1m-2025-08-07` 提示路由到对应的 `-1m` 模型变体。鉴于 GitHub Copilot 已转向按 token 计费而非按请求次数计费，贴近官方 Anthropic API 的行为比节省请求次数更重要。原先的次数节省行为（warmup → `smallModel`、`tool_result` + 文本块合并）仍可通过 `config.parityFirst: false` 启用。
 - **分阶段的 `gpt-5.4` 与 `gpt-5.3-codex`**：这些模型可以在更深入推理或调用工具前先发出面向用户的 commentary，让长时间运行的编码操作更容易理解，而不是突然开始一串工具调用。
 - **支持 Claude 原生 Beta 能力**：在 Messages API 路径上支持 Anthropic 原生能力，例如 `interleaved-thinking`、`advanced-tool-use` 和 `context-management`；这些能力在普通 Chat Completions 兼容模式下通常很难支持，或根本不可用。
 - **Subagent 标记集成**：Claude Code 与 opencode 插件可以注入 `__SUBAGENT_MARKER__...`，并传递 `x-session-id`，从而让 subagent 流量保留正确的根会话以及 agent/user 语义。
-- **通过 `@ai-sdk/anthropic` 接入 OpenCode**：可以将 OpenCode 指向这个代理作为 Anthropic provider，从而端到端保留 Anthropic Messages 语义、premium request 优化以及更原生的 Claude 行为。
+- **通过 `@ai-sdk/anthropic` 接入 OpenCode**：可以将 OpenCode 指向这个代理作为 Anthropic provider，从而端到端保留 Anthropic Messages 语义以及更原生的 Claude 行为。
 - **Claude Code 集成**：可通过简单的命令行参数（`--claude-code`）快速配置并启动 [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) 使用 Copilot 作为后端。
 - **使用量看板**：提供基于 Web 的看板，用于监控 Copilot API 使用情况、查看额度以及详细统计数据。
 - **速率限制控制**：通过速率限制选项（`--rate-limit`）和等待机制（`--wait`）管理 API 使用，避免因请求过快而报错。
@@ -85,15 +85,15 @@
 
 支持的 `anthropic-beta` 值会在原生 Messages 路径中过滤并透传；当请求了非自适应扩展思考的 thinking budget 时，也会自动添加 `interleaved-thinking`。
 
-### 减少不必要的 Premium 请求
+### Parity-first 转发
 
-这个代理内置了一些请求计费保护逻辑，专门面向重工具调用的编码工作流：
+鉴于 GitHub Copilot 正在从按请求次数计费转为按 token 计费，本代理默认以最小改动透传客户端 payload，让 Copilot 的响应尽量贴近官方 Anthropic API 的返回。具体表现为：
 
-- 无工具的预热或探测请求可以强制走 `smallModel`，避免后台检查消耗 premium 使用量；
-- 混合了 `tool_result` 和补充提示文本的消息块会重新并入 `tool_result` 流，而不会被当成新的用户轮次计费；
-- `x-initiator` 会根据最新一条消息或 item 推导，而不是依赖陈旧的 assistant 历史。
+- 原样保留客户端传入的 `thinking`、`output_config.effort`、`temperature` 等 Anthropic 字段，不再用代理默认值覆盖；
+- 当模型存在对应变体时，按 `anthropic-beta: context-1m-2025-08-07` 提示路由到 `-1m` 模型；
+- `x-initiator` 会根据最新一条消息或 item 推导，确保 user / agent 归因准确。
 
-这样可以让恢复的工具轮次被视为既有工作流的延续，而不是一条全新的 Premium 请求。
+原先的次数节省行为（warmup → `smallModel`、混合 `tool_result` + 文本块合并）已挂在 `config.parityFirst: false` 后面，留给仍按请求次数计费的用户使用。
 
 ### 分阶段的 `gpt-5.4` 与 `gpt-5.3-codex`
 
@@ -335,7 +335,8 @@ Copilot API 现在使用子命令结构，主要命令包括：
     - `temperature`：可选，当请求未指定时使用的默认温度。
     - `topP`：可选，当请求未指定时使用的默认 `top_p`。
     - `topK`：可选，当请求未指定时使用的默认 `top_k`。
-- **smallModel：** 无工具预热消息的回退模型（例如 Claude Code 的探测请求），用于避免消耗 premium requests；默认是 `gpt-5-mini`。
+- **smallModel：** 当 `parityFirst` 为 `false` 时，无工具预热消息（例如 Claude Code 的探测请求）会回退使用此模型。`parityFirst` 为 `true`（默认）时该项不生效，因为预热请求会被原样透传。默认是 `gpt-5-mini`。
+- **parityFirst：** 为 `true`（默认）时，代理以最小改动透传客户端 payload，尽量贴近官方 Anthropic API 的行为。设为 `false` 可重新启用上游按请求次数节省的行为（warmup → `smallModel`、`tool_result` + 文本块合并），仅在你的账号仍按请求次数计费时才需要。
 - **responsesApiContextManagementModels：** 需要启用 Responses API `context_management` 压缩指令的 GPT 模型 ID 列表。默认是 `[]`，需要你显式开启。一个不错的起点是 `["gpt-5-mini", "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.4"]`。启用后，请求体会带上 `context_management`，并在后续轮次中仅保留最新的压缩承载内容。实际压缩由服务端完成，看起来会在 usage 接近模型 `maxPromptTokens` 的约 90% 时开始，因此特别适合长任务场景，同时不会额外消耗 premium requests。实践中 `compact_threshold` 似乎也是服务端固定的，所以在本项目中修改它目前不会改变压缩行为。当前该优化仅面向 GPT 系模型。
 - **modelReasoningEfforts：** 按模型配置发送到 Copilot Responses API 的 `reasoning.effort`。可选值包括 `none`、`minimal`、`low`、`medium`、`high` 和 `xhigh`。若某模型未配置，则默认使用 `high`。
 - **useFunctionApplyPatch：** 当为 `true` 时，服务端会把 Responses payload 中任何名为 `apply_patch` 的自定义工具转换为 OpenAI 风格的函数工具（`type: "function"`），并附带参数 schema，从而让 assistant 可以通过 function-calling 语义调用它来编辑文件。若设为 `false`，则保持工具原样。默认值为 `true`。
