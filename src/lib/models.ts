@@ -8,9 +8,15 @@ export const findEndpointModel = (
 ): Model | undefined => {
   const models = state.models?.data ?? []
 
-  // When suffix is provided, try suffixed exact match first
+  // When suffix is provided, prefer any model whose id starts with
+  // `${sdkModelId}${suffix}` (e.g. suffix "-1m" matches both
+  // "claude-opus-4.6-1m" and "claude-opus-4.7-1m-internal"). Pick the
+  // shortest id so a clean suffix wins over decorated variants.
   if (suffix) {
-    const suffixedMatch = models.find((m) => m.id === `${sdkModelId}${suffix}`)
+    const suffixedMatch = pickShortestPrefixMatch(
+      models,
+      `${sdkModelId}${suffix}`,
+    )
     if (suffixedMatch) {
       return suffixedMatch
     }
@@ -26,19 +32,35 @@ export const findEndpointModel = (
     return undefined
   }
 
-  const modelName = `claude-${normalized.family}-${normalized.version}${suffix ?? ""}`
-  const model = models.find((m) => m.id === modelName)
-  if (model) {
-    return model
-  }
+  const baseName = `claude-${normalized.family}-${normalized.version}`
 
-  // When suffix didn't match via normalization, try without suffix as fallback
   if (suffix) {
-    const baseName = `claude-${normalized.family}-${normalized.version}`
+    const normalizedSuffixed = pickShortestPrefixMatch(
+      models,
+      `${baseName}${suffix}`,
+    )
+    if (normalizedSuffixed) {
+      return normalizedSuffixed
+    }
+    // Suffix didn't match anywhere; fall back to the un-suffixed base id.
     return models.find((m) => m.id === baseName)
   }
 
-  return undefined
+  return models.find((m) => m.id === baseName)
+}
+
+const pickShortestPrefixMatch = (
+  models: Array<Model>,
+  prefix: string,
+): Model | undefined => {
+  let best: Model | undefined
+  for (const m of models) {
+    if (!m.id.startsWith(prefix)) continue
+    if (!best || m.id.length < best.id.length) {
+      best = m
+    }
+  }
+  return best
 }
 
 /**
