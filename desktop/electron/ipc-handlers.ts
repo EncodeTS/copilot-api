@@ -93,13 +93,12 @@ export function registerIpcHandlers(
     const token = await readToken()
     if (!token) return { success: false }
     try {
-      const [username, accountType] = await Promise.all([
-        getGitHubUser(token),
-        getCopilotAccountType(token)
-      ])
-      // Refresh the persisted account type on startup in case the plan changed
-      const settings = await readSettings()
-      await writeSettings({ ...settings, accountType })
+      const username = await getGitHubUser(token)
+      // Refresh the persisted account type in the background so startup only waits on one request.
+      void getCopilotAccountType(token).then(async (accountType) => {
+        const settings = await readSettings()
+        await writeSettings({ ...settings, accountType })
+      }).catch(() => {})
       return { success: true, username }
     } catch {
       return { success: false }

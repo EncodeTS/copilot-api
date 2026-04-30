@@ -7,6 +7,7 @@ const en: Locale = {
     loading: 'Please wait…',
     manualToken: 'Enter token manually',
     deviceCode: 'Authorization code',
+    deviceCodeUrl: 'Authorization URL',
     copy: 'Copy',
     copied: '✓ Copied',
     openAuthPage: 'Open authorization page',
