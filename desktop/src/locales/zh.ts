@@ -7,6 +7,7 @@ const zh: Locale = {
     loading: '请稍候…',
     manualToken: '手动填写 Token',
     deviceCode: '授权码',
+    deviceCodeUrl: '授权地址',
     copy: '复制',
     copied: '✓ 已复制',
     openAuthPage: '打开授权页面',

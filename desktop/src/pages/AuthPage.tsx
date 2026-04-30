@@ -136,6 +136,15 @@ export default function AuthPage({ onSuccess }: AuthPageProps) {
                 </button>
               </div>
             </div>
+            <div>
+              <p className="text-[13px] text-slate-400 mb-1.5">{t('auth.deviceCodeUrl')}</p>
+              <button
+                onClick={handleOpenDeviceUrl}
+                className="w-full px-3 py-2.5 border border-slate-200 rounded-lg bg-white text-left text-[13px] text-blue-500 hover:text-blue-600 hover:bg-slate-50 transition-colors break-all"
+              >
+                {deviceCode.verification_uri}
+              </button>
+            </div>
             <button
               onClick={handleOpenDeviceUrl}
               className="w-full py-2.5 bg-[#0f172a] text-white text-[13px] font-semibold rounded-lg hover:bg-slate-800 transition-colors"

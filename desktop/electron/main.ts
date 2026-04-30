@@ -64,15 +64,18 @@ function applySettingsEnvOverrides(settings: DesktopSettings): void {
   }
 }
 
+function warmOpencodeVersion(): void {
+  void import('../../src/lib/opencode')
+    .then(({ initOpencodeVersion }) => initOpencodeVersion())
+    .catch(() => {})
+}
+
 function getRuntimeDependencies(): Promise<RuntimeDependencies> {
   runtimeDependenciesPromise ??= (async () => {
     const { readSettings } = await import('./settings-store')
 
     applySettingsEnvOverrides(await readSettings())
-
-    const { initOpencodeVersion } = await import('../../src/lib/opencode')
-
-    await initOpencodeVersion()
+    warmOpencodeVersion()
 
     const [
       { registerIpcHandlers },
@@ -198,12 +201,14 @@ function createWindow(): BrowserWindow {
     },
     titleBarStyle: 'hiddenInset',
     icon: process.platform === 'darwin' ? undefined : getWindowIconPath(),
+    backgroundColor: '#f8fafc',
     show: false
   })
 
   win.removeMenu()
 
   mainWindow = win
+  win.maximize()
 
   win.once('ready-to-show', () => win.show())
 

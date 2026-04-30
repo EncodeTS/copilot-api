@@ -8,6 +8,7 @@ export interface Locale {
     loading: string
     manualToken: string
     deviceCode: string
+    deviceCodeUrl: string
     copy: string
     copied: string
     openAuthPage: string
