@@ -343,10 +343,16 @@ const streamOpenAICompatibleProviderMessages = ({
     }
 
     for await (const chunk of events(upstreamResponse)) {
-      logger.debug("provider.messages.openai_compatible.raw_stream_event:", {
-        data: chunk.data,
-        event: chunk.event,
-      })
+      logger.debug(
+        "provider.messages.openai_compatible.raw_stream_event:",
+        chunk.data,
+      )
+      const eventName = chunk.event
+      if (eventName === "ping") {
+        await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
+        continue
+      }
+
       if (!chunk.data || chunk.data === "[DONE]") {
         if (chunk.data === "[DONE]") {
           break
