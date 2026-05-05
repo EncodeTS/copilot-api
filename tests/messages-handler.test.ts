@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Hono } from "hono"
 
 import type { AnthropicMessagesPayload } from "../src/routes/messages/anthropic-types"
@@ -36,21 +36,21 @@ const handleWithMessagesApi = mock(
     _c: unknown,
     _payload: AnthropicMessagesPayload,
     _options: FlowCallOptions,
-  ) => new Response("messages"),
+  ) => Promise.resolve(new Response("messages")),
 )
 const handleWithResponsesApi = mock(
   (
     _c: unknown,
     _payload: AnthropicMessagesPayload,
     _options: FlowCallOptions,
-  ) => new Response("responses"),
+  ) => Promise.resolve(new Response("responses")),
 )
 const handleWithChatCompletions = mock(
   (
     _c: unknown,
     _payload: AnthropicMessagesPayload,
     _options: FlowCallOptions,
-  ) => new Response("chat"),
+  ) => Promise.resolve(new Response("chat")),
 )
 
 await mock.module("~/lib/state", () => ({
@@ -73,13 +73,11 @@ await mock.module("~/lib/models", () => ({
 await mock.module("~/lib/utils", () => ({
   ...actualUtilsModule,
 }))
-await mock.module("~/routes/messages/api-flows", () => ({
-  handleWithMessagesApi,
-  handleWithResponsesApi,
-  handleWithChatCompletions,
-}))
+const { handleCompletion, messagesFlowHandlers } = await import(
+  "../src/routes/messages/handler"
+)
 
-const { handleCompletion } = await import("../src/routes/messages/handler")
+const defaultMessagesFlowHandlers = { ...messagesFlowHandlers }
 
 const createApp = () => {
   const app = new Hono()
@@ -102,10 +100,23 @@ beforeEach(() => {
   messagesApiEnabled = true
   selectedModel = undefined
 
+  messagesFlowHandlers.handleWithMessagesApi = handleWithMessagesApi
+  messagesFlowHandlers.handleWithResponsesApi = handleWithResponsesApi
+  messagesFlowHandlers.handleWithChatCompletions = handleWithChatCompletions
+
   findEndpointModel.mockClear()
   handleWithMessagesApi.mockClear()
   handleWithResponsesApi.mockClear()
   handleWithChatCompletions.mockClear()
+})
+
+afterEach(() => {
+  messagesFlowHandlers.handleWithMessagesApi =
+    defaultMessagesFlowHandlers.handleWithMessagesApi
+  messagesFlowHandlers.handleWithResponsesApi =
+    defaultMessagesFlowHandlers.handleWithResponsesApi
+  messagesFlowHandlers.handleWithChatCompletions =
+    defaultMessagesFlowHandlers.handleWithChatCompletions
 })
 
 describe("messages handler orchestration", () => {

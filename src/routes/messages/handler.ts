@@ -27,6 +27,12 @@ import { parseSubagentMarkerFromFirstUser } from "./subagent-marker"
 
 const logger = createHandlerLogger("messages-handler")
 
+export const messagesFlowHandlers = {
+  handleWithChatCompletions,
+  handleWithMessagesApi,
+  handleWithResponsesApi,
+}
+
 export async function handleCompletion(c: Context) {
   await checkRateLimit(state)
 
@@ -81,35 +87,47 @@ export async function handleCompletion(c: Context) {
   anthropicPayload.model = selectedModel?.id ?? anthropicPayload.model
 
   if (shouldUseMessagesApi(selectedModel)) {
-    return await handleWithMessagesApi(c, anthropicPayload, {
-      anthropicBetaHeader: anthropicBeta,
-      subagentMarker,
-      selectedModel,
-      requestId,
-      sessionId,
-      compactType,
-      logger,
-    })
+    return await messagesFlowHandlers.handleWithMessagesApi(
+      c,
+      anthropicPayload,
+      {
+        anthropicBetaHeader: anthropicBeta,
+        subagentMarker,
+        selectedModel,
+        requestId,
+        sessionId,
+        compactType,
+        logger,
+      },
+    )
   }
 
   if (shouldUseResponsesApi(selectedModel)) {
-    return await handleWithResponsesApi(c, anthropicPayload, {
+    return await messagesFlowHandlers.handleWithResponsesApi(
+      c,
+      anthropicPayload,
+      {
+        subagentMarker,
+        selectedModel,
+        requestId,
+        sessionId,
+        compactType,
+        logger,
+      },
+    )
+  }
+
+  return await messagesFlowHandlers.handleWithChatCompletions(
+    c,
+    anthropicPayload,
+    {
       subagentMarker,
-      selectedModel,
       requestId,
       sessionId,
       compactType,
       logger,
-    })
-  }
-
-  return await handleWithChatCompletions(c, anthropicPayload, {
-    subagentMarker,
-    requestId,
-    sessionId,
-    compactType,
-    logger,
-  })
+    },
+  )
 }
 
 const RESPONSES_ENDPOINT = "/responses"
