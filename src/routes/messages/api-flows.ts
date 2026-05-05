@@ -54,7 +54,10 @@ import {
   translateToOpenAI,
 } from "./non-stream-translation"
 import { prepareMessagesApiPayload } from "./preprocess"
-import { translateChunkToAnthropicEvents } from "./stream-translation"
+import {
+  flushPendingAnthropicStreamEvents,
+  translateChunkToAnthropicEvents,
+} from "./stream-translation"
 
 export interface FlowBaseOptions {
   logger: ConsolaInstance
@@ -138,6 +141,15 @@ export const handleWithChatCompletions = async (
           data: eventData,
         })
       }
+    }
+
+    for (const event of flushPendingAnthropicStreamEvents(streamState)) {
+      const eventData = JSON.stringify(event)
+      debugLazy(logger, () => ["Translated Anthropic event:", eventData])
+      await stream.writeSSE({
+        event: event.type,
+        data: eventData,
+      })
     }
 
     recordUsage(usage)

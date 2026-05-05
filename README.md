@@ -62,7 +62,7 @@ Compared with routing everything through plain Chat Completions compatibility, t
 - **Opencode OAuth Support**: Use opencode GitHub Copilot authentication by setting `COPILOT_API_OAUTH_APP=opencode` environment variable or using `--oauth-app=opencode` command line option.
 - **GitHub Enterprise Support**: Connect to GHE.com by setting `COPILOT_API_ENTERPRISE_URL` environment variable (e.g., `company.ghe.com`) or using `--enterprise-url=company.ghe.com` command line option.
 - **Custom Data Directory**: Change the default data directory (where tokens and config are stored) by setting `COPILOT_API_HOME` environment variable or using `--api-home=/path/to/dir` command line option.
-- **Multi-Provider Anthropic Proxy Routes**: Add global provider configs and call external Anthropic-compatible APIs via `/:provider/v1/messages` and `/:provider/v1/models`.
+- **Multi-Provider Messages Proxy Routes**: Add global provider configs and call external Anthropic-compatible or OpenAI-compatible APIs via `/:provider/v1/messages` and `/:provider/v1/models`.
 - **Accurate Claude Token Counting**: Optionally forward `/v1/messages/count_tokens` requests for Claude models to Anthropic's free token counting endpoint for exact counts instead of GPT tokenizer estimation.
 - **GPT Context Management**: Configurable context compaction for long-running GPT conversations via `responsesApiContextManagementModels`, reducing unnecessary premium requests when approaching token limits. See [Configuration](#configuration-configjson) for details.
 
@@ -309,6 +309,21 @@ The following command line options are available for the `start` command:
             "topP": 0.95
           }
         }
+      },
+      "dashscope": {
+        "type": "openai-compatible",
+        "enabled": true,
+        "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode",
+        "apiKey": "sk-your-dashscope-key",
+        "models": {
+          "qwen3.6-plus": {
+            "extraBody": {
+              "preserve_thinking": true
+            },
+            "supportPdf": false,
+            "toolContentSupportType": []
+          }
+        }
       }
     },
     "extraPrompts": {
@@ -332,16 +347,19 @@ The following command line options are available for the `start` command:
   ```
 - **auth.apiKeys:** API keys used for request authentication. Supports multiple keys for rotation. Requests can authenticate with either `x-api-key: <key>` or `Authorization: Bearer <key>`. If empty or omitted, authentication is disabled.
 - **extraPrompts:** Map of `model -> prompt` appended to the first system prompt when translating Anthropic-style requests to Copilot. Use this to inject guardrails or guidance per model. Missing default entries are auto-added without overwriting your custom prompts. The built-in prompts for `gpt-5.3-codex` and `gpt-5.4` enable phase-aware commentary, which lets the model emit a short user-facing progress update before tools or deeper reasoning.
-- **providers:** Global upstream provider map. Each provider key (for example `custom`) becomes a route prefix (`/custom/v1/messages`). Currently only `type: "anthropic"` is supported.
+- **providers:** Global upstream provider map. Each provider key (for example `custom`) becomes a route prefix (`/custom/v1/messages`). Supports `type: "anthropic"` and `type: "openai-compatible"`.
   - `enabled` defaults to `true` if omitted.
-  - `baseUrl` should be provider API base URL without trailing `/v1/messages`.
+  - `baseUrl` should be provider API base URL without the final endpoint. For Anthropic providers, omit `/v1/messages`; for OpenAI-compatible providers, omit `/v1/chat/completions`.
   - `apiKey` is used as the upstream credential value.
-  - `authType` (optional): Controls how `apiKey` is sent upstream. Supports `x-api-key` (default) and `authorization`. When set to `authorization`, the proxy sends `Authorization: Bearer <apiKey>`.
+  - `authType` (optional): Controls how `apiKey` is sent upstream. Supports `x-api-key` and `authorization`. Anthropic providers default to `x-api-key`; OpenAI-compatible providers default to `authorization`. When set to `authorization`, the proxy sends `Authorization: Bearer <apiKey>`.
   - `adjustInputTokens` (optional): When `true`, the proxy will adjust the `input_tokens` in the usage response by subtracting `cache_read_input_tokens` and `cache_creation_input_tokens`. 
   - `models` (optional): Per-model configuration map. Each key is a model ID (matching the model name in requests), and the value is:
     - `temperature` (optional): Default temperature value used when the request does not specify one.
     - `topP` (optional): Default top_p value used when the request does not specify one.
     - `topK` (optional): Default top_k value used when the request does not specify one.
+    - `extraBody` (optional): Dynamic fields merged into the upstream request body for that model. Request body fields with the same name take precedence. OpenAI-compatible providers can use this for fields such as `enable_thinking`, `preserve_thinking`, `reasoning_effort`.
+    - `supportPdf` (optional): Controls whether the model supports PDF/document content. Defaults to `false`; unsupported PDFs are converted to a text notice. Set it to `true` to send PDF/document blocks as OpenAI Chat Completions file parts.
+    - `toolContentSupportType` (optional): Tool result content capabilities for that model, as an array of `array`, `image`, and `pdf`. Provider routes default to string-only tool content when omitted. If `supportPdf` is `true` but this list does not include `pdf`, file parts in tool results are moved to user role messages. This provider default does not change the Copilot main flow, which continues to support array + image and not PDF.
 - **smallModel:** Fallback model used for tool-less warmup messages (e.g., Claude Code probe requests) to avoid spending premium requests; defaults to gpt-5-mini.
 - **responsesApiContextManagementModels:** List of GPT model IDs that should receive Responses API `context_management` compaction instructions. This defaults to `[]`, so you need to opt in explicitly. A good starting point is `["gpt-5-mini", "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.4"]`. When enabled, the request includes `context_management` in the body and keeps only the latest compaction carrier on follow-up turns. The actual compaction is handled server-side and appears to begin when usage approaches roughly 90% of the model's `maxPromptTokens`, which makes it especially useful for long-running tasks without consuming additional premium requests. In practice, the effective `compact_threshold` also appears to be fixed on the server side, so changing it in this project does not currently alter compaction behavior. At the moment, this optimization is intended for GPT-family models only.
 - **modelReasoningEfforts:** Per-model `reasoning.effort` sent to the Copilot Responses API. Allowed values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`. If a model isn’t listed, `high` is used by default.
@@ -392,8 +410,8 @@ These endpoints are designed to be compatible with the Anthropic Messages API.
 | -------------------------------- | ------ | ------------------------------------------------------------ |
 | `POST /v1/messages`              | `POST` | Creates a model response for a given conversation.           |
 | `POST /v1/messages/count_tokens` | `POST` | Calculates the number of tokens for a given set of messages. |
-| `POST /:provider/v1/messages`       | `POST` | Proxies Anthropic Messages API to the configured provider.   |
-| `GET /:provider/v1/models`          | `GET`  | Proxies Anthropic Models API to the configured provider.     |
+| `POST /:provider/v1/messages`       | `POST` | Proxies Anthropic Messages requests to the configured Anthropic or OpenAI-compatible provider. |
+| `GET /:provider/v1/models`          | `GET`  | Proxies model listing requests to the configured provider.   |
 | `POST /:provider/v1/messages/count_tokens` | `POST` | Calculates tokens locally for provider route requests. |
 
 ### Usage Monitoring Endpoints

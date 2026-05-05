@@ -225,6 +225,7 @@ export interface AnthropicStreamState {
   contentBlockIndex: number
   contentBlockOpen: boolean
   thinkingBlockOpen: boolean
+  pendingMessageDelta?: AnthropicMessageDeltaEvent
   toolCalls: {
     [openAIToolIndex: number]: {
       id: string

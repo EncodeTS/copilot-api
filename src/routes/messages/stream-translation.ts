@@ -5,6 +5,7 @@ import {
 } from "~/services/copilot/create-chat-completions"
 
 import {
+  type AnthropicMessageDeltaEvent,
   type AnthropicStreamEventData,
   type AnthropicStreamState,
 } from "./anthropic-types"
@@ -28,6 +29,7 @@ export function translateChunkToAnthropicEvents(
   const events: Array<AnthropicStreamEventData> = []
 
   if (chunk.choices.length === 0) {
+    completePendingMessage(state, events, chunk)
     return events
   }
 
@@ -45,6 +47,33 @@ export function translateChunkToAnthropicEvents(
   handleFinish(choice, state, { events, chunk })
 
   return events
+}
+
+export function flushPendingAnthropicStreamEvents(
+  state: AnthropicStreamState,
+): Array<AnthropicStreamEventData> {
+  const events: Array<AnthropicStreamEventData> = []
+  completePendingMessage(state, events)
+  return events
+}
+
+function completePendingMessage(
+  state: AnthropicStreamState,
+  events: Array<AnthropicStreamEventData>,
+  chunk?: ChatCompletionChunk,
+): void {
+  if (!state.pendingMessageDelta) {
+    return
+  }
+
+  if (chunk?.usage) {
+    state.pendingMessageDelta.usage = getAnthropicUsageFromOpenAIChunk(chunk)
+  }
+
+  events.push(state.pendingMessageDelta, {
+    type: "message_stop",
+  })
+  state.pendingMessageDelta = undefined
 }
 
 function handleFinish(
@@ -70,29 +99,31 @@ function handleFinish(
       }
     }
 
-    events.push(
-      {
-        type: "message_delta",
-        delta: {
-          stop_reason: mapOpenAIStopReasonToAnthropic(choice.finish_reason),
-          stop_sequence: null,
-        },
-        usage: {
-          input_tokens:
-            (chunk.usage?.prompt_tokens ?? 0)
-            - (chunk.usage?.prompt_tokens_details?.cached_tokens ?? 0),
-          output_tokens: chunk.usage?.completion_tokens ?? 0,
-          ...(chunk.usage?.prompt_tokens_details?.cached_tokens
-            !== undefined && {
-            cache_read_input_tokens:
-              chunk.usage.prompt_tokens_details.cached_tokens,
-          }),
-        },
+    state.pendingMessageDelta = {
+      type: "message_delta",
+      delta: {
+        stop_reason: mapOpenAIStopReasonToAnthropic(choice.finish_reason),
+        stop_sequence: null,
       },
-      {
-        type: "message_stop",
-      },
-    )
+      usage: getAnthropicUsageFromOpenAIChunk(chunk),
+    }
+    if (chunk.usage) {
+      completePendingMessage(state, events, chunk)
+    }
+  }
+}
+
+function getAnthropicUsageFromOpenAIChunk(
+  chunk: ChatCompletionChunk,
+): NonNullable<AnthropicMessageDeltaEvent["usage"]> {
+  return {
+    input_tokens:
+      (chunk.usage?.prompt_tokens ?? 0)
+      - (chunk.usage?.prompt_tokens_details?.cached_tokens ?? 0),
+    output_tokens: chunk.usage?.completion_tokens ?? 0,
+    ...(chunk.usage?.prompt_tokens_details?.cached_tokens !== undefined && {
+      cache_read_input_tokens: chunk.usage.prompt_tokens_details.cached_tokens,
+    }),
   }
 }
 
@@ -318,13 +349,15 @@ function handleThinkingText(
   state: AnthropicStreamState,
   events: Array<AnthropicStreamEventData>,
 ) {
-  if (delta.reasoning_text && delta.reasoning_text.length > 0) {
+  const reasoningText = delta.reasoning_text ?? delta.reasoning_content
+  if (reasoningText && reasoningText.length > 0) {
     // compatible with copilot API returning content->reasoning_text->reasoning_opaque in different deltas
     // this is an extremely abnormal situation, probably a server-side bug
     // only occurs in the claude model, with a very low probability of occurrence
     if (state.contentBlockOpen) {
-      delta.content = delta.reasoning_text
+      delta.content = reasoningText
       delta.reasoning_text = undefined
+      delta.reasoning_content = undefined
       return
     }
 
@@ -345,7 +378,7 @@ function handleThinkingText(
       index: state.contentBlockIndex,
       delta: {
         type: "thinking_delta",
-        thinking: delta.reasoning_text,
+        thinking: reasoningText,
       },
     })
   }

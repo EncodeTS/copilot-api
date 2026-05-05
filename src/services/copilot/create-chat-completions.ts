@@ -114,6 +114,7 @@ export interface Delta {
     }
   }>
   reasoning_text?: string | null
+  reasoning_content?: string | null
   reasoning_opaque?: string | null
 }
 
@@ -147,6 +148,7 @@ interface ResponseMessage {
   role: "assistant"
   content: string | null
   reasoning_text?: string | null
+  reasoning_content?: string | null
   reasoning_opaque?: string | null
   tool_calls?: Array<ToolCall>
 }
@@ -161,6 +163,8 @@ interface ChoiceNonStreaming {
 // Payload types
 
 export interface ChatCompletionsPayload {
+  [key: string]: unknown
+
   messages: Array<Message>
   model: string
   temperature?: number | null
@@ -184,7 +188,12 @@ export interface ChatCompletionsPayload {
     | { type: "function"; function: { name: string } }
     | null
   user?: string | null
+  stream_options?: {
+    include_usage?: boolean | null
+  } | null
   thinking_budget?: number
+  top_k?: number | null
+  parallel_tool_calls?: boolean | null
 }
 
 export interface Tool {
@@ -203,6 +212,7 @@ export interface Message {
   name?: string
   tool_calls?: Array<ToolCall>
   tool_call_id?: string
+  reasoning_content?: string | null
   reasoning_text?: string | null
   reasoning_opaque?: string | null
 }
@@ -216,7 +226,7 @@ export interface ToolCall {
   }
 }
 
-export type ContentPart = TextPart | ImagePart
+export type ContentPart = TextPart | ImagePart | FilePart
 
 export interface TextPart {
   type: "text"
@@ -228,5 +238,13 @@ export interface ImagePart {
   image_url: {
     url: string
     detail?: "low" | "high" | "auto"
+  }
+}
+
+export interface FilePart {
+  type: "file"
+  file: {
+    file_data: string
+    filename?: string
   }
 }
