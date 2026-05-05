@@ -332,7 +332,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
           "glm-5.1": {
             "temperature": 0.7,
             "topP": 0.95,
-            "contextCache": false,
+            "contextCache": true,
             "extraBody": {
               "preserve_thinking": true
             }

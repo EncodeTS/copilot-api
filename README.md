@@ -328,7 +328,7 @@ The following command line options are available for the `start` command:
           "glm-5.1": {
             "temperature": 0.7,
             "topP": 0.95,
-            "contextCache": false,
+            "contextCache": true,
             "extraBody": {
               "preserve_thinking": true
             }

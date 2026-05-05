@@ -426,6 +426,9 @@ function mapContent(
       // No default
     }
   }
+  if (contentParts.length === 0) {
+    return null
+  }
   return contentParts
 }
 
