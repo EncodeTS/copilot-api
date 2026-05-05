@@ -27,6 +27,7 @@ export interface ModelConfig {
   topP?: number
   topK?: number
   extraBody?: Record<string, unknown>
+  contextCache?: boolean
   supportPdf?: boolean
   toolContentSupportType?: Array<ToolContentSupportType>
 }
