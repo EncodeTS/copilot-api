@@ -8,7 +8,10 @@ import type {
 
 import { type AnthropicStreamState } from "~/routes/messages/anthropic-types"
 import { translateToAnthropic } from "~/routes/messages/non-stream-translation"
-import { translateChunkToAnthropicEvents } from "~/routes/messages/stream-translation"
+import {
+  flushPendingAnthropicStreamEvents,
+  translateChunkToAnthropicEvents,
+} from "~/routes/messages/stream-translation"
 
 const anthropicUsageSchema = z.object({
   input_tokens: z.number().int(),
@@ -363,5 +366,94 @@ describe("OpenAI to Anthropic Streaming Response Translation", () => {
     for (const event of translatedStream) {
       expect(isValidAnthropicStreamEvent(event)).toBe(true)
     }
+  })
+})
+
+describe("OpenAI usage-only stream translation", () => {
+  test("should emit final Anthropic usage from an OpenAI usage-only chunk", () => {
+    const openAIStream: Array<ChatCompletionChunk> = [
+      {
+        id: "cmpl-usage",
+        object: "chat.completion.chunk",
+        created: 1677652288,
+        model: "qwen-plus",
+        choices: [
+          {
+            index: 0,
+            delta: { role: "assistant" },
+            finish_reason: null,
+            logprobs: null,
+          },
+        ],
+      },
+      {
+        id: "cmpl-usage",
+        object: "chat.completion.chunk",
+        created: 1677652288,
+        model: "qwen-plus",
+        choices: [
+          {
+            index: 0,
+            delta: { content: "Hello" },
+            finish_reason: null,
+            logprobs: null,
+          },
+        ],
+      },
+      {
+        id: "cmpl-usage",
+        object: "chat.completion.chunk",
+        created: 1677652288,
+        model: "qwen-plus",
+        choices: [
+          { index: 0, delta: {}, finish_reason: "stop", logprobs: null },
+        ],
+      },
+      {
+        id: "cmpl-usage",
+        object: "chat.completion.chunk",
+        created: 1677652288,
+        model: "qwen-plus",
+        choices: [],
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 20,
+          total_tokens: 120,
+          prompt_tokens_details: {
+            cached_tokens: 12,
+          },
+        },
+      },
+    ]
+
+    const streamState: AnthropicStreamState = {
+      messageStartSent: false,
+      contentBlockIndex: 0,
+      contentBlockOpen: false,
+      toolCalls: {},
+      thinkingBlockOpen: false,
+    }
+    const translatedStream = openAIStream.flatMap((chunk) =>
+      translateChunkToAnthropicEvents(chunk, streamState),
+    )
+    translatedStream.push(...flushPendingAnthropicStreamEvents(streamState))
+
+    const messageDeltaEvents = translatedStream.filter(
+      (event) => event.type === "message_delta",
+    )
+    expect(messageDeltaEvents).toHaveLength(1)
+    expect(messageDeltaEvents[0]).toEqual({
+      type: "message_delta",
+      delta: {
+        stop_reason: "end_turn",
+        stop_sequence: null,
+      },
+      usage: {
+        input_tokens: 88,
+        output_tokens: 20,
+        cache_read_input_tokens: 12,
+      },
+    })
+    expect(translatedStream.at(-1)).toEqual({ type: "message_stop" })
   })
 })
