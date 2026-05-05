@@ -53,6 +53,7 @@ const fetchMock = mock((_url: string | URL | Request, _init?: RequestInit) =>
           completion_tokens: 2,
           total_tokens: 10,
           prompt_tokens_details: {
+            cache_creation_input_tokens: 2,
             cached_tokens: 1,
           },
         },
@@ -146,6 +147,20 @@ describe("openai-compatible provider messages", () => {
       top_k: 50,
       top_p: 0.8,
     })
+    expect(body.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "hello",
+            cache_control: {
+              type: "ephemeral",
+            },
+          },
+        ],
+      },
+    ])
     expect(body).not.toHaveProperty("stream_options")
 
     const json = (await response.json()) as Record<string, unknown>
@@ -154,8 +169,9 @@ describe("openai-compatible provider messages", () => {
       role: "assistant",
       stop_reason: "end_turn",
       usage: {
+        cache_creation_input_tokens: 2,
         cache_read_input_tokens: 1,
-        input_tokens: 7,
+        input_tokens: 5,
         output_tokens: 2,
       },
     })
@@ -238,6 +254,138 @@ describe("openai-compatible provider messages", () => {
   })
 })
 
+describe("openai-compatible provider context cache", () => {
+  test("marks first system and last two non-system messages for OpenAI-compatible context cache", async () => {
+    const app = createApp()
+    const response = await app.request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        system: "system prompt",
+        messages: [
+          { role: "user", content: "first" },
+          { role: "assistant", content: "first answer" },
+          { role: "user", content: "second" },
+          { role: "assistant", content: "second answer" },
+          { role: "user", content: "latest" },
+        ],
+        model: "qwen-plus",
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    const body = JSON.parse(init.body as string) as {
+      messages: Array<{ content: unknown; role: string }>
+    }
+    const markedMessages = body.messages.filter(
+      (message) =>
+        Array.isArray(message.content)
+        && message.content.some(
+          (part) =>
+            typeof part === "object"
+            && part !== null
+            && "cache_control" in part,
+        ),
+    )
+
+    expect(markedMessages).toHaveLength(3)
+    expect(body.messages[0]).toEqual({
+      role: "system",
+      content: [
+        {
+          type: "text",
+          text: "system prompt",
+          cache_control: {
+            type: "ephemeral",
+          },
+        },
+      ],
+    })
+    expect(body.messages[1]).toEqual({
+      role: "user",
+      content: "first",
+    })
+    expect(body.messages[2]).toEqual({
+      role: "assistant",
+      content: "first answer",
+    })
+    expect(body.messages[3]).toEqual({
+      role: "user",
+      content: "second",
+    })
+    expect(body.messages[4]).toEqual({
+      role: "assistant",
+      content: [
+        {
+          type: "text",
+          text: "second answer",
+          cache_control: {
+            type: "ephemeral",
+          },
+        },
+      ],
+    })
+    expect(body.messages[5]).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: "latest",
+          cache_control: {
+            type: "ephemeral",
+          },
+        },
+      ],
+    })
+  })
+
+  test("allows disabling OpenAI-compatible context cache per model", async () => {
+    providerConfig = {
+      ...providerConfig,
+      models: {
+        "qwen-plus": {
+          contextCache: false,
+          toolContentSupportType: [],
+        },
+      },
+    } as ResolvedProviderConfig
+
+    const app = createApp()
+    const response = await app.request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        system: "system prompt",
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    const body = JSON.parse(init.body as string) as {
+      messages: Array<Record<string, unknown>>
+    }
+    expect(body.messages).toEqual([
+      {
+        role: "system",
+        content: "system prompt",
+      },
+      {
+        role: "user",
+        content: "hello",
+      },
+    ])
+  })
+})
+
 describe("openai-compatible provider message content", () => {
   test("sends assistant thinking history as reasoning_content", async () => {
     const app = createApp()
@@ -293,6 +441,120 @@ describe("openai-compatible provider message content", () => {
     })
     expect(body.messages[1]).not.toHaveProperty("reasoning_text")
     expect(body.messages[1]).not.toHaveProperty("reasoning_opaque")
+  })
+})
+
+describe("openai-compatible provider tool array content", () => {
+  test("marks string tool result content for context cache", async () => {
+    const app = createApp()
+    const response = await app.request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "tool_text",
+                content: "plain tool result",
+              },
+            ],
+          },
+        ],
+        model: "qwen-plus",
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    const body = JSON.parse(init.body as string) as {
+      messages: Array<Record<string, unknown>>
+    }
+    expect(body.messages[0]).toEqual({
+      role: "tool",
+      tool_call_id: "tool_text",
+      content: [
+        {
+          type: "text",
+          text: "plain tool result",
+          cache_control: {
+            type: "ephemeral",
+          },
+        },
+      ],
+    })
+  })
+
+  test("marks tool result array content when array tool content is enabled", async () => {
+    providerConfig = {
+      ...providerConfig,
+      models: {
+        "qwen-plus": {
+          toolContentSupportType: ["array"],
+        },
+      },
+    } as ResolvedProviderConfig
+
+    const app = createApp()
+    const response = await app.request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "tool_text",
+                content: [
+                  {
+                    type: "text",
+                    text: "first line",
+                  },
+                  {
+                    type: "text",
+                    text: "second line",
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+        model: "qwen-plus",
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    const body = JSON.parse(init.body as string) as {
+      messages: Array<Record<string, unknown>>
+    }
+    expect(body.messages[0]).toEqual({
+      role: "tool",
+      tool_call_id: "tool_text",
+      content: [
+        {
+          type: "text",
+          text: "first line",
+        },
+        {
+          type: "text",
+          text: "second line",
+          cache_control: {
+            type: "ephemeral",
+          },
+        },
+      ],
+    })
   })
 })
 
@@ -365,6 +627,9 @@ describe("openai-compatible provider PDF message content", () => {
             file_data: "data:application/pdf;base64,pdf-data",
             filename: "report.pdf",
           },
+          cache_control: {
+            type: "ephemeral",
+          },
         },
       ],
     })
@@ -427,7 +692,15 @@ describe("openai-compatible provider PDF message content", () => {
     expect(body.messages[0]).toEqual({
       role: "tool",
       tool_call_id: "tool_pdf",
-      content: "PDF file read: report.pdf",
+      content: [
+        {
+          type: "text",
+          text: "PDF file read: report.pdf",
+          cache_control: {
+            type: "ephemeral",
+          },
+        },
+      ],
     })
     expect(body.messages[1]).toEqual({
       role: "user",
@@ -445,6 +718,9 @@ describe("openai-compatible provider PDF message content", () => {
           file: {
             file_data: "data:application/pdf;base64,pdf-data",
             filename: "report.pdf",
+          },
+          cache_control: {
+            type: "ephemeral",
           },
         },
       ],

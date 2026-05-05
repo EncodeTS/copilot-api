@@ -6,6 +6,7 @@ import { state } from "~/lib/state"
 import {
   closeUsageStore,
   createCopilotTokenUsageRecorder,
+  normalizeOpenAIUsage,
   recordTokenUsageEvent,
   type TokenUsageEventsPage,
   type TokenUsageSummary,
@@ -43,6 +44,26 @@ async function fetchEventsPage(pageSize = 20): Promise<TokenUsageEventsPage> {
 }
 
 describe("token usage storage", () => {
+  test("normalizes OpenAI cache creation usage details", () => {
+    expect(
+      normalizeOpenAIUsage({
+        completion_tokens: 10,
+        prompt_tokens: 100,
+        prompt_tokens_details: {
+          cache_creation_input_tokens: 20,
+          cached_tokens: 12,
+        },
+        total_tokens: 110,
+      }),
+    ).toEqual({
+      cache_creation_input_tokens: 20,
+      cache_read_input_tokens: 12,
+      input_tokens: 68,
+      output_tokens: 10,
+      total_tokens: 110,
+    })
+  })
+
   test("records trace id and prefers x-session-affinity for session id", async () => {
     requestContext.run(
       {

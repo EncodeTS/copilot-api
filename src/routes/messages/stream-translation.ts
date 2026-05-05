@@ -116,14 +116,36 @@ function handleFinish(
 function getAnthropicUsageFromOpenAIChunk(
   chunk: ChatCompletionChunk,
 ): NonNullable<AnthropicMessageDeltaEvent["usage"]> {
+  const { cachedTokens, cacheCreationTokens, inputTokens } =
+    getOpenAIChunkUsageTokens(chunk)
+
   return {
-    input_tokens:
-      (chunk.usage?.prompt_tokens ?? 0)
-      - (chunk.usage?.prompt_tokens_details?.cached_tokens ?? 0),
+    input_tokens: inputTokens,
     output_tokens: chunk.usage?.completion_tokens ?? 0,
-    ...(chunk.usage?.prompt_tokens_details?.cached_tokens !== undefined && {
-      cache_read_input_tokens: chunk.usage.prompt_tokens_details.cached_tokens,
+    ...(chunk.usage?.prompt_tokens_details?.cache_creation_input_tokens
+      !== undefined && {
+      cache_creation_input_tokens: cacheCreationTokens,
     }),
+    ...(chunk.usage?.prompt_tokens_details?.cached_tokens !== undefined && {
+      cache_read_input_tokens: cachedTokens,
+    }),
+  }
+}
+
+function getOpenAIChunkUsageTokens(chunk: ChatCompletionChunk): {
+  cacheCreationTokens: number
+  cachedTokens: number
+  inputTokens: number
+} {
+  const promptTokens = chunk.usage?.prompt_tokens ?? 0
+  const cachedTokens = chunk.usage?.prompt_tokens_details?.cached_tokens ?? 0
+  const cacheCreationTokens =
+    chunk.usage?.prompt_tokens_details?.cache_creation_input_tokens ?? 0
+
+  return {
+    cacheCreationTokens,
+    cachedTokens,
+    inputTokens: Math.max(0, promptTokens - cachedTokens - cacheCreationTokens),
   }
 }
 
@@ -277,6 +299,9 @@ function handleMessageStart(
   chunk: ChatCompletionChunk,
 ) {
   if (!state.messageStartSent) {
+    const { cachedTokens, cacheCreationTokens, inputTokens } =
+      getOpenAIChunkUsageTokens(chunk)
+
     events.push({
       type: "message_start",
       message: {
@@ -288,14 +313,15 @@ function handleMessageStart(
         stop_reason: null,
         stop_sequence: null,
         usage: {
-          input_tokens:
-            (chunk.usage?.prompt_tokens ?? 0)
-            - (chunk.usage?.prompt_tokens_details?.cached_tokens ?? 0),
+          input_tokens: inputTokens,
           output_tokens: 0, // Will be updated in message_delta when finished
+          ...(chunk.usage?.prompt_tokens_details?.cache_creation_input_tokens
+            !== undefined && {
+            cache_creation_input_tokens: cacheCreationTokens,
+          }),
           ...(chunk.usage?.prompt_tokens_details?.cached_tokens
             !== undefined && {
-            cache_read_input_tokens:
-              chunk.usage.prompt_tokens_details.cached_tokens,
+            cache_read_input_tokens: cachedTokens,
           }),
         },
       },

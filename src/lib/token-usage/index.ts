@@ -171,6 +171,7 @@ export function normalizeOpenAIUsage(
         prompt_tokens?: number
         total_tokens?: number
         prompt_tokens_details?: {
+          cache_creation_input_tokens?: number
           cached_tokens?: number
         }
       }
@@ -180,10 +181,17 @@ export function normalizeOpenAIUsage(
   const cachedTokens = normalizeToken(
     usage?.prompt_tokens_details?.cached_tokens,
   )
+  const cacheCreationTokens = normalizeToken(
+    usage?.prompt_tokens_details?.cache_creation_input_tokens,
+  )
   const promptTokens = normalizeToken(usage?.prompt_tokens)
   return {
+    cache_creation_input_tokens: cacheCreationTokens,
     cache_read_input_tokens: cachedTokens,
-    input_tokens: Math.max(0, promptTokens - cachedTokens),
+    input_tokens: Math.max(
+      0,
+      promptTokens - cachedTokens - cacheCreationTokens,
+    ),
     output_tokens: normalizeToken(usage?.completion_tokens),
     total_tokens: normalizeOptionalToken(usage?.total_tokens),
   }

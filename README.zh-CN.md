@@ -321,11 +321,21 @@ Copilot API 现在使用子命令结构，主要命令包括：
         "apiKey": "sk-your-dashscope-key",
         "models": {
           "qwen3.6-plus": {
+            "temperature": 1,
+            "topP": 0.95,
+            "topK": 20,
             "extraBody": {
               "preserve_thinking": true
             },
-            "supportPdf": false,
-            "toolContentSupportType": []
+            "contextCache": true
+          },
+          "glm-5.1": {
+            "temperature": 0.7,
+            "topP": 0.95,
+            "contextCache": false,
+            "extraBody": {
+              "preserve_thinking": true
+            }
           }
         }
       }
@@ -362,6 +372,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
     - `topP`：可选，当请求未指定时使用的默认 `top_p`。
     - `topK`：可选，当请求未指定时使用的默认 `top_k`。
     - `extraBody`：可选，按模型合入上游请求体的动态字段；请求体显式同名字段优先。OpenAI 兼容 provider 可用它配置 `enable_thinking`、`preserve_thinking`、`reasoning_effort` 等字段。
+    - `contextCache`：可选，OpenAI 兼容 provider 默认 `true`，用于启用阿里云百炼/DashScope 的显式缓存（explicit context cache），会按其 Context Cache 格式在最多 4 个 content block 上注入 `cache_control: { "type": "ephemeral" }`。缓存断点策略与 opencode 主链路保持一致：前 2 条 system 消息 + 最后 2 条非 system 消息。标记字符串 content 时会把 `system` / `user` / `assistant` / `tool` 消息转换为 text content part 数组；已有数组 content 则标记最后一个 part。如果模型本身已经支持隐式缓存，或上游不支持该显式缓存扩展字段，可在模型配置中设为 `false`。
     - `supportPdf`：可选，控制该模型是否支持 PDF/document content。默认 `false`，不支持时会把 PDF 转成提示文本；设为 `true` 时会把 PDF/document 转成 OpenAI Chat Completions 的 file part。
     - `toolContentSupportType`：可选，配置该模型的 tool result content 支持能力，值为 `array`、`image`、`pdf` 的数组。provider 侧未配置时默认只发送 string tool content。若 `supportPdf` 为 `true` 但这里不包含 `pdf`，tool result 里的 file part 会被转成 user role 消息。Copilot 主链路不使用这个 provider 默认，仍按 array + image 且不支持 PDF 的能力处理。
 - **smallModel：** 无工具预热消息的回退模型（例如 Claude Code 的探测请求），用于避免消耗 premium requests；默认是 `gpt-5-mini`。

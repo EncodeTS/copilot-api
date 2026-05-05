@@ -92,7 +92,8 @@ export interface ChatCompletionChunk {
     completion_tokens: number
     total_tokens: number
     prompt_tokens_details?: {
-      cached_tokens: number
+      cache_creation_input_tokens?: number
+      cached_tokens?: number
     }
     completion_tokens_details?: {
       accepted_prediction_tokens: number
@@ -139,7 +140,8 @@ export interface ChatCompletionResponse {
     completion_tokens: number
     total_tokens: number
     prompt_tokens_details?: {
-      cached_tokens: number
+      cache_creation_input_tokens?: number
+      cached_tokens?: number
     }
   }
 }
@@ -228,9 +230,14 @@ export interface ToolCall {
 
 export type ContentPart = TextPart | ImagePart | FilePart
 
+export interface CacheControl {
+  type: "ephemeral"
+}
+
 export interface TextPart {
   type: "text"
   text: string
+  cache_control?: CacheControl
 }
 
 export interface ImagePart {
@@ -239,6 +246,7 @@ export interface ImagePart {
     url: string
     detail?: "low" | "high" | "auto"
   }
+  cache_control?: CacheControl
 }
 
 export interface FilePart {
@@ -247,4 +255,5 @@ export interface FilePart {
     file_data: string
     filename?: string
   }
+  cache_control?: CacheControl
 }

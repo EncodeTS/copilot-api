@@ -541,18 +541,33 @@ export function translateToAnthropic(
     content: assistantContentBlocks,
     stop_reason: mapOpenAIStopReasonToAnthropic(stopReason),
     stop_sequence: null,
-    usage: {
-      input_tokens:
-        (response.usage?.prompt_tokens ?? 0)
-        - (response.usage?.prompt_tokens_details?.cached_tokens ?? 0),
-      output_tokens: response.usage?.completion_tokens ?? 0,
-      ...(response.usage?.prompt_tokens_details?.cached_tokens
-        !== undefined && {
-        cache_read_input_tokens:
-          response.usage.prompt_tokens_details.cached_tokens,
-      }),
-    },
+    usage: mapOpenAIChatCompletionUsage(response),
   }
+}
+
+function mapOpenAIChatCompletionUsage(
+  response: ChatCompletionResponse,
+): AnthropicResponse["usage"] {
+  const promptDetails = response.usage?.prompt_tokens_details
+  const promptTokens = response.usage?.prompt_tokens ?? 0
+  const cachedTokens = promptDetails?.cached_tokens ?? 0
+  const cacheCreationTokens = promptDetails?.cache_creation_input_tokens ?? 0
+  const usage: AnthropicResponse["usage"] = {
+    input_tokens: Math.max(
+      0,
+      promptTokens - cachedTokens - cacheCreationTokens,
+    ),
+    output_tokens: response.usage?.completion_tokens ?? 0,
+  }
+
+  if (promptDetails?.cache_creation_input_tokens !== undefined) {
+    usage.cache_creation_input_tokens = cacheCreationTokens
+  }
+  if (promptDetails?.cached_tokens !== undefined) {
+    usage.cache_read_input_tokens = cachedTokens
+  }
+
+  return usage
 }
 
 function getOpenAIReasoningText(message: {
