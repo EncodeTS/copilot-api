@@ -427,7 +427,7 @@ function mapContent(
     }
   }
   if (contentParts.length === 0) {
-    return null
+    return ""
   }
   return contentParts
 }

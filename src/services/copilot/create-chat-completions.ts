@@ -217,6 +217,7 @@ export interface Message {
   reasoning_content?: string | null
   reasoning_text?: string | null
   reasoning_opaque?: string | null
+  copilot_cache_control?: CopilotCacheControl
 }
 
 export interface ToolCall {
@@ -231,6 +232,10 @@ export interface ToolCall {
 export type ContentPart = TextPart | ImagePart | FilePart
 
 export interface CacheControl {
+  type: "ephemeral"
+}
+
+export interface CopilotCacheControl {
   type: "ephemeral"
 }
 
