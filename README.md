@@ -62,7 +62,7 @@ Compared with routing everything through plain Chat Completions compatibility, t
 - **Opencode OAuth Support**: Use opencode GitHub Copilot authentication by setting `COPILOT_API_OAUTH_APP=opencode` environment variable or using `--oauth-app=opencode` command line option.
 - **GitHub Enterprise Support**: Connect to GHE.com by setting `COPILOT_API_ENTERPRISE_URL` environment variable (e.g., `company.ghe.com`) or using `--enterprise-url=company.ghe.com` command line option.
 - **Custom Data Directory**: Change the default data directory (where tokens and config are stored) by setting `COPILOT_API_HOME` environment variable or using `--api-home=/path/to/dir` command line option.
-- **Multi-Provider Messages Proxy Routes**: Add global provider configs and call external Anthropic-compatible or OpenAI-compatible APIs via `/:provider/v1/messages` and `/:provider/v1/models`.
+- **Multi-Provider Messages Proxy Routes**: Add global provider configs and call external Anthropic-compatible or OpenAI-compatible APIs via `/:provider/v1/messages` and `/:provider/v1/models`, or send `model: "provider/model"` to the top-level `/v1/messages` API.
 - **Accurate Claude Token Counting**: Optionally forward `/v1/messages/count_tokens` requests for Claude models to Anthropic's free token counting endpoint for exact counts instead of GPT tokenizer estimation.
 - **GPT Context Management**: Configurable context compaction for long-running GPT conversations via `responsesApiContextManagementModels`, reducing unnecessary premium requests when approaching token limits. See [Configuration](#configuration-configjson) for details.
 
@@ -357,7 +357,7 @@ The following command line options are available for the `start` command:
   ```
 - **auth.apiKeys:** API keys used for request authentication. Supports multiple keys for rotation. Requests can authenticate with either `x-api-key: <key>` or `Authorization: Bearer <key>`. If empty or omitted, authentication is disabled.
 - **extraPrompts:** Map of `model -> prompt` appended to the first system prompt when translating Anthropic-style requests to Copilot. Use this to inject guardrails or guidance per model. Missing default entries are auto-added without overwriting your custom prompts. The built-in prompts for `gpt-5.3-codex` and `gpt-5.4` enable phase-aware commentary, which lets the model emit a short user-facing progress update before tools or deeper reasoning.
-- **providers:** Global upstream provider map. Each provider key (for example `custom`) becomes a route prefix (`/custom/v1/messages`). Supports `type: "anthropic"` and `type: "openai-compatible"`.
+- **providers:** Global upstream provider map. Each provider key (for example `custom`) becomes a route prefix (`/custom/v1/messages`). Supports `type: "anthropic"` and `type: "openai-compatible"`. Top-level Anthropic clients can also use `model: "custom/model-id"` with `/v1/messages` and `/v1/messages/count_tokens`; the proxy strips the `custom/` prefix before forwarding upstream. `GET /v1/models` does not aggregate provider models; use `GET /custom/v1/models` for provider model lists.
   - `enabled` defaults to `true` if omitted.
   - `baseUrl` should be provider API base URL without the final endpoint. For Anthropic providers, omit `/v1/messages`; for OpenAI-compatible providers, omit `/v1/chat/completions`.
   - `apiKey` is used as the upstream credential value.
@@ -419,8 +419,8 @@ These endpoints are designed to be compatible with the Anthropic Messages API.
 
 | Endpoint                         | Method | Description                                                  |
 | -------------------------------- | ------ | ------------------------------------------------------------ |
-| `POST /v1/messages`              | `POST` | Creates a model response for a given conversation.           |
-| `POST /v1/messages/count_tokens` | `POST` | Calculates the number of tokens for a given set of messages. |
+| `POST /v1/messages`              | `POST` | Creates a model response for a given conversation. Supports `provider/model` aliases for configured providers. |
+| `POST /v1/messages/count_tokens` | `POST` | Calculates the number of tokens for a given set of messages. Supports `provider/model` aliases for configured providers. |
 | `POST /:provider/v1/messages`       | `POST` | Proxies Anthropic Messages requests to the configured Anthropic or OpenAI-compatible provider. |
 | `GET /:provider/v1/models`          | `GET`  | Proxies model listing requests to the configured provider.   |
 | `POST /:provider/v1/messages/count_tokens` | `POST` | Calculates tokens locally for provider route requests. |

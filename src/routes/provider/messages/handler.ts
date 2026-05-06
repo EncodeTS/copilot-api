@@ -59,6 +59,18 @@ const OPENAI_COMPATIBLE_CONTEXT_CACHE_ROLES = new Set<Message["role"]>([
 
 export async function handleProviderMessages(c: Context): Promise<Response> {
   const provider = c.req.param("provider")
+  const payload = await c.req.json<AnthropicMessagesPayload>()
+  return await handleProviderMessagesForProvider(c, { payload, provider })
+}
+
+export async function handleProviderMessagesForProvider(
+  c: Context,
+  options: {
+    payload: AnthropicMessagesPayload
+    provider: string
+  },
+): Promise<Response> {
+  const { payload, provider } = options
   const providerConfig = getProviderConfig(provider)
   if (!providerConfig) {
     return c.json(
@@ -73,8 +85,6 @@ export async function handleProviderMessages(c: Context): Promise<Response> {
   }
 
   try {
-    const payload = await c.req.json<AnthropicMessagesPayload>()
-
     const modelConfig = providerConfig.models?.[payload.model]
     applyModelDefaults(payload, modelConfig)
 
