@@ -7,9 +7,11 @@ import { COMPACT_REQUEST } from "~/lib/compact"
 import { getSmallModel, isMessagesApiEnabled } from "~/lib/config"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { findEndpointModel } from "~/lib/models"
+import { parseProviderModelAlias } from "~/lib/provider-model"
 import { checkRateLimit } from "~/lib/rate-limit"
 import { state } from "~/lib/state"
 import { generateRequestIdFromPayload, getRootSessionId } from "~/lib/utils"
+import { handleProviderMessagesForProvider } from "~/routes/provider/messages/handler"
 
 import { type AnthropicMessagesPayload } from "./anthropic-types"
 import {
@@ -34,9 +36,18 @@ export const messagesFlowHandlers = {
 }
 
 export async function handleCompletion(c: Context) {
+  const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
+  const providerModelAlias = parseProviderModelAlias(anthropicPayload.model)
+  if (providerModelAlias) {
+    anthropicPayload.model = providerModelAlias.model
+    return await handleProviderMessagesForProvider(c, {
+      payload: anthropicPayload,
+      provider: providerModelAlias.provider,
+    })
+  }
+
   await checkRateLimit(state)
 
-  const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
   debugJson(logger, "Anthropic request payload:", anthropicPayload)
 
   sanitizeIdeTools(anthropicPayload)

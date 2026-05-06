@@ -62,7 +62,7 @@
 - **支持 opencode OAuth**：可通过设置环境变量 `COPILOT_API_OAUTH_APP=opencode` 或使用命令行参数 `--oauth-app=opencode` 来启用 opencode GitHub Copilot 认证。
 - **支持 GitHub Enterprise**：可通过设置环境变量 `COPILOT_API_ENTERPRISE_URL`（例如 `company.ghe.com`）或命令行参数 `--enterprise-url=company.ghe.com` 连接到 GHE.com。
 - **自定义数据目录**：可通过环境变量 `COPILOT_API_HOME` 或命令行参数 `--api-home=/path/to/dir` 修改默认数据目录（存放 token 和配置）。
-- **多 Provider Messages 代理路由**：可以添加全局 provider 配置，并通过 `/:provider/v1/messages` 与 `/:provider/v1/models` 调用外部 Anthropic 或 OpenAI 兼容 API。
+- **多 Provider Messages 代理路由**：可以添加全局 provider 配置，并通过 `/:provider/v1/messages` 与 `/:provider/v1/models` 调用外部 Anthropic 或 OpenAI 兼容 API，也可以把 `model` 写成 `"provider/model"` 后直接发到顶层 `/v1/messages`。
 - **精确的 Claude Token 计数**：可以选择将 Claude 模型的 `/v1/messages/count_tokens` 请求转发到 Anthropic 的免费 token counting 端点，以获得精确计数，而不是依赖 GPT tokenizer 估算。
 - **GPT 上下文管理**：可通过 `responsesApiContextManagementModels` 为长上下文 GPT 对话启用可配置的上下文压缩，在接近 token 限制时减少不必要的 Premium 请求。详见 [配置](#configuration-configjson)。
 
@@ -361,7 +361,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
   ```
 - **auth.apiKeys：** 用于请求认证的 API key。支持多个 key 轮换使用。请求可通过 `x-api-key: <key>` 或 `Authorization: Bearer <key>` 进行认证。若为空或省略，则禁用认证。
 - **extraPrompts：** `model -> prompt` 的映射。把 Anthropic 风格请求翻译给 Copilot 时，会将其附加到第一条 system prompt 后面。你可以借此为不同模型注入护栏或指引。缺失的默认项会自动补齐，但不会覆盖你自定义的 prompt。内置的 `gpt-5.3-codex` 和 `gpt-5.4` prompt 会启用带阶段感知的 commentary，让模型在工具调用或更深层推理前先发出简短的用户可见进度说明。
-- **providers：** 全局上游 provider 映射。每个 provider key（例如 `custom`）都会变成一个路由前缀（`/custom/v1/messages`）。支持 `type: "anthropic"` 和 `type: "openai-compatible"`。
+- **providers：** 全局上游 provider 映射。每个 provider key（例如 `custom`）都会变成一个路由前缀（`/custom/v1/messages`）。支持 `type: "anthropic"` 和 `type: "openai-compatible"`。顶层 Anthropic 客户端也可以在 `/v1/messages` 和 `/v1/messages/count_tokens` 中使用 `model: "custom/model-id"`；代理会在转发上游前移除 `custom/` 前缀。`GET /v1/models` 不聚合 provider 模型；provider 模型列表请使用 `GET /custom/v1/models`。
   - `enabled`：可选，若省略则默认为 `true`。
   - `baseUrl`：provider API 的基础 URL，不要带结尾的 endpoint。Anthropic provider 不要带 `/v1/messages`；OpenAI 兼容 provider 不要带 `/v1/chat/completions`。
   - `apiKey`：作为上游凭据值使用。
@@ -423,8 +423,8 @@ curl http://localhost:4141/v1/models \
 
 | 端点 | 方法 | 说明 |
 | --- | --- | --- |
-| `POST /v1/messages` | `POST` | 为给定对话创建模型响应。 |
-| `POST /v1/messages/count_tokens` | `POST` | 计算一组消息的 token 数。 |
+| `POST /v1/messages` | `POST` | 为给定对话创建模型响应。支持已配置 provider 的 `provider/model` 别名。 |
+| `POST /v1/messages/count_tokens` | `POST` | 计算一组消息的 token 数。支持已配置 provider 的 `provider/model` 别名。 |
 | `POST /:provider/v1/messages` | `POST` | 将 Anthropic Messages 请求代理到已配置的 Anthropic 或 OpenAI 兼容 provider。 |
 | `GET /:provider/v1/models` | `GET` | 将模型列表请求代理到已配置的 provider。 |
 | `POST /:provider/v1/messages/count_tokens` | `POST` | 为 provider 路由请求在本地计算 token 数。 |
