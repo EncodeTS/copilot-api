@@ -2,11 +2,14 @@
   "$schema": "https://json.schemastore.org/package.json",
   "name": "@jeffreycao/copilot-api",
   "version": "1.9.11",
-  "description": "Turn GitHub Copilot into OpenAI/Anthropic API compatible server. Usable with Claude Code Or Codex Or Opencode!",
+  "description": "OpenAI and Anthropic-compatible gateway for GitHub Copilot or third-party providers.",
   "keywords": [
-    "proxy",
+    "dashboard",
+    "multi-provider",
     "github-copilot",
-    "openai-compatible"
+    "ai-gateway",
+    "openai-compatible",
+    "anthropic-compatible"
   ],
   "homepage": "https://github.com/caozhiyuan/copilot-api",
   "bugs": "https://github.com/caozhiyuan/copilot-api/issues",
