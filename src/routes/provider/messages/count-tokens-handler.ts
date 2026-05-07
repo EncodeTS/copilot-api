@@ -1,4 +1,4 @@
-import type { Context } from "hono"
+import type { Context, Env } from "hono"
 
 import { getProviderConfig } from "~/lib/config"
 import { createHandlerLogger } from "~/lib/logger"
@@ -9,7 +9,9 @@ import { translateToOpenAI } from "~/routes/messages/non-stream-translation"
 
 const logger = createHandlerLogger("provider-count-tokens-handler")
 
-export async function handleProviderCountTokens(c: Context): Promise<Response> {
+export async function handleProviderCountTokens(
+  c: Context<Env, "/:provider">,
+): Promise<Response> {
   const provider = c.req.param("provider")
   const payload = await c.req.json<AnthropicMessagesPayload>()
   return await handleProviderCountTokensForProvider(c, { payload, provider })
