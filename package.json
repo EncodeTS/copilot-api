@@ -46,6 +46,9 @@
   "lint-staged": {
     "*": "bun run lint --fix"
   },
+  "overrides": {
+    "rolldown": "1.0.0-rc.18"
+  },
   "dependencies": {
     "citty": "^0.1.6",
     "clipboardy": "^5.0.0",
