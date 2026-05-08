@@ -99,6 +99,8 @@ function handleFinish(
       }
     }
 
+    flushDeferredContent(state, events)
+
     state.pendingMessageDelta = {
       type: "message_delta",
       delta: {
@@ -235,14 +237,9 @@ function handleContent(
   if (delta.content && delta.content.length > 0) {
     closeThinkingBlockIfOpen(state, events)
 
-    if (isToolBlockOpen(state)) {
-      // A tool block was open, so close it before starting a text block.
-      events.push({
-        type: "content_block_stop",
-        index: state.contentBlockIndex,
-      })
-      state.contentBlockIndex++
-      state.contentBlockOpen = false
+    if (isToolBlockOpen(state) || hasToolCallDelta(delta)) {
+      state.deferredContent = `${state.deferredContent ?? ""}${delta.content}`
+      return
     }
 
     if (!state.contentBlockOpen) {
@@ -291,6 +288,49 @@ function handleContent(
     state.contentBlockIndex++
     state.thinkingBlockOpen = false
   }
+}
+
+function hasToolCallDelta(delta: Delta): boolean {
+  return Boolean(delta.tool_calls && delta.tool_calls.length > 0)
+}
+
+function flushDeferredContent(
+  state: AnthropicStreamState,
+  events: Array<AnthropicStreamEventData>,
+): void {
+  if (!state.deferredContent) {
+    return
+  }
+
+  if (!state.contentBlockOpen) {
+    events.push({
+      type: "content_block_start",
+      index: state.contentBlockIndex,
+      content_block: {
+        type: "text",
+        text: "",
+      },
+    })
+    state.contentBlockOpen = true
+  }
+
+  events.push(
+    {
+      type: "content_block_delta",
+      index: state.contentBlockIndex,
+      delta: {
+        type: "text_delta",
+        text: state.deferredContent,
+      },
+    },
+    {
+      type: "content_block_stop",
+      index: state.contentBlockIndex,
+    },
+  )
+  state.deferredContent = undefined
+  state.contentBlockOpen = false
+  state.contentBlockIndex++
 }
 
 function handleMessageStart(

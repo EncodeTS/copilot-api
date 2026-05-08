@@ -407,6 +407,147 @@ describe("OpenAI to Anthropic Streaming Response Translation", () => {
   })
 })
 
+describe("OpenAI stream interleaved tool/content translation", () => {
+  test("should defer content while a tool call is still streaming", () => {
+    const openAIStream: Array<ChatCompletionChunk> = [
+      {
+        id: "cmpl-tool-content",
+        object: "chat.completion.chunk",
+        created: 1677652288,
+        model: "gpt-4o-2024-05-13",
+        choices: [
+          {
+            index: 0,
+            delta: { role: "assistant" },
+            finish_reason: null,
+            logprobs: null,
+          },
+        ],
+      },
+      {
+        id: "cmpl-tool-content",
+        object: "chat.completion.chunk",
+        created: 1677652288,
+        model: "gpt-4o-2024-05-13",
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_weather",
+                  type: "function",
+                  function: { name: "get_weather", arguments: "" },
+                },
+              ],
+            },
+            finish_reason: null,
+            logprobs: null,
+          },
+        ],
+      },
+      {
+        id: "cmpl-tool-content",
+        object: "chat.completion.chunk",
+        created: 1677652288,
+        model: "gpt-4o-2024-05-13",
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [{ index: 0, function: { arguments: '{"loc' } }],
+            },
+            finish_reason: null,
+            logprobs: null,
+          },
+        ],
+      },
+      {
+        id: "cmpl-tool-content",
+        object: "chat.completion.chunk",
+        created: 1677652288,
+        model: "gpt-4o-2024-05-13",
+        choices: [
+          {
+            index: 0,
+            delta: { content: "I will check that." },
+            finish_reason: null,
+            logprobs: null,
+          },
+        ],
+      },
+      {
+        id: "cmpl-tool-content",
+        object: "chat.completion.chunk",
+        created: 1677652288,
+        model: "gpt-4o-2024-05-13",
+        choices: [
+          {
+            index: 0,
+            delta: {
+              tool_calls: [
+                { index: 0, function: { arguments: 'ation": "Paris"}' } },
+              ],
+            },
+            finish_reason: null,
+            logprobs: null,
+          },
+        ],
+      },
+      {
+        id: "cmpl-tool-content",
+        object: "chat.completion.chunk",
+        created: 1677652288,
+        model: "gpt-4o-2024-05-13",
+        choices: [
+          { index: 0, delta: {}, finish_reason: "tool_calls", logprobs: null },
+        ],
+      },
+    ]
+
+    const streamState: AnthropicStreamState = {
+      messageStartSent: false,
+      contentBlockIndex: 0,
+      contentBlockOpen: false,
+      toolCalls: {},
+      thinkingBlockOpen: false,
+    }
+    const translatedStream = openAIStream.flatMap((chunk) =>
+      translateChunkToAnthropicEvents(chunk, streamState),
+    )
+
+    const lateToolDeltaIndex = translatedStream.findIndex(
+      (event) =>
+        event.type === "content_block_delta"
+        && event.index === 0
+        && event.delta.type === "input_json_delta"
+        && event.delta.partial_json === 'ation": "Paris"}',
+    )
+    const toolStopIndex = translatedStream.findIndex(
+      (event) => event.type === "content_block_stop" && event.index === 0,
+    )
+    const deferredTextStartIndex = translatedStream.findIndex(
+      (event) =>
+        event.type === "content_block_start"
+        && event.index === 1
+        && event.content_block.type === "text",
+    )
+
+    expect(lateToolDeltaIndex).toBeGreaterThan(-1)
+    expect(toolStopIndex).toBeGreaterThan(lateToolDeltaIndex)
+    expect(deferredTextStartIndex).toBeGreaterThan(toolStopIndex)
+    expect(translatedStream).toContainEqual({
+      type: "content_block_delta",
+      index: 1,
+      delta: {
+        type: "text_delta",
+        text: "I will check that.",
+      },
+    })
+  })
+})
+
 describe("OpenAI usage-only stream translation", () => {
   test("should emit final Anthropic usage from an OpenAI usage-only chunk", () => {
     const openAIStream: Array<ChatCompletionChunk> = [
