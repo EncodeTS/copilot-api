@@ -7,7 +7,7 @@
 - **Dev:**  
   `bun run dev`
 - **Lint:**  
-  `bun run lint` (uses @echristian/eslint-config)
+  `bun run lint` (uses the local flat config in `eslint.config.js`)
 - **Lint & Fix staged files:**  
   `bunx lint-staged`
 - **Test all:**  
@@ -38,7 +38,7 @@
 - **Testing:**  
    Use Bun's built-in test runner. Place tests in `tests/`, name as `*.test.ts`.
 - **Linting:**  
-  Uses `@echristian/eslint-config` (see npm for details). Includes stylistic, unused imports, regex, and package.json rules.
+  Uses the local flat config in `eslint.config.js`. Includes JavaScript recommended rules, TypeScript recommended type-checked rules, unused import cleanup, and Prettier.
 - **Paths:**  
   Use path aliases (`~/*`) for imports from `src/`.
 
