@@ -176,6 +176,15 @@ https://github.com/caozhiyuan/copilot-api/releases
 
 Download the installer for your platform, sign in inside the app, choose a port, start the server, then point your client at the local endpoint shown in the app. Packaged desktop builds use the bundled Electron runtime, so normal desktop usage does not require installing Node.js separately. Token usage history is enabled when that bundled runtime supports SQLite.
 
+### Desktop App Screenshots
+
+Main dashboard, token usage breakdown in the bundled Electron app:
+
+<p align="center">
+  <img src="./docs/screenshots/desktop-dashboard.png" alt="Copilot API desktop app dashboard" width="49%" />
+  <img src="./docs/screenshots/desktop-token-usage.png" alt="Copilot API desktop app token usage view" width="49%" />
+</p>
+
 ## Using with Docker
 
 Build image
@@ -500,6 +509,65 @@ npx @jeffreycao/copilot-api@latest --api-home=/custom/path --oauth-app=opencode 
 bunx --bun @jeffreycao/copilot-api@latest start
 ```
 
+## Using with Claude Code
+
+This proxy can be used to power [Claude Code](https://docs.anthropic.com/en/claude-code), an experimental conversational AI assistant for developers from Anthropic.
+
+There are two ways to configure Claude Code to use this proxy:
+
+### Interactive Setup with `--claude-code` flag
+
+To get started, run the `start` command with the `--claude-code` flag:
+
+```sh
+npx @jeffreycao/copilot-api@latest start --claude-code
+```
+
+You will be prompted to select a primary model and a "small, fast" model for background tasks. After selecting the models, a command will be copied to your clipboard. This command sets the necessary environment variables for Claude Code to use the proxy.
+
+Paste and run this command in a new terminal to launch Claude Code.
+
+### Manual Configuration with `settings.json`
+
+Alternatively, you can configure Claude Code by creating a `.claude/settings.json` file in your project's root directory. This file should contain the environment variables needed by Claude Code. This way you don't need to run the interactive setup every time.
+
+Here is an example `.claude/settings.json` file:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:4141",
+    "ANTHROPIC_AUTH_TOKEN": "dummy",
+    "ANTHROPIC_MODEL": "gpt-5.4",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.4",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5-mini",
+    "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+    "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false",
+    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "true",
+    "CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0",
+    "CLAUDE_PLUGIN_ENABLE_QUESTION_RULES": "true"
+  },
+  "permissions": {
+    "deny": [
+      "WebSearch", 
+      "mcp__ide__executeCode"
+    ]
+  }
+}
+```
+
+- Replace `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL` according to your needs. After configuration, please install the claude code plugin [Plugin Integrations](#plugin-integrations). If configuring the claude model, it is recommended to set all model configurations the same, so as to remain consistent with github-copilot claude agent behavior. 
+- Setting CLAUDE_CODE_ATTRIBUTION_HEADER to 0 can prevent Claude code from adding billing and version information in system prompts, thereby avoiding prompt cache invalidation.
+- Turning off CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION and CLAUDE_CODE_ENABLE_AWAY_SUMMARY can prevent quota from being consumed unnecessarily.
+- Permissions deny WebSearch because the GitHub Copilot API does not support natie websearch (some gpt models support websearch, but the current project has not adapted websearch); it is recommended to install the mcp mcp_server_fetch tool or other search tools as alternatives..
+- If using a non-Claude model, do not enable ENABLE_TOOL_SEARCH. If using the Claude model, can enable ENABLE_TOOL_SEARCH. The current Claude Code uses the client tool search mode. In this mode, loading defer tools requires an additional request each time.
+
+You can find more options here: [Claude Code settings](https://docs.anthropic.com/en/docs/claude-code/settings#environment-variables)
+
+You can also read more about IDE integration here: [Add Claude Code to your IDE](https://docs.anthropic.com/en/docs/claude-code/ide-integrations)
+
 ## Using with OpenCode
 
 OpenCode already has a direct GitHub Copilot provider. Use this section when you want OpenCode to point at this proxy through `@ai-sdk/anthropic` and reuse the agent behaviors described earlier in this README.
@@ -590,88 +658,6 @@ Why these fields matter:
 - `model`, `small_model`, and `agent.*.model` let you keep `gpt-5.4` for build/plan work while routing exploration and background work to `gpt-5-mini`.
 - If you enable `auth.apiKeys` in this proxy, replace `dummy` with a real key. Otherwise any placeholder value is fine.
 
-## Using the Usage Viewer
-
-After starting the server, a URL to the Copilot Usage Dashboard will be displayed in your console. This dashboard is a web interface for monitoring your API usage.
-
-1.  Start the server. For example, using npx:
-    ```sh
-    npx @jeffreycao/copilot-api@latest start
-    ```
-2.  The server will output a URL to the usage viewer. Copy and paste this URL into your browser. It will look something like this:
-    `http://localhost:4141/usage-viewer?endpoint=http://localhost:4141/usage`
-    - If you use the `start.bat` script on Windows, this page will open automatically.
-
-The dashboard provides a user-friendly interface to view your Copilot usage data:
-
-> Token usage history requires Bun or Node.js >= 22.13.0. On Node.js < 22.13.0, the server runs normally but token usage storage is disabled.
-
-- **API Endpoint URL**: The dashboard is pre-configured to fetch data from your local server endpoint via the URL query parameter. You can change this URL to point to any other compatible API endpoint.
-- **Fetch Data**: Click the "Fetch" button to load or refresh the usage data. The dashboard will automatically fetch data on load.
-- **Usage Quotas**: View a summary of your usage quotas for different services like Chat and Completions, displayed with progress bars for a quick overview.
-- **Detailed Information**: See the full JSON response from the API for a detailed breakdown of all available usage statistics.
-- **URL-based Configuration**: You can also specify the API endpoint directly in the URL using a query parameter. This is useful for bookmarks or sharing links. For example:
-  `http://localhost:4141/usage-viewer?endpoint=http://your-api-server/usage`
-
-## Using with Claude Code
-
-This proxy can be used to power [Claude Code](https://docs.anthropic.com/en/claude-code), an experimental conversational AI assistant for developers from Anthropic.
-
-There are two ways to configure Claude Code to use this proxy:
-
-### Interactive Setup with `--claude-code` flag
-
-To get started, run the `start` command with the `--claude-code` flag:
-
-```sh
-npx @jeffreycao/copilot-api@latest start --claude-code
-```
-
-You will be prompted to select a primary model and a "small, fast" model for background tasks. After selecting the models, a command will be copied to your clipboard. This command sets the necessary environment variables for Claude Code to use the proxy.
-
-Paste and run this command in a new terminal to launch Claude Code.
-
-### Manual Configuration with `settings.json`
-
-Alternatively, you can configure Claude Code by creating a `.claude/settings.json` file in your project's root directory. This file should contain the environment variables needed by Claude Code. This way you don't need to run the interactive setup every time.
-
-Here is an example `.claude/settings.json` file:
-
-```json
-{
-  "env": {
-    "ANTHROPIC_BASE_URL": "http://localhost:4141",
-    "ANTHROPIC_AUTH_TOKEN": "dummy",
-    "ANTHROPIC_MODEL": "gpt-5.4",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.4",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5-mini",
-    "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
-    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-    "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false",
-    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "true",
-    "CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0",
-    "CLAUDE_PLUGIN_ENABLE_QUESTION_RULES": "true"
-  },
-  "permissions": {
-    "deny": [
-      "WebSearch", 
-      "mcp__ide__executeCode"
-    ]
-  }
-}
-```
-
-- Replace `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL` according to your needs. After configuration, please install the claude code plugin [Plugin Integrations](#plugin-integrations). If configuring the claude model, it is recommended to set all model configurations the same, so as to remain consistent with github-copilot claude agent behavior. 
-- Setting CLAUDE_CODE_ATTRIBUTION_HEADER to 0 can prevent Claude code from adding billing and version information in system prompts, thereby avoiding prompt cache invalidation.
-- Turning off CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION and CLAUDE_CODE_ENABLE_AWAY_SUMMARY can prevent quota from being consumed unnecessarily.
-- Permissions deny WebSearch because the GitHub Copilot API does not support natie websearch (some gpt models support websearch, but the current project has not adapted websearch); it is recommended to install the mcp mcp_server_fetch tool or other search tools as alternatives..
-- If using a non-Claude model, do not enable ENABLE_TOOL_SEARCH. If using the Claude model, can enable ENABLE_TOOL_SEARCH. The current Claude Code uses the client tool search mode. In this mode, loading defer tools requires an additional request each time.
-
-You can find more options here: [Claude Code settings](https://docs.anthropic.com/en/docs/claude-code/settings#environment-variables)
-
-You can also read more about IDE integration here: [Add Claude Code to your IDE](https://docs.anthropic.com/en/docs/claude-code/ide-integrations)
-
 ## Plugin Integrations
 
 Plugin integrations are available for Claude Code and opencode.
@@ -725,6 +711,35 @@ Or manually create the file at `~/.config/opencode/plugins/subagent-marker.js` w
 - Enables this proxy to infer `x-initiator: agent` for subagent-originated requests
 
 The plugin hooks into `session.created`, `session.deleted`, `chat.message`, and `chat.headers` events to provide seamless subagent marker functionality.
+
+## Using the Usage Viewer
+
+After starting the server, a URL to the Copilot Usage Dashboard will be displayed in your console. This dashboard is a web interface for monitoring your API usage.
+
+1.  Start the server. For example, using npx:
+    ```sh
+    npx @jeffreycao/copilot-api@latest start
+    ```
+2.  The server will output a URL to the usage viewer. Copy and paste this URL into your browser. It will look something like this:
+    `http://localhost:4141/usage-viewer?endpoint=http://localhost:4141/usage`
+    - If you use the `start.bat` script on Windows, this page will open automatically.
+
+The dashboard provides a user-friendly interface to view your Copilot usage data:
+
+> Token usage history requires Bun or Node.js >= 22.13.0. On Node.js < 22.13.0, the server runs normally but token usage storage is disabled.
+
+- **API Endpoint URL**: The dashboard is pre-configured to fetch data from your local server endpoint via the URL query parameter. You can change this URL to point to any other compatible API endpoint.
+- **Fetch Data**: Click the "Fetch" button to load or refresh the usage data. The dashboard will automatically fetch data on load.
+- **Usage Quotas**: View a summary of your usage quotas for different services like Chat and Completions, displayed with progress bars for a quick overview.
+- **Detailed Information**: See the full JSON response from the API for a detailed breakdown of all available usage statistics.
+- **URL-based Configuration**: You can also specify the API endpoint directly in the URL using a query parameter. This is useful for bookmarks or sharing links. For example:
+  `http://localhost:4141/usage-viewer?endpoint=http://your-api-server/usage`
+
+### Usage Viewer Screenshot
+
+<p align="center">
+  <img src="./docs/screenshots/usage-viewer.png" alt="Copilot API usage viewer" width="900" />
+</p>
 
 ## Running from Source
 
