@@ -178,6 +178,15 @@ https://github.com/caozhiyuan/copilot-api/releases
 
 下载对应平台的安装包后，在应用内登录、选择端口并启动服务，再把你的客户端指向应用里显示的本地端点即可。发布版桌面应用使用随包内置的 Electron 运行时，正常使用不需要额外安装 Node.js；token usage 历史记录会在该内置运行时支持 SQLite 时启用。
 
+### 桌面应用截图
+
+下面展示了桌面应用中的首页、Token 用量统计页面：
+
+<p align="center">
+  <img src="./docs/screenshots/desktop-dashboard.png" alt="Copilot API 桌面应用首页" width="49%" />
+  <img src="./docs/screenshots/desktop-token-usage.png" alt="Copilot API 桌面应用 Token 用量页" width="49%" />
+</p>
+
 ## 配合 Docker 使用
 
 构建镜像：
@@ -504,6 +513,67 @@ npx @jeffreycao/copilot-api@latest --api-home=/custom/path --oauth-app=opencode 
 bunx --bun @jeffreycao/copilot-api@latest start
 ```
 
+## 与 Claude Code 一起使用
+
+这个代理可以为 [Claude Code](https://docs.anthropic.com/en/claude-code) 提供后端能力。Claude Code 是 Anthropic 提供的实验性面向开发者的对话式 AI 助手。
+
+有两种方式可以把 Claude Code 配置为使用这个代理：
+
+### 通过 `--claude-code` 标志进行交互式配置
+
+执行带 `--claude-code` 的 `start` 命令开始：
+
+```sh
+npx @jeffreycao/copilot-api@latest start --claude-code
+```
+
+你会被提示选择一个主模型，以及一个用于后台任务的 “small, fast” 模型。选择完成后，会有一条命令被复制到剪贴板中。该命令会设置 Claude Code 使用该代理所需的环境变量。
+
+在新的终端中粘贴并执行这条命令，即可启动 Claude Code。
+
+<a id="manual-configuration-with-settingsjson"></a>
+
+### 通过 `settings.json` 手动配置
+
+另一种方式是在项目根目录中创建 `.claude/settings.json` 文件，并写入 Claude Code 所需的环境变量。这样你就不需要每次都运行交互式配置了。
+
+下面是一个 `.claude/settings.json` 示例：
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:4141",
+    "ANTHROPIC_AUTH_TOKEN": "dummy",
+    "ANTHROPIC_MODEL": "gpt-5.4",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.4",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5-mini",
+    "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+    "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false",
+    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "true",
+    "CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0",
+    "CLAUDE_PLUGIN_ENABLE_QUESTION_RULES": "true"
+  },
+  "permissions": {
+    "deny": [
+      "WebSearch", 
+      "mcp__ide__executeCode"
+    ]
+  }
+}
+```
+
+- 请根据需要替换 `ANTHROPIC_MODEL`、`ANTHROPIC_DEFAULT_OPUS_MODEL`、`ANTHROPIC_DEFAULT_SONNET_MODEL` 和 `ANTHROPIC_DEFAULT_HAIKU_MODEL`。配置完成后，请安装 claude code 插件，见 [插件集成](#plugin-integrations)。如果你配置的是 Claude 模型，建议把这些模型配置都设为相同，以保持与 github-copilot claude agent 行为一致。
+- 将 `CLAUDE_CODE_ATTRIBUTION_HEADER` 设为 `0` 可以阻止 Claude Code 在 system prompt 中附加计费和版本信息，从而避免 prompt cache 失效。
+- 关闭 `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION` 和 `CLAUDE_CODE_ENABLE_AWAY_SUMMARY` 可以避免不必要地消耗额度。
+- `permissions` 中禁止 `WebSearch`，因为 GitHub Copilot API 不支持原生 web search（部分 gpt 模型支持 websearch，但本项目目前尚未适配）；建议安装 mcp 的 `mcp_server_fetch` 工具或其他搜索工具作为替代。
+- 如果使用的不是 Claude 模型，请不要启用 `ENABLE_TOOL_SEARCH`。如果使用的是 Claude 模型，则可以启用 `ENABLE_TOOL_SEARCH`。当前 Claude Code 使用的是客户端 tool search 模式，在该模式下每次加载 defer tools 都需要额外请求一次。
+
+更多选项见：[Claude Code settings](https://docs.anthropic.com/en/docs/claude-code/settings#environment-variables)
+
+也可以参考 IDE 集成说明：[Add Claude Code to your IDE](https://docs.anthropic.com/en/docs/claude-code/ide-integrations)
+
 ## 与 OpenCode 一起使用
 
 OpenCode 已经有直接的 GitHub Copilot provider。本节适用于你希望让 OpenCode 通过 `@ai-sdk/anthropic` 指向这个代理，并复用本 README 前面提到的 agent 行为时。
@@ -594,90 +664,6 @@ npx @jeffreycao/copilot-api@latest --oauth-app=opencode start
 - `model`、`small_model` 与 `agent.*.model` 让你可以把 `gpt-5.4` 用于 build/plan，同时把探索和后台工作路由到 `gpt-5-mini`。
 - 如果你在此代理中启用了 `auth.apiKeys`，请把 `dummy` 替换为真实 key；否则任意占位值都可以。
 
-## 使用量查看器
-
-服务启动后，控制台会输出一个 Copilot 使用量看板 URL。这个看板是一个用于监控 API 用量的 Web 界面。
-
-1. 启动服务。例如使用 npx：
-   ```sh
-   npx @jeffreycao/copilot-api@latest start
-   ```
-2. 服务会输出一个 usage viewer 的 URL。将它复制到浏览器中打开，形式大致如下：
-   `http://localhost:4141/usage-viewer?endpoint=http://localhost:4141/usage`
-   - 如果你在 Windows 上使用 `start.bat` 脚本，这个页面会自动打开。
-
-看板提供了更易读的 Copilot 用量视图：
-
-> token usage 历史记录需要 Bun 或 Node.js >= 22.13.0。Node.js < 22.13.0 时服务会正常运行，但 token usage 存储会被禁用。
-
-- **API Endpoint URL**：看板会通过 URL 查询参数，默认从本地服务端点拉取数据。你也可以把这个 URL 改成任意其他兼容 API 端点。
-- **Fetch Data**：点击 “Fetch” 按钮即可加载或刷新使用数据。页面首次加载时也会自动拉取。
-- **Usage Quotas**：使用进度条汇总展示 Chat、Completions 等不同服务的额度使用情况。
-- **Detailed Information**：可查看 API 返回的完整 JSON，以便深入分析所有可用统计信息。
-- **URL-based Configuration**：你也可以直接通过 URL 查询参数指定 API 端点，便于收藏或分享。例如：
-  `http://localhost:4141/usage-viewer?endpoint=http://your-api-server/usage`
-
-## 与 Claude Code 一起使用
-
-这个代理可以为 [Claude Code](https://docs.anthropic.com/en/claude-code) 提供后端能力。Claude Code 是 Anthropic 提供的实验性面向开发者的对话式 AI 助手。
-
-有两种方式可以把 Claude Code 配置为使用这个代理：
-
-### 通过 `--claude-code` 标志进行交互式配置
-
-执行带 `--claude-code` 的 `start` 命令开始：
-
-```sh
-npx @jeffreycao/copilot-api@latest start --claude-code
-```
-
-你会被提示选择一个主模型，以及一个用于后台任务的 “small, fast” 模型。选择完成后，会有一条命令被复制到剪贴板中。该命令会设置 Claude Code 使用该代理所需的环境变量。
-
-在新的终端中粘贴并执行这条命令，即可启动 Claude Code。
-
-<a id="manual-configuration-with-settingsjson"></a>
-
-### 通过 `settings.json` 手动配置
-
-另一种方式是在项目根目录中创建 `.claude/settings.json` 文件，并写入 Claude Code 所需的环境变量。这样你就不需要每次都运行交互式配置了。
-
-下面是一个 `.claude/settings.json` 示例：
-
-```json
-{
-  "env": {
-    "ANTHROPIC_BASE_URL": "http://localhost:4141",
-    "ANTHROPIC_AUTH_TOKEN": "dummy",
-    "ANTHROPIC_MODEL": "gpt-5.4",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.4",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5-mini",
-    "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
-    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-    "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false",
-    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "true",
-    "CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0",
-    "CLAUDE_PLUGIN_ENABLE_QUESTION_RULES": "true"
-  },
-  "permissions": {
-    "deny": [
-      "WebSearch", 
-      "mcp__ide__executeCode"
-    ]
-  }
-}
-```
-
-- 请根据需要替换 `ANTHROPIC_MODEL`、`ANTHROPIC_DEFAULT_OPUS_MODEL`、`ANTHROPIC_DEFAULT_SONNET_MODEL` 和 `ANTHROPIC_DEFAULT_HAIKU_MODEL`。配置完成后，请安装 claude code 插件，见 [插件集成](#plugin-integrations)。如果你配置的是 Claude 模型，建议把这些模型配置都设为相同，以保持与 github-copilot claude agent 行为一致。
-- 将 `CLAUDE_CODE_ATTRIBUTION_HEADER` 设为 `0` 可以阻止 Claude Code 在 system prompt 中附加计费和版本信息，从而避免 prompt cache 失效。
-- 关闭 `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION` 和 `CLAUDE_CODE_ENABLE_AWAY_SUMMARY` 可以避免不必要地消耗额度。
-- `permissions` 中禁止 `WebSearch`，因为 GitHub Copilot API 不支持原生 web search（部分 gpt 模型支持 websearch，但本项目目前尚未适配）；建议安装 mcp 的 `mcp_server_fetch` 工具或其他搜索工具作为替代。
-- 如果使用的不是 Claude 模型，请不要启用 `ENABLE_TOOL_SEARCH`。如果使用的是 Claude 模型，则可以启用 `ENABLE_TOOL_SEARCH`。当前 Claude Code 使用的是客户端 tool search 模式，在该模式下每次加载 defer tools 都需要额外请求一次。
-
-更多选项见：[Claude Code settings](https://docs.anthropic.com/en/docs/claude-code/settings#environment-variables)
-
-也可以参考 IDE 集成说明：[Add Claude Code to your IDE](https://docs.anthropic.com/en/docs/claude-code/ide-integrations)
-
 <a id="plugin-integrations"></a>
 
 ## 插件集成
@@ -733,6 +719,35 @@ cp .opencode/plugins/subagent-marker.js ~/.config/opencode/plugins/
 - 让该代理能够把来自 subagent 的请求识别为 `x-initiator: agent`
 
 该插件会挂接到 `session.created`、`session.deleted`、`chat.message` 和 `chat.headers` 事件上，以无缝提供 subagent marker 能力。
+
+## 使用量查看器
+
+服务启动后，控制台会输出一个 Copilot 使用量看板 URL。这个看板是一个用于监控 API 用量的 Web 界面。
+
+1. 启动服务。例如使用 npx：
+   ```sh
+   npx @jeffreycao/copilot-api@latest start
+   ```
+2. 服务会输出一个 usage viewer 的 URL。将它复制到浏览器中打开，形式大致如下：
+   `http://localhost:4141/usage-viewer?endpoint=http://localhost:4141/usage`
+   - 如果你在 Windows 上使用 `start.bat` 脚本，这个页面会自动打开。
+
+看板提供了更易读的 Copilot 用量视图：
+
+> token usage 历史记录需要 Bun 或 Node.js >= 22.13.0。Node.js < 22.13.0 时服务会正常运行，但 token usage 存储会被禁用。
+
+- **API Endpoint URL**：看板会通过 URL 查询参数，默认从本地服务端点拉取数据。你也可以把这个 URL 改成任意其他兼容 API 端点。
+- **Fetch Data**：点击 “Fetch” 按钮即可加载或刷新使用数据。页面首次加载时也会自动拉取。
+- **Usage Quotas**：使用进度条汇总展示 Chat、Completions 等不同服务的额度使用情况。
+- **Detailed Information**：可查看 API 返回的完整 JSON，以便深入分析所有可用统计信息。
+- **URL-based Configuration**：你也可以直接通过 URL 查询参数指定 API 端点，便于收藏或分享。例如：
+  `http://localhost:4141/usage-viewer?endpoint=http://your-api-server/usage`
+
+### Usage Viewer 截图
+
+<p align="center">
+  <img src="./docs/screenshots/usage-viewer.png" alt="Copilot API Usage Viewer 页面" width="900" />
+</p>
 
 ## 从源码运行
 
