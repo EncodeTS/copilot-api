@@ -3,9 +3,12 @@ import type { Context } from "hono"
 import { streamSSE } from "hono/streaming"
 
 import { awaitApproval } from "~/lib/approval"
-import { getConfig, isResponsesApiWebSearchEnabled } from "~/lib/config"
+import {
+  getConfig as getConfiguredConfig,
+  isResponsesApiWebSearchEnabled as isConfiguredResponsesApiWebSearchEnabled,
+} from "~/lib/config"
 import { createHandlerLogger, debugJson, debugJsonTail } from "~/lib/logger"
-import { checkRateLimit } from "~/lib/rate-limit"
+import { checkRateLimit as checkConfiguredRateLimit } from "~/lib/rate-limit"
 import { state } from "~/lib/state"
 import {
   createCopilotTokenUsageRecorder,
@@ -14,7 +17,7 @@ import {
 } from "~/lib/token-usage"
 import { generateRequestIdFromPayload, getUUID } from "~/lib/utils"
 import {
-  createResponses,
+  createResponses as createCopilotResponses,
   type ResponsesPayload,
   type ResponsesResult,
   type ResponseStreamEvent,
@@ -30,8 +33,15 @@ import {
 
 const logger = createHandlerLogger("responses-handler")
 
+export const responsesHandlerDependencies = {
+  checkRateLimit: checkConfiguredRateLimit,
+  createResponses: createCopilotResponses,
+  getConfig: getConfiguredConfig,
+  isResponsesApiWebSearchEnabled: isConfiguredResponsesApiWebSearchEnabled,
+}
+
 export const handleResponses = async (c: Context) => {
-  await checkRateLimit(state)
+  await responsesHandlerDependencies.checkRateLimit(state)
 
   const payload = await c.req.json<ResponsesPayload>()
   debugJson(logger, "Responses request payload:", payload)
@@ -52,7 +62,7 @@ export const handleResponses = async (c: Context) => {
 
   removeUnsupportedTools(payload)
 
-  if (!isResponsesApiWebSearchEnabled()) {
+  if (!responsesHandlerDependencies.isResponsesApiWebSearchEnabled()) {
     removeWebSearchTool(payload)
   }
 
@@ -89,7 +99,7 @@ export const handleResponses = async (c: Context) => {
     await awaitApproval()
   }
 
-  const response = await createResponses(payload, {
+  const response = await responsesHandlerDependencies.createResponses(payload, {
     vision,
     initiator,
     requestId,
@@ -162,7 +172,7 @@ const parseResponsesStreamEvent = (
 }
 
 const useFunctionApplyPatch = (payload: ResponsesPayload): void => {
-  const config = getConfig()
+  const config = responsesHandlerDependencies.getConfig()
   const useFunctionApplyPatch = config.useFunctionApplyPatch ?? true
   if (useFunctionApplyPatch) {
     logger.debug("Using function tool apply_patch for responses")

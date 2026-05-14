@@ -1,18 +1,12 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Hono } from "hono"
 
-const actualConfigModule = await import("../src/lib/config")
-const actualRateLimitModule = await import("../src/lib/rate-limit")
-const actualResponsesModule = await import(
-  "../src/services/copilot/create-responses"
-)
+import type { createResponses as createCopilotResponses } from "../src/services/copilot/create-responses"
 
 let responsesApiWebSocketEnabled = true
 
 const createResponses = mock((() =>
-  Promise.resolve(
-    streamChunks([]),
-  )) as typeof actualResponsesModule.createResponses)
+  Promise.resolve(streamChunks([]))) as typeof createCopilotResponses)
 
 const createResponsesResult = (model: string) => ({
   created_at: 0,
@@ -34,28 +28,24 @@ const createResponsesResult = (model: string) => ({
   usage: null,
 })
 
-await mock.module("~/lib/config", () => ({
-  ...actualConfigModule,
-  getConfig: () => ({ useFunctionApplyPatch: true }),
-  isResponsesApiWebSocketEnabled: () => responsesApiWebSocketEnabled,
-  isResponsesApiWebSearchEnabled: () => true,
-}))
-await mock.module("~/lib/rate-limit", () => ({
-  ...actualRateLimitModule,
-  checkRateLimit: async () => {},
-}))
-await mock.module("~/services/copilot/create-responses", () => ({
-  ...actualResponsesModule,
-  createResponses,
-}))
-
 const { state } = await import("../src/lib/state")
 const { closeUsageStore } = await import("../src/lib/token-usage")
 const { tokenUsageRoute } = await import("../src/routes/token-usage/route")
+const { responsesHandlerDependencies } = await import(
+  "../src/routes/responses/handler"
+)
 const { responsesRoutes } = await import("../src/routes/responses/route")
+const { responsesUtilsDependencies } = await import(
+  "../src/routes/responses/utils"
+)
 const { generateRequestIdFromPayload, getUUID } = await import(
   "../src/lib/utils"
 )
+
+const defaultResponsesHandlerDependencies = {
+  ...responsesHandlerDependencies,
+}
+const defaultResponsesUtilsDependencies = { ...responsesUtilsDependencies }
 
 const DB_PATH_ENV = "COPILOT_API_SQLITE_DB_PATH"
 
@@ -109,6 +99,14 @@ beforeEach(async () => {
   } as typeof state.models
 
   responsesApiWebSocketEnabled = true
+  responsesHandlerDependencies.checkRateLimit = async () => {}
+  responsesHandlerDependencies.createResponses = createResponses
+  responsesHandlerDependencies.getConfig = () => ({
+    useFunctionApplyPatch: true,
+  })
+  responsesHandlerDependencies.isResponsesApiWebSearchEnabled = () => true
+  responsesUtilsDependencies.isResponsesApiWebSocketEnabled = () =>
+    responsesApiWebSocketEnabled
   createResponses.mockReset()
 })
 
@@ -123,6 +121,11 @@ afterEach(async () => {
   state.rateLimitWait = originalState.rateLimitWait
   state.lastRequestTimestamp = originalState.lastRequestTimestamp
   state.models = originalState.models
+  Object.assign(
+    responsesHandlerDependencies,
+    defaultResponsesHandlerDependencies,
+  )
+  Object.assign(responsesUtilsDependencies, defaultResponsesUtilsDependencies)
 })
 
 describe("responses handler token usage", () => {

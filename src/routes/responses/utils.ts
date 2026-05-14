@@ -6,12 +6,18 @@ import type {
 } from "~/services/copilot/create-responses"
 
 import {
-  isResponsesApiContextManagementModel,
-  isResponsesApiWebSocketEnabled,
+  isResponsesApiContextManagementModel as isConfiguredResponsesApiContextManagementModel,
+  isResponsesApiWebSocketEnabled as isConfiguredResponsesApiWebSocketEnabled,
 } from "~/lib/config"
 
 export const RESPONSES_ENDPOINT = "/responses"
 export const RESPONSES_WS_ENDPOINT = "ws:/responses"
+
+export const responsesUtilsDependencies = {
+  isResponsesApiContextManagementModel:
+    isConfiguredResponsesApiContextManagementModel,
+  isResponsesApiWebSocketEnabled: isConfiguredResponsesApiWebSocketEnabled,
+}
 
 export const getResponsesRequestOptions = (
   payload: ResponsesPayload,
@@ -30,7 +36,8 @@ export const getResponsesTransportForModel = (
     | undefined,
 ): ResponsesTransport | null => {
   const supportedEndpoints = selectedModel?.supported_endpoints ?? []
-  const useWebSocket = isResponsesApiWebSocketEnabled()
+  const useWebSocket =
+    responsesUtilsDependencies.isResponsesApiWebSocketEnabled()
 
   if (useWebSocket && supportedEndpoints.includes(RESPONSES_WS_ENDPOINT)) {
     return "websocket"
@@ -89,7 +96,11 @@ export const applyResponsesApiContextManagement = (
     return
   }
 
-  if (!isResponsesApiContextManagementModel(payload.model)) {
+  if (
+    !responsesUtilsDependencies.isResponsesApiContextManagementModel(
+      payload.model,
+    )
+  ) {
     return
   }
 
