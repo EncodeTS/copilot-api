@@ -17,13 +17,16 @@ class MockWebSocket {
   static instances: Array<MockWebSocket> = []
 
   readonly sent: Array<string> = []
-  readonly init: { headers?: Record<string, string> }
+  readonly init: { dispatcher?: unknown; headers?: Record<string, string> }
   readonly url: string
   readyState = MockWebSocket.CONNECTING
 
   private readonly listeners = new Map<string, Set<Listener>>()
 
-  constructor(url: string, init: { headers?: Record<string, string> }) {
+  constructor(
+    url: string,
+    init: { dispatcher?: unknown; headers?: Record<string, string> },
+  ) {
     this.init = init
     this.url = url
     MockWebSocket.instances.push(this)
@@ -94,11 +97,36 @@ class MockWebSocket {
   }
 }
 
+class MockAgent {
+  close(): Promise<void> {
+    return Promise.resolve()
+  }
+
+  destroy(): void {}
+}
+
+class MockProxyAgent extends MockAgent {
+  readonly proxyUrl: string
+
+  constructor(proxyUrl: string) {
+    super()
+    this.proxyUrl = proxyUrl
+  }
+}
+
+const setGlobalDispatcherMock = mock((_dispatcher: unknown) => {})
+
 await mock.module("undici", () => ({
+  Agent: MockAgent,
+  ProxyAgent: MockProxyAgent,
+  setGlobalDispatcher: setGlobalDispatcherMock,
   WebSocket: MockWebSocket,
 }))
 
 const { state } = await import("../src/lib/state")
+const { getProxyEnvDispatcher, initProxyFromEnv } = await import(
+  "../src/lib/proxy"
+)
 const { createResponses } = await import(
   "../src/services/copilot/create-responses"
 )
@@ -259,6 +287,27 @@ test("Responses websocket pool clears stale idle timer after a queued request st
 
   MockWebSocket.instances[0]?.completeLatestResponse()
   await secondPromise
+})
+
+test("Responses websocket uses the proxy-env dispatcher when initialized", async () => {
+  const originalHttpProxy = process.env.HTTP_PROXY
+  process.env.HTTP_PROXY = "http://127.0.0.1:8080"
+
+  try {
+    initProxyFromEnv()
+    const dispatcher = getProxyEnvDispatcher()
+
+    await collectResponsesStream("proxy-request")
+
+    expect(dispatcher).toBeDefined()
+    expect(MockWebSocket.instances[0]?.init.dispatcher).toBe(dispatcher)
+  } finally {
+    if (originalHttpProxy === undefined) {
+      delete process.env.HTTP_PROXY
+    } else {
+      process.env.HTTP_PROXY = originalHttpProxy
+    }
+  }
 })
 
 const collectResponsesStream = async (requestId: string): Promise<void> => {

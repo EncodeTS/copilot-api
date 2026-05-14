@@ -19,6 +19,7 @@ import {
   type CopilotQuotaSnapshot,
 } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
+import { getProxyEnvDispatcher } from "~/lib/proxy"
 import { state } from "~/lib/state"
 
 export interface ResponsesPayload {
@@ -718,7 +719,9 @@ const openResponsesWebSocket = async ({
   url: string
 }): Promise<InstanceType<typeof WebSocket>> =>
   await new Promise((resolve, reject) => {
-    const websocket = new WebSocket(url, { headers })
+    const dispatcher = getProxyEnvDispatcher()
+    const init = dispatcher ? { dispatcher, headers } : { headers }
+    const websocket = new WebSocket(url, init)
 
     const cleanup = () => {
       websocket.removeEventListener("open", onOpen)
