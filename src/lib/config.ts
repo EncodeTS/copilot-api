@@ -17,6 +17,7 @@ export interface AppConfig {
   >
   useFunctionApplyPatch?: boolean
   useMessagesApi?: boolean
+  useResponsesApiWebSocket?: boolean
   anthropicApiKey?: string
   useResponsesApiWebSearch?: boolean
   claudeTokenMultiplier?: number
@@ -106,6 +107,7 @@ const defaultConfig: AppConfig = {
   },
   useFunctionApplyPatch: true,
   useMessagesApi: true,
+  useResponsesApiWebSocket: true,
   useResponsesApiWebSearch: true,
 }
 
@@ -337,6 +339,11 @@ export function listEnabledProviders(): Array<string> {
 export function isMessagesApiEnabled(): boolean {
   const config = getConfig()
   return config.useMessagesApi ?? true
+}
+
+export function isResponsesApiWebSocketEnabled(): boolean {
+  const config = getConfig()
+  return config.useResponsesApiWebSocket ?? true
 }
 
 export function getAnthropicApiKey(): string | undefined {
