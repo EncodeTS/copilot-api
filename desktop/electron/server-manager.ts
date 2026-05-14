@@ -180,7 +180,7 @@ export async function startServer(
   }
 
   const serverPath = getServerPath()
-  const args = ['start', '--github-token', token, '--port', String(port)]
+  const args = ['start', '--github-token', token, '--port', String(port), '--proxy-env']
   if (serverOptions?.accountType && serverOptions.accountType !== 'individual') {
     args.push('--account-type', serverOptions.accountType)
   }
