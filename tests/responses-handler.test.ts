@@ -7,14 +7,37 @@ const actualResponsesModule = await import(
   "../src/services/copilot/create-responses"
 )
 
+let responsesApiWebSocketEnabled = true
+
 const createResponses = mock((() =>
   Promise.resolve(
     streamChunks([]),
   )) as typeof actualResponsesModule.createResponses)
 
+const createResponsesResult = (model: string) => ({
+  created_at: 0,
+  error: null,
+  id: "resp-test",
+  incomplete_details: null,
+  instructions: null,
+  metadata: null,
+  model,
+  object: "response" as const,
+  output: [],
+  output_text: "",
+  parallel_tool_calls: false,
+  status: "completed",
+  temperature: null,
+  tool_choice: "auto",
+  tools: [],
+  top_p: null,
+  usage: null,
+})
+
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
   getConfig: () => ({ useFunctionApplyPatch: true }),
+  isResponsesApiWebSocketEnabled: () => responsesApiWebSocketEnabled,
   isResponsesApiWebSearchEnabled: () => true,
 }))
 await mock.module("~/lib/rate-limit", () => ({
@@ -85,6 +108,7 @@ beforeEach(async () => {
     ],
   } as typeof state.models
 
+  responsesApiWebSocketEnabled = true
   createResponses.mockReset()
 })
 
@@ -102,6 +126,101 @@ afterEach(async () => {
 })
 
 describe("responses handler token usage", () => {
+  test("uses websocket transport by default for dual-endpoint models", async () => {
+    state.models = {
+      object: "list",
+      data: [
+        {
+          capabilities: {
+            limits: {
+              max_prompt_tokens: 128000,
+            },
+          },
+          id: "gpt-test",
+          supported_endpoints: ["/responses", "ws:/responses"],
+        },
+      ],
+    } as typeof state.models
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        input: "hello",
+        model: "gpt-test",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(1)
+    expect(createResponses.mock.calls[0][1]?.transport).toBe("websocket")
+  })
+
+  test("keeps HTTP transport for dual-endpoint models when websocket is disabled", async () => {
+    state.models = {
+      object: "list",
+      data: [
+        {
+          capabilities: {
+            limits: {
+              max_prompt_tokens: 128000,
+            },
+          },
+          id: "gpt-test",
+          supported_endpoints: ["/responses", "ws:/responses"],
+        },
+      ],
+    } as typeof state.models
+    responsesApiWebSocketEnabled = false
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        input: "hello",
+        model: "gpt-test",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(1)
+    expect(createResponses.mock.calls[0][1]?.transport).toBe("http")
+  })
+
+  test("keeps HTTP transport when the selected model only supports /responses", async () => {
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        input: "hello",
+        model: "gpt-test",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(1)
+    expect(createResponses.mock.calls[0][1]?.transport).toBe("http")
+  })
+
   test("records usage from failed streaming responses and falls back to interaction id", async () => {
     createResponses.mockImplementation(() =>
       Promise.resolve(

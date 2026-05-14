@@ -1,16 +1,31 @@
 import { beforeEach, expect, mock, test } from "bun:test"
 
 import type { AnthropicMessagesPayload } from "../src/routes/messages/anthropic-types"
+import type { Model } from "../src/services/copilot/get-models"
 import type {
   ChatCompletionResponse,
   ChatCompletionsPayload,
 } from "../src/services/copilot/create-chat-completions"
+import type {
+  CreateResponsesReturn,
+  ResponsesPayload,
+  ResponsesResult,
+  ResponsesTransport,
+} from "../src/services/copilot/create-responses"
 
+const actualConfigModule = await import("../src/lib/config")
 const actualChatCompletionsModule = await import(
   "../src/services/copilot/create-chat-completions"
 )
+const actualResponsesModule = await import(
+  "../src/services/copilot/create-responses"
+)
 
 let capturedPayload: ChatCompletionsPayload | null = null
+let capturedResponsesOptions: {
+  transport?: ResponsesTransport
+} | null = null
+let responsesApiWebSocketEnabled = true
 
 const createChatCompletions = mock(
   (payload: ChatCompletionsPayload): Promise<ChatCompletionResponse> => {
@@ -34,14 +49,36 @@ const createChatCompletions = mock(
     })
   },
 )
+const createResponses = mock(
+  (
+    payload: ResponsesPayload,
+    options: {
+      transport?: ResponsesTransport
+    },
+  ): Promise<CreateResponsesReturn> => {
+    capturedResponsesOptions = options
+    return Promise.resolve(createResponsesResult(payload.model))
+  },
+)
 
+await mock.module("~/lib/config", () => ({
+  ...actualConfigModule,
+  isResponsesApiWebSocketEnabled: () => responsesApiWebSocketEnabled,
+}))
 await mock.module("~/services/copilot/create-chat-completions", () => ({
   ...actualChatCompletionsModule,
   createChatCompletions,
 }))
+await mock.module("~/services/copilot/create-responses", () => ({
+  ...actualResponsesModule,
+  createResponses,
+}))
 
-const { handleWithChatCompletions, prepareCopilotChatCompletionsPayload } =
-  await import("../src/routes/messages/api-flows")
+const {
+  handleWithChatCompletions,
+  handleWithResponsesApi,
+  prepareCopilotChatCompletionsPayload,
+} = await import("../src/routes/messages/api-flows")
 
 const logger = {
   debug: () => {},
@@ -56,7 +93,10 @@ const createContext = () =>
 
 beforeEach(() => {
   capturedPayload = null
+  capturedResponsesOptions = null
+  responsesApiWebSocketEnabled = true
   createChatCompletions.mockClear()
+  createResponses.mockClear()
 })
 
 test("messages Chat Completions flow adds Copilot cache control to system and latest two non-system messages", async () => {
@@ -193,4 +233,100 @@ test("Copilot Chat Completions payload preparation marks two system and latest t
       },
     },
   ])
+})
+
+test("messages Responses flow uses websocket transport by default for dual-endpoint models", async () => {
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+  }
+
+  const response = await handleWithResponsesApi(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+    selectedModel: createModel(["/responses", "ws:/responses"]),
+  })
+
+  expect(response.status).toBe(200)
+  expect(createResponses).toHaveBeenCalledTimes(1)
+  expect(capturedResponsesOptions?.transport).toBe("websocket")
+})
+
+test("messages Responses flow keeps HTTP transport for dual-endpoint models when websocket is disabled", async () => {
+  responsesApiWebSocketEnabled = false
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+  }
+
+  const response = await handleWithResponsesApi(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+    selectedModel: createModel(["/responses", "ws:/responses"]),
+  })
+
+  expect(response.status).toBe(200)
+  expect(createResponses).toHaveBeenCalledTimes(1)
+  expect(capturedResponsesOptions?.transport).toBe("http")
+})
+
+test("messages Responses flow keeps HTTP transport for /responses-only models", async () => {
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+  }
+
+  const response = await handleWithResponsesApi(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+    selectedModel: createModel(["/responses"]),
+  })
+
+  expect(response.status).toBe(200)
+  expect(createResponses).toHaveBeenCalledTimes(1)
+  expect(capturedResponsesOptions?.transport).toBe("http")
+})
+
+const createModel = (supportedEndpoints: Array<string>): Model => ({
+  capabilities: {
+    family: "gpt",
+    limits: {
+      max_prompt_tokens: 128000,
+    },
+    object: "model_capabilities",
+    supports: {},
+    tokenizer: "o200k_base",
+    type: "chat",
+  },
+  id: "gpt-test",
+  model_picker_enabled: true,
+  name: "gpt-test",
+  object: "model",
+  preview: false,
+  supported_endpoints: supportedEndpoints,
+  vendor: "openai",
+  version: "1",
+})
+
+const createResponsesResult = (model: string): ResponsesResult => ({
+  created_at: 0,
+  error: null,
+  id: "resp-test",
+  incomplete_details: null,
+  instructions: null,
+  metadata: null,
+  model,
+  object: "response",
+  output: [],
+  output_text: "",
+  parallel_tool_calls: false,
+  status: "completed",
+  temperature: null,
+  tool_choice: "auto",
+  tools: [],
+  top_p: null,
+  usage: null,
 })

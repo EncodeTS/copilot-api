@@ -221,6 +221,28 @@ describe("messages handler orchestration", () => {
     expect(handleWithChatCompletions).not.toHaveBeenCalled()
   })
 
+  test("delegates to the Responses API flow when the model supports ws:/responses", async () => {
+    selectedModel = {
+      id: "responses-ws-model",
+      supported_endpoints: ["ws:/responses"],
+    }
+
+    const app = createApp()
+    const response = await app.request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(createPayload()),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe("responses")
+    expect(handleWithMessagesApi).not.toHaveBeenCalled()
+    expect(handleWithResponsesApi).toHaveBeenCalledTimes(1)
+    expect(handleWithChatCompletions).not.toHaveBeenCalled()
+  })
+
   test("falls back to the Chat Completions flow when no endpoint matches", async () => {
     selectedModel = {
       id: "chat-model",
