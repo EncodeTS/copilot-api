@@ -214,7 +214,7 @@ export function mergeConfigWithDefaults(): AppConfig {
 }
 
 export function getConfig(): AppConfig {
-  cachedConfig ??= readConfigFromDisk()
+  cachedConfig ??= mergeDefaultConfig(readConfigFromDisk()).mergedConfig
   return cachedConfig
 }
 

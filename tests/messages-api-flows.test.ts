@@ -1,4 +1,4 @@
-import { beforeEach, expect, mock, test } from "bun:test"
+import { afterEach, beforeEach, expect, mock, test } from "bun:test"
 
 import type { AnthropicMessagesPayload } from "../src/routes/messages/anthropic-types"
 import type { Model } from "../src/services/copilot/get-models"
@@ -12,14 +12,6 @@ import type {
   ResponsesResult,
   ResponsesTransport,
 } from "../src/services/copilot/create-responses"
-
-const actualConfigModule = await import("../src/lib/config")
-const actualChatCompletionsModule = await import(
-  "../src/services/copilot/create-chat-completions"
-)
-const actualResponsesModule = await import(
-  "../src/services/copilot/create-responses"
-)
 
 let capturedPayload: ChatCompletionsPayload | null = null
 let capturedResponsesOptions: {
@@ -61,24 +53,18 @@ const createResponses = mock(
   },
 )
 
-await mock.module("~/lib/config", () => ({
-  ...actualConfigModule,
-  isResponsesApiWebSocketEnabled: () => responsesApiWebSocketEnabled,
-}))
-await mock.module("~/services/copilot/create-chat-completions", () => ({
-  ...actualChatCompletionsModule,
-  createChatCompletions,
-}))
-await mock.module("~/services/copilot/create-responses", () => ({
-  ...actualResponsesModule,
-  createResponses,
-}))
-
 const {
   handleWithChatCompletions,
   handleWithResponsesApi,
+  messagesApiFlowDependencies,
   prepareCopilotChatCompletionsPayload,
 } = await import("../src/routes/messages/api-flows")
+const { responsesUtilsDependencies } = await import(
+  "../src/routes/responses/utils"
+)
+
+const defaultMessagesApiFlowDependencies = { ...messagesApiFlowDependencies }
+const defaultResponsesUtilsDependencies = { ...responsesUtilsDependencies }
 
 const logger = {
   debug: () => {},
@@ -95,8 +81,17 @@ beforeEach(() => {
   capturedPayload = null
   capturedResponsesOptions = null
   responsesApiWebSocketEnabled = true
+  messagesApiFlowDependencies.createChatCompletions = createChatCompletions
+  messagesApiFlowDependencies.createResponses = createResponses
+  responsesUtilsDependencies.isResponsesApiWebSocketEnabled = () =>
+    responsesApiWebSocketEnabled
   createChatCompletions.mockClear()
   createResponses.mockClear()
+})
+
+afterEach(() => {
+  Object.assign(messagesApiFlowDependencies, defaultMessagesApiFlowDependencies)
+  Object.assign(responsesUtilsDependencies, defaultResponsesUtilsDependencies)
 })
 
 test("messages Chat Completions flow adds Copilot cache control to system and latest two non-system messages", async () => {
