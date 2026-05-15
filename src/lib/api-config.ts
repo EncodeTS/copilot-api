@@ -315,6 +315,8 @@ export const copilotWebSocketHeaders = (
     "copilot-vision-request",
   )
 
+  headers["user-agent"] = "node"
+
   return headers
 }
 
