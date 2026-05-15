@@ -171,21 +171,26 @@ describe("createResponses", () => {
       "Editor-Plugin-Version": "copilot-chat/0.48.0",
       "Editor-Version": "vscode/1.120.0",
       "OpenAI-Intent": "conversation-agent",
-      "VScode-MachineId": "machine-1",
       "VScode-SessionId": "session-1",
+      "VScode-MachineId": "machine-1",
       "X-Agent-Task-Id": "request-1",
       "X-GitHub-Api-Version": "2026-01-09",
       "X-Interaction-Id": "interaction-1",
       "X-Interaction-Type": "conversation-agent",
       "X-Request-Id": "request-1",
-      accept: "*/*",
-      "accept-encoding": "br, gzip, deflate",
-      "accept-language": "*",
-      "cache-control": "no-cache",
-      pragma: "no-cache",
-      "sec-fetch-mode": "websocket",
-      "user-agent": "node",
     })
+    const headerNames = Object.keys(headers)
+    const agentTaskIdIndex = headerNames.indexOf("X-Agent-Task-Id")
+    expect(
+      headerNames.slice(agentTaskIdIndex + 1, agentTaskIdIndex + 3),
+    ).toEqual(["VScode-SessionId", "VScode-MachineId"])
+    expect(headers.accept).toBeUndefined()
+    expect(headers["accept-encoding"]).toBeUndefined()
+    expect(headers["accept-language"]).toBeUndefined()
+    expect(headers["cache-control"]).toBeUndefined()
+    expect(headers.pragma).toBeUndefined()
+    expect(headers["sec-fetch-mode"]).toBeUndefined()
+    expect(headers["user-agent"]).toBeUndefined()
     expect(headers["x-initiator"]).toBeUndefined()
     expect(headers["sec-websocket-key"]).toBeUndefined()
   })

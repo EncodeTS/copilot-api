@@ -282,20 +282,6 @@ export const copilotWebSocketHeaders = (
     "X-Interaction-Id": source("x-interaction-id", requestId),
     "X-Interaction-Type": source("x-interaction-type", "conversation-agent"),
     "X-Agent-Task-Id": source("x-agent-task-id", requestId),
-    "Editor-Device-Id": source("editor-device-id"),
-    "Editor-Plugin-Version": source(
-      "editor-plugin-version",
-      EDITOR_WEBSOCKET_PLUGIN_VERSION,
-    ),
-    "Editor-Version": source("editor-version"),
-    "Copilot-Integration-Id": source("copilot-integration-id", "vscode-chat"),
-    accept: "*/*",
-    "accept-language": "*",
-    "sec-fetch-mode": "websocket",
-    "user-agent": "node",
-    pragma: "no-cache",
-    "cache-control": "no-cache",
-    "accept-encoding": "br, gzip, deflate",
   }
 
   setPreparedHeader(
@@ -311,6 +297,16 @@ export const copilotWebSocketHeaders = (
     preparedHeaders,
     "vscode-machineid",
   )
+
+  Object.assign(headers, {
+    "Editor-Device-Id": source("editor-device-id"),
+    "Editor-Plugin-Version": source(
+      "editor-plugin-version",
+      EDITOR_WEBSOCKET_PLUGIN_VERSION,
+    ),
+    "Editor-Version": source("editor-version"),
+    "Copilot-Integration-Id": source("copilot-integration-id", "vscode-chat"),
+  })
 
   setPreparedHeader(
     headers,
