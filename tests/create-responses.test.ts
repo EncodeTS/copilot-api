@@ -221,9 +221,11 @@ describe("createResponses", () => {
       model: "gpt-test",
       type: "response.create",
     })
-    expect(request.headers["OpenAI-Intent"]).toBe("conversation-other")
+    expect(request.headers["OpenAI-Intent"]).toBe("conversation-agent")
     expect(request.headers["X-Interaction-Id"]).toBe("interaction-1")
-    expect(request.headers["X-Interaction-Type"]).toBe("conversation-other")
+    expect(request.headers["X-Interaction-Type"]).toBe(
+      "conversation-compaction",
+    )
     expect(request.headers["x-initiator"]).toBeUndefined()
   })
 
