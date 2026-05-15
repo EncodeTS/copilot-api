@@ -1,4 +1,11 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  setSystemTime,
+  test,
+} from "bun:test"
 import { Hono } from "hono"
 
 import { requestContext } from "~/lib/request-context"
@@ -8,6 +15,7 @@ import {
   createCopilotTokenUsageRecorder,
   normalizeOpenAIUsage,
   recordTokenUsageEvent,
+  type TokenUsageDailySummary,
   type TokenUsageEventsPage,
   type TokenUsageSummary,
 } from "~/lib/token-usage"
@@ -24,6 +32,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await closeUsageStore()
+  setSystemTime()
   state.userName = undefined
   Reflect.deleteProperty(process.env, DB_PATH_ENV)
 })
@@ -41,6 +50,17 @@ async function fetchEventsPage(pageSize = 20): Promise<TokenUsageEventsPage> {
   )
   expect(response.status).toBe(200)
   return (await response.json()) as TokenUsageEventsPage
+}
+
+function localDate(year: number, month: number, day: number, hour = 12): Date {
+  return new Date(year, month, day, hour, 0, 0, 0)
+}
+
+function localDateLabel(date: Date): string {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, "0")
+  const day = String(date.getDate()).padStart(2, "0")
+  return `${year}-${month}-${day}`
 }
 
 describe("token usage storage", () => {
@@ -228,5 +248,111 @@ describe("token usage storage", () => {
     expect(page.items).toHaveLength(2)
     expect(page.items[0]?.session_id).toBe("real-session")
     expect(page.items[1]?.session_id).toBe("interaction-session")
+  })
+
+  test("returns daily token usage buckets by model with total tokens", async () => {
+    setSystemTime(localDate(2026, 4, 8))
+    recordTokenUsageEvent({
+      endpoint: "chat_completions",
+      input_tokens: 999,
+      model: "outside-week",
+      output_tokens: 1,
+      source: "copilot",
+    })
+
+    setSystemTime(localDate(2026, 4, 12, 10))
+    recordTokenUsageEvent({
+      cache_creation_input_tokens: 1,
+      cache_read_input_tokens: 2,
+      endpoint: "chat_completions",
+      input_tokens: 10,
+      model: "gpt-a",
+      output_tokens: 3,
+      source: "copilot",
+    })
+    recordTokenUsageEvent({
+      cache_read_input_tokens: 4,
+      endpoint: "responses",
+      input_tokens: 20,
+      model: "gpt-b",
+      output_tokens: 5,
+      source: "copilot",
+    })
+
+    setSystemTime(localDate(2026, 4, 14, 9))
+    recordTokenUsageEvent({
+      endpoint: "messages",
+      input_tokens: 6,
+      model: "gpt-a",
+      output_tokens: 4,
+      source: "copilot",
+      total_tokens: 100,
+    })
+
+    setSystemTime(localDate(2026, 4, 15))
+    const response = await createTokenUsageApp().request(
+      "/token-usage/daily?period=week",
+    )
+    expect(response.status).toBe(200)
+
+    const daily = (await response.json()) as TokenUsageDailySummary
+    expect(daily.period).toBe("week")
+    expect(daily.days).toHaveLength(7)
+    expect(daily.totals).toEqual({
+      cache_creation_input_tokens: 1,
+      cache_read_input_tokens: 6,
+      input_tokens: 36,
+      output_tokens: 12,
+      request_count: 3,
+      total_tokens: 145,
+    })
+    expect(daily.byModel.map((model) => model.model)).toEqual([
+      "gpt-a",
+      "gpt-b",
+    ])
+    expect(daily.byModel[0]?.total_tokens).toBe(116)
+
+    const firstDay = daily.days[0]
+    expect(firstDay?.date).toBe(localDateLabel(localDate(2026, 4, 9)))
+    expect(firstDay?.totals.total_tokens).toBe(0)
+
+    const may12 = daily.days.find(
+      (day) => day.date === localDateLabel(localDate(2026, 4, 12)),
+    )
+    expect(may12?.totals).toEqual({
+      cache_creation_input_tokens: 1,
+      cache_read_input_tokens: 6,
+      input_tokens: 30,
+      output_tokens: 8,
+      request_count: 2,
+      total_tokens: 45,
+    })
+    expect(may12?.byModel.map((model) => model.model)).toEqual([
+      "gpt-b",
+      "gpt-a",
+    ])
+
+    const may14 = daily.days.find(
+      (day) => day.date === localDateLabel(localDate(2026, 4, 14)),
+    )
+    expect(may14?.totals.total_tokens).toBe(100)
+    expect(may14?.byModel[0]?.model).toBe("gpt-a")
+    expect(may14?.byModel[0]?.total_tokens).toBe(100)
+  })
+
+  test("returns empty daily buckets and falls back invalid period to day", async () => {
+    setSystemTime(localDate(2026, 4, 15))
+    const response = await createTokenUsageApp().request(
+      "/token-usage/daily?period=invalid",
+    )
+    expect(response.status).toBe(200)
+
+    const daily = (await response.json()) as TokenUsageDailySummary
+    expect(daily.period).toBe("day")
+    expect(daily.days).toHaveLength(1)
+    expect(daily.days[0]?.date).toBe(localDateLabel(localDate(2026, 4, 15)))
+    expect(daily.days[0]?.totals.total_tokens).toBe(0)
+    expect(daily.byModel).toEqual([])
+    expect(daily.totals.request_count).toBe(0)
   })
 })

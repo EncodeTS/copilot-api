@@ -16,11 +16,14 @@ import {
 
 export {
   closeUsageStore,
+  getTokenUsageDailySummary,
   getTokenUsageEventsPage,
   getTokenUsageSummary,
 } from "./store"
 
 export type {
+  TokenUsageDailyBucket,
+  TokenUsageDailySummary,
   TokenUsageEndpoint,
   TokenUsageEventRecord,
   TokenUsageEventsPage,

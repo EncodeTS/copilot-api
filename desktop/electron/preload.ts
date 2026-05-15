@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   fetchUsage: () => ipcRenderer.invoke('server:fetch-usage'),
   fetchModels: () => ipcRenderer.invoke('server:fetch-models'),
   fetchTokenUsage: (period: string) => ipcRenderer.invoke('server:fetch-token-usage', period),
+  fetchTokenUsageDaily: (period: string) => ipcRenderer.invoke('server:fetch-token-usage-daily', period),
   fetchTokenUsageEvents: (period: string, page: number, pageSize: number) =>
     ipcRenderer.invoke('server:fetch-token-usage-events', period, page, pageSize),
   getServerAuthInfo: () => ipcRenderer.invoke('server:get-auth-info'),

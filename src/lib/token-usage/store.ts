@@ -88,6 +88,27 @@ export interface TokenUsageSummary {
   totals: TokenUsageTotals
 }
 
+export interface TokenUsageDailyBucket {
+  byModel: Array<TokenUsageModelSummary>
+  date: string
+  end_ms: number
+  start_ms: number
+  totals: TokenUsageTotals
+}
+
+export interface TokenUsageDailySummary {
+  byModel: Array<TokenUsageModelSummary>
+  days: Array<TokenUsageDailyBucket>
+  period: TokenUsagePeriod
+  range: {
+    end_ms: number
+    end_utc: string
+    start_ms: number
+    start_utc: string
+  }
+  totals: TokenUsageTotals
+}
+
 export interface TokenUsageEventsPage {
   items: Array<TokenUsageEventRecord>
   page: number
@@ -291,21 +312,18 @@ async function flushTokenUsageEvents(): Promise<void> {
 
 function getPeriodRange(period: TokenUsagePeriod, now = new Date()) {
   const start = new Date(now)
+  start.setHours(0, 0, 0, 0)
 
   switch (period) {
     case "day": {
-      start.setHours(0, 0, 0, 0)
       break
     }
     case "week": {
-      const daysSinceMonday = (start.getDay() + 6) % 7
-      start.setDate(start.getDate() - daysSinceMonday)
-      start.setHours(0, 0, 0, 0)
+      start.setDate(start.getDate() - 6)
       break
     }
     case "month": {
-      start.setDate(1)
-      start.setHours(0, 0, 0, 0)
+      start.setDate(start.getDate() - 29)
       break
     }
     default: {
@@ -324,7 +342,7 @@ function getPeriodRange(period: TokenUsagePeriod, now = new Date()) {
       break
     }
     case "month": {
-      end.setMonth(end.getMonth() + 1)
+      end.setDate(end.getDate() + 30)
       break
     }
     default: {
@@ -338,6 +356,37 @@ function getPeriodRange(period: TokenUsagePeriod, now = new Date()) {
   }
 }
 
+function formatLocalDate(date: Date): string {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, "0")
+  const day = String(date.getDate()).padStart(2, "0")
+  return `${year}-${month}-${day}`
+}
+
+function createDailyIntervals(range: { endMs: number; startMs: number }) {
+  const intervals: Array<{
+    date: string
+    endMs: number
+    startMs: number
+  }> = []
+  const cursor = new Date(range.startMs)
+
+  while (cursor.getTime() < range.endMs) {
+    const startMs = cursor.getTime()
+    const next = new Date(cursor)
+    next.setDate(next.getDate() + 1)
+    const endMs = Math.min(next.getTime(), range.endMs)
+    intervals.push({
+      date: formatLocalDate(cursor),
+      endMs,
+      startMs,
+    })
+    cursor.setTime(endMs)
+  }
+
+  return intervals
+}
+
 function createEmptyTotals(): TokenUsageTotals {
   return {
     cache_creation_input_tokens: 0,
@@ -349,11 +398,45 @@ function createEmptyTotals(): TokenUsageTotals {
   }
 }
 
+function addTotals(target: TokenUsageTotals, next: TokenUsageTotals): void {
+  target.cache_creation_input_tokens += next.cache_creation_input_tokens
+  target.cache_read_input_tokens += next.cache_read_input_tokens
+  target.input_tokens += next.input_tokens
+  target.output_tokens += next.output_tokens
+  target.request_count += next.request_count
+  target.total_tokens += next.total_tokens
+}
+
 function createEmptySummary(period: TokenUsagePeriod): TokenUsageSummary {
   const range = getPeriodRange(period)
 
   return {
     byModel: [],
+    period,
+    range: {
+      end_ms: range.endMs,
+      end_utc: new Date(range.endMs).toISOString(),
+      start_ms: range.startMs,
+      start_utc: new Date(range.startMs).toISOString(),
+    },
+    totals: createEmptyTotals(),
+  }
+}
+
+function createEmptyDailySummary(
+  period: TokenUsagePeriod,
+): TokenUsageDailySummary {
+  const range = getPeriodRange(period)
+
+  return {
+    byModel: [],
+    days: createDailyIntervals(range).map((interval) => ({
+      byModel: [],
+      date: interval.date,
+      end_ms: interval.endMs,
+      start_ms: interval.startMs,
+      totals: createEmptyTotals(),
+    })),
     period,
     range: {
       end_ms: range.endMs,
@@ -390,6 +473,15 @@ function createEmptyEventsPage(input: {
   }
 }
 
+function rangePayload(range: { endMs: number; startMs: number }) {
+  return {
+    end_ms: range.endMs,
+    end_utc: new Date(range.endMs).toISOString(),
+    start_ms: range.startMs,
+    start_utc: new Date(range.startMs).toISOString(),
+  }
+}
+
 function numberFromRow(
   row: Record<string, unknown> | undefined,
   key: string,
@@ -411,6 +503,15 @@ function totalsFromRow(
     output_tokens: numberFromRow(row, "output_tokens"),
     request_count: numberFromRow(row, "request_count"),
     total_tokens: numberFromRow(row, "total_tokens"),
+  }
+}
+
+function modelSummaryFromRow(
+  row: Record<string, unknown>,
+): TokenUsageModelSummary {
+  return {
+    ...totalsFromRow(row),
+    model: typeof row.model === "string" ? row.model : "unknown",
   }
 }
 
@@ -452,17 +553,11 @@ function usageEventFromRow(
   }
 }
 
-export async function getTokenUsageSummary(
-  period: TokenUsagePeriod,
-): Promise<TokenUsageSummary> {
-  if (!isTokenUsageStorageEnabled()) {
-    return createEmptySummary(period)
-  }
-
-  await flushTokenUsageEvents()
-  const range = getPeriodRange(period)
-  const db = await getDb()
-  const totalsRow = db
+function getTotalsRow(
+  db: SqliteDatabase,
+  range: { endMs: number; startMs: number },
+): Record<string, unknown> | undefined {
+  return db
     .prepare(
       `
     SELECT
@@ -477,8 +572,13 @@ export async function getTokenUsageSummary(
   `,
     )
     .get(range.startMs, range.endMs) as Record<string, unknown> | undefined
+}
 
-  const byModelRows = db
+function getModelRows(
+  db: SqliteDatabase,
+  range: { endMs: number; startMs: number },
+): Array<Record<string, unknown>> {
+  return db
     .prepare(
       `
     SELECT
@@ -498,20 +598,68 @@ export async function getTokenUsageSummary(
   `,
     )
     .all(range.startMs, range.endMs) as Array<Record<string, unknown>>
+}
+
+function createDailyBucket(
+  interval: { date: string; endMs: number; startMs: number },
+  rows: Array<Record<string, unknown>>,
+): TokenUsageDailyBucket {
+  const byModel = rows.map((row) => modelSummaryFromRow(row))
+  const totals = createEmptyTotals()
+  for (const model of byModel) {
+    addTotals(totals, model)
+  }
 
   return {
-    byModel: byModelRows.map((row) => ({
-      ...totalsFromRow(row),
-      model: typeof row.model === "string" ? row.model : "unknown",
-    })),
+    byModel,
+    date: interval.date,
+    end_ms: interval.endMs,
+    start_ms: interval.startMs,
+    totals,
+  }
+}
+
+export async function getTokenUsageSummary(
+  period: TokenUsagePeriod,
+): Promise<TokenUsageSummary> {
+  if (!isTokenUsageStorageEnabled()) {
+    return createEmptySummary(period)
+  }
+
+  await flushTokenUsageEvents()
+  const range = getPeriodRange(period)
+  const db = await getDb()
+  const totalsRow = getTotalsRow(db, range)
+  const byModelRows = getModelRows(db, range)
+
+  return {
+    byModel: byModelRows.map((row) => modelSummaryFromRow(row)),
     period,
-    range: {
-      end_ms: range.endMs,
-      end_utc: new Date(range.endMs).toISOString(),
-      start_ms: range.startMs,
-      start_utc: new Date(range.startMs).toISOString(),
-    },
+    range: rangePayload(range),
     totals: totalsFromRow(totalsRow),
+  }
+}
+
+export async function getTokenUsageDailySummary(
+  period: TokenUsagePeriod,
+): Promise<TokenUsageDailySummary> {
+  if (!isTokenUsageStorageEnabled()) {
+    return createEmptyDailySummary(period)
+  }
+
+  await flushTokenUsageEvents()
+  const range = getPeriodRange(period)
+  const db = await getDb()
+  const intervals = createDailyIntervals(range)
+
+  return {
+    byModel: getModelRows(db, range).map((row) => modelSummaryFromRow(row)),
+    days: intervals.map((interval) =>
+      createDailyBucket(interval, getModelRows(db, interval)),
+    ),
+    period,
+    range: rangePayload(range),
+    totals: totalsFromRow(getTotalsRow(db, range)),
   }
 }
 

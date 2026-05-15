@@ -201,6 +201,22 @@ export function registerIpcHandlers(
     }
   })
 
+  ipcMain.handle('server:fetch-token-usage-daily', async (_event, period: string) => {
+    const port = getPort()
+    const normalizedPeriod = period === 'week' || period === 'month' ? period : 'day'
+    try {
+      const headers = await getServerRequestHeaders()
+      const res = await fetch(`http://localhost:${port}/token-usage/daily?period=${normalizedPeriod}`, {
+        headers,
+        signal: AbortSignal.timeout(5000)
+      })
+      if (!res.ok) return null
+      return res.json()
+    } catch {
+      return null
+    }
+  })
+
   ipcMain.handle('server:fetch-token-usage-events', async (_event, period: string, page: number, pageSize: number) => {
     const port = getPort()
     const normalizedPeriod = period === 'week' || period === 'month' ? period : 'day'
