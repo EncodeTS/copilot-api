@@ -1,6 +1,7 @@
 import { Hono } from "hono"
 
 import {
+  getTokenUsageDailySummary,
   getTokenUsageEventsPage,
   getTokenUsageSummary,
   type TokenUsagePeriod,
@@ -25,6 +26,12 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
 tokenUsageRoute.get("/", async (c) => {
   const period = parsePeriod(c.req.query("period"))
   const summary = await getTokenUsageSummary(period)
+  return c.json(summary)
+})
+
+tokenUsageRoute.get("/daily", async (c) => {
+  const period = parsePeriod(c.req.query("period"))
+  const summary = await getTokenUsageDailySummary(period)
   return c.json(summary)
 })
 

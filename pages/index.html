@@ -205,8 +205,8 @@
                 "
               >
                 <option value="day">Day</option>
-                <option value="week">Week</option>
-                <option value="month">Month</option>
+                <option value="week">Last 7 days</option>
+                <option value="month">Last 30 days</option>
               </select>
             </div>
             <button
@@ -273,6 +273,8 @@
         const DEFAULT_ENDPOINT = "http://localhost:4141/usage";
         const DEFAULT_TOKEN_USAGE_PERIOD = "day";
         const DEFAULT_TOKEN_USAGE_EVENTS_PAGE_SIZE = 20;
+        const ALL_METRICS_VALUE = "__all__";
+        const ALL_MODELS_VALUE = "__all__";
         const API_KEY_STORAGE_KEY = "copilot-api.usage-viewer.x-api-key";
         const VALID_PERIODS = new Set(["day", "week", "month"]);
         const EMPTY_TOKEN_USAGE_TOTALS = {
@@ -291,11 +293,16 @@
           isEventsLoading: false,
           error: null,
           data: null,
+          tokenUsageDailySummary: null,
           tokenUsageSummary: null,
           tokenUsageEventsPage: null,
+          tokenUsageDailyError: null,
           tokenUsageSummaryError: null,
           tokenUsageEventsError: null,
           tokenUsagePeriod: DEFAULT_TOKEN_USAGE_PERIOD,
+          tokenUsageTrendDayIndex: null,
+          tokenUsageTrendMetric: ALL_METRICS_VALUE,
+          tokenUsageTrendModel: ALL_MODELS_VALUE,
         };
 
         // --- Rendering Logic ---
@@ -402,6 +409,14 @@
           return url.toString();
         }
 
+        function buildTokenUsageDailyUrl(usageEndpoint, period) {
+          const url = new URL(
+            deriveEndpointUrl(usageEndpoint, "token-usage/daily")
+          );
+          url.searchParams.set("period", period);
+          return url.toString();
+        }
+
         function buildTokenUsageEventsUrl(usageEndpoint, period, page) {
           const url = new URL(
             deriveEndpointUrl(usageEndpoint, "token-usage/events")
@@ -503,8 +518,8 @@
         function renderTokenUsageRangeText(period, range) {
           const labels = {
             day: "Day window",
-            week: "Week window",
-            month: "Month window",
+            week: "Last 7 days",
+            month: "Last 30 days",
           };
 
           if (!range) {
@@ -533,8 +548,10 @@
               || state.data
               || state.isTokenUsageLoading
               || state.isEventsLoading
+              || state.tokenUsageDailySummary
               || state.tokenUsageSummary
               || state.tokenUsageEventsPage
+              || state.tokenUsageDailyError
               || state.tokenUsageSummaryError
               || state.tokenUsageEventsError
           );
@@ -692,8 +709,10 @@
           const hasTokenUsageContent = Boolean(
             state.isTokenUsageLoading
               || state.isEventsLoading
+              || state.tokenUsageDailySummary
               || state.tokenUsageSummary
               || state.tokenUsageEventsPage
+              || state.tokenUsageDailyError
               || state.tokenUsageSummaryError
               || state.tokenUsageEventsError
           );
@@ -703,9 +722,11 @@
           }
 
           const summary = state.tokenUsageSummary;
+          const dailySummary = state.tokenUsageDailySummary;
           const eventsPage = state.tokenUsageEventsPage;
           const totals = summary?.totals || EMPTY_TOKEN_USAGE_TOTALS;
-          const activeRange = summary?.range || eventsPage?.range || null;
+          const activeRange =
+            summary?.range || dailySummary?.range || eventsPage?.range || null;
           const totalPages = eventsPage ? Math.max(eventsPage.total_pages, 1) : 1;
           const eventsMeta = eventsPage
             ? `Page ${eventsPage.page} / ${totalPages} · ${formatNumber(
@@ -782,6 +803,11 @@
                 )}
               </div>
 
+              ${renderTokenUsageDailyTrend(
+                dailySummary,
+                state.tokenUsageDailyError
+              )}
+
               <div class="mt-4 border" style="background-color: var(--color-bg); border-color: var(--color-bg-light-2);">
                 <div class="px-4 py-3 border-b flex items-center justify-between gap-3" style="background-color: var(--color-bg-soft); border-color: var(--color-bg-light-2);">
                   <div>
@@ -826,6 +852,321 @@
                 ${renderTokenUsageEventsTable(eventsPage)}
               </div>
             </section>
+          `;
+        }
+
+        function getTokenUsageTrendMetrics() {
+          return [
+            {
+              color: "var(--color-fg-lightest)",
+              key: "total_tokens",
+              label: "Total",
+            },
+            {
+              color: "var(--color-blue-accent)",
+              key: "input_tokens",
+              label: "Input",
+            },
+            {
+              color: "var(--color-green-accent)",
+              key: "output_tokens",
+              label: "Output",
+            },
+            {
+              color: "var(--color-aqua-accent)",
+              key: "cache_read_input_tokens",
+              label: "Cache Read",
+            },
+            {
+              color: "var(--color-yellow-accent)",
+              key: "cache_creation_input_tokens",
+              label: "Cache Write",
+            },
+          ];
+        }
+
+        function getDailyTrendTotals(day, selectedModel) {
+          if (selectedModel === ALL_MODELS_VALUE) {
+            return day.totals || EMPTY_TOKEN_USAGE_TOTALS;
+          }
+
+          return (
+            day.byModel?.find((model) => model.model === selectedModel)
+            || EMPTY_TOKEN_USAGE_TOTALS
+          );
+        }
+
+        function formatChartDate(value) {
+          const parts = String(value).split("-");
+          return parts.length === 3 ? `${parts[1]}/${parts[2]}` : value;
+        }
+
+        function renderTokenUsageDailyTrend(dailySummary, error) {
+          if (state.tokenUsagePeriod === "day") {
+            return "";
+          }
+
+          const models = dailySummary?.byModel || [];
+          const selectedModel = models.some(
+            (model) => model.model === state.tokenUsageTrendModel
+          )
+            ? state.tokenUsageTrendModel
+            : ALL_MODELS_VALUE;
+          const options = [
+            `<option value="${ALL_MODELS_VALUE}">All models</option>`,
+            ...models.map(
+              (model) =>
+                `<option value="${escapeHtml(model.model)}" ${
+                  selectedModel === model.model ? "selected" : ""
+                }>${escapeHtml(model.model)}</option>`
+            ),
+          ].join("");
+
+          return `
+            <div class="mt-4 border" style="background-color: var(--color-bg); border-color: var(--color-bg-light-2);">
+              <div class="px-4 py-3 border-b flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between" style="background-color: var(--color-bg-soft); border-color: var(--color-bg-light-2);">
+                <p class="text-sm font-semibold" style="color: var(--color-fg-lightest);">Daily Trend</p>
+                <select
+                  data-token-usage-trend-model
+                  class="px-3 py-1.5 border input-focus text-xs"
+                  style="background-color: var(--color-bg); border-color: var(--color-bg-light-2); color: var(--color-fg-light);"
+                >${options}</select>
+              </div>
+              ${
+                error
+                  ? `<div class="p-4">${renderError(
+                      error,
+                      "Token usage daily trend failed"
+                    )}</div>`
+                  : ""
+              }
+              ${renderTokenUsageTrendChart(dailySummary, selectedModel)}
+            </div>
+          `;
+        }
+
+        function renderTokenUsageTrendChart(dailySummary, selectedModel) {
+          const days = dailySummary?.days || [];
+          const metrics = getTokenUsageTrendMetrics();
+          const visibleMetrics =
+            state.tokenUsageTrendMetric === ALL_METRICS_VALUE
+              ? metrics
+              : metrics.filter(
+                  (metric) => metric.key === state.tokenUsageTrendMetric
+                );
+          const hasUsage = days.some(
+            (day) => getDailyTrendTotals(day, selectedModel).request_count > 0
+          );
+          const latestUsageIndex = days.reduce((latest, day, index) => {
+            return getDailyTrendTotals(day, selectedModel).request_count > 0
+              ? index
+              : latest;
+          }, -1);
+          const activeIndex =
+            Number.isInteger(state.tokenUsageTrendDayIndex)
+              && state.tokenUsageTrendDayIndex >= 0
+              && state.tokenUsageTrendDayIndex < days.length
+              ? state.tokenUsageTrendDayIndex
+              : latestUsageIndex >= 0
+                ? latestUsageIndex
+                : Math.max(0, days.length - 1);
+          const activeDay = days[activeIndex];
+          const activeTotals = activeDay
+            ? getDailyTrendTotals(activeDay, selectedModel)
+            : EMPTY_TOKEN_USAGE_TOTALS;
+
+          if (state.isTokenUsageLoading && !dailySummary) {
+            return `<div class="p-4 min-h-[14rem] text-sm animate-pulse" style="color: var(--color-gray);">Loading...</div>`;
+          }
+
+          if (!dailySummary || days.length === 0 || !hasUsage) {
+            return renderEmptyState(
+              "No token usage recorded for the selected period."
+            );
+          }
+
+          const width = 720;
+          const height = 220;
+          const padding = { bottom: 34, left: 58, right: 16, top: 16 };
+          const plotWidth = width - padding.left - padding.right;
+          const plotHeight = height - padding.top - padding.bottom;
+          const allValues = days.flatMap((day) => {
+            const totals = getDailyTrendTotals(day, selectedModel);
+            return visibleMetrics.map((metric) => totals[metric.key] || 0);
+          });
+          const maxValue = Math.max(1, ...allValues);
+          const xForIndex = (index) =>
+            days.length <= 1
+              ? padding.left + plotWidth / 2
+              : padding.left + (plotWidth * index) / (days.length - 1);
+          const hitWidth =
+            days.length <= 1 ? plotWidth : plotWidth / (days.length - 1);
+          const yForValue = (value) =>
+            padding.top
+            + plotHeight
+            - (Math.max(0, value) / maxValue) * plotHeight;
+          const labelEvery = Math.max(1, Math.ceil(days.length / 6));
+          const yTicks = [0, 0.25, 0.5, 0.75, 1].map((ratio) =>
+            Math.round(maxValue * ratio)
+          );
+
+          const grid = yTicks
+            .map((tick) => {
+              const y = yForValue(tick);
+              return `
+                <line x1="${padding.left}" x2="${
+                  width - padding.right
+                }" y1="${y}" y2="${y}" stroke="var(--color-bg-light-2)" stroke-width="1" />
+                <text x="${padding.left - 8}" y="${
+                  y + 4
+                }" text-anchor="end" font-size="11" fill="var(--color-gray-accent)">${formatNumber(
+                  tick
+                )}</text>
+              `;
+            })
+            .join("");
+          const xLabels = days
+            .map((day, index) => {
+              if (index % labelEvery !== 0 && index !== days.length - 1) {
+                return "";
+              }
+              return `<text x="${xForIndex(index)}" y="${
+                height - 10
+              }" text-anchor="middle" font-size="11" fill="var(--color-gray-accent)">${escapeHtml(
+                formatChartDate(day.date)
+              )}</text>`;
+            })
+            .join("");
+          const lines = visibleMetrics
+            .map((metric) => {
+              const points = days
+                .map((day, index) => {
+                  const totals = getDailyTrendTotals(day, selectedModel);
+                  return `${xForIndex(index)},${yForValue(
+                    totals[metric.key] || 0
+                  )}`;
+                })
+                .join(" ");
+              const circles = days
+                .map((day, index) => {
+                  const totals = getDailyTrendTotals(day, selectedModel);
+                  const value = totals[metric.key] || 0;
+                  return `<circle cx="${xForIndex(index)}" cy="${yForValue(
+                    value
+                  )}" r="2.5" fill="${
+                    metric.color
+                  }" data-trend-day-index="${index}">
+                    <title>${escapeHtml(
+                      `${formatChartDate(day.date)} ${metric.label}: ${formatNumber(
+                        value
+                      )}`
+                    )}</title>
+                  </circle>`;
+                })
+                .join("");
+              return `
+                <polyline fill="none" points="${points}" stroke="${metric.color}" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.25">
+                  <title>${escapeHtml(metric.label)}</title>
+                </polyline>
+                ${circles}
+              `;
+            })
+            .join("");
+          const activeMarker = activeDay
+            ? `<line x1="${xForIndex(activeIndex)}" x2="${xForIndex(
+                activeIndex
+              )}" y1="${padding.top}" y2="${
+                padding.top + plotHeight
+              }" stroke="var(--color-bg-light-4)" stroke-dasharray="4 4" stroke-width="1" />`
+            : "";
+          const hitRects = days
+            .map((day, index) => {
+              const x = xForIndex(index);
+              const hitStart = Math.max(padding.left, x - hitWidth / 2);
+              const hitEnd = Math.min(
+                width - padding.right,
+                x + hitWidth / 2
+              );
+              const totals = getDailyTrendTotals(day, selectedModel);
+              const title = [
+                formatChartDate(day.date),
+                ...visibleMetrics.map(
+                  (metric) =>
+                    `${metric.label}: ${formatNumber(
+                      totals[metric.key] || 0
+                    )}`
+                ),
+              ].join("\n");
+              return `<rect x="${hitStart}" y="${padding.top}" width="${
+                hitEnd - hitStart
+              }" height="${plotHeight}" fill="transparent" style="cursor: pointer;" data-trend-day-index="${index}">
+                <title>${escapeHtml(title)}</title>
+              </rect>`;
+            })
+            .join("");
+          const legend = [
+            `<button type="button" data-trend-metric="${ALL_METRICS_VALUE}" class="inline-flex items-center border px-2 py-1 text-xs ${
+              state.tokenUsageTrendMetric === ALL_METRICS_VALUE
+                ? "font-semibold"
+                : ""
+            }" style="background-color: ${
+              state.tokenUsageTrendMetric === ALL_METRICS_VALUE
+                ? "var(--color-bg-light-1)"
+                : "var(--color-bg)"
+            }; border-color: var(--color-bg-light-2); color: var(--color-fg-light);">All</button>`,
+            ...metrics.map(
+              (metric) => `
+                <button type="button" data-trend-metric="${
+                  metric.key
+                }" class="inline-flex items-center gap-1.5 border px-2 py-1 text-xs ${
+                  state.tokenUsageTrendMetric === metric.key
+                    ? "font-semibold"
+                    : ""
+                }" style="background-color: ${
+                  state.tokenUsageTrendMetric === metric.key
+                    ? "var(--color-bg-light-1)"
+                    : "var(--color-bg)"
+                }; border-color: var(--color-bg-light-2); color: var(--color-fg-light);">
+                  <span class="h-2 w-2 rounded-full" style="background-color: ${
+                    metric.color
+                  };"></span>
+                  ${escapeHtml(metric.label)}
+                </button>
+              `
+            ),
+          ].join("");
+          const activeValues = activeDay
+            ? `
+              <div class="mt-2 flex flex-wrap gap-3 px-3 py-2 text-xs" style="background-color: var(--color-bg-soft); color: var(--color-fg-dark);">
+                <span class="font-semibold" style="color: var(--color-fg-lightest);">${escapeHtml(
+                  formatChartDate(activeDay.date)
+                )}</span>
+                ${visibleMetrics
+                  .map(
+                    (metric) =>
+                      `<span>${escapeHtml(metric.label)}: ${formatNumber(
+                        activeTotals[metric.key] || 0
+                      )}</span>`
+                  )
+                  .join("")}
+              </div>
+            `
+            : "";
+
+          return `
+            <div class="p-4 ${state.isTokenUsageLoading ? "opacity-60" : ""}">
+              <svg class="w-full h-56" viewBox="0 0 ${width} ${height}" role="img">
+                ${grid}
+                ${xLabels}
+                ${activeMarker}
+                ${lines}
+                ${hitRects}
+              </svg>
+              <div class="mt-2 flex flex-wrap gap-3">
+                ${legend}
+              </div>
+              ${activeValues}
+            </div>
           `;
         }
 
@@ -1059,9 +1400,12 @@
           const endpoint = endpointUrlInput.value.trim();
           if (!endpoint) {
             state.data = null;
+            state.tokenUsageDailySummary = null;
             state.tokenUsageSummary = null;
             state.tokenUsageEventsPage = null;
             state.error = "Endpoint URL cannot be empty.";
+            state.tokenUsageDailyError =
+              "Token usage requires a valid endpoint URL.";
             state.tokenUsageSummaryError =
               "Token usage requires a valid endpoint URL.";
             state.tokenUsageEventsError = null;
@@ -1072,16 +1416,18 @@
           const period = getSelectedPeriod();
           state.isLoading = true;
           state.error = null;
+          state.tokenUsageDailyError = null;
           state.tokenUsageSummaryError = null;
           state.tokenUsageEventsError = null;
           render();
 
           try {
             const usageUrl = resolveUsageUrl(endpoint);
-            const [usageResult, summaryResult, eventsResult] =
+            const [usageResult, summaryResult, dailyResult, eventsResult] =
               await Promise.allSettled([
                 fetchJson(usageUrl),
                 fetchJson(buildTokenUsageSummaryUrl(usageUrl, period)),
+                fetchJson(buildTokenUsageDailyUrl(usageUrl, period)),
                 fetchJson(buildTokenUsageEventsUrl(usageUrl, period, page)),
               ]);
 
@@ -1106,6 +1452,20 @@
               );
             }
 
+            if (dailyResult.status === "fulfilled") {
+              state.tokenUsageDailySummary = dailyResult.value;
+            } else if (
+              isMissingTokenUsageEndpointError(dailyResult.reason)
+            ) {
+              state.tokenUsageDailySummary = null;
+              state.tokenUsageDailyError = null;
+            } else {
+              state.tokenUsageDailySummary = null;
+              state.tokenUsageDailyError = getErrorMessage(
+                dailyResult.reason
+              );
+            }
+
             if (eventsResult.status === "fulfilled") {
               state.tokenUsageEventsPage = eventsResult.value;
             } else if (
@@ -1122,9 +1482,11 @@
           } catch (error) {
             console.error("Fetch error:", error);
             state.data = null;
+            state.tokenUsageDailySummary = null;
             state.tokenUsageSummary = null;
             state.tokenUsageEventsPage = null;
             state.error = getErrorMessage(error);
+            state.tokenUsageDailyError = getErrorMessage(error);
             state.tokenUsageSummaryError = getErrorMessage(error);
             state.tokenUsageEventsError = getErrorMessage(error);
           } finally {
@@ -1136,8 +1498,11 @@
         async function fetchTokenUsageSummaryAndEvents(page = 1) {
           const endpoint = endpointUrlInput.value.trim();
           if (!endpoint) {
+            state.tokenUsageDailySummary = null;
             state.tokenUsageSummary = null;
             state.tokenUsageEventsPage = null;
+            state.tokenUsageDailyError =
+              "Token usage requires a valid endpoint URL.";
             state.tokenUsageSummaryError =
               "Token usage requires a valid endpoint URL.";
             state.tokenUsageEventsError = null;
@@ -1147,18 +1512,22 @@
 
           const period = getSelectedPeriod();
           state.isTokenUsageLoading = true;
+          state.tokenUsageDailySummary = null;
           state.tokenUsageSummary = null;
           state.tokenUsageEventsPage = null;
+          state.tokenUsageDailyError = null;
           state.tokenUsageSummaryError = null;
           state.tokenUsageEventsError = null;
           render();
 
           try {
             const usageUrl = resolveUsageUrl(endpoint);
-            const [summaryResult, eventsResult] = await Promise.allSettled([
-              fetchJson(buildTokenUsageSummaryUrl(usageUrl, period)),
-              fetchJson(buildTokenUsageEventsUrl(usageUrl, period, page)),
-            ]);
+            const [summaryResult, dailyResult, eventsResult] =
+              await Promise.allSettled([
+                fetchJson(buildTokenUsageSummaryUrl(usageUrl, period)),
+                fetchJson(buildTokenUsageDailyUrl(usageUrl, period)),
+                fetchJson(buildTokenUsageEventsUrl(usageUrl, period, page)),
+              ]);
 
             if (summaryResult.status === "fulfilled") {
               state.tokenUsageSummary = summaryResult.value;
@@ -1171,6 +1540,20 @@
               state.tokenUsageSummary = null;
               state.tokenUsageSummaryError = getErrorMessage(
                 summaryResult.reason
+              );
+            }
+
+            if (dailyResult.status === "fulfilled") {
+              state.tokenUsageDailySummary = dailyResult.value;
+            } else if (
+              isMissingTokenUsageEndpointError(dailyResult.reason)
+            ) {
+              state.tokenUsageDailySummary = null;
+              state.tokenUsageDailyError = null;
+            } else {
+              state.tokenUsageDailySummary = null;
+              state.tokenUsageDailyError = getErrorMessage(
+                dailyResult.reason
               );
             }
 
@@ -1189,8 +1572,10 @@
             }
           } catch (error) {
             console.error("Token usage fetch error:", error);
+            state.tokenUsageDailySummary = null;
             state.tokenUsageSummary = null;
             state.tokenUsageEventsPage = null;
+            state.tokenUsageDailyError = getErrorMessage(error);
             state.tokenUsageSummaryError = getErrorMessage(error);
             state.tokenUsageEventsError = getErrorMessage(error);
           } finally {
@@ -1254,6 +1639,28 @@
             return;
           }
 
+          const trendMetric = event.target.closest("[data-trend-metric]");
+          if (trendMetric) {
+            state.tokenUsageTrendMetric =
+              trendMetric.getAttribute("data-trend-metric")
+              || ALL_METRICS_VALUE;
+            render();
+            return;
+          }
+
+          const trendPoint = event.target.closest("[data-trend-day-index]");
+          if (trendPoint) {
+            const index = Number.parseInt(
+              trendPoint.getAttribute("data-trend-day-index") || "",
+              10
+            );
+            if (Number.isFinite(index) && index >= 0) {
+              state.tokenUsageTrendDayIndex = index;
+              render();
+            }
+            return;
+          }
+
           const actionButton = event.target.closest("[data-page-action]");
           if (!actionButton || !state.tokenUsageEventsPage || state.isEventsLoading) {
             return;
@@ -1276,6 +1683,20 @@
           }
         }
 
+        function handleContentAreaChange(event) {
+          if (!(event.target instanceof HTMLSelectElement)) {
+            return;
+          }
+
+          if (!event.target.matches("[data-token-usage-trend-model]")) {
+            return;
+          }
+
+          state.tokenUsageTrendModel =
+            event.target.value || ALL_MODELS_VALUE;
+          render();
+        }
+
         /**
          * Initializes the application.
          */
@@ -1286,6 +1707,7 @@
             storeApiKey(apiKeyInput.value);
           });
           contentArea.addEventListener("click", handleContentAreaClick);
+          contentArea.addEventListener("change", handleContentAreaChange);
 
           apiKeyInput.value = loadStoredApiKey();
 

@@ -40,6 +40,7 @@ export interface Locale {
     refreshing: string
     refresh: string
     tokenUsage: string
+    tokenUsageAllModels: string
     tokenUsageCache: string
     tokenUsageCacheRead: string
     tokenUsageCacheWrite: string
@@ -59,6 +60,7 @@ export interface Locale {
     tokenUsageSource: string
     tokenUsageTime: string
     tokenUsageTotal: string
+    tokenUsageTrend: string
     tokenUsageTrace: string
     tokenUsageUser: string
     availableModels: string

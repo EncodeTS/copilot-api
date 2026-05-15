@@ -53,6 +53,27 @@ export interface TokenUsageSummary {
   byModel: TokenUsageModelSummary[]
 }
 
+export interface TokenUsageDailyBucket {
+  date: string
+  start_ms: number
+  end_ms: number
+  totals: TokenUsageTotals
+  byModel: TokenUsageModelSummary[]
+}
+
+export interface TokenUsageDailySummary {
+  period: TokenUsagePeriod
+  range: {
+    start_ms: number
+    end_ms: number
+    start_utc: string
+    end_utc: string
+  }
+  totals: TokenUsageTotals
+  byModel: TokenUsageModelSummary[]
+  days: TokenUsageDailyBucket[]
+}
+
 export interface TokenUsageEventRecord {
   id: number
   created_at_ms: number
@@ -114,6 +135,7 @@ declare global {
       fetchUsage: () => Promise<unknown>
       fetchModels: () => Promise<unknown>
       fetchTokenUsage: (period: TokenUsagePeriod) => Promise<unknown>
+      fetchTokenUsageDaily: (period: TokenUsagePeriod) => Promise<unknown>
       fetchTokenUsageEvents: (period: TokenUsagePeriod, page: number, pageSize: number) => Promise<unknown>
       getServerAuthInfo: () => Promise<ServerAuthInfo>
       getLogs: () => Promise<string[]>
