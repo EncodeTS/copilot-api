@@ -3,6 +3,11 @@ import { Hono } from "hono"
 
 import type { AnthropicMessagesPayload } from "../src/routes/messages/anthropic-types"
 
+import {
+  compactSummaryPromptStart,
+  compactTextOnlyGuard,
+} from "../src/lib/compact"
+
 const actualStateModule = await import("../src/lib/state")
 const actualConfigModule = await import("../src/lib/config")
 const actualModelsModule = await import("../src/lib/models")
@@ -22,6 +27,7 @@ type SelectedModel = {
 }
 
 type FlowCallOptions = {
+  compactType?: number
   requestId: string
   sessionId?: string
   subagentMarker?: unknown
@@ -241,6 +247,37 @@ describe("messages handler orchestration", () => {
     expect(handleWithMessagesApi).not.toHaveBeenCalled()
     expect(handleWithResponsesApi).toHaveBeenCalledTimes(1)
     expect(handleWithChatCompletions).not.toHaveBeenCalled()
+  })
+
+  test("does not delegate compact requests to a ws-only Responses API model", async () => {
+    selectedModel = {
+      id: "responses-ws-model",
+      supported_endpoints: ["ws:/responses"],
+    }
+
+    const app = createApp()
+    const response = await app.request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(
+        createPayload({
+          messages: [
+            {
+              role: "user",
+              content: `${compactTextOnlyGuard}\n\n${compactSummaryPromptStart}\n\nPending Tasks:\n- one\n\nCurrent Work:\n- two`,
+            },
+          ],
+        }),
+      ),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe("chat")
+    expect(handleWithMessagesApi).not.toHaveBeenCalled()
+    expect(handleWithResponsesApi).not.toHaveBeenCalled()
+    expect(handleWithChatCompletions).toHaveBeenCalledTimes(1)
   })
 
   test("falls back to the Chat Completions flow when no endpoint matches", async () => {
