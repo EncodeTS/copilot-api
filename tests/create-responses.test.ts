@@ -178,19 +178,20 @@ describe("createResponses", () => {
       "X-Interaction-Id": "interaction-1",
       "X-Interaction-Type": "conversation-agent",
       "X-Request-Id": "request-1",
+      "user-agent": "node",
     })
     const headerNames = Object.keys(headers)
     const agentTaskIdIndex = headerNames.indexOf("X-Agent-Task-Id")
     expect(
       headerNames.slice(agentTaskIdIndex + 1, agentTaskIdIndex + 3),
     ).toEqual(["VScode-SessionId", "VScode-MachineId"])
+    expect(headerNames[headerNames.length - 1]).toBe("user-agent")
     expect(headers.accept).toBeUndefined()
     expect(headers["accept-encoding"]).toBeUndefined()
     expect(headers["accept-language"]).toBeUndefined()
     expect(headers["cache-control"]).toBeUndefined()
     expect(headers.pragma).toBeUndefined()
     expect(headers["sec-fetch-mode"]).toBeUndefined()
-    expect(headers["user-agent"]).toBeUndefined()
     expect(headers["x-initiator"]).toBeUndefined()
     expect(headers["sec-websocket-key"]).toBeUndefined()
   })
