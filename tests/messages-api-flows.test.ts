@@ -13,6 +13,8 @@ import type {
   ResponsesTransport,
 } from "../src/services/copilot/create-responses"
 
+import { COMPACT_REQUEST } from "../src/lib/compact"
+
 let capturedPayload: ChatCompletionsPayload | null = null
 let capturedResponsesOptions: {
   transport?: ResponsesTransport
@@ -257,6 +259,25 @@ test("messages Responses flow keeps HTTP transport for dual-endpoint models when
   }
 
   const response = await handleWithResponsesApi(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+    selectedModel: createModel(["/responses", "ws:/responses"]),
+  })
+
+  expect(response.status).toBe(200)
+  expect(createResponses).toHaveBeenCalledTimes(1)
+  expect(capturedResponsesOptions?.transport).toBe("http")
+})
+
+test("messages Responses flow keeps HTTP transport for compact requests", async () => {
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "compact" }],
+    model: "gpt-test",
+  }
+
+  const response = await handleWithResponsesApi(createContext(), payload, {
+    compactType: COMPACT_REQUEST,
     logger,
     requestId: "request-1",
     selectedModel: createModel(["/responses", "ws:/responses"]),

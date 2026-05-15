@@ -201,7 +201,10 @@ export const handleWithResponsesApi = async (
   debugJson(logger, "Translated Responses payload:", responsesPayload)
 
   const { vision, initiator } = getResponsesRequestOptions(responsesPayload)
-  const transport = getResponsesTransportForModel(selectedModel) ?? "http"
+  const transport =
+    getResponsesTransportForModel(selectedModel, {
+      compactType: requestOptions.compactType,
+    }) ?? "http"
   const response = await messagesApiFlowDependencies.createResponses(
     responsesPayload,
     {

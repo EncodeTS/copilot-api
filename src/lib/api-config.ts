@@ -103,8 +103,8 @@ export const prepareForCompact = (
   if (compactType) {
     headers["x-initiator"] = "agent"
     if (!isOpencodeOauthApp() && compactType === COMPACT_REQUEST) {
-      headers["x-interaction-type"] = "conversation-other"
-      headers["openai-intent"] = "conversation-other"
+      headers["x-interaction-type"] = "conversation-compaction"
+      headers["openai-intent"] = "conversation-agent"
     }
   }
 }

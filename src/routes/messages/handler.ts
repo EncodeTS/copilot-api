@@ -114,7 +114,7 @@ export async function handleCompletion(c: Context) {
     )
   }
 
-  if (shouldUseResponsesApi(selectedModel)) {
+  if (shouldUseResponsesApi(selectedModel, compactType)) {
     return await messagesFlowHandlers.handleWithResponsesApi(
       c,
       anthropicPayload,
@@ -144,8 +144,11 @@ export async function handleCompletion(c: Context) {
 
 const MESSAGES_ENDPOINT = "/v1/messages"
 
-const shouldUseResponsesApi = (selectedModel: Model | undefined): boolean => {
-  return Boolean(getResponsesTransportForModel(selectedModel))
+const shouldUseResponsesApi = (
+  selectedModel: Model | undefined,
+  compactType: ReturnType<typeof getCompactType>,
+): boolean => {
+  return Boolean(getResponsesTransportForModel(selectedModel, { compactType }))
 }
 
 const shouldUseMessagesApi = (selectedModel: Model | undefined): boolean => {

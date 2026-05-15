@@ -3,7 +3,6 @@ import { events } from "fetch-event-stream"
 import { createHash } from "node:crypto"
 import { WebSocket } from "undici"
 
-import type { CompactType } from "~/lib/compact"
 import type { SubagentMarker } from "~/lib/subagent"
 
 import {
@@ -13,6 +12,7 @@ import {
   prepareForCompact,
   prepareInteractionHeaders,
 } from "~/lib/api-config"
+import { COMPACT_REQUEST, type CompactType } from "~/lib/compact"
 import {
   logCopilotQuotaSnapshots,
   logCopilotRateLimits,
@@ -413,7 +413,10 @@ export const createResponses = async (
 
   consola.log(`<-- model: ${payload.model}`)
 
-  if (transport === "websocket") {
+  const effectiveTransport =
+    compactType === COMPACT_REQUEST ? "http" : transport
+
+  if (effectiveTransport === "websocket") {
     const websocketRequest = prepareResponsesWebSocketRequest(
       payload,
       headers,
