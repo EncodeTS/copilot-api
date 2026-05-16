@@ -4,6 +4,7 @@ import {
   getExtraPromptForModel,
   getReasoningEffortForModel,
 } from "~/lib/config"
+import { requestContext } from "~/lib/request-context"
 import { parseUserIdMetadata } from "~/lib/utils"
 import {
   type ResponsesPayload,
@@ -56,8 +57,25 @@ const COMPACTION_SIGNATURE_SEPARATOR = "@"
 
 export const THINKING_TEXT = "Thinking..."
 
+const buildPromptCacheKey = (
+  basePromptCacheKey: string | null,
+  subagentAgentId?: string | null,
+): string | null => {
+  if (!basePromptCacheKey) {
+    return null
+  }
+
+  const normalizedSubagentAgentId = subagentAgentId?.trim() || null
+  if (!normalizedSubagentAgentId) {
+    return basePromptCacheKey
+  }
+
+  return `${basePromptCacheKey}:agent:${normalizedSubagentAgentId}`
+}
+
 export const translateAnthropicMessagesToResponsesPayload = (
   payload: AnthropicMessagesPayload,
+  subagentAgentId?: string | null,
 ): ResponsesPayload => {
   const input: Array<ResponseInputItem> = []
   const applyPhase = shouldApplyPhase(payload.model)
@@ -66,12 +84,22 @@ export const translateAnthropicMessagesToResponsesPayload = (
     input.push(...translateMessage(message, payload.model, applyPhase))
   }
 
+  const hasOriginalTools =
+    Array.isArray(payload.tools) && payload.tools.length > 0
   const translatedTools = convertAnthropicTools(payload.tools)
   const toolChoice = convertAnthropicToolChoice(payload.tool_choice)
 
   // Remove safetyIdentifier to align with vscode copilot
-  const { sessionId: promptCacheKey } = parseUserIdMetadata(
+  const { sessionId: metadataPromptCacheKey } = parseUserIdMetadata(
     payload.metadata?.user_id,
+  )
+
+  const requestStore = requestContext.getStore()
+  const sessionAffinity = requestStore?.sessionAffinity?.trim() || null
+  const basePromptCacheKey = metadataPromptCacheKey ?? sessionAffinity
+  const promptCacheKey = buildPromptCacheKey(
+    basePromptCacheKey,
+    subagentAgentId,
   )
 
   const responsesPayload: ResponsesPayload = {
@@ -84,7 +112,6 @@ export const translateAnthropicMessagesToResponsesPayload = (
     tools: translatedTools,
     tool_choice: toolChoice,
     metadata: payload.metadata ? { ...payload.metadata } : null,
-    prompt_cache_key: promptCacheKey,
     //prompt_cache_retention: "24h",  not work in gpt-5.4
     stream: payload.stream ?? null,
     store: false,
@@ -94,6 +121,10 @@ export const translateAnthropicMessagesToResponsesPayload = (
       summary: "detailed",
     },
     include: ["reasoning.encrypted_content"],
+  }
+
+  if (hasOriginalTools) {
+    responsesPayload.prompt_cache_key = promptCacheKey
   }
 
   return responsesPayload
@@ -332,9 +363,8 @@ const resolveAssistantPhase = (
   return hasToolUse ? "commentary" : "final_answer"
 }
 
-const shouldApplyPhase = (model: string): boolean => {
-  const extraPrompt = getExtraPromptForModel(model)
-  return extraPrompt.includes("## Intermediary updates")
+const shouldApplyPhase = (_model: string): boolean => {
+  return true
 }
 
 const createTextContent = (text: string): ResponseInputText => ({

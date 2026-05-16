@@ -182,8 +182,10 @@ export const handleWithResponsesApi = async (
 ) => {
   const { logger, selectedModel, ...requestOptions } = options
 
-  const responsesPayload =
-    translateAnthropicMessagesToResponsesPayload(anthropicPayload)
+  const responsesPayload = translateAnthropicMessagesToResponsesPayload(
+    anthropicPayload,
+    requestOptions.subagentMarker?.agent_id,
+  )
   const recordUsage = createCopilotUsageRecorder({
     endpoint: "responses",
     fallbackSessionId: requestOptions.sessionId,

@@ -26,6 +26,11 @@ export interface ServerAuthInfo {
   headerValue?: string
 }
 
+export interface ModelMappingsConfig {
+  configPath: string
+  modelMappings: Record<string, string>
+}
+
 export type TokenUsagePeriod = 'day' | 'week' | 'month'
 
 export interface TokenUsageTotals {
@@ -131,6 +136,8 @@ declare global {
       stopServer: () => Promise<void>
       getSettings: () => Promise<DesktopSettings>
       saveSettings: (settings: DesktopSettings) => Promise<void>
+      getModelMappingsConfig: () => Promise<ModelMappingsConfig>
+      saveModelMappings: (modelMappings: Record<string, string>) => Promise<void>
       openUrl: (url: string) => Promise<void>
       fetchUsage: () => Promise<unknown>
       fetchModels: () => Promise<unknown>

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 
 import Header from '../components/Header'
 import { useLanguage } from '../contexts/LanguageContext'
+import AdvancedConfigPage from './AdvancedConfigPage'
 import type {
   ServerAuthInfo,
   TokenUsageDailySummary,
@@ -43,6 +44,7 @@ interface Model {
 
 type TranslateFn = ReturnType<typeof useLanguage>['t']
 type DashboardTab = 'dashboard' | 'tokenUsage' | 'logs'
+type DashboardView = 'main' | 'advancedConfig'
 
 const numberFormatter = new Intl.NumberFormat()
 const eventTimeFormatter = new Intl.DateTimeFormat(undefined, {
@@ -112,6 +114,7 @@ function formatCellText(value: string | null | undefined): string {
 export default function DashboardPage({ username, defaultPort, onLogout }: DashboardPageProps) {
   const { t } = useLanguage()
   const [started, setStarted] = useState(false)
+  const [view, setView] = useState<DashboardView>('main')
   const [port, setPort] = useState<string>(String(defaultPort))
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState('')
@@ -368,6 +371,7 @@ export default function DashboardPage({ username, defaultPort, onLogout }: Dashb
         onLogout={handleLogout}
         onStop={handleStop}
         isRunning={started && !stopping}
+        onOpenAdvancedConfig={() => setView('advancedConfig')}
       />
 
       {/* Unexpected server stop banner */}
@@ -378,7 +382,7 @@ export default function DashboardPage({ username, defaultPort, onLogout }: Dashb
       )}
 
       {/* Tabs shown only while the server is running */}
-      {started && (
+      {view === 'main' && started && (
         <div className="flex px-4 bg-white border-b border-slate-100 shrink-0">
           {dashboardTabs.map(tabItem => (
             <button
@@ -399,8 +403,15 @@ export default function DashboardPage({ username, defaultPort, onLogout }: Dashb
       {/* Content area */}
       <div className="flex-1 overflow-auto">
 
+        {view === 'advancedConfig' && (
+          <AdvancedConfigPage
+            onBack={() => setView('main')}
+            serverRunning={started && !stopping}
+          />
+        )}
+
         {/* Empty state: start form */}
-        {!started && (
+        {view === 'main' && !started && (
           <div className="h-full flex flex-col items-center justify-center gap-4 px-6">
             <div className="w-11 h-11 bg-slate-100 rounded-xl flex items-center justify-center text-[13px]">🚀</div>
             <div className="text-center">
@@ -453,7 +464,7 @@ export default function DashboardPage({ username, defaultPort, onLogout }: Dashb
         )}
 
         {/* Dashboard tab */}
-        {started && tab === 'dashboard' && (
+        {view === 'main' && started && tab === 'dashboard' && (
           <div className="p-4">
             <div className="grid items-start gap-3 xl:grid-cols-[minmax(0,1fr)_340px]">
               <div className="flex min-w-0 flex-col gap-3">
@@ -566,7 +577,7 @@ export default function DashboardPage({ username, defaultPort, onLogout }: Dashb
         )}
 
         {/* Token usage tab */}
-        {started && tab === 'tokenUsage' && (
+        {view === 'main' && started && tab === 'tokenUsage' && (
           <div className="p-4">
             <TokenUsagePanel
               dailyUsage={tokenUsageDaily}
@@ -586,7 +597,7 @@ export default function DashboardPage({ username, defaultPort, onLogout }: Dashb
         )}
 
         {/* Logs tab */}
-        {started && tab === 'logs' && (
+        {view === 'main' && started && tab === 'logs' && (
           <div className="p-4 h-full flex flex-col">
             <div className="flex-1 bg-[#0f172a] rounded-xl p-4 flex flex-col overflow-hidden min-h-0">
               <div className="flex items-center justify-between mb-3 shrink-0">

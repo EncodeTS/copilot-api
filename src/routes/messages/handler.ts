@@ -4,7 +4,11 @@ import type { Model } from "~/services/copilot/get-models"
 
 import { awaitApproval } from "~/lib/approval"
 import { COMPACT_REQUEST } from "~/lib/compact"
-import { getSmallModel, isMessagesApiEnabled } from "~/lib/config"
+import {
+  getSmallModel,
+  isMessagesApiEnabled,
+  resolveMappedModel,
+} from "~/lib/config"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { findEndpointModel } from "~/lib/models"
 import { parseProviderModelAlias } from "~/lib/provider-model"
@@ -38,6 +42,14 @@ export const messagesFlowHandlers = {
 
 export async function handleCompletion(c: Context) {
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
+  const requestedModel = anthropicPayload.model
+  anthropicPayload.model = resolveMappedModel(anthropicPayload.model)
+  if (anthropicPayload.model !== requestedModel) {
+    logger.debug(
+      `Resolved model mapping: ${requestedModel} -> ${anthropicPayload.model}`,
+    )
+  }
+
   const providerModelAlias = parseProviderModelAlias(anthropicPayload.model)
   if (providerModelAlias) {
     anthropicPayload.model = providerModelAlias.model

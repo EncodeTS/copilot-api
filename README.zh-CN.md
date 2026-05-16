@@ -178,6 +178,8 @@ https://github.com/caozhiyuan/copilot-api/releases
 
 下载对应平台的安装包后，在应用内登录、选择端口并启动服务，再把你的客户端指向应用里显示的本地端点即可。发布版桌面应用使用随包内置的 Electron 运行时，正常使用不需要额外安装 Node.js；token usage 历史记录会在该内置运行时支持 SQLite 时启用。
 
+桌面应用里的高级配置页会通过 `GET/POST /admin/config/model-mappings` 读写模型映射。它使用的是 `auth.adminApiKey`，不是普通的 `auth.apiKeys`；应用会在服务启动并自动生成该 key 后，直接从 `config.json` 读取它来发起请求。
+
 ### 桌面应用截图
 
 下面展示了桌面应用中的首页、Token 用量统计页面：
@@ -306,7 +308,8 @@ Copilot API 现在使用子命令结构，主要命令包括：
   ```json
   {
     "auth": {
-      "apiKeys": []
+      "apiKeys": [],
+      "adminApiKey": "<startup 自动生成>"
     },
     "providers": {
       "custom": {
@@ -369,7 +372,8 @@ Copilot API 现在使用子命令结构，主要命令包括：
     "useResponsesApiWebSearch": true
   }
   ```
-- **auth.apiKeys：** 用于请求认证的 API key。支持多个 key 轮换使用。请求可通过 `x-api-key: <key>` 或 `Authorization: Bearer <key>` 进行认证。若为空或省略，则禁用认证。
+- **auth.apiKeys：** 用于普通非 admin 路由的 API key。支持多个 key 轮换使用。请求可通过 `x-api-key: <key>` 或 `Authorization: Bearer <key>` 进行认证。若为空或省略，则普通路由的认证会被禁用。
+- **auth.adminApiKey：** 仅用于 `/admin/*` 路由的单个 admin key。若未配置，服务会在启动时自动生成一个随机 key，并回写到 `config.json`。它同样使用 `x-api-key` 或 `Authorization: Bearer` 这两种头，但普通 `auth.apiKeys` 不能访问 `/admin/*`。
 - **extraPrompts：** `model -> prompt` 的映射。把 Anthropic 风格请求翻译给 Copilot 时，会将其附加到第一条 system prompt 后面。你可以借此为不同模型注入护栏或指引。缺失的默认项会自动补齐，但不会覆盖你自定义的 prompt。内置的 `gpt-5.3-codex` 和 `gpt-5.4` prompt 会启用带阶段感知的 commentary，让模型在工具调用或更深层推理前先发出简短的用户可见进度说明。
 - **providers：** 全局上游 provider 映射。每个 provider key（例如 `custom`）都会变成一个路由前缀（`/custom/v1/messages`）。支持 `type: "anthropic"` 和 `type: "openai-compatible"`。顶层 Anthropic 客户端也可以在 `/v1/messages` 和 `/v1/messages/count_tokens` 中使用 `model: "custom/model-id"`；代理会在转发上游前移除 `custom/` 前缀。`GET /v1/models` 不聚合 provider 模型；provider 模型列表请使用 `GET /custom/v1/models`。
   - `enabled`：可选，若省略则默认为 `true`。
@@ -399,18 +403,26 @@ Copilot API 现在使用子命令结构，主要命令包括：
 
 ## API 认证
 
-- **受保护路由：** 当配置了 `auth.apiKeys` 且非空时，除 `/`、`/usage-viewer` 和 `/usage-viewer/` 以外的所有路由都需要认证。
+- **受保护的普通路由：** 当配置了 `auth.apiKeys` 且非空时，除 `/`、`/usage-viewer` 和 `/usage-viewer/` 以外的普通路由都需要认证。
+- **Admin 路由：** 所有 `/admin/*` 路由都要求 `auth.adminApiKey`。如果缺失，服务会在启动时自动生成并在开始提供服务前写回 `config.json`。
 - **允许的认证头：**
   - `x-api-key: <your_key>`
   - `Authorization: Bearer <your_key>`
 - **CORS 预检：** `OPTIONS` 请求始终允许。
-- **未配置 key 时：** 服务会正常启动，并允许请求通过（即禁用认证）。
+- **未配置普通 key 时：** 普通路由仍可直接访问；但这条规则不适用于 `/admin/*`，后者只接受 `auth.adminApiKey`。
 
-示例请求：
+普通受保护路由的示例请求：
 
 ```sh
 curl http://localhost:4141/v1/models \
   -H "x-api-key: your_api_key"
+```
+
+Admin 路由的示例请求：
+
+```sh
+curl http://localhost:4141/admin/config/model-mappings \
+  -H "x-api-key: your_admin_api_key"
 ```
 
 ## API 端点
@@ -448,6 +460,15 @@ curl http://localhost:4141/v1/models \
 | --- | --- | --- |
 | `GET /usage` | `GET` | 获取详细的 Copilot 使用统计与额度信息。 |
 | `GET /token` | `GET` | 获取当前 API 正在使用的 Copilot token。 |
+
+### Admin / 配置端点
+
+这些端点用于本地管理操作，只接受 `auth.adminApiKey`。
+
+| 端点 | 方法 | 说明 |
+| --- | --- | --- |
+| `GET /admin/config/model-mappings` | `GET` | 返回当前 `config.json` 路径以及生效中的 `modelMappings` 映射。 |
+| `POST /admin/config/model-mappings` | `POST` | 只更新 `config.json` 里的 `modelMappings` 字段，并回传更新后的结果。 |
 
 ## 使用示例
 

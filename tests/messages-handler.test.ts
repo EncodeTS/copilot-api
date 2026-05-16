@@ -21,6 +21,7 @@ const state = {
 }
 
 let messagesApiEnabled = true
+let modelMappings: Record<string, string> = {}
 type SelectedModel = {
   id: string
   supported_endpoints?: Array<string>
@@ -37,6 +38,7 @@ type FlowCallOptions = {
 let selectedModel: SelectedModel | undefined
 
 const findEndpointModel = mock((_: string) => selectedModel)
+const checkRateLimit = mock(async () => {})
 const handleWithMessagesApi = mock(
   (
     _c: unknown,
@@ -65,12 +67,13 @@ await mock.module("~/lib/state", () => ({
 }))
 await mock.module("~/lib/rate-limit", () => ({
   ...actualRateLimitModule,
-  checkRateLimit: async () => {},
+  checkRateLimit,
 }))
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
   getSmallModel: () => "small-model",
   isMessagesApiEnabled: () => messagesApiEnabled,
+  resolveMappedModel: (model: string) => modelMappings[model] ?? model,
 }))
 await mock.module("~/lib/models", () => ({
   ...actualModelsModule,
@@ -104,12 +107,14 @@ beforeEach(() => {
   state.manualApprove = false
   state.verbose = false
   messagesApiEnabled = true
+  modelMappings = {}
   selectedModel = undefined
 
   messagesFlowHandlers.handleWithMessagesApi = handleWithMessagesApi
   messagesFlowHandlers.handleWithResponsesApi = handleWithResponsesApi
   messagesFlowHandlers.handleWithChatCompletions = handleWithChatCompletions
 
+  checkRateLimit.mockClear()
   findEndpointModel.mockClear()
   handleWithMessagesApi.mockClear()
   handleWithResponsesApi.mockClear()
@@ -200,6 +205,32 @@ describe("messages handler orchestration", () => {
     expect(handleWithMessagesApi).toHaveBeenCalledTimes(1)
     expect(handleWithResponsesApi).not.toHaveBeenCalled()
     expect(handleWithChatCompletions).not.toHaveBeenCalled()
+
+    const [, forwardedPayload] = handleWithMessagesApi.mock.calls[0]
+    expect(forwardedPayload.model).toBe("messages-model")
+  })
+
+  test("maps the requested model before resolving the endpoint model", async () => {
+    modelMappings = {
+      "claude-opus-4-7": "messages-model",
+    }
+    selectedModel = {
+      id: "messages-model",
+      supported_endpoints: ["/v1/messages"],
+    }
+
+    const app = createApp()
+    const response = await app.request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(createPayload({ model: "claude-opus-4-7" })),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe("messages")
+    expect(findEndpointModel).toHaveBeenCalledWith("messages-model")
 
     const [, forwardedPayload] = handleWithMessagesApi.mock.calls[0]
     expect(forwardedPayload.model).toBe("messages-model")

@@ -8,6 +8,8 @@ interface AuthMiddlewareOptions {
   getApiKeys?: () => Array<string>
   allowUnauthenticatedPaths?: Array<string>
   allowOptionsBypass?: boolean
+  allowWhenNoApiKeys?: boolean
+  shouldSkipPath?: (path: string) => boolean
 }
 
 export function normalizeApiKeys(apiKeys: unknown): Array<string> {
@@ -35,6 +37,21 @@ export function normalizeApiKeys(apiKeys: unknown): Array<string> {
 export function getConfiguredApiKeys(): Array<string> {
   const config = getConfig()
   return normalizeApiKeys(config.auth?.apiKeys)
+}
+
+function normalizeApiKey(apiKey: unknown): string | null {
+  if (typeof apiKey !== "string") {
+    return null
+  }
+
+  const normalizedApiKey = apiKey.trim()
+  return normalizedApiKey || null
+}
+
+export function getConfiguredAdminApiKeys(): Array<string> {
+  const config = getConfig()
+  const adminApiKey = normalizeApiKey(config.auth?.adminApiKey)
+  return adminApiKey ? [adminApiKey] : []
 }
 
 export function extractRequestApiKey(c: Context): string | null {
@@ -76,9 +93,15 @@ export function createAuthMiddleware(
   const getApiKeys = options.getApiKeys ?? getConfiguredApiKeys
   const allowUnauthenticatedPaths = options.allowUnauthenticatedPaths ?? ["/"]
   const allowOptionsBypass = options.allowOptionsBypass ?? true
+  const allowWhenNoApiKeys = options.allowWhenNoApiKeys ?? true
+  const shouldSkipPath = options.shouldSkipPath ?? (() => false)
 
   return async (c, next) => {
     if (allowOptionsBypass && c.req.method === "OPTIONS") {
+      return next()
+    }
+
+    if (shouldSkipPath(c.req.path)) {
       return next()
     }
 
@@ -88,7 +111,7 @@ export function createAuthMiddleware(
 
     const apiKeys = getApiKeys()
     if (apiKeys.length === 0) {
-      return next()
+      return allowWhenNoApiKeys ? next() : createUnauthorizedResponse(c)
     }
 
     const requestApiKey = extractRequestApiKey(c)
