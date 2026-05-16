@@ -2,7 +2,11 @@ import type { Context } from "hono"
 
 import consola from "consola"
 
-import { getAnthropicApiKey, getClaudeTokenMultiplier } from "~/lib/config"
+import {
+  getAnthropicApiKey,
+  getClaudeTokenMultiplier,
+  resolveMappedModel,
+} from "~/lib/config"
 import {
   createFallbackModel,
   parseProviderModelAlias,
@@ -87,6 +91,8 @@ async function countTokensViaAnthropic(
  */
 export async function handleCountTokens(c: Context) {
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
+  anthropicPayload.model = resolveMappedModel(anthropicPayload.model)
+
   const providerModelAlias = parseProviderModelAlias(anthropicPayload.model)
   if (providerModelAlias) {
     anthropicPayload.model = providerModelAlias.model
