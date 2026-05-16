@@ -472,6 +472,10 @@ interface ResponsesWebSocketRequest {
   payload: ResponsesWebSocketPayload
 }
 
+type ResponsesWebSocketErrorEvent = Parameters<
+  NonNullable<InstanceType<typeof WebSocket>["onerror"]>
+>[0]
+
 export const prepareResponsesWebSocketRequest = (
   payload: ResponsesPayload,
   preparedHeaders: Record<string, string>,
@@ -714,6 +718,19 @@ const unrefTimer = (timer: ReturnType<typeof setTimeout>): void => {
   }
 }
 
+const createResponsesWebSocketError = (
+  message: string,
+  event?: Pick<ResponsesWebSocketErrorEvent, "error" | "message">,
+): Error => {
+  const reason = event?.error ?? event?.message
+  if (reason === undefined || reason === "") {
+    return new Error(message)
+  }
+
+  const cause = toError(reason)
+  return new Error(`${message}: ${cause.message}`, { cause })
+}
+
 const openResponsesWebSocket = async ({
   headers,
   url,
@@ -736,9 +753,14 @@ const openResponsesWebSocket = async ({
       resolve(websocket)
     }
 
-    const onError = () => {
+    const onError = (event: ResponsesWebSocketErrorEvent) => {
       cleanup()
-      reject(new Error("Failed to create responses websocket"))
+      reject(
+        createResponsesWebSocketError(
+          "Failed to create responses websocket",
+          event,
+        ),
+      )
     }
 
     websocket.addEventListener("open", onOpen)
@@ -768,8 +790,11 @@ const createWebSocketMessageStream = async function* (
     wake()
   }
 
-  const onError = () => {
-    error = new Error("Responses websocket stream error")
+  const onError = (event: ResponsesWebSocketErrorEvent) => {
+    error = createResponsesWebSocketError(
+      "Responses websocket stream error",
+      event,
+    )
     wake()
   }
 
