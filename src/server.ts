@@ -3,9 +3,13 @@ import { cors } from "hono/cors"
 import { logger } from "hono/logger"
 import { readFileSync } from "node:fs"
 
-import { createAuthMiddleware } from "./lib/request-auth"
+import {
+  createAuthMiddleware,
+  getConfiguredAdminApiKeys,
+} from "./lib/request-auth"
 import { traceIdMiddleware } from "./lib/trace"
 import { completionRoutes } from "./routes/chat-completions/route"
+import { configRoutes } from "./routes/admin/config/route"
 import { embeddingRoutes } from "./routes/embeddings/route"
 import { messageRoutes } from "./routes/messages/route"
 import { modelRoutes } from "./routes/models/route"
@@ -25,6 +29,15 @@ server.use(
   "*",
   createAuthMiddleware({
     allowUnauthenticatedPaths: ["/", "/usage-viewer", "/usage-viewer/"],
+    shouldSkipPath: (path) => path.startsWith("/admin/"),
+  }),
+)
+server.use(
+  "/admin/*",
+  createAuthMiddleware({
+    getApiKeys: getConfiguredAdminApiKeys,
+    allowUnauthenticatedPaths: [],
+    allowWhenNoApiKeys: false,
   }),
 )
 
@@ -36,6 +49,7 @@ server.get("/usage-viewer", (c) => {
 server.get("/usage-viewer/", (c) => c.redirect("/usage-viewer", 301))
 
 server.route("/chat/completions", completionRoutes)
+server.route("/admin/config", configRoutes)
 server.route("/models", modelRoutes)
 server.route("/embeddings", embeddingRoutes)
 server.route("/usage", usageRoute)

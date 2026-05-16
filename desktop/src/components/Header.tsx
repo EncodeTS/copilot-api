@@ -7,24 +7,41 @@ interface HeaderProps {
   onLogout?: () => void
   onStop?: () => void
   isRunning?: boolean
+  onOpenAdvancedConfig?: () => void
 }
 
-export default function Header({ username, onLogout, onStop, isRunning }: HeaderProps) {
+export default function Header({ username, onLogout, onStop, isRunning, onOpenAdvancedConfig }: HeaderProps) {
   const { t } = useLanguage()
   const [showSettings, setShowSettings] = useState(false)
+  const [showSettingsMenu, setShowSettingsMenu] = useState(false)
   const [showLogout, setShowLogout] = useState(false)
-  const dropdownRef = useRef<HTMLDivElement>(null)
+  const logoutRef = useRef<HTMLDivElement>(null)
+  const settingsMenuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (!showLogout) return
+    if (!showLogout && !showSettingsMenu) return
     const handleOutside = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+      if (logoutRef.current && !logoutRef.current.contains(e.target as Node)) {
         setShowLogout(false)
+      }
+      if (settingsMenuRef.current && !settingsMenuRef.current.contains(e.target as Node)) {
+        setShowSettingsMenu(false)
       }
     }
     document.addEventListener('mousedown', handleOutside)
     return () => document.removeEventListener('mousedown', handleOutside)
-  }, [showLogout])
+  }, [showLogout, showSettingsMenu])
+
+  const handleSettingsAction = () => {
+    setShowLogout(false)
+
+    if (onOpenAdvancedConfig) {
+      setShowSettingsMenu(v => !v)
+      return
+    }
+
+    setShowSettings(true)
+  }
 
   return (
     <>
@@ -65,9 +82,12 @@ export default function Header({ username, onLogout, onStop, isRunning }: Header
           ) : null}
 
           {username && (
-            <div className="relative" ref={dropdownRef}>
+            <div className="relative" ref={logoutRef}>
               <button
-                onClick={() => setShowLogout(v => !v)}
+                onClick={() => {
+                  setShowSettingsMenu(false)
+                  setShowLogout(v => !v)
+                }}
                 className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors ${
                   showLogout ? 'bg-blue-600' : 'bg-blue-500 hover:bg-blue-600'
                 }`}
@@ -100,16 +120,41 @@ export default function Header({ username, onLogout, onStop, isRunning }: Header
             </div>
           )}
 
-          <button
-            onClick={() => setShowSettings(true)}
-            className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-50 rounded-md transition-colors"
-            title={t('header.settings')}
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
-              <circle cx="12" cy="12" r="3"/>
-            </svg>
-          </button>
+          <div className="relative" ref={settingsMenuRef}>
+            <button
+              onClick={handleSettingsAction}
+              className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-50 rounded-md transition-colors"
+              title={t('header.settings')}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+            </button>
+
+            {showSettingsMenu && onOpenAdvancedConfig && (
+              <div className="absolute right-0 top-full mt-1.5 bg-white border border-gray-200 rounded-xl shadow-lg z-10 min-w-[170px] overflow-hidden">
+                <button
+                  onClick={() => {
+                    setShowSettingsMenu(false)
+                    setShowSettings(true)
+                  }}
+                  className="flex items-center gap-2 w-full px-3 py-2.5 text-[13px] text-slate-700 hover:bg-slate-50 transition-colors text-left"
+                >
+                  {t('header.appSettings')}
+                </button>
+                <button
+                  onClick={() => {
+                    setShowSettingsMenu(false)
+                    onOpenAdvancedConfig()
+                  }}
+                  className="flex items-center gap-2 w-full px-3 py-2.5 text-[13px] text-slate-700 hover:bg-slate-50 transition-colors text-left border-t border-slate-100"
+                >
+                  {t('header.advancedConfig')}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

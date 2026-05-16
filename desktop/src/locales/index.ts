@@ -80,6 +80,8 @@ export interface Locale {
     notStarted: string
     logout: string
     settings: string
+    appSettings: string
+    advancedConfig: string
   }
   tray: {
     showWindow: string
@@ -118,6 +120,30 @@ export interface Locale {
     cancel: string
     save: string
     saving: string
+  }
+  advancedConfig: {
+    title: string
+    subtitle: string
+    back: string
+    modelMappingsTitle: string
+    modelMappingsDesc: string
+    scopeLabel: string
+    scopeNote: string
+    restartNote: string
+    configPath: string
+    addMapping: string
+    sourceModel: string
+    targetModel: string
+    remove: string
+    emptyTitle: string
+    emptyDescription: string
+    saveHelp: string
+    saved: string
+    loadFailed: string
+    saveFailed: string
+    serverRequired: string
+    validationIncomplete: string
+    validationDuplicate: string
   }
 }
 

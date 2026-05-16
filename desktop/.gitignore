@@ -3,3 +3,4 @@ out/
 release/
 *.tsbuildinfo
 .DS_Store
+electron.vite.config.*.mjs

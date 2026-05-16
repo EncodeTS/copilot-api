@@ -6,17 +6,40 @@ import { normalizeApiKeys } from '../../src/lib/request-auth'
 import { PATHS } from '../../src/lib/paths'
 import { getDeviceCode, pollAccessToken, getGitHubUser, saveToken, readToken, clearToken, getCopilotAccountType } from './auth'
 import { tMain } from './i18n'
-import { startServer, stopServer, getPort, getLogs } from './server-manager'
+import { startServer, stopServer, getPort, getLogs, isRunning } from './server-manager'
 import { readSettings, writeSettings } from './settings-store'
-import type { DesktopSettings, ServerAuthInfo } from '../src/types/ipc'
+import type {
+  DesktopSettings,
+  ModelMappingsConfig,
+  ServerAuthInfo,
+} from '../src/types/ipc'
 
-async function getServerAuthInfo(): Promise<ServerAuthInfo> {
+interface ConfigApiErrorResponse {
+  error?: {
+    message?: string
+  }
+}
+
+type ServerAuthScope = 'default' | 'admin'
+
+function normalizeApiKey(apiKey: unknown): string | null {
+  if (typeof apiKey !== 'string') {
+    return null
+  }
+
+  const normalizedApiKey = apiKey.trim()
+  return normalizedApiKey || null
+}
+
+async function getServerAuthInfo(scope: ServerAuthScope = 'default'): Promise<ServerAuthInfo> {
   try {
     const raw = await fs.readFile(PATHS.CONFIG_PATH, 'utf8')
     const parsed = raw.trim()
-      ? JSON.parse(raw) as { auth?: { apiKeys?: unknown } }
+      ? JSON.parse(raw) as { auth?: { apiKeys?: unknown, adminApiKey?: unknown } }
       : {}
-    const apiKey = normalizeApiKeys(parsed.auth?.apiKeys)[0]
+    const apiKey = scope === 'admin'
+      ? normalizeApiKey(parsed.auth?.adminApiKey)
+      : normalizeApiKeys(parsed.auth?.apiKeys)[0] ?? null
 
     if (!apiKey) {
       return { enabled: false }
@@ -32,14 +55,62 @@ async function getServerAuthInfo(): Promise<ServerAuthInfo> {
   }
 }
 
-async function getServerRequestHeaders(): Promise<Record<string, string> | undefined> {
-  const authInfo = await getServerAuthInfo()
+async function getServerRequestHeaders(scope: ServerAuthScope = 'default'): Promise<Record<string, string> | undefined> {
+  const authInfo = await getServerAuthInfo(scope)
   if (!authInfo.enabled || !authInfo.headerName || !authInfo.headerValue) {
     return undefined
   }
 
   return {
     [authInfo.headerName]: authInfo.headerValue,
+  }
+}
+
+function getConfigApiBaseUrl(): string {
+  if (!isRunning()) {
+    throw new Error('Server is not running. Start the service before editing advanced config.')
+  }
+
+  return `http://localhost:${getPort()}/admin/config/model-mappings`
+}
+
+async function readConfigApiError(response: Response): Promise<string> {
+  try {
+    const payload = await response.json() as ConfigApiErrorResponse
+    return payload.error?.message ?? response.statusText
+  } catch {
+    return response.statusText
+  }
+}
+
+async function fetchModelMappingsConfig(): Promise<ModelMappingsConfig> {
+  const headers = await getServerRequestHeaders('admin')
+  const response = await fetch(getConfigApiBaseUrl(), {
+    headers,
+    signal: AbortSignal.timeout(5000),
+  })
+  if (!response.ok) {
+    throw new Error(await readConfigApiError(response))
+  }
+
+  return response.json()
+}
+
+async function saveModelMappingsViaApi(
+  modelMappings: Record<string, string>,
+): Promise<void> {
+  const headers = await getServerRequestHeaders('admin')
+  const response = await fetch(getConfigApiBaseUrl(), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...headers,
+    },
+    body: JSON.stringify({ modelMappings }),
+    signal: AbortSignal.timeout(5000),
+  })
+  if (!response.ok) {
+    throw new Error(await readConfigApiError(response))
   }
 }
 
@@ -147,6 +218,10 @@ export function registerIpcHandlers(
     if (onSettingsChange) {
       await onSettingsChange(settings, prev)
     }
+  })
+  ipcMain.handle('config:get-model-mappings', async () => fetchModelMappingsConfig())
+  ipcMain.handle('config:save-model-mappings', async (_event, modelMappings: Record<string, string>) => {
+    await saveModelMappingsViaApi(modelMappings)
   })
 
   // Shell: Open the system browser
