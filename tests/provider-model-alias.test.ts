@@ -220,6 +220,39 @@ describe("provider/model aliases on top-level messages routes", () => {
     expect(selectedModel.capabilities.tokenizer).toBe("o200k_base")
   })
 
+  test("routes mapped /v1/messages/count_tokens models to provider token counting", async () => {
+    modelMappings = {
+      "claude-opus-4-7": "dash/qwen-plus",
+    }
+
+    const app = createApp()
+    const response = await app.request("/v1/messages/count_tokens", {
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ content: "hello", role: "user" }],
+        model: "claude-opus-4-7",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({
+      input_tokens: 42,
+    })
+    expect(getTokenCount).toHaveBeenCalledTimes(1)
+
+    const [openAIPayload, selectedModel] = getTokenCount.mock.calls[0] as [
+      TokenCountPayload,
+      TokenCountModel,
+    ]
+    expect(openAIPayload.model).toBe("qwen-plus")
+    expect(selectedModel.id).toBe("qwen-plus")
+    expect(selectedModel.capabilities.tokenizer).toBe("o200k_base")
+  })
+
   test("resolves missing top-level count_tokens models to the o200k_base fallback model", () => {
     const resolved = resolveCountTokensModel("missing-model", () => undefined)
 

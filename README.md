@@ -348,6 +348,7 @@ The following command line options are available for the `start` command:
         }
       }
     },
+    "modelMappings": {},
     "extraPrompts": {
       "gpt-5-mini": "<built-in exploration prompt>",
       "gpt-5.3-codex": "<built-in commentary prompt>",
@@ -370,6 +371,7 @@ The following command line options are available for the `start` command:
   ```
 - **auth.apiKeys:** API keys used for request authentication on non-admin routes. Supports multiple keys for rotation. Requests can authenticate with either `x-api-key: <key>` or `Authorization: Bearer <key>`. If empty or omitted, authentication for non-admin routes is disabled.
 - **auth.adminApiKey:** Single admin key used only for `/admin/*` routes. If missing, the server generates a random key at startup and writes it back to `config.json`. Requests use the same `x-api-key` or `Authorization: Bearer` headers, but regular `auth.apiKeys` never grant access to `/admin/*`.
+- **modelMappings:** Exact `sourceModel -> targetModel` rewrites for top-level `POST /v1/messages` and `POST /v1/messages/count_tokens` requests. Omit it or leave it as `{}` to disable rewrites. Both the source and target must be non-empty strings. Targets can be regular model IDs or `provider/model` aliases such as `dashscope/qwen3.6-plus`, and the rewrite happens before provider alias parsing. The admin endpoints `GET/POST /admin/config/model-mappings` read and update only this field.
 - **extraPrompts:** Map of `model -> prompt` appended to the first system prompt when translating Anthropic-style requests to Copilot. Use this to inject guardrails or guidance per model. Missing default entries are auto-added without overwriting your custom prompts. The built-in prompts for `gpt-5.3-codex` and `gpt-5.4` enable phase-aware commentary, which lets the model emit a short user-facing progress update before tools or deeper reasoning.
 - **providers:** Global upstream provider map. Each provider key (for example `custom`) becomes a route prefix (`/custom/v1/messages`). Supports `type: "anthropic"` and `type: "openai-compatible"`. Top-level Anthropic clients can also use `model: "custom/model-id"` with `/v1/messages` and `/v1/messages/count_tokens`; the proxy strips the `custom/` prefix before forwarding upstream. `GET /v1/models` does not aggregate provider models; use `GET /custom/v1/models` for provider model lists.
   - `enabled` defaults to `true` if omitted.
