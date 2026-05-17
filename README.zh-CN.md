@@ -615,7 +615,7 @@ GPT 模型不要设置 Claude Code 原生的 `ENABLE_TOOL_SEARCH`。这个开关
     "tool_search": {
       "type": "stdio",
       "command": "npx",
-      "args": ["@jeffreycao/copilot-api@latest", "mcp"]
+      "args": ["-y", "@jeffreycao/copilot-api@latest", "mcp"]
     }
   }
 }
@@ -628,7 +628,7 @@ GPT 模型不要设置 Claude Code 原生的 `ENABLE_TOOL_SEARCH`。这个开关
   "mcp": {
     "tool_search": {
       "type": "local",
-      "command": ["npx", "@jeffreycao/copilot-api@latest", "mcp"]
+      "command": ["npx", "-y", "@jeffreycao/copilot-api@latest", "mcp"]
     }
   }
 }
