@@ -2,6 +2,7 @@ export const BRIDGE_TOOL_SEARCH_NAME = "mcp__tool_search__search"
 export const BRIDGE_TOOL_SEARCH_ALIASES = [
   BRIDGE_TOOL_SEARCH_NAME,
   "tool_search_search",
+  "mcp__plugin_tool-search_tool_search__search",
 ] as const
 export const MCP_TOOL_SEARCH_SENTINEL_TYPE = "copilot_api_tool_search"
 
