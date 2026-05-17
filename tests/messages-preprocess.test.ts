@@ -3,6 +3,8 @@ import { describe, expect, test } from "bun:test"
 import type { AnthropicMessagesPayload } from "../src/routes/messages/anthropic-types"
 
 import {
+  applyLastMessageCacheControl,
+  getLastMessageContentCacheControl,
   mergeToolResultForClaude,
   prepareMessagesApiPayload,
   sanitizeIdeTools,
@@ -52,6 +54,64 @@ describe("mergeToolResultForClaude", () => {
               tool_name: "AskUserQuestion",
             },
           ],
+        },
+      ],
+    })
+  })
+
+  test("restores cache_control captured before stripping Tool loaded", () => {
+    const message: AnthropicMessagesPayload["messages"][number] = {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "tool-1",
+          content: [
+            {
+              type: "tool_reference",
+              tool_name: "AskUserQuestion",
+            },
+          ],
+        },
+        {
+          type: "text",
+          text: "Tool loaded.",
+          cache_control: {
+            type: "ephemeral",
+            scope: "user",
+          },
+        },
+      ],
+    }
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4.6",
+      max_tokens: 128,
+      messages: [message],
+    }
+
+    const lastMessageCacheControl = getLastMessageContentCacheControl(
+      payload.messages.at(-1),
+    )
+    stripToolReferenceTurnBoundary(payload)
+    mergeToolResultForClaude(payload)
+    applyLastMessageCacheControl(payload, lastMessageCacheControl)
+
+    expect(payload.messages[0]).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "tool-1",
+          content: [
+            {
+              type: "tool_reference",
+              tool_name: "AskUserQuestion",
+            },
+          ],
+          cache_control: {
+            type: "ephemeral",
+            scope: "user",
+          },
         },
       ],
     })
@@ -128,6 +188,51 @@ describe("mergeToolResultForClaude", () => {
           type: "tool_result",
           tool_use_id: "tool-1",
           content: "Launching skill: foo\n\nFollow-up details",
+        },
+      ],
+    })
+  })
+
+  test("adds cache_control to the merged tool_result when trailing text is absorbed", () => {
+    const message: AnthropicMessagesPayload["messages"][number] = {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "tool-1",
+          content: "Launching skill: foo",
+        },
+        {
+          type: "text",
+          text: "[Pasted ~4 lines]",
+          cache_control: {
+            type: "ephemeral",
+          },
+        },
+      ],
+    }
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4.6",
+      max_tokens: 128,
+      messages: [message],
+    }
+
+    const lastMessageCacheControl = getLastMessageContentCacheControl(
+      payload.messages.at(-1),
+    )
+    mergeToolResultForClaude(payload)
+    applyLastMessageCacheControl(payload, lastMessageCacheControl)
+
+    expect(payload.messages[0]).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "tool-1",
+          content: "Launching skill: foo\n\n[Pasted ~4 lines]",
+          cache_control: {
+            type: "ephemeral",
+          },
         },
       ],
     })

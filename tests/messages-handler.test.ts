@@ -185,6 +185,131 @@ describe("messages handler orchestration", () => {
     ])
   })
 
+  test("adds cache_control to the last content block after merging tool_result content", async () => {
+    selectedModel = {
+      id: "messages-model",
+      supported_endpoints: ["/v1/messages"],
+    }
+
+    const payload: AnthropicMessagesPayload = {
+      model: "original-model",
+      max_tokens: 128,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-1",
+              content: "Launching skill: foo",
+            },
+            {
+              type: "text",
+              text: "[Pasted ~4 lines]",
+            },
+          ],
+        },
+      ],
+    }
+
+    const app = createApp()
+    const response = await app.request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe("messages")
+
+    const [, forwardedPayload] = handleWithMessagesApi.mock.calls[0]
+    expect(forwardedPayload.messages[0]).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "tool-1",
+          content: "Launching skill: foo\n\n[Pasted ~4 lines]",
+          cache_control: {
+            type: "ephemeral",
+          },
+        },
+      ],
+    })
+  })
+
+  test("preserves cache_control captured before Tool loaded is stripped", async () => {
+    selectedModel = {
+      id: "messages-model",
+      supported_endpoints: ["/v1/messages"],
+    }
+
+    const payload: AnthropicMessagesPayload = {
+      model: "original-model",
+      max_tokens: 128,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-1",
+              content: [
+                {
+                  type: "tool_reference",
+                  tool_name: "AskUserQuestion",
+                },
+              ],
+            },
+            {
+              type: "text",
+              text: "Tool loaded.",
+              cache_control: {
+                type: "ephemeral",
+                scope: "user",
+              },
+            },
+          ],
+        },
+      ],
+    }
+
+    const app = createApp()
+    const response = await app.request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe("messages")
+
+    const [, forwardedPayload] = handleWithMessagesApi.mock.calls[0]
+    expect(forwardedPayload.messages[0]).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "tool-1",
+          content: [
+            {
+              type: "tool_reference",
+              tool_name: "AskUserQuestion",
+            },
+          ],
+          cache_control: {
+            type: "ephemeral",
+            scope: "user",
+          },
+        },
+      ],
+    })
+  })
+
   test("delegates to the Messages API flow when the model supports /v1/messages", async () => {
     selectedModel = {
       id: "messages-model",
