@@ -5,6 +5,7 @@ import type { AnthropicMessagesPayload } from "../src/routes/messages/anthropic-
 import {
   mergeToolResultForClaude,
   prepareMessagesApiPayload,
+  sanitizeIdeTools,
   stripToolReferenceTurnBoundary,
 } from "../src/routes/messages/preprocess"
 
@@ -588,6 +589,65 @@ describe("mergeToolResultForClaude attachments with tool_reference", () => {
         },
       ],
     })
+  })
+})
+
+describe("sanitizeIdeTools", () => {
+  test("continues to remove executeCode when Responses tool search is disabled", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "gpt-5",
+      max_tokens: 128,
+      messages: [{ role: "user", content: "hello" }],
+      tools: [
+        {
+          name: "mcp__tool_search__search",
+          input_schema: { type: "object" },
+        },
+        {
+          name: "mcp__ide__executeCode",
+          description: "Execute code",
+          input_schema: { type: "object" },
+        },
+        {
+          name: "mcp__ide__getDiagnostics",
+          description: "Old description",
+          input_schema: { type: "object" },
+        },
+      ],
+    }
+
+    sanitizeIdeTools(payload)
+
+    expect(payload.tools?.map((tool) => tool.name)).toEqual([
+      "mcp__tool_search__search",
+      "mcp__ide__getDiagnostics",
+    ])
+  })
+
+  test("does not keep executeCode for GPT models without the tool search bridge", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "gpt-5.4",
+      max_tokens: 128,
+      messages: [{ role: "user", content: "hello" }],
+      tools: [
+        {
+          name: "mcp__ide__executeCode",
+          description: "Execute code",
+          input_schema: { type: "object" },
+        },
+        {
+          name: "mcp__ide__getDiagnostics",
+          description: "Old description",
+          input_schema: { type: "object" },
+        },
+      ],
+    }
+
+    sanitizeIdeTools(payload)
+
+    expect(payload.tools?.map((tool) => tool.name)).toEqual([
+      "mcp__ide__getDiagnostics",
+    ])
   })
 })
 
