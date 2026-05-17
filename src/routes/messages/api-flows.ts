@@ -8,6 +8,7 @@ import type { SubagentMarker } from "~/lib/subagent"
 import type { Model } from "~/services/copilot/get-models"
 
 import { debugJson, debugJsonTail, debugLazy } from "~/lib/logger"
+import { resolveBridgeToolSearchName } from "~/lib/tool-search"
 import {
   createCopilotTokenUsageRecorder,
   mergeAnthropicUsage,
@@ -220,7 +221,9 @@ export const handleWithResponsesApi = async (
   if (responsesPayload.stream && isAsyncIterable(response)) {
     logger.debug("Streaming response from Copilot (Responses API)")
     return streamSSE(c, async (stream) => {
-      const streamState = createResponsesStreamState()
+      const streamState = createResponsesStreamState({
+        toolSearchName: resolveBridgeToolSearchName(anthropicPayload.tools),
+      })
       let usage: UsageTokens = {}
 
       for await (const chunk of response) {
@@ -285,6 +288,9 @@ export const handleWithResponsesApi = async (
   })
   const anthropicResponse = translateResponsesResultToAnthropic(
     response as ResponsesResult,
+    {
+      toolSearchName: resolveBridgeToolSearchName(anthropicPayload.tools),
+    },
   )
   recordUsage(normalizeResponsesUsage((response as ResponsesResult).usage))
   debugJson(logger, "Translated Anthropic response:", anthropicResponse)
