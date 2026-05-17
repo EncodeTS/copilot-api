@@ -609,7 +609,7 @@ Add the tool search bridge to the MCP config used by Claude Code:
     "tool_search": {
       "type": "stdio",
       "command": "npx",
-      "args": ["@jeffreycao/copilot-api@latest", "mcp"]
+      "args": ["-y", "@jeffreycao/copilot-api@latest", "mcp"]
     }
   }
 }
@@ -622,7 +622,7 @@ Add the tool search bridge to the MCP config used by opencode:
   "mcp": {
     "tool_search": {
       "type": "local",
-      "command": ["npx", "@jeffreycao/copilot-api@latest", "mcp"]
+      "command": ["npx", "-y", "@jeffreycao/copilot-api@latest", "mcp"]
     }
   }
 }
