@@ -367,7 +367,6 @@ Copilot API 现在使用子命令结构，主要命令包括：
       "gpt-5.4-mini": "xhigh",
       "gpt-5.4": "xhigh"
     },
-    "useFunctionApplyPatch": true,
     "useMessagesApi": true,
     "useResponsesApiWebSocket": true,
     "useResponsesApiWebSearch": true
@@ -394,7 +393,6 @@ Copilot API 现在使用子命令结构，主要命令包括：
 - **smallModel：** 无工具预热消息的回退模型（例如 Claude Code 的探测请求），用于避免消耗 premium requests；默认是 `gpt-5-mini`。
 - **responsesApiContextManagementModels：** 需要启用 Responses API `context_management` 压缩指令的 GPT 模型 ID 列表。默认是 `[]`，需要你显式开启。一个不错的起点是 `["gpt-5-mini", "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.4"]`。启用后，请求体会带上 `context_management`，并在后续轮次中仅保留最新的压缩承载内容。实际压缩由服务端完成，看起来会在 usage 接近模型 `maxPromptTokens` 的约 90% 时开始，因此特别适合长任务场景，同时不会额外消耗 premium requests。实践中 `compact_threshold` 似乎也是服务端固定的，所以在本项目中修改它目前不会改变压缩行为。当前该优化仅面向 GPT 系模型。
 - **modelReasoningEfforts：** 按模型配置发送到 Copilot Responses API 的 `reasoning.effort`。可选值包括 `none`、`minimal`、`low`、`medium`、`high` 和 `xhigh`。若某模型未配置，则默认使用 `high`。
-- **useFunctionApplyPatch：** 当为 `true` 时，服务端会把 Responses payload 中任何名为 `apply_patch` 的自定义工具转换为 OpenAI 风格的函数工具（`type: "function"`），并附带参数 schema，从而让 assistant 可以通过 function-calling 语义调用它来编辑文件。若设为 `false`，则保持工具原样。默认值为 `true`。
 - **useMessagesApi：** 当为 `true` 时，支持 Copilot 原生 `/v1/messages` 的 Claude 系模型会走 Messages API；否则回退到 `/chat/completions`。设为 `false` 可禁用 Messages API 路由，始终使用 `/chat/completions`。默认值为 `true`。
 - **useResponsesApiWebSocket：** 当为 `true` 时，Responses API 请求会优先对声明了 `ws:/responses` 的模型使用 Copilot websocket transport；仅声明 `/responses` 的模型仍走 HTTP。设为 `false` 可禁用 websocket 路由，并在模型支持 `/responses` 时使用 HTTP `/responses`。默认值为 `true`。
 - **useResponsesApiWebSearch：** 当为 `true` 时，服务端会保留 Responses API 中 `type: "web_search"` 的工具并透传到上游。设为 `false` 则会从 `/responses` payload 中移除这些工具。默认值为 `true`。

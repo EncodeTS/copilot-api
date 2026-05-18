@@ -3,10 +3,7 @@ import type { Context } from "hono"
 import { streamSSE } from "hono/streaming"
 
 import { awaitApproval } from "~/lib/approval"
-import {
-  getConfig as getConfiguredConfig,
-  isResponsesApiWebSearchEnabled as isConfiguredResponsesApiWebSearchEnabled,
-} from "~/lib/config"
+import { isResponsesApiWebSearchEnabled as isConfiguredResponsesApiWebSearchEnabled } from "~/lib/config"
 import { createHandlerLogger, debugJson, debugJsonTail } from "~/lib/logger"
 import { checkRateLimit as checkConfiguredRateLimit } from "~/lib/rate-limit"
 import { state } from "~/lib/state"
@@ -36,7 +33,6 @@ const logger = createHandlerLogger("responses-handler")
 export const responsesHandlerDependencies = {
   checkRateLimit: checkConfiguredRateLimit,
   createResponses: createCopilotResponses,
-  getConfig: getConfiguredConfig,
   isResponsesApiWebSearchEnabled: isConfiguredResponsesApiWebSearchEnabled,
 }
 
@@ -57,8 +53,6 @@ export const handleResponses = async (c: Context) => {
     fallbackSessionId: sessionId,
     model: payload.model,
   })
-
-  useFunctionApplyPatch(payload)
 
   removeUnsupportedTools(payload)
 
@@ -168,38 +162,6 @@ const parseResponsesStreamEvent = (
     return JSON.parse(data) as ResponseStreamEvent
   } catch {
     return null
-  }
-}
-
-const useFunctionApplyPatch = (payload: ResponsesPayload): void => {
-  const config = responsesHandlerDependencies.getConfig()
-  const useFunctionApplyPatch = config.useFunctionApplyPatch ?? true
-  if (useFunctionApplyPatch) {
-    logger.debug("Using function tool apply_patch for responses")
-    if (Array.isArray(payload.tools)) {
-      const toolsArr = payload.tools
-      for (let i = 0; i < toolsArr.length; i++) {
-        const t = toolsArr[i]
-        if (t.type === "custom" && t.name === "apply_patch") {
-          toolsArr[i] = {
-            type: "function",
-            name: t.name,
-            description: "Use the `apply_patch` tool to edit files",
-            parameters: {
-              type: "object",
-              properties: {
-                input: {
-                  type: "string",
-                  description: "The entire contents of the apply_patch command",
-                },
-              },
-              required: ["input"],
-            },
-            strict: false,
-          }
-        }
-      }
-    }
   }
 }
 
