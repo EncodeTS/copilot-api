@@ -101,9 +101,6 @@ beforeEach(async () => {
   responsesApiWebSocketEnabled = true
   responsesHandlerDependencies.checkRateLimit = async () => {}
   responsesHandlerDependencies.createResponses = createResponses
-  responsesHandlerDependencies.getConfig = () => ({
-    useFunctionApplyPatch: true,
-  })
   responsesHandlerDependencies.isResponsesApiWebSearchEnabled = () => true
   responsesUtilsDependencies.isResponsesApiWebSocketEnabled = () =>
     responsesApiWebSocketEnabled
@@ -222,6 +219,39 @@ describe("responses handler token usage", () => {
     expect(response.status).toBe(200)
     expect(createResponses).toHaveBeenCalledTimes(1)
     expect(createResponses.mock.calls[0][1]?.transport).toBe("http")
+  })
+
+  test("preserves custom apply_patch tools for Copilot Responses", async () => {
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+    const applyPatchTool = {
+      type: "custom",
+      name: "apply_patch",
+      description: "Edit files with a patch",
+      format: {
+        type: "grammar",
+        syntax: "lark",
+        definition: "start: /.+/",
+      },
+    }
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        input: "hello",
+        model: "gpt-test",
+        tools: [applyPatchTool],
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(1)
+    expect(createResponses.mock.calls[0][0].tools?.[0]).toEqual(applyPatchTool)
   })
 
   test("records usage from failed streaming responses and falls back to interaction id", async () => {

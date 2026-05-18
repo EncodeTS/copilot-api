@@ -18,7 +18,6 @@ export interface AppConfig {
     string,
     "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
   >
-  useFunctionApplyPatch?: boolean
   useMessagesApi?: boolean
   useResponsesApiWebSocket?: boolean
   anthropicApiKey?: string
@@ -109,7 +108,6 @@ const defaultConfig: AppConfig = {
     "gpt-5.4": "xhigh",
     "gpt-5.5": "xhigh",
   },
-  useFunctionApplyPatch: true,
   useMessagesApi: true,
   useResponsesApiWebSocket: true,
   useResponsesApiWebSearch: true,
