@@ -16,9 +16,8 @@ await mock.module("~/lib/tokenizer", () => ({
   getTokenCount: () => Promise.resolve({ input: 100, output: 0 }),
 }))
 
-const { handleCountTokens } = await import(
-  "../src/routes/messages/count-tokens-handler"
-)
+const { handleCountTokens } =
+  await import("../src/routes/messages/count-tokens-handler")
 
 const m = (id: string): Model => ({ id }) as Model
 
