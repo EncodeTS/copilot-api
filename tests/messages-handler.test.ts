@@ -65,6 +65,8 @@ await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
   getSmallModel: () => "small-model",
   isMessagesApiEnabled: () => messagesApiEnabled,
+  isParityFirstEnabled: () => true,
+  isResponsesApiWebSocketEnabled: () => true,
 }))
 await mock.module("~/lib/models", () => ({
   ...actualModelsModule,
@@ -188,10 +190,54 @@ describe("messages handler orchestration", () => {
     expect(forwardedPayload.model).toBe("messages-model")
   })
 
+  test("prefers the Messages API flow when a model also supports Responses", async () => {
+    selectedModel = {
+      id: "dual-endpoint-model",
+      supported_endpoints: ["/v1/messages", "/responses", "ws:/responses"],
+    }
+
+    const app = createApp()
+    const response = await app.request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(createPayload()),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe("messages")
+    expect(handleWithMessagesApi).toHaveBeenCalledTimes(1)
+    expect(handleWithResponsesApi).not.toHaveBeenCalled()
+    expect(handleWithChatCompletions).not.toHaveBeenCalled()
+  })
+
   test("delegates to the Responses API flow when the model supports /responses", async () => {
     selectedModel = {
       id: "responses-model",
       supported_endpoints: ["/responses"],
+    }
+
+    const app = createApp()
+    const response = await app.request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(createPayload()),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe("responses")
+    expect(handleWithMessagesApi).not.toHaveBeenCalled()
+    expect(handleWithResponsesApi).toHaveBeenCalledTimes(1)
+    expect(handleWithChatCompletions).not.toHaveBeenCalled()
+  })
+
+  test("delegates to the Responses API flow when the model supports ws:/responses", async () => {
+    selectedModel = {
+      id: "responses-ws-model",
+      supported_endpoints: ["ws:/responses"],
     }
 
     const app = createApp()

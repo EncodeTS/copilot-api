@@ -14,38 +14,33 @@ import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
 import { HTTPError, logUpstreamError } from "~/lib/error"
 import { state } from "~/lib/state"
 
-export const createChatCompletions = async (
-  payload: ChatCompletionsPayload,
-  options: {
-    subagentMarker?: SubagentMarker | null
-    requestId: string
-    sessionId?: string
-    compactType?: CompactType
-  },
-) => {
-  if (!state.copilotToken) throw new Error("Copilot token not found")
+export interface ChatCompletionsOptions {
+  subagentMarker?: SubagentMarker | null
+  requestId: string
+  sessionId?: string
+  compactType?: CompactType
+}
 
+export const hasAgentInitiator = (messages: Array<Message>): boolean => {
+  const lastMessage = messages.at(-1)
+  return Boolean(
+    lastMessage && ["assistant", "tool"].includes(lastMessage.role),
+  )
+}
+
+export const prepareChatCompletionsHeaders = (
+  payload: ChatCompletionsPayload,
+  options: ChatCompletionsOptions,
+): Record<string, string> => {
   const enableVision = payload.messages.some(
     (x) =>
       typeof x.content !== "string"
       && x.content?.some((x) => x.type === "image_url"),
   )
 
-  // Agent/user check for x-initiator header
-  // Determine if any message is from an agent ("assistant" or "tool")
-  // Refactor `isAgentCall` logic to check only the last message in the history rather than any message. This prevents valid user messages from being incorrectly flagged as agent calls due to previous assistant history, ensuring proper credit consumption for multi-turn conversations.
-  let isAgentCall = false
-  if (payload.messages.length > 0) {
-    const lastMessage = payload.messages.at(-1)
-    if (lastMessage) {
-      isAgentCall = ["assistant", "tool"].includes(lastMessage.role)
-    }
-  }
-
-  // Build headers and add x-initiator
   const headers: Record<string, string> = {
     ...copilotHeaders(state, options.requestId, enableVision),
-    "x-initiator": isAgentCall ? "agent" : "user",
+    "x-initiator": hasAgentInitiator(payload.messages) ? "agent" : "user",
   }
 
   prepareInteractionHeaders(
@@ -56,13 +51,27 @@ export const createChatCompletions = async (
 
   prepareForCompact(headers, options.compactType)
 
+  return headers
+}
+
+export const createChatCompletions = async (
+  payload: ChatCompletionsPayload,
+  options: ChatCompletionsOptions,
+) => {
+  if (!state.copilotToken) throw new Error("Copilot token not found")
+
+  const headers = prepareChatCompletionsHeaders(payload, options)
+
   consola.log(`<-- model: ${payload.model}`)
 
-  const response = await fetch(`${copilotBaseUrl(state)}/chat/completions`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-  })
+  const response = await globalThis.fetch(
+    `${copilotBaseUrl(state)}/chat/completions`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    },
+  )
 
   logCopilotRateLimits(response.headers)
 
@@ -101,7 +110,8 @@ export interface ChatCompletionChunk {
     completion_tokens: number
     total_tokens: number
     prompt_tokens_details?: {
-      cached_tokens: number
+      cache_creation_input_tokens?: number
+      cached_tokens?: number
     }
     completion_tokens_details?: {
       accepted_prediction_tokens: number
@@ -123,6 +133,7 @@ export interface Delta {
     }
   }>
   reasoning_text?: string | null
+  reasoning_content?: string | null
   reasoning_opaque?: string | null
 }
 
@@ -147,7 +158,8 @@ export interface ChatCompletionResponse {
     completion_tokens: number
     total_tokens: number
     prompt_tokens_details?: {
-      cached_tokens: number
+      cache_creation_input_tokens?: number
+      cached_tokens?: number
     }
   }
 }
@@ -156,6 +168,7 @@ interface ResponseMessage {
   role: "assistant"
   content: string | null
   reasoning_text?: string | null
+  reasoning_content?: string | null
   reasoning_opaque?: string | null
   tool_calls?: Array<ToolCall>
 }
@@ -170,6 +183,8 @@ interface ChoiceNonStreaming {
 // Payload types
 
 export interface ChatCompletionsPayload {
+  [key: string]: unknown
+
   messages: Array<Message>
   model: string
   temperature?: number | null
@@ -193,7 +208,12 @@ export interface ChatCompletionsPayload {
     | { type: "function"; function: { name: string } }
     | null
   user?: string | null
+  stream_options?: {
+    include_usage?: boolean | null
+  } | null
   thinking_budget?: number
+  top_k?: number | null
+  parallel_tool_calls?: boolean | null
 }
 
 export interface Tool {
@@ -212,8 +232,10 @@ export interface Message {
   name?: string
   tool_calls?: Array<ToolCall>
   tool_call_id?: string
+  reasoning_content?: string | null
   reasoning_text?: string | null
   reasoning_opaque?: string | null
+  copilot_cache_control?: CopilotCacheControl
 }
 
 export interface ToolCall {
@@ -225,11 +247,20 @@ export interface ToolCall {
   }
 }
 
-export type ContentPart = TextPart | ImagePart
+export type ContentPart = TextPart | ImagePart | FilePart
+
+export interface CacheControl {
+  type: "ephemeral"
+}
+
+export interface CopilotCacheControl {
+  type: "ephemeral"
+}
 
 export interface TextPart {
   type: "text"
   text: string
+  cache_control?: CacheControl
 }
 
 export interface ImagePart {
@@ -238,4 +269,14 @@ export interface ImagePart {
     url: string
     detail?: "low" | "high" | "auto"
   }
+  cache_control?: CacheControl
+}
+
+export interface FilePart {
+  type: "file"
+  file: {
+    file_data: string
+    filename?: string
+  }
+  cache_control?: CacheControl
 }

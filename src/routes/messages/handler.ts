@@ -17,6 +17,7 @@ import { checkRateLimit } from "~/lib/rate-limit"
 import { requestContext } from "~/lib/request-context"
 import { state } from "~/lib/state"
 import { generateRequestIdFromPayload, getRootSessionId } from "~/lib/utils"
+import { getResponsesTransportForModel } from "~/routes/responses/utils"
 
 import { type AnthropicMessagesPayload } from "./anthropic-types"
 import {
@@ -206,13 +207,10 @@ export async function handleCompletion(c: Context) {
   })
 }
 
-const RESPONSES_ENDPOINT = "/responses"
 const MESSAGES_ENDPOINT = "/v1/messages"
 
 const shouldUseResponsesApi = (selectedModel: Model | undefined): boolean => {
-  return (
-    selectedModel?.supported_endpoints?.includes(RESPONSES_ENDPOINT) ?? false
-  )
+  return Boolean(getResponsesTransportForModel(selectedModel))
 }
 
 const shouldUseMessagesApi = (selectedModel: Model | undefined): boolean => {

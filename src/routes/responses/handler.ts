@@ -18,12 +18,11 @@ import { createStreamIdTracker, fixStreamIds } from "./stream-id-sync"
 import {
   applyResponsesApiContextManagement,
   compactInputByLatestCompaction,
+  getResponsesTransportForModel,
   getResponsesRequestOptions,
 } from "./utils"
 
 const logger = createHandlerLogger("responses-handler")
-
-const RESPONSES_ENDPOINT = "/responses"
 
 export const handleResponses = async (c: Context) => {
   await checkRateLimit(state)
@@ -51,10 +50,9 @@ export const handleResponses = async (c: Context) => {
   const selectedModel = state.models?.data.find(
     (model) => model.id === payload.model,
   )
-  const supportsResponses =
-    selectedModel?.supported_endpoints?.includes(RESPONSES_ENDPOINT) ?? false
+  const responsesTransport = getResponsesTransportForModel(selectedModel)
 
-  if (!supportsResponses) {
+  if (!responsesTransport) {
     return c.json(
       {
         error: {
@@ -85,6 +83,7 @@ export const handleResponses = async (c: Context) => {
     initiator,
     requestId,
     sessionId: sessionId,
+    transport: responsesTransport,
   })
 
   if (isStreamingRequested(payload) && isAsyncIterable(response)) {
