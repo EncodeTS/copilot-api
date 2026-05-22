@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test"
 
-import type { ResolvedProviderConfig } from "~/lib/config"
+import {
+  resolveProviderAuthType,
+  type ResolvedProviderConfig,
+} from "~/lib/config"
 
 import { buildProviderUpstreamHeaders } from "../src/services/providers/anthropic-proxy"
 
@@ -50,5 +53,38 @@ describe("buildProviderUpstreamHeaders", () => {
       authorization: "Bearer provider-key",
       "user-agent": "test-client",
     })
+  })
+
+  test("does not forward Anthropic-only headers to OpenAI-compatible providers", () => {
+    const headers = buildProviderUpstreamHeaders(
+      createProviderConfig({
+        authType: "authorization",
+        type: "openai-compatible",
+      }),
+      new Headers({
+        accept: "application/json",
+        "anthropic-version": "2023-06-01",
+      }),
+    )
+
+    expect(headers).toEqual({
+      "content-type": "application/json",
+      accept: "application/json",
+      authorization: "Bearer provider-key",
+    })
+  })
+})
+
+describe("resolveProviderAuthType", () => {
+  test("falls back to OpenAI-compatible default for invalid authType", () => {
+    expect(
+      resolveProviderAuthType("dash", "invalid-auth-type", "openai-compatible"),
+    ).toBe("authorization")
+  })
+
+  test("falls back to Anthropic default for invalid authType", () => {
+    expect(
+      resolveProviderAuthType("custom", "invalid-auth-type", "anthropic"),
+    ).toBe("x-api-key")
   })
 })
