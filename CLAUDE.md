@@ -74,5 +74,6 @@ This is a reverse-engineered proxy that exposes the GitHub Copilot API as both a
 
 ## Plugin Integrations
 
-- **Claude Code plugin:** Install from marketplace with `/plugin marketplace add https://github.com/caozhiyuan/copilot-api.git` then `/plugin install claude-plugin@copilot-api-marketplace`. Injects `__SUBAGENT_MARKER__` on subagent starts.
+- **Claude Code agent-inject plugin:** Install from marketplace with `/plugin marketplace add https://github.com/caozhiyuan/copilot-api.git` then `/plugin install agent-inject@copilot-api-marketplace`. Injects `__SUBAGENT_MARKER__` on subagent starts.
+- **Claude Code tool-search plugin:** Install from the same marketplace with `/plugin install tool-search@copilot-api-marketplace`. Registers the `tool_search` MCP bridge.
 - **Opencode plugin:** Copy `.opencode/plugins/subagent-marker.js` to `~/.config/opencode/plugins/`.
