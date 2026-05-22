@@ -10,6 +10,7 @@ import type { Model } from "~/services/copilot/get-models"
 
 import { debugJson, debugJsonTail, debugLazy } from "~/lib/logger"
 import { state } from "~/lib/state"
+import { resolveBridgeToolSearchName } from "~/lib/tool-search"
 import {
   buildErrorEvent,
   createResponsesStreamState,
@@ -22,12 +23,15 @@ import {
 import {
   applyResponsesApiContextManagement,
   compactInputByLatestCompaction,
+  getResponsesTransportForModel,
   getResponsesRequestOptions,
 } from "~/routes/responses/utils"
 import {
   createChatCompletions,
   type ChatCompletionChunk,
   type ChatCompletionResponse,
+  type ChatCompletionsPayload,
+  type Message,
 } from "~/services/copilot/create-chat-completions"
 import { createMessages } from "~/services/copilot/create-messages"
 import {
@@ -45,7 +49,16 @@ import {
   translateToOpenAI,
 } from "./non-stream-translation"
 import { prepareMessagesApiPayload } from "./preprocess"
-import { translateChunkToAnthropicEvents } from "./stream-translation"
+import {
+  flushPendingAnthropicStreamEvents,
+  translateChunkToAnthropicEvents,
+} from "./stream-translation"
+
+const COPILOT_CONTEXT_CACHE_SYSTEM_MARKER_LIMIT = 2
+const COPILOT_CONTEXT_CACHE_NON_SYSTEM_MARKER_LIMIT = 2
+const COPILOT_CONTEXT_CACHE_CONTROL = {
+  type: "ephemeral",
+} as const
 
 export interface FlowBaseOptions {
   logger: ConsolaInstance
@@ -71,6 +84,7 @@ export const handleWithChatCompletions = async (
 ) => {
   const { logger, subagentMarker, requestId, sessionId, compactType } = options
   const openAIPayload = translateToOpenAI(anthropicPayload)
+  prepareCopilotChatCompletionsPayload(openAIPayload)
   debugJson(logger, "Translated OpenAI request payload:", openAIPayload)
 
   const response = await createChatCompletions(openAIPayload, {
@@ -119,6 +133,15 @@ export const handleWithChatCompletions = async (
         })
       }
     }
+
+    for (const event of flushPendingAnthropicStreamEvents(streamState)) {
+      const eventData = JSON.stringify(event)
+      debugLazy(logger, () => ["Translated Anthropic event:", eventData])
+      await stream.writeSSE({
+        event: event.type,
+        data: eventData,
+      })
+    }
   })
 }
 
@@ -149,9 +172,11 @@ export const handleWithResponsesApi = async (
   debugJson(logger, "Translated Responses payload:", responsesPayload)
 
   const { vision, initiator } = getResponsesRequestOptions(responsesPayload)
+  const transport = getResponsesTransportForModel(selectedModel) ?? "http"
   const response = await createResponses(responsesPayload, {
     vision,
     initiator,
+    transport,
     subagentMarker,
     requestId,
     sessionId,
@@ -161,7 +186,9 @@ export const handleWithResponsesApi = async (
   if (responsesPayload.stream && isAsyncIterable(response)) {
     logger.debug("Streaming response from Copilot (Responses API)")
     return streamSSE(c, async (stream) => {
-      const streamState = createResponsesStreamState()
+      const streamState = createResponsesStreamState({
+        toolSearchName: resolveBridgeToolSearchName(anthropicPayload.tools),
+      })
 
       for await (const chunk of response) {
         const eventName = chunk.event
@@ -217,6 +244,9 @@ export const handleWithResponsesApi = async (
   })
   const anthropicResponse = translateResponsesResultToAnthropic(
     response as ResponsesResult,
+    {
+      toolSearchName: resolveBridgeToolSearchName(anthropicPayload.tools),
+    },
   )
   debugJson(logger, "Translated Anthropic response:", anthropicResponse)
   return c.json(anthropicResponse)
@@ -283,6 +313,58 @@ export const handleWithMessagesApi = async (
   })
   return c.json(response)
 }
+
+export const prepareCopilotChatCompletionsPayload = (
+  payload: ChatCompletionsPayload,
+): void => {
+  applyCopilotContextCache(payload)
+}
+
+const applyCopilotContextCache = (payload: ChatCompletionsPayload): void => {
+  const messageIndexes = selectCopilotContextCacheMessageIndexes(
+    payload.messages,
+  )
+  for (const messageIndex of messageIndexes) {
+    const message = payload.messages[messageIndex]
+    message.copilot_cache_control = { ...COPILOT_CONTEXT_CACHE_CONTROL }
+  }
+}
+
+const selectCopilotContextCacheMessageIndexes = (
+  messages: Array<Message>,
+): Array<number> => {
+  const systemIndexes = messages
+    .flatMap((message, index) =>
+      message.role === "system" && isCopilotContextCacheEligible(message) ?
+        [index]
+      : [],
+    )
+    .slice(0, COPILOT_CONTEXT_CACHE_SYSTEM_MARKER_LIMIT)
+  const reverseNonSystemIndexes = messages
+    .flatMap((message, index) =>
+      message.role !== "system" && isCopilotContextCacheEligible(message) ?
+        [index]
+      : [],
+    )
+    .reverse()
+    .slice(0, COPILOT_CONTEXT_CACHE_NON_SYSTEM_MARKER_LIMIT)
+
+  return uniqueIndexes([...systemIndexes, ...reverseNonSystemIndexes]).sort(
+    (a, b) => a - b,
+  )
+}
+
+const isCopilotContextCacheEligible = (message: Message): boolean => {
+  if (typeof message.content === "string") {
+    return message.content.length > 0
+  }
+
+  return Array.isArray(message.content) && message.content.length > 0
+}
+
+const uniqueIndexes = (indexes: Array<number>): Array<number> => [
+  ...new Set(indexes),
+]
 
 const isNonStreaming = (
   response: Awaited<ReturnType<typeof createChatCompletions>>,

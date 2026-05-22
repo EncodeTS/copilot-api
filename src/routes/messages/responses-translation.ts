@@ -1,9 +1,22 @@
+/* eslint-disable max-lines */
 import consola from "consola"
 
 import {
   getExtraPromptForModel,
   getReasoningEffortForModel,
 } from "~/lib/config"
+import { HTTPError } from "~/lib/error"
+import {
+  BRIDGE_TOOL_SEARCH_NAME,
+  formatToolSearchBridgeArguments,
+  isBridgeToolSearchName,
+  isDeferredToolName,
+  listDeferredToolNames,
+  normalizeToolSearchBridgeArguments,
+  parseMcpToolSearchSentinel,
+  selectDeferredToolsByNames,
+  shouldEnableResponsesToolSearch,
+} from "~/lib/tool-search"
 import { parseUserIdMetadata } from "~/lib/utils"
 import {
   type ResponsesPayload,
@@ -19,6 +32,7 @@ import {
   type ResponseOutputContentBlock,
   type ResponseOutputCompaction,
   type ResponseOutputFunctionCall,
+  type ResponseOutputToolSearchCall,
   type ResponseOutputItem,
   type ResponseOutputReasoning,
   type ResponseReasoningBlock,
@@ -26,6 +40,8 @@ import {
   type ResponseOutputText,
   type ResponseFunctionToolCallItem,
   type ResponseFunctionCallOutputItem,
+  type ResponseToolSearchCallItem,
+  type ResponseToolSearchOutputItem,
   type Tool,
   type ToolChoiceFunction,
   type ToolChoiceOptions,
@@ -61,13 +77,34 @@ export const translateAnthropicMessagesToResponsesPayload = (
 ): ResponsesPayload => {
   const input: Array<ResponseInputItem> = []
   const applyPhase = shouldApplyPhase(payload.model)
-
-  for (const message of payload.messages) {
-    input.push(...translateMessage(message, payload.model, applyPhase))
+  const toolSearchEnabled = shouldEnableResponsesToolSearch({
+    model: payload.model,
+    tools: payload.tools,
+  })
+  const translationState: TranslationState = {
+    originalTools: payload.tools ?? [],
+    toolSearchEnabled,
+    toolUseNameById: new Map(),
   }
 
-  const translatedTools = convertAnthropicTools(payload.tools)
-  const toolChoice = convertAnthropicToolChoice(payload.tool_choice)
+  for (const message of payload.messages) {
+    input.push(
+      ...translateMessage(message, {
+        applyPhase,
+        model: payload.model,
+        state: translationState,
+      }),
+    )
+  }
+
+  const translatedTools = convertAnthropicTools(
+    payload.tools,
+    toolSearchEnabled,
+  )
+  const toolChoice = convertAnthropicToolChoice(
+    payload.tool_choice,
+    toolSearchEnabled,
+  )
 
   // Remove safetyIdentifier to align with vscode copilot
   const { sessionId: promptCacheKey } = parseUserIdMetadata(
@@ -96,6 +133,18 @@ export const translateAnthropicMessagesToResponsesPayload = (
   }
 
   return responsesPayload
+}
+
+interface TranslationState {
+  originalTools: Array<AnthropicTool>
+  toolSearchEnabled: boolean
+  toolUseNameById: Map<string, string>
+}
+
+interface TranslateMessageOptions {
+  applyPhase: boolean
+  model: string
+  state: TranslationState
 }
 
 type CompactionCarrier = {
@@ -138,18 +187,18 @@ export const decodeCompactionCarrierSignature = (
 
 const translateMessage = (
   message: AnthropicMessage,
-  model: string,
-  applyPhase: boolean,
+  options: TranslateMessageOptions,
 ): Array<ResponseInputItem> => {
   if (message.role === "user") {
-    return translateUserMessage(message)
+    return translateUserMessage(message, options.state)
   }
 
-  return translateAssistantMessage(message, model, applyPhase)
+  return translateAssistantMessage(message, options)
 }
 
 const translateUserMessage = (
   message: AnthropicUserMessage,
+  state: TranslationState,
 ): Array<ResponseInputItem> => {
   if (typeof message.content === "string") {
     return [createMessage("user", message.content)]
@@ -165,7 +214,7 @@ const translateUserMessage = (
   for (const block of message.content) {
     if (block.type === "tool_result") {
       flushPendingContent(pendingContent, items, { role: "user" })
-      items.push(createFunctionCallOutput(block))
+      items.push(createToolCallOutput(block, state))
       continue
     }
 
@@ -182,8 +231,7 @@ const translateUserMessage = (
 
 const translateAssistantMessage = (
   message: AnthropicAssistantMessage,
-  model: string,
-  applyPhase: boolean,
+  { applyPhase, model, state }: TranslateMessageOptions,
 ): Array<ResponseInputItem> => {
   const assistantPhase = resolveAssistantPhase(
     model,
@@ -204,11 +252,12 @@ const translateAssistantMessage = (
 
   for (const block of message.content) {
     if (block.type === "tool_use") {
+      state.toolUseNameById.set(block.id, block.name)
       flushPendingContent(pendingContent, items, {
         role: "assistant",
         phase: assistantPhase,
       })
-      items.push(createFunctionToolCall(block))
+      items.push(createToolCall(block, state))
       continue
     }
 
@@ -410,13 +459,38 @@ const parseReasoningSignature = (
 
 const createFunctionToolCall = (
   block: AnthropicToolUseBlock,
+  state: TranslationState,
 ): ResponseFunctionToolCallItem => ({
   type: "function_call",
   call_id: block.id,
   name: block.name,
   arguments: JSON.stringify(block.input),
   status: "completed",
+  ...(state.toolSearchEnabled && isDeferredToolName(block.name) ?
+    { namespace: block.name }
+  : {}),
 })
+
+const createToolSearchCall = (
+  block: AnthropicToolUseBlock,
+): ResponseToolSearchCallItem => ({
+  type: "tool_search_call",
+  call_id: block.id,
+  arguments: normalizeToolSearchBridgeArguments(block.input),
+  execution: "client",
+  status: "completed",
+})
+
+const createToolCall = (
+  block: AnthropicToolUseBlock,
+  state: TranslationState,
+): ResponseFunctionToolCallItem | ResponseToolSearchCallItem => {
+  if (state.toolSearchEnabled && isBridgeToolSearchName(block.name)) {
+    return createToolSearchCall(block)
+  }
+
+  return createFunctionToolCall(block, state)
+}
 
 const createFunctionCallOutput = (
   block: AnthropicToolResultBlock,
@@ -426,6 +500,127 @@ const createFunctionCallOutput = (
   output: convertToolResultContent(block.content),
   status: block.is_error ? "incomplete" : "completed",
 })
+
+const createToolCallOutput = (
+  block: AnthropicToolResultBlock,
+  state: TranslationState,
+): ResponseFunctionCallOutputItem | ResponseToolSearchOutputItem => {
+  const toolUseName = state.toolUseNameById.get(block.tool_use_id)
+  if (state.toolSearchEnabled && isBridgeToolSearchName(toolUseName ?? "")) {
+    return createToolSearchOutput(block, state.originalTools)
+  }
+
+  return createFunctionCallOutput(block)
+}
+
+const createToolSearchOutput = (
+  block: AnthropicToolResultBlock,
+  originalTools: Array<AnthropicTool>,
+): ResponseToolSearchOutputItem => {
+  const referencedToolNames = resolveToolSearchReferencedToolNames(
+    block.content,
+    originalTools,
+  )
+
+  return {
+    type: "tool_search_output",
+    call_id: block.tool_use_id,
+    tools: referencedToolNames.map((toolName) =>
+      convertDeferredToolToNamespace(
+        resolveDeferredTool(toolName, originalTools),
+      ),
+    ),
+    execution: "client",
+    status: block.is_error ? "incomplete" : "completed",
+  }
+}
+
+const resolveToolSearchReferencedToolNames = (
+  content: string | Array<AnthropicToolResultContentBlock>,
+  originalTools: Array<AnthropicTool>,
+): Array<string> => {
+  const explicitReferences = extractToolReferenceNames(content)
+  if (explicitReferences.length > 0) {
+    return uniqueToolNames(explicitReferences)
+  }
+
+  const sentinel = extractMcpToolSearchSentinel(content)
+  if (sentinel) {
+    return selectDeferredToolsByNames(sentinel.names, originalTools).map(
+      (tool) => tool.name,
+    )
+  }
+
+  return []
+}
+
+const extractToolReferenceNames = (
+  content: string | Array<AnthropicToolResultContentBlock>,
+): Array<string> => {
+  if (!Array.isArray(content)) {
+    return []
+  }
+
+  return content.flatMap((block) =>
+    block.type === "tool_reference" ? [block.tool_name] : [],
+  )
+}
+
+const extractMcpToolSearchSentinel = (
+  content: string | Array<AnthropicToolResultContentBlock>,
+) => {
+  if (typeof content === "string") {
+    return parseMcpToolSearchSentinel(content)
+  }
+
+  for (const block of content) {
+    if (block.type !== "text") {
+      continue
+    }
+
+    const sentinel = parseMcpToolSearchSentinel(block.text)
+    if (sentinel) {
+      return sentinel
+    }
+  }
+
+  return null
+}
+
+const resolveDeferredTool = (
+  toolName: string,
+  originalTools: Array<AnthropicTool>,
+): AnthropicTool => {
+  const tool = originalTools.find((candidate) => candidate.name === toolName)
+  if (tool && isDeferredToolName(tool.name)) {
+    return tool
+  }
+
+  throw createInvalidRequestError(
+    `Tool reference '${toolName}' has no corresponding deferred tool definition`,
+  )
+}
+
+const uniqueToolNames = (toolNames: Array<string>): Array<string> => [
+  ...new Set(toolNames),
+]
+
+const createInvalidRequestError = (message: string): HTTPError =>
+  new HTTPError(
+    message,
+    new Response(
+      JSON.stringify({
+        error: {
+          message,
+          type: "invalid_request_error",
+        },
+      }),
+      {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      },
+    ),
+  )
 
 const translateSystemPrompt = (
   system: string | Array<AnthropicTextBlock> | undefined,
@@ -454,22 +649,89 @@ const translateSystemPrompt = (
 
 const convertAnthropicTools = (
   tools: Array<AnthropicTool> | undefined,
+  toolSearchEnabled: boolean,
 ): Array<Tool> | null => {
   if (!tools || tools.length === 0) {
     return null
   }
 
-  return tools.map((tool) => ({
-    type: "function",
-    name: tool.name,
-    parameters: normalizeToolSchema(tool.input_schema),
-    strict: false,
-    ...(tool.description ? { description: tool.description } : {}),
-  }))
+  const converted: Array<Tool> = []
+  let addedToolSearch = false
+  const searchableToolNames =
+    toolSearchEnabled ? listDeferredToolNames(tools) : []
+
+  for (const tool of tools) {
+    if (isBridgeToolSearchName(tool.name)) {
+      if (toolSearchEnabled && !addedToolSearch) {
+        converted.push(createResponsesToolSearchDefinition(searchableToolNames))
+        addedToolSearch = true
+      }
+      continue
+    }
+
+    if (toolSearchEnabled && isDeferredToolName(tool.name)) {
+      converted.push(convertDeferredToolToNamespace(tool))
+      continue
+    }
+
+    converted.push(convertToolToFunction(tool))
+  }
+
+  return converted
 }
+
+const createResponsesToolSearchDefinition = (
+  searchableToolNames: Array<string>,
+): Tool => ({
+  type: "tool_search",
+  execution: "client",
+  description:
+    "Load deferred tools by exact name before using them. Return only the searchable tool names you need for the next step.",
+  parameters: {
+    type: "object",
+    properties: {
+      names: {
+        type: "array",
+        description: "Exact deferred tool names to load.",
+        items: {
+          type: "string",
+          enum: searchableToolNames,
+        },
+        minItems: 1,
+      },
+    },
+    required: ["names"],
+    additionalProperties: false,
+  },
+})
+
+const convertToolToFunction = (tool: AnthropicTool): Tool => ({
+  type: "function",
+  name: tool.name,
+  parameters: normalizeToolSchema(tool.input_schema),
+  strict: false,
+  ...(tool.description ? { description: tool.description } : {}),
+})
+
+const convertDeferredToolToNamespace = (tool: AnthropicTool): Tool => ({
+  type: "namespace",
+  name: tool.name,
+  ...(tool.description ? { description: tool.description } : {}),
+  tools: [
+    {
+      type: "function",
+      name: tool.name,
+      parameters: normalizeToolSchema(tool.input_schema),
+      strict: false,
+      defer_loading: true,
+      ...(tool.description ? { description: tool.description } : {}),
+    },
+  ],
+})
 
 const convertAnthropicToolChoice = (
   choice: AnthropicMessagesPayload["tool_choice"],
+  toolSearchEnabled: boolean,
 ): ToolChoiceOptions | ToolChoiceFunction => {
   if (!choice) {
     return "auto"
@@ -483,6 +745,13 @@ const convertAnthropicToolChoice = (
       return "required"
     }
     case "tool": {
+      if (
+        toolSearchEnabled
+        && choice.name
+        && isBridgeToolSearchName(choice.name)
+      ) {
+        return "auto"
+      }
       return choice.name ? { type: "function", name: choice.name } : "auto"
     }
     case "none": {
@@ -494,10 +763,15 @@ const convertAnthropicToolChoice = (
   }
 }
 
+interface ResponsesToAnthropicOptions {
+  toolSearchName?: string
+}
+
 export const translateResponsesResultToAnthropic = (
   response: ResponsesResult,
+  options?: ResponsesToAnthropicOptions,
 ): AnthropicResponse => {
-  const contentBlocks = mapOutputToAnthropicContent(response.output)
+  const contentBlocks = mapOutputToAnthropicContent(response.output, options)
   const usage = mapResponsesUsage(response)
   let anthropicContent = fallbackContentBlocks(response.output_text)
   if (contentBlocks.length > 0) {
@@ -520,6 +794,7 @@ export const translateResponsesResultToAnthropic = (
 
 const mapOutputToAnthropicContent = (
   output: Array<ResponseOutputItem>,
+  options?: ResponsesToAnthropicOptions,
 ): Array<AnthropicAssistantContentBlock> => {
   const contentBlocks: Array<AnthropicAssistantContentBlock> = []
 
@@ -541,6 +816,19 @@ const mapOutputToAnthropicContent = (
         if (toolUseBlock) {
           contentBlocks.push(toolUseBlock)
         }
+        break
+      }
+      case "tool_search_call": {
+        const toolUseBlock = createToolSearchUseContentBlock(
+          item,
+          options?.toolSearchName,
+        )
+        if (toolUseBlock) {
+          contentBlocks.push(toolUseBlock)
+        }
+        break
+      }
+      case "tool_search_output": {
         break
       }
       case "message": {
@@ -636,7 +924,8 @@ const createToolUseContentBlock = (
   call: ResponseOutputFunctionCall,
 ): AnthropicToolUseBlock | null => {
   const toolId = call.call_id
-  if (!call.name || !toolId) {
+  const toolName = resolveToolUseName(call)
+  if (!toolName || !toolId) {
     return null
   }
 
@@ -645,9 +934,36 @@ const createToolUseContentBlock = (
   return {
     type: "tool_use",
     id: toolId,
-    name: call.name,
+    name: toolName,
     input,
   }
+}
+
+const createToolSearchUseContentBlock = (
+  call: ResponseOutputToolSearchCall,
+  toolSearchName = BRIDGE_TOOL_SEARCH_NAME,
+): AnthropicToolUseBlock | null => {
+  const toolId = call.call_id
+  if (!toolId) {
+    return null
+  }
+
+  return {
+    type: "tool_use",
+    id: toolId,
+    name: toolSearchName,
+    input: parseToolSearchArguments(call.arguments),
+  }
+}
+
+export const resolveToolUseName = (
+  call: Pick<ResponseOutputFunctionCall, "name" | "namespace">,
+): string => {
+  if (typeof call.namespace === "string" && call.namespace.length > 0) {
+    return call.namespace
+  }
+
+  return call.name
 }
 
 const createCompactionThinkingBlock = (
@@ -694,6 +1010,12 @@ const parseFunctionCallArguments = (
   return { raw_arguments: rawArguments }
 }
 
+const parseToolSearchArguments = (
+  argumentsValue: Record<string, unknown> | string,
+): Record<string, unknown> => {
+  return formatToolSearchBridgeArguments(argumentsValue)
+}
+
 const fallbackContentBlocks = (
   outputText: string,
 ): Array<AnthropicAssistantContentBlock> => {
@@ -715,7 +1037,12 @@ const mapResponsesStopReason = (
   const { status, incomplete_details: incompleteDetails } = response
 
   if (status === "completed") {
-    if (response.output.some((item) => item.type === "function_call")) {
+    if (
+      response.output.some(
+        (item) =>
+          item.type === "function_call" || item.type === "tool_search_call",
+      )
+    ) {
       return "tool_use"
     }
     return "end_turn"
