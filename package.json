@@ -43,6 +43,7 @@
     "*": "bun run lint --fix"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "citty": "^0.1.6",
     "clipboardy": "^5.0.0",
     "consola": "^3.4.2",
