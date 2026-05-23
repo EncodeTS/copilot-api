@@ -171,7 +171,7 @@ const applyMissingExtraBody = (
   options: { extraBody: Record<string, unknown> | undefined },
 ): void => {
   for (const [key, value] of Object.entries(options.extraBody ?? {})) {
-    if (!Object.hasOwn(payload, key)) {
+    if (!Object.hasOwn(payload, key) || payload[key] === undefined) {
       payload[key] = value
     }
   }
@@ -441,6 +441,7 @@ const streamOpenAICompatibleProviderMessages = ({
       thinkingBlockOpen: false,
     }
 
+    let terminatedWithError = false
     for await (const chunk of events(upstreamResponse)) {
       logger.debug(
         "provider.messages.openai_compatible.raw_stream_event:",
@@ -459,12 +460,26 @@ const streamOpenAICompatibleProviderMessages = ({
         continue
       }
 
-      const parsed = parseOpenAICompatibleStreamChunk(chunk.data)
-      if (!parsed) {
+      const parsed = parseOpenAICompatibleStreamFrame(chunk.data, eventName)
+      if (parsed.kind === "skip") {
         continue
       }
 
-      const events = translateChunkToAnthropicEvents(parsed, streamState)
+      if (parsed.kind === "error") {
+        const eventData = JSON.stringify(parsed.event)
+        debugLazy(logger, () => [
+          "provider.messages.openai_compatible.translated_event:",
+          eventData,
+        ])
+        await stream.writeSSE({
+          event: parsed.event.type,
+          data: eventData,
+        })
+        terminatedWithError = true
+        break
+      }
+
+      const events = translateChunkToAnthropicEvents(parsed.chunk, streamState)
       for (const event of events) {
         const eventData = JSON.stringify(event)
         debugLazy(logger, () => [
@@ -476,6 +491,10 @@ const streamOpenAICompatibleProviderMessages = ({
           data: eventData,
         })
       }
+    }
+
+    if (terminatedWithError) {
+      return
     }
 
     for (const event of flushPendingAnthropicStreamEvents(streamState)) {
@@ -492,19 +511,101 @@ const streamOpenAICompatibleProviderMessages = ({
   })
 }
 
-const parseOpenAICompatibleStreamChunk = (
+type OpenAICompatibleStreamFrame =
+  | { kind: "chunk"; chunk: ChatCompletionChunk }
+  | { kind: "error"; event: AnthropicStreamEventData }
+  | { kind: "skip" }
+
+const parseOpenAICompatibleStreamFrame = (
   data: string,
-): ChatCompletionChunk | null => {
+  eventName: string | undefined,
+): OpenAICompatibleStreamFrame => {
   try {
-    return JSON.parse(data) as ChatCompletionChunk
+    const parsed: unknown = JSON.parse(data)
+    if (isOpenAICompatibleStreamChunk(parsed)) {
+      return { kind: "chunk", chunk: parsed }
+    }
+
+    const errorEvent = createOpenAICompatibleStreamErrorEvent(parsed, eventName)
+    if (errorEvent) {
+      return { kind: "error", event: errorEvent }
+    }
+
+    logger.error("provider.messages.openai_compatible.invalid_chunk", {
+      data: parsed,
+      eventName,
+    })
+    return { kind: "skip" }
   } catch (error) {
     logger.error("provider.messages.openai_compatible.parse_chunk_error", {
       data,
       error,
     })
-    return null
+    return { kind: "skip" }
   }
 }
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null
+
+const isOpenAICompatibleStreamChunk = (
+  value: unknown,
+): value is ChatCompletionChunk =>
+  isRecord(value) && Array.isArray(value.choices)
+
+const createOpenAICompatibleStreamErrorEvent = (
+  value: unknown,
+  eventName: string | undefined,
+): AnthropicStreamEventData | null => {
+  if (!isRecord(value) && eventName !== "error") {
+    return null
+  }
+
+  const errorPayload = isRecord(value) ? value.error : undefined
+  if (isRecord(errorPayload)) {
+    return createAnthropicStreamErrorEvent({
+      message:
+        typeof errorPayload.message === "string" ?
+          errorPayload.message
+        : "Upstream provider stream failed.",
+      type:
+        typeof errorPayload.type === "string" ? errorPayload.type : "api_error",
+    })
+  }
+
+  if (isRecord(value) && value.type === "error") {
+    return createAnthropicStreamErrorEvent({
+      message:
+        typeof value.message === "string" ?
+          value.message
+        : "Upstream provider stream failed.",
+      type: "api_error",
+    })
+  }
+
+  if (eventName === "error") {
+    return createAnthropicStreamErrorEvent({
+      message: "Upstream provider stream returned an error event.",
+      type: "api_error",
+    })
+  }
+
+  return null
+}
+
+const createAnthropicStreamErrorEvent = ({
+  message,
+  type,
+}: {
+  message: string
+  type: string
+}): AnthropicStreamEventData => ({
+  type: "error",
+  error: {
+    type,
+    message,
+  },
+})
 
 const respondOpenAICompatibleProviderMessagesJson = (
   c: Context,
