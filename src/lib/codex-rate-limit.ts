@@ -56,7 +56,6 @@ export const logCodexRateLimitsEvent = (event: unknown): void => {
     }
     summary.push(
       `used=${window.used_percent}%`,
-      `window=${window.window_minutes}m`,
       `reset_at=${formatCodexRateLimitResetAt(window.reset_at)}`,
     )
 
@@ -64,7 +63,7 @@ export const logCodexRateLimitsEvent = (event: unknown): void => {
       planType ?
         `Codex ${scope} rate limit (${planType})`
       : `Codex ${scope} rate limit`
-    consola.info(`${label}: ${summary.join(", ")}`)
+    consola.log(`${label}: ${summary.join(", ")}`)
   }
 }
 
