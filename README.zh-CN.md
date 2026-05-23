@@ -26,88 +26,18 @@
 
 这个项目最初是一个通过逆向工程实现的 GitHub Copilot API 代理，但现在也可以看作一个小型 AI gateway。除了 Copilot，它还可以在同一个 OpenAI / Anthropic 兼容入口后面路由内置的 `codex` provider 和第三方 provider，例如 DashScope，让 [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) 这类工具复用同一个本地端点。
 
-在 GitHub Copilot 路径上，AI gateway 会在可用时优先使用 Copilot 原生的 Anthropic 风格 Messages API，保留更原生的 Claude 行为，并减少预热或恢复工具轮次时不必要的 Premium 请求消耗。
+在 GitHub Copilot 路径上，AI gateway 会在可用时优先使用 Copilot 原生的 Anthropic 风格 Messages API，在重工具调用场景下保留更原生的 Claude 行为。
 
 ## 功能特性
 
-- **OpenAI 与 Anthropic 双兼容**：通过 OpenAI 兼容接口（`/v1/responses`、`/v1/chat/completions`、`/v1/models`、`/v1/embeddings`）和 Anthropic 兼容接口（`/v1/messages`）对外暴露同一个本地 AI gateway。
-- **面向 Copilot、Codex 与第三方 Provider 的 AI Gateway**：同一个 AI gateway 可同时承接 GitHub Copilot、内置的 `codex` provider 和第三方 provider，例如 DashScope。
-- **Claude 模型优先走 Anthropic 原生路由**：当模型支持 Copilot 原生 `/v1/messages` 端点时，AI gateway 会优先使用它，而不是 `/responses` 或 `/chat/completions`，从而保留 Anthropic 风格的 `tool_use` / `tool_result` 流程以及更原生的 Claude 行为。
-- **减少不必要的 Premium 请求**：通过把预热请求路由到 `smallModel`、将 `tool_result` 的后续消息重新并入工具流，以及把恢复的工具轮次视为延续流量而非全新高级交互，减少浪费的 premium 使用量。
-- **分阶段的 `gpt-5.4` 与 `gpt-5.3-codex`**：这些模型可以在更深入推理或调用工具前先发出面向用户的 commentary，让长时间运行的编码操作更容易理解，而不是突然开始一串工具调用。
-- **支持 Claude 原生 Beta 能力**：在 Messages API 路径上支持 Anthropic 原生能力，例如 `interleaved-thinking`、`advanced-tool-use` 和 `context-management`；这些能力在普通 Chat Completions 兼容模式下通常很难支持，或根本不可用。
-- **Subagent 标记集成**：Claude Code 与 opencode 插件可以注入 `__SUBAGENT_MARKER__...`，并传递 `x-session-id`，从而让 subagent 流量保留正确的根会话以及 agent/user 语义。
-- **通过 `@ai-sdk/anthropic` 接入 OpenCode**：可以将 OpenCode 指向这个 AI gateway 作为 Anthropic provider，从而端到端保留 Anthropic Messages 语义、premium request 优化以及更原生的 Claude 行为。
-- **Claude Code 集成**：可通过简单的命令行参数（`--claude-code`）快速配置并启动 [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) 使用 Copilot 作为后端。
-- **使用量看板**：提供基于 Web 的看板，用于监控 Copilot API 使用情况、查看额度以及详细统计数据。
-- **速率限制控制**：通过速率限制选项（`--rate-limit`）和等待机制（`--wait`）管理 API 使用，避免因请求过快而报错。
-- **手动请求审批**：可对每个 API 请求进行手动批准或拒绝，实现更细粒度的使用控制（`--manual`）。
-- **令牌可见性**：可在认证和刷新期间显示 GitHub 与 Copilot token，便于调试（`--show-token`）。
-- **灵活认证方式**：既可交互式认证，也可以直接传入 GitHub token，适合 CI/CD 等非交互环境。
-- **支持不同账号类型**：兼容个人版、Business 和 Enterprise 的 GitHub Copilot 方案。
-- **支持 opencode OAuth**：可通过设置环境变量 `COPILOT_API_OAUTH_APP=opencode` 或使用命令行参数 `--oauth-app=opencode` 来启用 opencode GitHub Copilot 认证。
-- **支持 GitHub Enterprise**：可通过设置环境变量 `COPILOT_API_ENTERPRISE_URL`（例如 `company.ghe.com`）或命令行参数 `--enterprise-url=company.ghe.com` 连接到 GHE.com。
-- **自定义数据目录**：可通过环境变量 `COPILOT_API_HOME` 或命令行参数 `--api-home=/path/to/dir` 修改默认数据目录（存放 token 和配置）。
-- **多 Provider AI Gateway 路由**：可以添加全局 provider 配置，并通过 `/:provider/v1/messages` 与 `/:provider/v1/models` 调用外部 Anthropic 或 OpenAI 兼容 API，也可以把 `model` 写成 `"provider/model"` 后直接发到顶层 `/v1/messages`。
-- **精确的 Claude Token 计数**：可以选择将 Claude 模型的 `/v1/messages/count_tokens` 请求转发到 Anthropic 的免费 token counting 端点，以获得精确计数，而不是依赖 GPT tokenizer 估算。
-- **GPT 上下文管理**：可通过 `responsesApiContextManagementModels` 为长上下文 GPT 对话启用可配置的上下文压缩，在接近 token 限制时减少不必要的 Premium 请求。详见 [配置](#configuration-configjson)。
-
-## 更好的 Agent 语义
-
-### 在可用时优先使用原生 Anthropic Messages API
-
-对于那些声明支持 Copilot `/v1/messages` 的模型，本项目会优先把请求发送到原生 Messages API，只有在需要时才回退到 `/responses` 或 `/chat/completions`。
-
-相比仅通过 Chat Completions 兼容层使用 Claude 系模型，Messages API 路径能保留更多 Anthropic 原生行为，包括支持：
-
-- `interleaved-thinking-2025-05-14`
-- `advanced-tool-use-2025-11-20`
-- `context-management-2025-06-27`
-
-支持的 `anthropic-beta` 值会在原生 Messages 路径中过滤并透传；当请求了非自适应扩展思考的 thinking budget 时，也会自动添加 `interleaved-thinking`。
-
-### 减少不必要的 Premium 请求
-
-这个 AI gateway 内置了一些请求计费保护逻辑，专门面向重工具调用的编码工作流：
-
-- 无工具的预热或探测请求可以强制走 `smallModel`，避免后台检查消耗 premium 使用量；
-- 混合了 `tool_result` 和补充提示文本的消息块会重新并入 `tool_result` 流，而不会被当成新的用户轮次计费；
-- `x-initiator` 会根据最新一条消息或 item 推导，而不是依赖陈旧的 assistant 历史。
-
-这样可以让恢复的工具轮次被视为既有工作流的延续，而不是一条全新的 Premium 请求。
-
-### 分阶段的 `gpt-5.4` 与 `gpt-5.3-codex`
-
-默认情况下，内置的 `extraPrompts` 会为 `gpt-5.4` 与 `gpt-5.3-codex` 启用中间进度更新行为，AI gateway 会在工具调用前把 assistant 轮次翻译成 `phase: "commentary"`，并在最终回复时使用 `phase: "final_answer"`。
-
-这样客户端在更深入的推理或工具执行开始前，就能先收到一段简短、面向用户的说明。
-
-### Subagent 标记集成
-
-对于基于 subagent 的客户端，本项目可以保留根会话上下文，并正确识别来自 subagent 的流量。
-
-这一标记流程会在 `<system-reminder>` 中放入 `__SUBAGENT_MARKER__...`，同时传递根级 `x-session-id`。当检测到该标记后，AI gateway 可以保留父会话身份、推导 `x-initiator: agent`，并把交互标记为 subagent 流量，而不是新的顶层请求。
-
-项目中已经为 Claude Code 和 opencode 都提供了插件集成；配置方法见下文 [插件集成](#plugin-integrations)。
-
-<a id="accurate-claude-token-counting"></a>
-
-### 精确的 Claude Token 计数
-
-默认情况下，`/v1/messages/count_tokens` 会使用 GPT 的 `o200k_base` tokenizer，并乘以 1.15 倍来估算 Claude token 数。这个估算通常会低于 Claude 的真实 token 使用量，导致像 Claude Code 这类工具压缩上下文太晚，从而触发 “prompt token count exceeds limit” 之类的错误。
-
-当配置了 Anthropic API key 后，AI gateway 会把 Claude 模型的 token 计数请求转发到 [Anthropic 真实的 `/v1/messages/count_tokens` 端点](https://docs.anthropic.com/en/docs/build-with-claude/token-counting)。这样能返回精确计数，消除估算误差。不属于 Claude 的模型，以及转发失败的情况，会自动回退到 GPT tokenizer 估算。
-
-**设置方式：**
-
-1. 在 [console.anthropic.com](https://console.anthropic.com) 创建 Anthropic API 账户，并至少充值 5 美元信用额度（这是激活 API key 所需条件，但 token counting 端点本身是免费的）
-2. 在 Settings > API Keys 中创建一个 API key
-3. 通过以下 **任一** 方式配置：
-   - `config.json`：设置 `"anthropicApiKey": "sk-ant-..."`
-   - 环境变量：`ANTHROPIC_API_KEY=sk-ant-...`
-
-> [!NOTE]
-> Anthropic 的 `/v1/messages/count_tokens` 端点是 **免费的**（不会按 token 收费）。在 Tier 1 下速率限制为 100 RPM。这里要求预充值 5 美元，只是为了激活 API 访问权限，token counting 调用本身不产生费用。
+- **OpenAI 与 Anthropic 双兼容**：通过 `/v1/responses`、`/v1/chat/completions`、`/v1/models`、`/v1/embeddings` 和 `/v1/messages` 对外暴露同一个本地 AI gateway。
+- **同一网关接入 Copilot、`codex` 与第三方 provider**：可统一路由 GitHub Copilot、内置 `codex` provider 和配置好的外部 provider。
+- **面向 Claude 的更原生 Copilot 路由**：优先使用原生 `/v1/messages`，保留 Claude 风格工具流，支持 Anthropic beta 能力，并保留 subagent / session 标记。
+- **Claude Code 与 OpenCode 集成**：兼容 Claude Code 与 OpenCode，也支持通过 `@ai-sdk/anthropic` 直接作为 Anthropic provider 使用。
+- **灵活的认证与部署选项**：支持交互式登录、直接 token、个人 / Business / Enterprise、GitHub Enterprise、opencode OAuth 和自定义数据目录。
+- **本地控制与可观测性**：提供使用量看板、速率限制、手动审批，以及调试时显示 token 的能力。
+- **多 provider 路由**：可暴露 `/:provider/...` 路由，也可在顶层 API 上使用 `model: "provider/model"`。
+- **更好的 token 与上下文管理**：支持精确 Claude token 计数，以及面向长对话的 GPT 上下文压缩。
 
 ## 前置要求
 
@@ -183,56 +113,20 @@ https://github.com/caozhiyuan/copilot-api/releases
 docker build -t copilot-api .
 ```
 
-运行容器：
+通过 bind mount 运行容器，让认证数据在重启后保留：
 
 ```sh
-# 在宿主机创建目录，用于持久化 GitHub token 及相关数据
 mkdir -p ./copilot-data
-
-# 通过 bind mount 持久化 token
-# 这样容器重启后认证信息仍会保留
-
 docker run -p 4141:4141 -v $(pwd)/copilot-data:/root/.local/share/copilot-api copilot-api
 ```
 
-> **注意：**
-> GitHub token 及相关数据会保存在宿主机的 `copilot-data` 目录中。该目录会映射到容器内的 `/root/.local/share/copilot-api`，从而在容器重启后继续保留数据。
+这会把宿主机上的 `./copilot-data` 映射到容器内的 `/root/.local/share/copilot-api`，用于持久化 GitHub 认证数据。
 
-### 在 Docker 中使用环境变量
-
-你也可以直接通过环境变量把 GitHub token 传给容器：
+也可以直接通过环境变量传入 GitHub token：
 
 ```sh
-# 构建时注入 GitHub token
-docker build --build-arg GH_TOKEN=your_github_token_here -t copilot-api .
-
-# 运行时注入 GitHub token
 docker run -p 4141:4141 -e GH_TOKEN=your_github_token_here copilot-api
-
-# 搭配附加选项运行
-docker run -p 4141:4141 -e GH_TOKEN=your_token copilot-api start --verbose --port 4141
 ```
-
-### Docker Compose 示例
-
-```yaml
-version: "3.8"
-services:
-  copilot-api:
-    build: .
-    ports:
-      - "4141:4141"
-    environment:
-      - GH_TOKEN=your_github_token_here
-    restart: unless-stopped
-```
-
-Docker 镜像包含：
-
-- 多阶段构建，以优化镜像体积
-- 非 root 用户，以增强安全性
-- 用于容器监控的健康检查
-- 固定基础镜像版本，以保证可复现构建
 
 ## 命令结构
 
@@ -376,14 +270,14 @@ Copilot API 现在使用子命令结构，主要命令包括：
     - `contextCache`：可选，OpenAI 兼容 provider 默认 `true`，用于启用阿里云百炼/DashScope 的显式缓存（explicit context cache），会按其 Context Cache 格式在最多 4 个 content block 上注入 `cache_control: { "type": "ephemeral" }`。缓存断点策略与 opencode 主链路保持一致：前 2 条 system 消息 + 最后 2 条非 system 消息。标记字符串 content 时会把 `system` / `user` / `assistant` / `tool` 消息转换为 text content part 数组；已有数组 content 则标记最后一个 part。如果模型本身已经支持隐式缓存，或上游不支持该显式缓存扩展字段，可在模型配置中设为 `false`。
     - `supportPdf`：可选，控制该模型是否支持 PDF/document content。默认 `false`，不支持时会把 PDF 转成提示文本；设为 `true` 时会把 PDF/document 转成 OpenAI Chat Completions 的 file part。
     - `toolContentSupportType`：可选，配置该模型的 tool result content 支持能力，值为 `array`、`image`、`pdf` 的数组。provider 侧未配置时默认只发送 string tool content。若 `supportPdf` 为 `true` 但这里不包含 `pdf`，tool result 里的 file part 会被转成 user role 消息。Copilot 主链路不使用这个 provider 默认，仍按 array + image 且不支持 PDF 的能力处理。
-- **smallModel：** 无工具预热消息的回退模型（例如 Claude Code 的探测请求），用于避免消耗 premium requests；默认是 `gpt-5-mini`。
-- **responsesApiContextManagementModels：** 需要启用 Responses API `context_management` 压缩指令的 GPT 模型 ID 列表。默认是 `[]`，需要你显式开启。一个不错的起点是 `["gpt-5-mini", "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.4"]`。启用后，请求体会带上 `context_management`，并在后续轮次中仅保留最新的压缩承载内容。实际压缩由服务端完成，看起来会在 usage 接近模型 `maxPromptTokens` 的约 90% 时开始，因此特别适合长任务场景，同时不会额外消耗 premium requests。实践中 `compact_threshold` 似乎也是服务端固定的，所以在本项目中修改它目前不会改变压缩行为。当前该优化仅面向 GPT 系模型。
+- **smallModel：** 无工具预热消息的回退模型（例如 Claude Code 的探测请求）；默认是 `gpt-5-mini`。
+- **responsesApiContextManagementModels：** 需要启用 Responses API `context_management` 压缩指令的 GPT 模型 ID 列表。默认是 `[]`，需要你显式开启。一个不错的起点是 `["gpt-5-mini", "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.4"]`。启用后，请求体会带上 `context_management`，并在后续轮次中仅保留最新的压缩承载内容。实际压缩由服务端完成，看起来会在 usage 接近模型 `maxPromptTokens` 的约 90% 时开始，因此特别适合长任务场景。实践中 `compact_threshold` 似乎也是服务端固定的，所以在本项目中修改它目前不会改变压缩行为。当前该优化仅面向 GPT 系模型。
 - **modelReasoningEfforts：** 按模型配置发送到 Copilot Responses API 的 `reasoning.effort`。可选值包括 `none`、`minimal`、`low`、`medium`、`high` 和 `xhigh`。若某模型未配置，则默认使用 `high`。
 - **useMessagesApi：** 当为 `true` 时，支持 Copilot 原生 `/v1/messages` 的 Claude 系模型会走 Messages API；否则回退到 `/chat/completions`。设为 `false` 可禁用 Messages API 路由，始终使用 `/chat/completions`。默认值为 `true`。
 - **useResponsesApiWebSocket：** 当为 `true` 时，Responses API 请求会优先对声明了 `ws:/responses` 的模型使用 Copilot websocket transport；仅声明 `/responses` 的模型仍走 HTTP。设为 `false` 可禁用 websocket 路由，并在模型支持 `/responses` 时使用 HTTP `/responses`。默认值为 `true`。
 - **useResponsesApiWebSearch：** 当为 `true` 时，服务端会保留 Responses API 中 `type: "web_search"` 的工具并透传到上游。设为 `false` 则会从 `/responses` payload 中移除这些工具。默认值为 `true`。
 - **claudeTokenMultiplier：** 用于 Claude `/v1/messages/count_tokens` 请求在本地走 GPT tokenizer 估算时的乘数。默认值为 `1.15`。如果你的客户端仍然过晚触发上下文压缩，可以适当调大。这个配置只会在代理本地估算 Claude token 时生效；如果已经配置 `anthropicApiKey` 且 Anthropic token counting 调用成功，则会直接返回 Anthropic 的精确计数，不会使用这个乘数。
-- **anthropicApiKey：** 用于精确 Claude token 计数的 Anthropic API key（参见下方 [精确的 Claude Token 计数](#accurate-claude-token-counting)）。也可通过环境变量 `ANTHROPIC_API_KEY` 设置。若未配置，则回退到 GPT tokenizer 估算。
+- **anthropicApiKey：** 用于把 Claude `/v1/messages/count_tokens` 请求转发到 Anthropic 真实 token counting 端点的 API key，这样会返回精确计数，而不是 GPT tokenizer 估算值。也可通过环境变量 `ANTHROPIC_API_KEY` 设置。若未配置，或上游调用失败，则回退到由 `claudeTokenMultiplier` 控制的本地 GPT tokenizer 估算。
 
 编辑此文件后即可自定义 prompts，或替换为你自己的快速模型。修改完成后请重启服务（或重新执行命令），让缓存中的配置刷新生效。
 
@@ -458,7 +352,7 @@ curl http://localhost:4141/admin/config/model-mappings \
 
 ## 使用示例
 
-通过 npx 使用：
+常用 `npx` 命令：
 
 ```sh
 # 基础启动
@@ -467,59 +361,14 @@ npx @jeffreycao/copilot-api@latest start
 # 自定义端口并开启详细日志
 npx @jeffreycao/copilot-api@latest start --port 8080 --verbose
 
-# 使用 GitHub Business 方案账号
-npx @jeffreycao/copilot-api@latest start --account-type business
-
-# 使用 GitHub Enterprise 方案账号
-npx @jeffreycao/copilot-api@latest start --account-type enterprise
-
-# 对每个请求启用手动审批
-npx @jeffreycao/copilot-api@latest start --manual
-
-# 将请求间隔限制为 30 秒
-npx @jeffreycao/copilot-api@latest start --rate-limit 30
-
-# 命中速率限制时等待，而不是直接报错
-npx @jeffreycao/copilot-api@latest start --rate-limit 30 --wait
-
-# 直接传入 GitHub token
-npx @jeffreycao/copilot-api@latest start --github-token ghp_YOUR_TOKEN_HERE
-
-# 仅执行认证流程，并交互式选择内置 provider
+# 执行认证流程
 npx @jeffreycao/copilot-api@latest auth login
-
-# 显式登录 Codex
-npx @jeffreycao/copilot-api@latest auth login --provider codex
-
-# 显式登录 Copilot，并启用详细日志
-npx @jeffreycao/copilot-api@latest auth login --provider copilot --verbose
 
 # 在终端中查看 Copilot 用量与额度（无需启动服务）
 npx @jeffreycao/copilot-api@latest check-usage
 
-# 输出调试信息，便于排障
-npx @jeffreycao/copilot-api@latest debug
-
 # 以 JSON 格式输出调试信息
 npx @jeffreycao/copilot-api@latest debug --json
-
-# 从环境变量初始化代理（HTTP_PROXY、HTTPS_PROXY 等）
-npx @jeffreycao/copilot-api@latest start --proxy-env
-
-# 使用 opencode GitHub Copilot 认证
-COPILOT_API_OAUTH_APP=opencode npx @jeffreycao/copilot-api@latest start
-
-# 通过命令行设置自定义 API home 目录
-npx @jeffreycao/copilot-api@latest --api-home=/path/to/custom/dir start
-
-# 通过命令行使用 GitHub Enterprise
-npx @jeffreycao/copilot-api@latest --enterprise-url=company.ghe.com start
-
-# 通过命令行使用 opencode OAuth
-npx @jeffreycao/copilot-api@latest --oauth-app=opencode start
-
-# 组合多个全局选项
-npx @jeffreycao/copilot-api@latest --api-home=/custom/path --oauth-app=opencode --enterprise-url=company.ghe.com start
 
 # 用 Bun 而不是 Node.js 运行已发布 CLI
 bunx --bun @jeffreycao/copilot-api@latest start
