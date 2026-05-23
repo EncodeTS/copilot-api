@@ -40,7 +40,6 @@ export const responsesHandlerDependencies = {
 
 export const handleResponses = async (c: Context) => {
   const payload = await c.req.json<ResponsesPayload>()
-  debugJson(logger, "Responses request payload:", payload)
 
   const providerModelAlias = parseProviderModelAlias(payload.model)
   if (providerModelAlias) {
@@ -51,6 +50,7 @@ export const handleResponses = async (c: Context) => {
     })
   }
 
+  debugJson(logger, "Responses request payload:", payload)
   await responsesHandlerDependencies.checkRateLimit(state)
 
   // not support subagent marker for now , set sessionId = getUUID(requestId)

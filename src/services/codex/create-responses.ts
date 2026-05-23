@@ -32,6 +32,17 @@ type ServerSentEventChunk = {
 
 type CodexResponsesWebSocketChunk = ServerSentEventChunk
 
+type StandardizedCodexResponsesChunk = {
+  chunk: ServerSentEventChunk
+  event: ResponseStreamEvent | null
+}
+
+interface CodexResponsesStandardStreamOptions {
+  onClose?: () => void | Promise<void>
+  onChunk?: (chunk: ServerSentEventChunk) => void | Promise<void>
+  onEvent?: (event: ResponseStreamEvent) => void | Promise<void>
+}
+
 type CodexResponsesWebSocketRequest =
   PooledWebSocketRequest<CodexResponsesWebSocketPayload>
 
@@ -415,9 +426,10 @@ const createCodexResponsesWebSocketProxyResponse = (
 
 export const createStandardizedCodexResponsesEventStream = (
   source: AsyncIterable<ServerSentEventChunk>,
+  options: CodexResponsesStandardStreamOptions = {},
 ): ReadableStream<Uint8Array> => {
   return createServerSentEventStream(
-    normalizeCodexResponsesStandardStream(source),
+    normalizeCodexResponsesStandardStream(source, options),
   )
 }
 
@@ -431,9 +443,20 @@ const normalizeCodexResponsesWebSocketStream = async function* (
 
 const normalizeCodexResponsesStandardStream = async function* (
   stream: AsyncIterable<ServerSentEventChunk>,
+  options: CodexResponsesStandardStreamOptions,
 ): AsyncIterable<ServerSentEventChunk> {
-  for await (const chunk of stream) {
-    yield normalizeCodexResponsesStandardChunk(chunk)
+  try {
+    for await (const chunk of stream) {
+      const normalized = normalizeCodexResponsesStandardChunk(chunk)
+      await options.onChunk?.(normalized.chunk)
+      if (normalized.event) {
+        await options.onEvent?.(normalized.event)
+      }
+
+      yield normalized.chunk
+    }
+  } finally {
+    await options.onClose?.()
   }
 }
 
@@ -465,9 +488,12 @@ const normalizeCodexResponsesProxyChunk = (
 
 const normalizeCodexResponsesStandardChunk = (
   chunk: ServerSentEventChunk,
-): ServerSentEventChunk => {
+): StandardizedCodexResponsesChunk => {
   if (!chunk.data || chunk.data === "[DONE]") {
-    return chunk
+    return {
+      chunk,
+      event: null,
+    }
   }
 
   try {
@@ -475,16 +501,25 @@ const normalizeCodexResponsesStandardChunk = (
     logCodexRateLimitsEvent(parsed)
     const normalized = normalizeCodexResponsesEvent(parsed)
     if (!normalized) {
-      return chunk
+      return {
+        chunk,
+        event: null,
+      }
     }
 
     return {
-      ...chunk,
-      data: JSON.stringify(normalized),
-      event: normalized.type,
+      chunk: {
+        ...chunk,
+        data: JSON.stringify(normalized),
+        event: normalized.type,
+      },
+      event: normalized,
     }
   } catch {
-    return chunk
+    return {
+      chunk,
+      event: null,
+    }
   }
 }
 

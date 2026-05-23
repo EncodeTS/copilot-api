@@ -38,6 +38,10 @@ export async function handleProviderResponsesForProvider(
   },
 ): Promise<Response> {
   const { payload, provider } = options
+  debugJson(logger, "Responses request payload:", {
+    payload,
+    provider,
+  })
   const providerConfig = await resolveProviderConfig(provider)
   if (providerConfig?.type !== "openai-responses") {
     return c.json(
@@ -51,15 +55,19 @@ export async function handleProviderResponsesForProvider(
     )
   }
 
-  const selectedModel =
+  const model =
     providerConfig.name === "codex" ?
       getCodexModels().data.find((model) => model.id === payload.model)
     : undefined
 
-  applyResponsesApiContextManagement(
-    payload,
-    selectedModel?.capabilities.limits.max_prompt_tokens,
-  )
+  const maxPromptTokens = model?.capabilities.limits.max_prompt_tokens ?? 0
+  applyResponsesApiContextManagement(payload, maxPromptTokens)
+
+  const contextManagement = payload.context_management
+  debugJson(logger, "Translated Responses request payload:", {
+    contextManagement,
+    provider,
+  })
 
   const upstreamResponse =
     providerConfig.name === "codex" ?
@@ -79,6 +87,31 @@ export async function handleProviderResponsesForProvider(
 
   const recordUsage = createProviderResponsesUsageRecorder(payload, provider)
 
+  if (providerConfig.name === "codex" && payload.stream) {
+    let usage: UsageTokens = {}
+
+    return createProviderProxyResponse(
+      upstreamResponse,
+      createStandardizedCodexResponsesEventStream(
+        getResponsesEvents(upstreamResponse),
+        {
+          onClose: () => {
+            recordUsage(usage)
+          },
+          onChunk: (chunk) => {
+            debugJson(logger, "Responses stream chunk:", chunk)
+          },
+          onEvent: (event) => {
+            const nextUsage = getResponsesStreamEventUsage(event)
+            if (nextUsage) {
+              usage = nextUsage
+            }
+          },
+        },
+      ),
+    )
+  }
+
   if (payload.stream) {
     void recordProviderResponsesStreamUsage(upstreamResponse.clone(), {
       normalizeCodex: providerConfig.name === "codex",
@@ -95,15 +128,6 @@ export async function handleProviderResponsesForProvider(
       .clone()
       .json()) as ResponsesResult
     recordUsage(normalizeResponsesUsage(responseBody.usage))
-  }
-
-  if (providerConfig.name === "codex" && payload.stream) {
-    return createProviderProxyResponse(
-      upstreamResponse,
-      createStandardizedCodexResponsesEventStream(
-        getResponsesEvents(upstreamResponse),
-      ),
-    )
   }
 
   return createProviderProxyResponse(upstreamResponse)
@@ -153,12 +177,11 @@ const recordProviderResponsesStreamUsage = async (
         normalizeCodex: options.normalizeCodex,
         provider: options.provider,
       })
-      if (
-        parsed?.type === "response.completed"
-        || parsed?.type === "response.failed"
-        || parsed?.type === "response.incomplete"
-      ) {
-        usage = normalizeResponsesUsage(parsed.response.usage)
+      if (parsed) {
+        const nextUsage = getResponsesStreamEventUsage(parsed)
+        if (nextUsage) {
+          usage = nextUsage
+        }
       }
     }
   } finally {
@@ -186,6 +209,20 @@ const parseProviderResponsesStreamEvent = (
     })
     return null
   }
+}
+
+const getResponsesStreamEventUsage = (
+  event: ResponseStreamEvent,
+): UsageTokens | null => {
+  if (
+    event.type === "response.completed"
+    || event.type === "response.failed"
+    || event.type === "response.incomplete"
+  ) {
+    return normalizeResponsesUsage(event.response.usage)
+  }
+
+  return null
 }
 
 const getResponsesEvents = (response: unknown) => {
