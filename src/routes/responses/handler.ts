@@ -211,6 +211,11 @@ const handleProviderResponsesForProvider = async (
       normalizeCodex: providerConfig.name === "codex",
       provider,
       recordUsage,
+    }).catch((error) => {
+      logger.warn("provider.responses.usage_stream_error", {
+        provider,
+        error: getErrorMessage(error),
+      })
     })
   } else {
     const responseBody = (await upstreamResponse
@@ -251,6 +256,14 @@ const parseResponsesStreamEvent = (
   } catch {
     return null
   }
+}
+
+const getErrorMessage = (error: unknown): string => {
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+
+  return String(error)
 }
 
 const createProviderResponsesUsageRecorder = (

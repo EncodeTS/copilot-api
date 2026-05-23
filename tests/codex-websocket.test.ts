@@ -271,3 +271,50 @@ test("forwardCodexResponses keeps the HTTP SSE shape while using websocket", asy
   expect(body).toContain('"type":"response.done"')
   expect(body).not.toContain('"type":"response.completed"')
 })
+
+test("forwardCodexResponses emits an SSE error when the websocket closes without a terminal response", async () => {
+  MockWebSocket.autoComplete = false
+
+  const response = await forwardCodexResponses(
+    {
+      input: "hello",
+      model: "gpt-5.4",
+      stream: true,
+    },
+    new Headers(),
+    undefined,
+    {
+      transport: "websocket",
+    },
+  )
+
+  expect(fetchMock).not.toHaveBeenCalled()
+  expect(response.status).toBe(200)
+
+  const bodyPromise = response.text()
+
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+
+  MockWebSocket.instances[0]?.close()
+
+  const body = await bodyPromise
+
+  expect(body).toContain("event: error")
+  expect(body).toContain(
+    '"message":"Codex responses websocket ended without a terminal response"',
+  )
+})
+
+const waitFor = async (predicate: () => boolean): Promise<void> => {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (predicate()) {
+      return
+    }
+
+    await new Promise<void>((resolve) => {
+      originalSetTimeout(resolve, 0)
+    })
+  }
+
+  throw new Error("Timed out waiting for condition")
+}

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto"
 import type {
   ResponsesPayload,
   ResponsesResult,
+  ResponseErrorEvent,
   ResponseStreamEvent,
   ResponsesTransport,
 } from "~/services/copilot/create-responses"
@@ -489,7 +490,7 @@ const createServerSentEventStream = (
     },
     async pull(controller) {
       try {
-        const result: IteratorResult<CodexResponsesWebSocketChunk> =
+        const result: IteratorResult<ServerSentEventChunk> =
           await iterator.next()
         if (result.done) {
           controller.close()
@@ -500,10 +501,34 @@ const createServerSentEventStream = (
           encoder.encode(serializeServerSentEvent(result.value)),
         )
       } catch (error) {
-        controller.error(error)
+        controller.enqueue(
+          encoder.encode(
+            serializeServerSentEvent(
+              createResponsesErrorServerSentEventChunk(getErrorMessage(error)),
+            ),
+          ),
+        )
+        controller.close()
       }
     },
   })
+}
+
+const createResponsesErrorServerSentEventChunk = (
+  message: string,
+): ServerSentEventChunk => {
+  const errorEvent: ResponseErrorEvent = {
+    code: null,
+    message,
+    param: null,
+    sequence_number: 0,
+    type: "error",
+  }
+
+  return {
+    data: JSON.stringify(errorEvent),
+    event: errorEvent.type,
+  }
 }
 
 const serializeServerSentEvent = (chunk: ServerSentEventChunk): string => {
@@ -524,6 +549,14 @@ const serializeServerSentEvent = (chunk: ServerSentEventChunk): string => {
   }
 
   return `${lines.join("\n")}\n\n`
+}
+
+const getErrorMessage = (error: unknown): string => {
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+
+  return String(error)
 }
 
 const encodePoolKeyPart = (value: string): string => encodeURIComponent(value)
