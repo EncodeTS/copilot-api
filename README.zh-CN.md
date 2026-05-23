@@ -2,25 +2,6 @@
 
 [English](./README.md) | 简体中文
 
-> [!WARNING]
-> 这是一个通过逆向工程实现的 GitHub Copilot API 代理。它不受 GitHub 官方支持，并且可能随时异常失效。请自行承担使用风险。当前版本中，如果不使用 opencode OAuth，设备 ID 和机器 ID 会被发送给 GitHub Copilot。不建议在单台设备上使用大量账号；如确有需要，建议放在 Docker 容器中运行。
-
-> [!WARNING]
-> **GitHub 安全提示：**  
-> 过度自动化或脚本化地使用 Copilot（包括高频或批量请求，例如通过自动化工具发起）可能触发 GitHub 的滥用检测系统。  
-> 你可能会收到 GitHub Security 的警告，进一步的异常活动还可能导致 Copilot 访问权限被暂时停用。
->
-> GitHub 禁止使用其服务器进行过度批量自动化活动，或任何对其基础设施造成不当负载的行为。
->
-> 请阅读：
->
-> - [GitHub Acceptable Use Policies](https://docs.github.com/site-policy/acceptable-use-policies/github-acceptable-use-policies#4-spam-and-inauthentic-activity-on-github)
-> - [GitHub Copilot Terms](https://docs.github.com/site-policy/github-terms/github-terms-for-additional-products-and-features#github-copilot)
->
-> 请负责任地使用本代理，避免账号受到限制。
-
----
-
 ## 重要说明
 
 > [!IMPORTANT]
@@ -28,30 +9,35 @@
 >
 > 1. **Claude Code 配置：** 与 Claude Code 搭配使用时，请将模型 ID 配置为 `claude-opus-4-6` 或 `claude-opus-4.6`（不要带 `[1m]` 后缀，超出 GitHub Copilot 上下文窗口限制太多可能导致账号被封）。示例 claude `settings.json` 见 [通过 `settings.json` 手动配置](#manual-configuration-with-settingsjson)。
 >
-> 2. **推荐给 opencode 用户：** 与 opencode 搭配时，推荐优先使用 opencode OAuth app 启动。该方式与 opencode 内置的 GitHub Copilot provider 行为一致，且不存在 Terms of Service 风险：
+> 2. **推荐给 opencode 用户：** 对 opencode 而言，优先使用 opencode OAuth app。它与 opencode 内置的 GitHub Copilot provider 行为一致，且没有 Terms of Service 风险：
 >    ```sh
 >    npx @jeffreycao/copilot-api@latest --oauth-app=opencode start
 >    ```
 >
-> 3. **通过 codex 使用时请关闭 multi agent：** 如果你是通过 GitHub Copilot 使用 codex，建议关闭 multi agent 功能。目前 GitHub Copilot 在 codex 场景下会按最后一条消息是否为 user role 计费，而这部分计费逻辑尚未调整。
+> 3. **内置 `codex` provider：** 执行一次 `npx @jeffreycao/copilot-api@latest auth login --provider codex` 后，AI gateway 会自动持久化并刷新 Codex OAuth 凭据。
+>
+> 4. **通过 codex 使用时请关闭 multi agent：** 如果你是通过 GitHub Copilot 使用 codex，请关闭 multi agent。当前 Copilot 会按最后一条消息是否为 user role 对 codex 流量计费，而这部分逻辑尚未调整。
+>
+> 5. **注意事项：** README 顶部移除的 GitHub Copilot warning 见 [GitHub Copilot 安全提示](./NOTICE.md#github-copilot-security-notice)。
 
 ---
 
 ## 项目概览
 
-这是一个通过逆向工程实现的 GitHub Copilot API 代理，它将 Copilot 暴露为同时兼容 OpenAI 和 Anthropic 的服务。这样你就可以在任何支持 OpenAI Chat Completions / Responses API 或 Anthropic Messages API 的工具中使用 GitHub Copilot，包括把它作为 [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) 的后端。
+这个项目最初是一个通过逆向工程实现的 GitHub Copilot API 代理，但现在也可以看作一个小型 AI gateway。除了 Copilot，它还可以在同一个 OpenAI / Anthropic 兼容入口后面路由内置的 `codex` provider 和第三方 provider，例如 DashScope，让 [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) 这类工具复用同一个本地端点。
 
-相比单纯把所有请求都转成 Chat Completions 兼容模式，这个代理可以对 Claude 系模型优先使用 Copilot 原生的 Anthropic 风格 Messages API，保留更多原生思考与工具调用语义，减少预热或恢复工具轮次时不必要的 Premium 请求消耗，并暴露带阶段感知的 `gpt-5.4` / `gpt-5.3-codex` 响应，让用户更容易跟踪模型正在做什么。
+在 GitHub Copilot 路径上，AI gateway 会在可用时优先使用 Copilot 原生的 Anthropic 风格 Messages API，保留更原生的 Claude 行为，并减少预热或恢复工具轮次时不必要的 Premium 请求消耗。
 
 ## 功能特性
 
-- **OpenAI 与 Anthropic 双兼容**：以 OpenAI 兼容接口（`/v1/responses`、`/v1/chat/completions`、`/v1/models`、`/v1/embeddings`）和 Anthropic 兼容接口（`/v1/messages`）对外暴露 GitHub Copilot。
-- **Claude 模型优先走 Anthropic 原生路由**：当模型支持 Copilot 原生 `/v1/messages` 端点时，代理会优先使用它，而不是 `/responses` 或 `/chat/completions`，从而保留 Anthropic 风格的 `tool_use` / `tool_result` 流程以及更原生的 Claude 行为。
+- **OpenAI 与 Anthropic 双兼容**：通过 OpenAI 兼容接口（`/v1/responses`、`/v1/chat/completions`、`/v1/models`、`/v1/embeddings`）和 Anthropic 兼容接口（`/v1/messages`）对外暴露同一个本地 AI gateway。
+- **面向 Copilot、Codex 与第三方 Provider 的 AI Gateway**：同一个 AI gateway 可同时承接 GitHub Copilot、内置的 `codex` provider 和第三方 provider，例如 DashScope。
+- **Claude 模型优先走 Anthropic 原生路由**：当模型支持 Copilot 原生 `/v1/messages` 端点时，AI gateway 会优先使用它，而不是 `/responses` 或 `/chat/completions`，从而保留 Anthropic 风格的 `tool_use` / `tool_result` 流程以及更原生的 Claude 行为。
 - **减少不必要的 Premium 请求**：通过把预热请求路由到 `smallModel`、将 `tool_result` 的后续消息重新并入工具流，以及把恢复的工具轮次视为延续流量而非全新高级交互，减少浪费的 premium 使用量。
 - **分阶段的 `gpt-5.4` 与 `gpt-5.3-codex`**：这些模型可以在更深入推理或调用工具前先发出面向用户的 commentary，让长时间运行的编码操作更容易理解，而不是突然开始一串工具调用。
 - **支持 Claude 原生 Beta 能力**：在 Messages API 路径上支持 Anthropic 原生能力，例如 `interleaved-thinking`、`advanced-tool-use` 和 `context-management`；这些能力在普通 Chat Completions 兼容模式下通常很难支持，或根本不可用。
 - **Subagent 标记集成**：Claude Code 与 opencode 插件可以注入 `__SUBAGENT_MARKER__...`，并传递 `x-session-id`，从而让 subagent 流量保留正确的根会话以及 agent/user 语义。
-- **通过 `@ai-sdk/anthropic` 接入 OpenCode**：可以将 OpenCode 指向这个代理作为 Anthropic provider，从而端到端保留 Anthropic Messages 语义、premium request 优化以及更原生的 Claude 行为。
+- **通过 `@ai-sdk/anthropic` 接入 OpenCode**：可以将 OpenCode 指向这个 AI gateway 作为 Anthropic provider，从而端到端保留 Anthropic Messages 语义、premium request 优化以及更原生的 Claude 行为。
 - **Claude Code 集成**：可通过简单的命令行参数（`--claude-code`）快速配置并启动 [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) 使用 Copilot 作为后端。
 - **使用量看板**：提供基于 Web 的看板，用于监控 Copilot API 使用情况、查看额度以及详细统计数据。
 - **速率限制控制**：通过速率限制选项（`--rate-limit`）和等待机制（`--wait`）管理 API 使用，避免因请求过快而报错。
@@ -62,7 +48,7 @@
 - **支持 opencode OAuth**：可通过设置环境变量 `COPILOT_API_OAUTH_APP=opencode` 或使用命令行参数 `--oauth-app=opencode` 来启用 opencode GitHub Copilot 认证。
 - **支持 GitHub Enterprise**：可通过设置环境变量 `COPILOT_API_ENTERPRISE_URL`（例如 `company.ghe.com`）或命令行参数 `--enterprise-url=company.ghe.com` 连接到 GHE.com。
 - **自定义数据目录**：可通过环境变量 `COPILOT_API_HOME` 或命令行参数 `--api-home=/path/to/dir` 修改默认数据目录（存放 token 和配置）。
-- **多 Provider Messages 代理路由**：可以添加全局 provider 配置，并通过 `/:provider/v1/messages` 与 `/:provider/v1/models` 调用外部 Anthropic 或 OpenAI 兼容 API，也可以把 `model` 写成 `"provider/model"` 后直接发到顶层 `/v1/messages`。
+- **多 Provider AI Gateway 路由**：可以添加全局 provider 配置，并通过 `/:provider/v1/messages` 与 `/:provider/v1/models` 调用外部 Anthropic 或 OpenAI 兼容 API，也可以把 `model` 写成 `"provider/model"` 后直接发到顶层 `/v1/messages`。
 - **精确的 Claude Token 计数**：可以选择将 Claude 模型的 `/v1/messages/count_tokens` 请求转发到 Anthropic 的免费 token counting 端点，以获得精确计数，而不是依赖 GPT tokenizer 估算。
 - **GPT 上下文管理**：可通过 `responsesApiContextManagementModels` 为长上下文 GPT 对话启用可配置的上下文压缩，在接近 token 限制时减少不必要的 Premium 请求。详见 [配置](#configuration-configjson)。
 
@@ -82,7 +68,7 @@
 
 ### 减少不必要的 Premium 请求
 
-这个代理内置了一些请求计费保护逻辑，专门面向重工具调用的编码工作流：
+这个 AI gateway 内置了一些请求计费保护逻辑，专门面向重工具调用的编码工作流：
 
 - 无工具的预热或探测请求可以强制走 `smallModel`，避免后台检查消耗 premium 使用量；
 - 混合了 `tool_result` 和补充提示文本的消息块会重新并入 `tool_result` 流，而不会被当成新的用户轮次计费；
@@ -92,7 +78,7 @@
 
 ### 分阶段的 `gpt-5.4` 与 `gpt-5.3-codex`
 
-默认情况下，内置的 `extraPrompts` 会为 `gpt-5.4` 与 `gpt-5.3-codex` 启用中间进度更新行为，代理会在工具调用前把 assistant 轮次翻译成 `phase: "commentary"`，并在最终回复时使用 `phase: "final_answer"`。
+默认情况下，内置的 `extraPrompts` 会为 `gpt-5.4` 与 `gpt-5.3-codex` 启用中间进度更新行为，AI gateway 会在工具调用前把 assistant 轮次翻译成 `phase: "commentary"`，并在最终回复时使用 `phase: "final_answer"`。
 
 这样客户端在更深入的推理或工具执行开始前，就能先收到一段简短、面向用户的说明。
 
@@ -100,7 +86,7 @@
 
 对于基于 subagent 的客户端，本项目可以保留根会话上下文，并正确识别来自 subagent 的流量。
 
-这一标记流程会在 `<system-reminder>` 中放入 `__SUBAGENT_MARKER__...`，同时传递根级 `x-session-id`。当检测到该标记后，代理可以保留父会话身份、推导 `x-initiator: agent`，并把交互标记为 subagent 流量，而不是新的顶层请求。
+这一标记流程会在 `<system-reminder>` 中放入 `__SUBAGENT_MARKER__...`，同时传递根级 `x-session-id`。当检测到该标记后，AI gateway 可以保留父会话身份、推导 `x-initiator: agent`，并把交互标记为 subagent 流量，而不是新的顶层请求。
 
 项目中已经为 Claude Code 和 opencode 都提供了插件集成；配置方法见下文 [插件集成](#plugin-integrations)。
 
@@ -110,7 +96,7 @@
 
 默认情况下，`/v1/messages/count_tokens` 会使用 GPT 的 `o200k_base` tokenizer，并乘以 1.15 倍来估算 Claude token 数。这个估算通常会低于 Claude 的真实 token 使用量，导致像 Claude Code 这类工具压缩上下文太晚，从而触发 “prompt token count exceeds limit” 之类的错误。
 
-当配置了 Anthropic API key 后，代理会把 Claude 模型的 token 计数请求转发到 [Anthropic 真实的 `/v1/messages/count_tokens` 端点](https://docs.anthropic.com/en/docs/build-with-claude/token-counting)。这样能返回精确计数，消除估算误差。不属于 Claude 的模型，以及转发失败的情况，会自动回退到 GPT tokenizer 估算。
+当配置了 Anthropic API key 后，AI gateway 会把 Claude 模型的 token 计数请求转发到 [Anthropic 真实的 `/v1/messages/count_tokens` 端点](https://docs.anthropic.com/en/docs/build-with-claude/token-counting)。这样能返回精确计数，消除估算误差。不属于 Claude 的模型，以及转发失败的情况，会自动回退到 GPT tokenizer 估算。
 
 **设置方式：**
 
@@ -376,7 +362,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
 - **auth.adminApiKey：** 仅用于 `/admin/*` 路由的单个 admin key。若未配置，服务会在启动时自动生成一个随机 key，并回写到 `config.json`。它同样使用 `x-api-key` 或 `Authorization: Bearer` 这两种头，但普通 `auth.apiKeys` 不能访问 `/admin/*`。
 - **modelMappings：** 用于顶层 `POST /v1/messages` 和 `POST /v1/messages/count_tokens` 请求的精确 `sourceModel -> targetModel` 重写映射。省略该字段或保留为 `{}` 时，不会做模型重写。`source` 和 `target` 都必须是非空字符串。`target` 可以是普通模型 ID，也可以是 `provider/model` 形式的别名，例如 `dashscope/qwen3.6-plus`；重写发生在 provider alias 解析之前。`GET/POST /admin/config/model-mappings` 管理接口读写的也只有这个字段。
 - **extraPrompts：** `model -> prompt` 的映射。把 Anthropic 风格请求翻译给 Copilot 时，会将其附加到第一条 system prompt 后面。你可以借此为不同模型注入护栏或指引。缺失的默认项会自动补齐，但不会覆盖你自定义的 prompt。内置的 `gpt-5.3-codex` 和 `gpt-5.4` prompt 会启用带阶段感知的 commentary，让模型在工具调用或更深层推理前先发出简短的用户可见进度说明。
-- **providers：** 全局上游 provider 映射。每个 provider key（例如 `custom`）都会变成一个路由前缀（`/custom/v1/messages`）。支持 `type: "anthropic"`、`type: "openai-compatible"` 和 `type: "openai-responses"`。顶层客户端也可以在 `/v1/messages`、`/v1/messages/count_tokens` 和 `/v1/responses` 中使用 `model: "custom/model-id"`；代理会在转发上游前移除 `custom/` 前缀。`GET /v1/models` 不聚合 provider 模型；provider 模型列表请使用 `GET /custom/v1/models`。
+- **providers：** 全局上游 provider 映射。每个 provider key（例如 `dashscope`）都会变成一个路由前缀（`/dashscope/v1/messages`）。支持 `type: "anthropic"`、`type: "openai-compatible"` 和 `type: "openai-responses"`。顶层客户端也可以在 `/v1/messages`、`/v1/messages/count_tokens` 和 `/v1/responses` 中使用 `model: "dashscope/model-id"`；AI gateway 会在转发上游前移除 `dashscope/` 前缀。`GET /v1/models` 不聚合 provider 模型；provider 模型列表请使用 `GET /dashscope/v1/models`。
   - `enabled`：可选，若省略则默认为 `true`。
   - `baseUrl`：provider API 的基础 URL，不要带结尾的 endpoint。Anthropic provider 不要带 `/v1/messages`；OpenAI 兼容 provider 不要带 `/v1/chat/completions`；OpenAI Responses provider 不要带 `/v1/responses`。
   - `apiKey`：作为上游凭据值使用；普通 provider 必须配置。
@@ -541,9 +527,9 @@ bunx --bun @jeffreycao/copilot-api@latest start
 
 ## 与 Claude Code 一起使用
 
-这个代理可以为 [Claude Code](https://docs.anthropic.com/en/claude-code) 提供后端能力。Claude Code 是 Anthropic 提供的实验性面向开发者的对话式 AI 助手。
+这个 AI gateway 可以为 [Claude Code](https://docs.anthropic.com/en/claude-code) 提供后端能力。Claude Code 是 Anthropic 提供的实验性面向开发者的对话式 AI 助手。
 
-有两种方式可以把 Claude Code 配置为使用这个代理：
+有两种方式可以把 Claude Code 配置为使用这个 AI gateway：
 
 ### 通过 `--claude-code` 标志进行交互式配置
 
@@ -553,7 +539,7 @@ bunx --bun @jeffreycao/copilot-api@latest start
 npx @jeffreycao/copilot-api@latest start --claude-code
 ```
 
-你会被提示选择一个主模型，以及一个用于后台任务的 “small, fast” 模型。选择完成后，会有一条命令被复制到剪贴板中。该命令会设置 Claude Code 使用该代理所需的环境变量。
+你会被提示选择一个主模型，以及一个用于后台任务的 “small, fast” 模型。选择完成后，会有一条命令被复制到剪贴板中。该命令会设置 Claude Code 使用这个 AI gateway 所需的环境变量。
 
 在新的终端中粘贴并执行这条命令，即可启动 Claude Code。
 
@@ -602,9 +588,9 @@ npx @jeffreycao/copilot-api@latest start --claude-code
 
 ## GPT Tool Search
 
-对于 `gpt-5.4+` 这类 GPT Responses 模型，本代理可以通过一个很小的 MCP bridge 暴露 Responses `tool_search`。Claude Code 和 opencode 都可以使用同一个 bridge，前提是客户端会加载 MCP server，并且 Anthropic Messages 流量会经过本代理。
+对于 `gpt-5.4+` 这类 GPT Responses 模型，这个 AI gateway 可以通过一个很小的 MCP bridge 暴露 Responses `tool_search`。Claude Code 和 opencode 都可以使用同一个 bridge，前提是客户端会加载 MCP server，并且 Anthropic Messages 流量会经过这个 AI gateway。
 
-GPT 模型不要设置 Claude Code 原生的 `ENABLE_TOOL_SEARCH`。这个开关启用的是 Claude Code 自己的客户端 tool search 模式，可能导致 deferred 工具定义不再转发给代理。本代理需要完整的工具定义，这样才能只保留那一小组常驻加载工具，其余工具统一转换为 Responses deferred namespace。
+GPT 模型不要设置 Claude Code 原生的 `ENABLE_TOOL_SEARCH`。这个开关启用的是 Claude Code 自己的客户端 tool search 模式，可能导致 deferred 工具定义不再转发给 AI gateway。这个 AI gateway 需要完整的工具定义，这样才能只保留那一小组常驻加载工具，其余工具统一转换为 Responses deferred namespace。
 
 如果你安装了 `tool-search@copilot-api-marketplace`，Claude Code 会自动带上这个 MCP bridge，可以跳过下面这段 Claude Code MCP 手动配置。
 
@@ -637,23 +623,23 @@ GPT 模型不要设置 Claude Code 原生的 `ENABLE_TOOL_SEARCH`。这个开关
 
 本地开发时可以将命令换成 `bun`，参数换成 `["run", "./src/main.ts", "mcp"]`。
 
-代理内部现在会把 OpenAI Responses `tool_search` 配置成 client-executed 模式。deferred tools 仍然会作为可搜索 namespace 暴露给模型，但会明确要求模型直接返回下一步要加载的精确工具名列表。
+AI gateway 内部现在会把 OpenAI Responses `tool_search` 配置成 client-executed 模式。deferred tools 仍然会作为可搜索 namespace 暴露给模型，但会明确要求模型直接返回下一步要加载的精确工具名列表。
 
 该 bridge 使用直接工具选择，不做 query 搜索。工具入参是 `names`，值为逗号分隔的精确 deferred 工具名，例如 `TaskList,TaskGet,mcp__fetch__fetch`。
 
 ## 与 OpenCode 一起使用
 
-OpenCode 已经有直接的 GitHub Copilot provider。本节适用于你希望让 OpenCode 通过 `@ai-sdk/anthropic` 指向这个代理，并复用本 README 前面提到的 agent 行为时。
+OpenCode 已经有直接的 GitHub Copilot provider。本节适用于你希望让 OpenCode 通过 `@ai-sdk/anthropic` 指向这个 AI gateway，并复用本 README 前面提到的 agent 行为时。
 
 ### 最小配置
 
-使用 OpenCode OAuth app 启动代理：
+使用 OpenCode OAuth app 启动 AI gateway：
 
 ```sh
 npx @jeffreycao/copilot-api@latest --oauth-app=opencode start
 ```
 
-然后让 OpenCode 通过 `@ai-sdk/anthropic` 指向该代理。
+然后让 OpenCode 通过 `@ai-sdk/anthropic` 指向这个 AI gateway。
 
 示例 `~/.config/opencode/opencode.json`：
 
@@ -726,7 +712,7 @@ npx @jeffreycao/copilot-api@latest --oauth-app=opencode start
 
 这些字段的重要性：
 
-- `npm: "@ai-sdk/anthropic"` 是关键。OpenCode 会以 Anthropic Messages 语义与该代理通信，而不是把一切扁平化为 OpenAI Chat Completions。
+- `npm: "@ai-sdk/anthropic"` 是关键。OpenCode 会以 Anthropic Messages 语义与这个 AI gateway 通信，而不是把一切扁平化为 OpenAI Chat Completions。
 - `options.baseURL` 应设为 `http://localhost:4141/v1`；Anthropic SDK 会自动补上 `/messages`、`/models` 和 `/messages/count_tokens`。
 - `model`、`small_model` 与 `agent.*.model` 让你可以把 `gpt-5.4` 用于 build/plan，同时把探索和后台工作路由到 `gpt-5-mini`。
 - 如果你在此代理中启用了 `auth.apiKeys`，请把 `dummy` 替换为真实 key；否则任意占位值都可以。
@@ -741,7 +727,7 @@ npx @jeffreycao/copilot-api@latest --oauth-app=opencode start
 
 Claude Code 集成现在拆分为两个插件：
 
-- `agent-inject` 会在 `SubagentStart` 时注入 `__SUBAGENT_MARKER__...`，以便本代理推导 `x-initiator: agent`。
+- `agent-inject` 会在 `SubagentStart` 时注入 `__SUBAGENT_MARKER__...`，以便 AI gateway 推导 `x-initiator: agent`。
 - `tool-search` 会注册用于 GPT Responses deferred tool loading 的 `tool_search` MCP bridge。
 
 - 本仓库中的 marketplace catalog：`.claude-plugin/marketplace.json`
@@ -760,7 +746,7 @@ Claude Code 集成现在拆分为两个插件：
 /plugin install tool-search@copilot-api-marketplace
 ```
 
-安装后，`agent-inject` 会在 `SubagentStart` 时注入 `__SUBAGENT_MARKER__...`，该代理会利用它推导 `x-initiator: agent`。
+安装后，`agent-inject` 会在 `SubagentStart` 时注入 `__SUBAGENT_MARKER__...`，AI gateway 会利用它推导 `x-initiator: agent`。
 
 `agent-inject` 还会注册一个 `UserPromptSubmit` hook，并返回 `{"continue": true}`；同时它也可以通过环境变量注入 `SessionStart` reminder 规则：
 
@@ -789,7 +775,7 @@ cp plugin/opencode/subagent-marker.js ~/.config/opencode/plugins/
 - 跟踪 subagent 创建的子会话
 - 自动在 subagent 聊天消息前添加 marker system reminder（`__SUBAGENT_MARKER__...`）
 - 设置 `x-session-id` 请求头以跟踪会话
-- 让该代理能够把来自 subagent 的请求识别为 `x-initiator: agent`
+- 让这个 AI gateway 能够把来自 subagent 的请求识别为 `x-initiator: agent`
 
 该插件会挂接到 `session.created`、`session.deleted`、`chat.message` 和 `chat.headers` 事件上，以无缝提供 subagent marker 能力。
 
