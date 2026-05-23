@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import {
   afterAll,
   afterEach,
@@ -221,7 +222,46 @@ describe("openai-compatible provider messages", () => {
       include_usage: true,
     })
   })
+})
 
+describe("openai-compatible provider stream handling", () => {
+  test("translates OpenAI-compatible stream errors to Anthropic error events", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          'event: error\ndata: {"error":{"message":"upstream failed","type":"invalid_request_error"}}\n\n',
+          {
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      ),
+    )
+
+    const app = createApp()
+    const response = await app.request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("event: error")
+    expect(body).toContain('"message":"upstream failed"')
+    expect(body).toContain('"type":"invalid_request_error"')
+  })
+})
+
+describe("openai-compatible provider request body options", () => {
   test("allows extraBody to disable parallel tool calls", async () => {
     providerConfig = {
       ...providerConfig,
@@ -252,6 +292,40 @@ describe("openai-compatible provider messages", () => {
     const init = fetchMock.mock.calls[0][1] as RequestInit
     const body = JSON.parse(init.body as string) as Record<string, unknown>
     expect(body.parallel_tool_calls).toBe(false)
+  })
+
+  test("applies extraBody defaults when translated fields are undefined", async () => {
+    providerConfig = {
+      ...providerConfig,
+      models: {
+        "qwen-plus": {
+          extraBody: {
+            stop: ["END"],
+            user: "configured-user",
+          },
+          toolContentSupportType: [],
+        },
+      },
+    } as ResolvedProviderConfig
+
+    const app = createApp()
+    const response = await app.request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    const body = JSON.parse(init.body as string) as Record<string, unknown>
+    expect(body.stop).toEqual(["END"])
+    expect(body.user).toBe("configured-user")
   })
 
   test("maps Anthropic thinking budget to OpenAI-compatible thinking_budget", async () => {
