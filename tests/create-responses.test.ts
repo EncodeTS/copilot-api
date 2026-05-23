@@ -16,6 +16,7 @@ const {
   buildResponsesWebSocketPayload,
   buildResponsesWebSocketUrl,
   prepareResponsesWebSocketRequest,
+  resolveEffectiveResponsesTransport,
 } = await import("../src/services/copilot/create-responses")
 
 const originalOauthApp = process.env.COPILOT_API_OAUTH_APP
@@ -158,9 +159,11 @@ describe("createResponses", () => {
       model: "gpt-test",
       type: "response.create",
     })
-    expect(request.headers["OpenAI-Intent"]).toBe("conversation-other")
+    expect(request.headers["OpenAI-Intent"]).toBe("conversation-agent")
     expect(request.headers["X-Interaction-Id"]).toBe("interaction-1")
-    expect(request.headers["X-Interaction-Type"]).toBe("conversation-other")
+    expect(request.headers["X-Interaction-Type"]).toBe(
+      "conversation-compaction",
+    )
     expect(request.headers["x-initiator"]).toBeUndefined()
   })
 
@@ -226,5 +229,12 @@ describe("createResponses", () => {
     expect(new Set([mainKey, subagentKey, otherModelKey]).size).toBe(3)
     expect(mainKey).toContain("gpt-test")
     expect(mainKey).toContain("request-1")
+  })
+
+  test("compact requests use HTTP even when websocket transport is requested", () => {
+    expect(
+      resolveEffectiveResponsesTransport("websocket", COMPACT_REQUEST),
+    ).toBe("http")
+    expect(resolveEffectiveResponsesTransport("websocket")).toBe("websocket")
   })
 })

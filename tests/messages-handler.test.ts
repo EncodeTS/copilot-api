@@ -334,3 +334,32 @@ describe("messages handler orchestration", () => {
     expect(options.anthropicBetaHeader).toBe("warmup-beta")
   })
 })
+
+describe("messages handler compact routing", () => {
+  test("falls back to Chat Completions for compact requests when only ws:/responses is supported", async () => {
+    selectedModel = {
+      id: "responses-ws-model",
+      supported_endpoints: ["ws:/responses"],
+    }
+
+    const app = createApp()
+    const response = await app.request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(
+        createPayload({
+          system:
+            "You are a helpful AI assistant tasked with summarizing conversations",
+        }),
+      ),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe("chat")
+    expect(handleWithMessagesApi).not.toHaveBeenCalled()
+    expect(handleWithResponsesApi).not.toHaveBeenCalled()
+    expect(handleWithChatCompletions).toHaveBeenCalledTimes(1)
+  })
+})

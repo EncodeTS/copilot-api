@@ -61,6 +61,8 @@ test("prepareForCompact marks compact traffic as agent initiated", () => {
   prepareForCompact(normalHeaders, 0)
 
   expect(compactHeaders["x-initiator"]).toBe("agent")
+  expect(compactHeaders["x-interaction-type"]).toBe("conversation-compaction")
+  expect(compactHeaders["openai-intent"]).toBe("conversation-agent")
   expect(autoContinueHeaders["x-initiator"]).toBe("agent")
   expect(normalHeaders["x-initiator"]).toBe("user")
 })
