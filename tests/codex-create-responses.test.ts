@@ -128,6 +128,65 @@ describe("codex api helpers", () => {
     expect(body).toContain("data: [DONE]")
   })
 
+  test("reports normalized terminal events while standardizing Codex SSE", async () => {
+    const seenChunkEvents: Array<string | undefined> = []
+    const seenEvents: Array<string> = []
+    let streamClosed = false
+    const stream = createStandardizedCodexResponsesEventStream(
+      streamChunks([
+        {
+          data: JSON.stringify({
+            response: {
+              created_at: 0,
+              error: null,
+              id: "resp_123",
+              incomplete_details: null,
+              instructions: null,
+              metadata: null,
+              model: "gpt-5.4",
+              object: "response",
+              output: [],
+              output_text: "hello",
+              parallel_tool_calls: true,
+              status: "completed",
+              temperature: null,
+              tool_choice: "auto",
+              tools: [],
+              top_p: null,
+              usage: {
+                input_tokens: 5,
+                output_tokens: 2,
+                total_tokens: 7,
+              },
+            },
+            sequence_number: 1,
+            type: "response.done",
+          }),
+        },
+        {
+          data: "[DONE]",
+        },
+      ]),
+      {
+        onClose: () => {
+          streamClosed = true
+        },
+        onChunk: (chunk) => {
+          seenChunkEvents.push(chunk.event)
+        },
+        onEvent: (event) => {
+          seenEvents.push(event.type)
+        },
+      },
+    )
+
+    await new Response(stream).text()
+
+    expect(seenChunkEvents).toEqual(["response.completed", undefined])
+    expect(seenEvents).toEqual(["response.completed"])
+    expect(streamClosed).toBe(true)
+  })
+
   test("builds the ChatGPT Codex websocket responses path", () => {
     expect(buildCodexResponsesWebSocketUrl()).toBe(
       "wss://chatgpt.com/backend-api/codex/responses",
