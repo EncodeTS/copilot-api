@@ -45,3 +45,7 @@
 ---
 
 This file is tailored for agentic coding agents. For more details, see the configs in `eslint.config.js` and `tsconfig.json`. No Cursor or Copilot rules detected.
+
+## Local Context
+
+If `AGENTS.local.md` exists, read it for local-only context. Never commit `AGENTS.local.md`.
