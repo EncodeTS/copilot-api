@@ -16,19 +16,22 @@ import type {
   ContentPart,
   Message,
 } from "~/services/copilot/create-chat-completions"
+import type {
+  ResponsesResult,
+  ResponseStreamEvent,
+} from "~/services/copilot/create-responses"
 
-import {
-  getProviderConfig,
-  type ModelConfig,
-  type ResolvedProviderConfig,
-} from "~/lib/config"
+import { type ModelConfig, type ResolvedProviderConfig } from "~/lib/config"
 import { HTTPError } from "~/lib/error"
 import { createHandlerLogger, debugJson, debugLazy } from "~/lib/logger"
+import { resolveProviderConfig } from "~/lib/provider-resolver"
+import { resolveBridgeToolSearchName } from "~/lib/tool-search"
 import {
   createProviderTokenUsageRecorder,
   mergeAnthropicUsage,
   normalizeAnthropicUsage,
   normalizeOpenAIUsage,
+  normalizeResponsesUsage,
   type UsageTokens,
 } from "~/lib/token-usage"
 import { parseUserIdMetadata } from "~/lib/utils"
@@ -41,9 +44,28 @@ import {
   translateChunkToAnthropicEvents,
 } from "~/routes/messages/stream-translation"
 import {
+  buildErrorEvent,
+  createResponsesStreamState,
+  translateResponsesStreamEvent,
+} from "~/routes/messages/responses-stream-translation"
+import {
+  translateAnthropicMessagesToResponsesPayload,
+  translateResponsesResultToAnthropic,
+} from "~/routes/messages/responses-translation"
+import {
+  applyResponsesApiContextManagement,
+  compactInputByLatestCompaction,
+} from "~/routes/responses/utils"
+import { getModels as getCodexModels } from "~/services/codex/get-models"
+import {
+  forwardCodexResponses,
+  normalizeCodexResponsesEvent,
+} from "~/services/codex/create-responses"
+import {
   forwardProviderChatCompletions,
   forwardProviderMessages,
-} from "~/services/providers/anthropic-proxy"
+  forwardProviderResponses,
+} from "~/services/providers/provider-proxy"
 
 const logger = createHandlerLogger("provider-messages-handler")
 
@@ -74,7 +96,7 @@ export async function handleProviderMessagesForProvider(
   },
 ): Promise<Response> {
   const { payload, provider } = options
-  const providerConfig = getProviderConfig(provider)
+  const providerConfig = await resolveProviderConfig(provider)
   if (!providerConfig) {
     return c.json(
       {
@@ -92,6 +114,15 @@ export async function handleProviderMessagesForProvider(
     applyModelDefaults(payload, modelConfig)
 
     debugJson(logger, "provider.messages.request", { payload, provider })
+
+    if (providerConfig.type === "openai-responses") {
+      return await handleOpenAIResponsesProviderMessages(c, {
+        modelConfig,
+        payload,
+        provider,
+        providerConfig,
+      })
+    }
 
     if (providerConfig.type === "openai-compatible") {
       return await handleOpenAICompatibleProviderMessages(c, {
@@ -145,6 +176,70 @@ export async function handleProviderMessagesForProvider(
     })
     throw error
   }
+}
+
+const handleOpenAIResponsesProviderMessages = async (
+  c: Context,
+  options: {
+    modelConfig: ModelConfig | undefined
+    payload: AnthropicMessagesPayload
+    provider: string
+    providerConfig: ResolvedProviderConfig
+  },
+): Promise<Response> => {
+  const { payload, provider, providerConfig } = options
+  const selectedModel =
+    providerConfig.name === "codex" ?
+      getCodexModels().data.find((model) => model.id === payload.model)
+    : undefined
+  const responsesPayload = translateAnthropicMessagesToResponsesPayload(payload)
+
+  applyResponsesApiContextManagement(
+    responsesPayload,
+    selectedModel?.capabilities.limits.max_prompt_tokens,
+  )
+  compactInputByLatestCompaction(responsesPayload)
+
+  debugJson(logger, "provider.messages.responses.request", {
+    payload: responsesPayload,
+    provider,
+  })
+
+  const upstreamResponse =
+    providerConfig.name === "codex" ?
+      await forwardCodexResponses(
+        responsesPayload,
+        c.req.raw.headers,
+        providerConfig.baseUrl,
+      )
+    : await forwardProviderResponses(
+        providerConfig,
+        responsesPayload,
+        c.req.raw.headers,
+      )
+
+  if (!upstreamResponse.ok) {
+    logger.error("Failed to create provider responses", upstreamResponse)
+    throw new HTTPError("Failed to create provider responses", upstreamResponse)
+  }
+
+  if (responsesPayload.stream) {
+    return streamResponsesProviderMessages({
+      c,
+      payload,
+      provider,
+      providerConfig,
+      upstreamResponse,
+    })
+  }
+
+  const jsonBody = (await upstreamResponse.json()) as ResponsesResult
+  return respondResponsesProviderMessagesJson(c, {
+    body: jsonBody,
+    payload,
+    provider,
+    providerConfig,
+  })
 }
 
 const applyModelDefaults = (
@@ -543,6 +638,88 @@ const streamOpenAICompatibleProviderMessages = ({
   })
 }
 
+const streamResponsesProviderMessages = ({
+  c,
+  payload,
+  provider,
+  providerConfig,
+  upstreamResponse,
+}: {
+  c: Context
+  payload: AnthropicMessagesPayload
+  provider: string
+  providerConfig: ResolvedProviderConfig
+  upstreamResponse: Response
+}): Response => {
+  logger.debug("provider.messages.responses.streaming", {
+    provider,
+  })
+  const recordUsage = createProviderMessagesUsageRecorder(payload, provider)
+  return streamSSE(c, async (stream) => {
+    let usage: UsageTokens = {}
+    const streamState = createResponsesStreamState({
+      toolSearchName: resolveBridgeToolSearchName(payload.tools),
+    })
+
+    for await (const chunk of events(upstreamResponse)) {
+      logger.debug("provider.messages.responses.raw_stream_event:", chunk.data)
+      const eventName = chunk.event
+      if (eventName === "ping") {
+        await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
+        continue
+      }
+
+      if (!chunk.data || chunk.data === "[DONE]") {
+        if (chunk.data === "[DONE]") {
+          break
+        }
+        continue
+      }
+
+      const parsed = parseResponsesProviderStreamChunk(
+        chunk.data,
+        providerConfig,
+      )
+      if (!parsed) {
+        continue
+      }
+
+      if (
+        parsed.type === "response.completed"
+        || parsed.type === "response.failed"
+        || parsed.type === "response.incomplete"
+      ) {
+        usage = normalizeResponsesUsage(parsed.response.usage)
+      }
+
+      const events = translateResponsesStreamEvent(parsed, streamState)
+      for (const event of events) {
+        const eventData = JSON.stringify(event)
+        debugLazy(logger, () => [
+          "provider.messages.responses.translated_event:",
+          eventData,
+        ])
+        await stream.writeSSE({
+          event: event.type,
+          data: eventData,
+        })
+      }
+    }
+
+    if (!streamState.messageCompleted) {
+      const errorEvent = buildErrorEvent(
+        `${provider} stream ended without a completion event`,
+      )
+      await stream.writeSSE({
+        event: errorEvent.type,
+        data: JSON.stringify(errorEvent),
+      })
+    }
+
+    recordUsage(usage)
+  })
+}
+
 const parseOpenAICompatibleStreamChunk = (
   data: string,
 ): ChatCompletionChunk | null => {
@@ -550,6 +727,25 @@ const parseOpenAICompatibleStreamChunk = (
     return JSON.parse(data) as ChatCompletionChunk
   } catch (error) {
     logger.error("provider.messages.openai_compatible.parse_chunk_error", {
+      data,
+      error,
+    })
+    return null
+  }
+}
+
+const parseResponsesProviderStreamChunk = (
+  data: string,
+  providerConfig: ResolvedProviderConfig,
+): ResponseStreamEvent | null => {
+  try {
+    const parsed = JSON.parse(data) as ResponseStreamEvent
+    return providerConfig.name === "codex" ?
+        normalizeCodexResponsesEvent(parsed)
+      : parsed
+  } catch (error) {
+    logger.error("provider.messages.responses.parse_chunk_error", {
+      provider: providerConfig.name,
       data,
       error,
     })
@@ -624,6 +820,34 @@ const respondOpenAICompatibleProviderMessagesJson = (
     "provider.messages.openai_compatible.no_stream result:",
     anthropicResponse,
   )
+  return c.json(anthropicResponse)
+}
+
+const respondResponsesProviderMessagesJson = (
+  c: Context,
+  options: {
+    body: ResponsesResult
+    payload: AnthropicMessagesPayload
+    provider: string
+    providerConfig: ResolvedProviderConfig
+  },
+): Response => {
+  const { body, payload, provider, providerConfig } = options
+  const recordUsage = createProviderMessagesUsageRecorder(payload, provider)
+  recordUsage(normalizeResponsesUsage(body.usage))
+
+  const anthropicResponse = translateResponsesResultToAnthropic(body, {
+    toolSearchName: resolveBridgeToolSearchName(payload.tools),
+  })
+  debugJson(
+    logger,
+    "provider.messages.responses.no_stream result:",
+    anthropicResponse,
+  )
+
+  if (providerConfig.name === "codex") {
+    logger.debug("provider.messages.codex.no_stream.result")
+  }
   return c.json(anthropicResponse)
 }
 

@@ -376,11 +376,11 @@ Copilot API 现在使用子命令结构，主要命令包括：
 - **auth.adminApiKey：** 仅用于 `/admin/*` 路由的单个 admin key。若未配置，服务会在启动时自动生成一个随机 key，并回写到 `config.json`。它同样使用 `x-api-key` 或 `Authorization: Bearer` 这两种头，但普通 `auth.apiKeys` 不能访问 `/admin/*`。
 - **modelMappings：** 用于顶层 `POST /v1/messages` 和 `POST /v1/messages/count_tokens` 请求的精确 `sourceModel -> targetModel` 重写映射。省略该字段或保留为 `{}` 时，不会做模型重写。`source` 和 `target` 都必须是非空字符串。`target` 可以是普通模型 ID，也可以是 `provider/model` 形式的别名，例如 `dashscope/qwen3.6-plus`；重写发生在 provider alias 解析之前。`GET/POST /admin/config/model-mappings` 管理接口读写的也只有这个字段。
 - **extraPrompts：** `model -> prompt` 的映射。把 Anthropic 风格请求翻译给 Copilot 时，会将其附加到第一条 system prompt 后面。你可以借此为不同模型注入护栏或指引。缺失的默认项会自动补齐，但不会覆盖你自定义的 prompt。内置的 `gpt-5.3-codex` 和 `gpt-5.4` prompt 会启用带阶段感知的 commentary，让模型在工具调用或更深层推理前先发出简短的用户可见进度说明。
-- **providers：** 全局上游 provider 映射。每个 provider key（例如 `custom`）都会变成一个路由前缀（`/custom/v1/messages`）。支持 `type: "anthropic"` 和 `type: "openai-compatible"`。顶层 Anthropic 客户端也可以在 `/v1/messages` 和 `/v1/messages/count_tokens` 中使用 `model: "custom/model-id"`；代理会在转发上游前移除 `custom/` 前缀。`GET /v1/models` 不聚合 provider 模型；provider 模型列表请使用 `GET /custom/v1/models`。
+- **providers：** 全局上游 provider 映射。每个 provider key（例如 `custom`）都会变成一个路由前缀（`/custom/v1/messages`）。支持 `type: "anthropic"`、`type: "openai-compatible"` 和 `type: "openai-responses"`。顶层客户端也可以在 `/v1/messages`、`/v1/messages/count_tokens` 和 `/v1/responses` 中使用 `model: "custom/model-id"`；代理会在转发上游前移除 `custom/` 前缀。`GET /v1/models` 不聚合 provider 模型；provider 模型列表请使用 `GET /custom/v1/models`。
   - `enabled`：可选，若省略则默认为 `true`。
-  - `baseUrl`：provider API 的基础 URL，不要带结尾的 endpoint。Anthropic provider 不要带 `/v1/messages`；OpenAI 兼容 provider 不要带 `/v1/chat/completions`。
-  - `apiKey`：作为上游凭据值使用。
-  - `authType`：可选，控制 `apiKey` 如何发送到上游。支持 `x-api-key` 和 `authorization`。Anthropic provider 默认 `x-api-key`；OpenAI 兼容 provider 默认 `authorization`。当设置为 `authorization` 时，代理会发送 `Authorization: Bearer <apiKey>`。
+  - `baseUrl`：provider API 的基础 URL，不要带结尾的 endpoint。Anthropic provider 不要带 `/v1/messages`；OpenAI 兼容 provider 不要带 `/v1/chat/completions`；OpenAI Responses provider 不要带 `/v1/responses`。
+  - `apiKey`：作为上游凭据值使用；普通 provider 必须配置。
+  - `authType`：可选，控制 `apiKey` 如何发送到上游。普通 provider 支持 `x-api-key` 和 `authorization`。Anthropic provider 默认 `x-api-key`；OpenAI 兼容和 OpenAI Responses provider 默认 `authorization`。当设置为 `authorization` 时，代理会发送 `Authorization: Bearer <apiKey>`。`oauth2` 仅保留给内置 `codex` provider，并由 `auth login --provider codex` 自动写入。
   - `adjustInputTokens`：可选，当为 `true` 时，代理会在 usage 响应里用 `input_tokens` 减去 `cache_read_input_tokens` 和 `cache_creation_input_tokens`。
   - `models`：可选，按模型 ID 配置的映射。每个键为请求中的模型名，值支持：
     - `temperature`：可选，当请求未指定时使用的默认温度。
@@ -435,7 +435,7 @@ curl http://localhost:4141/admin/config/model-mappings \
 
 | 端点 | 方法 | 说明 |
 | --- | --- | --- |
-| `POST /v1/responses` | `POST` | OpenAI 中用于生成模型响应的高级接口。 |
+| `POST /v1/responses` | `POST` | OpenAI 中用于生成模型响应的高级接口。支持 `openai-responses` provider 的 `provider/model` 别名。 |
 | `POST /v1/chat/completions` | `POST` | 为给定聊天对话创建模型响应。 |
 | `GET /v1/models` | `GET` | 列出当前可用模型。 |
 | `POST /v1/embeddings` | `POST` | 创建表示输入文本的向量嵌入。 |
@@ -448,7 +448,7 @@ curl http://localhost:4141/admin/config/model-mappings \
 | --- | --- | --- |
 | `POST /v1/messages` | `POST` | 为给定对话创建模型响应。支持已配置 provider 的 `provider/model` 别名。 |
 | `POST /v1/messages/count_tokens` | `POST` | 计算一组消息的 token 数。支持已配置 provider 的 `provider/model` 别名。 |
-| `POST /:provider/v1/messages` | `POST` | 将 Anthropic Messages 请求代理到已配置的 Anthropic 或 OpenAI 兼容 provider。 |
+| `POST /:provider/v1/messages` | `POST` | 将 Anthropic Messages 请求代理到已配置的 Anthropic、OpenAI 兼容或 OpenAI Responses provider。 |
 | `GET /:provider/v1/models` | `GET` | 将模型列表请求代理到已配置的 provider。 |
 | `POST /:provider/v1/messages/count_tokens` | `POST` | 为 provider 路由请求在本地计算 token 数。 |
 
@@ -499,11 +499,14 @@ npx @jeffreycao/copilot-api@latest start --rate-limit 30 --wait
 # 直接传入 GitHub token
 npx @jeffreycao/copilot-api@latest start --github-token ghp_YOUR_TOKEN_HERE
 
-# 仅执行认证流程
-npx @jeffreycao/copilot-api@latest auth
+# 仅执行认证流程，并交互式选择内置 provider
+npx @jeffreycao/copilot-api@latest auth login
 
-# 认证时启用详细日志
-npx @jeffreycao/copilot-api@latest auth --verbose
+# 显式登录 Codex
+npx @jeffreycao/copilot-api@latest auth login --provider codex
+
+# 显式登录 Copilot，并启用详细日志
+npx @jeffreycao/copilot-api@latest auth login --provider copilot --verbose
 
 # 在终端中查看 Copilot 用量与额度（无需启动服务）
 npx @jeffreycao/copilot-api@latest check-usage
@@ -742,7 +745,7 @@ Claude Code 集成现在拆分为两个插件：
 - `tool-search` 会注册用于 GPT Responses deferred tool loading 的 `tool_search` MCP bridge。
 
 - 本仓库中的 marketplace catalog：`.claude-plugin/marketplace.json`
-- 本仓库中的插件源码：`claude-plugin/agent-inject`、`claude-plugin/tool-search`
+- 本仓库中的插件源码：`plugin/claude/agent-inject`、`plugin/claude/tool-search`
 
 远程添加 marketplace：
 
@@ -768,7 +771,7 @@ Claude Code 集成现在拆分为两个插件：
 
 #### Opencode 插件
 
-subagent 标记生成器被打包为一个 opencode 插件，位于 `.opencode/plugins/subagent-marker.js`。
+subagent 标记生成器被打包为一个 opencode 插件，位于 `plugin/opencode/subagent-marker.js`。
 
 **安装方式：**
 
@@ -776,7 +779,7 @@ subagent 标记生成器被打包为一个 opencode 插件，位于 `.opencode/p
 
 ```sh
 # 克隆或下载本仓库后复制该插件
-cp .opencode/plugins/subagent-marker.js ~/.config/opencode/plugins/
+cp plugin/opencode/subagent-marker.js ~/.config/opencode/plugins/
 ```
 
 或者手动在 `~/.config/opencode/plugins/subagent-marker.js` 创建该文件，并填入插件内容。

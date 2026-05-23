@@ -72,6 +72,7 @@ export interface ResponsesStreamState {
   blockHasDelta: Set<number>
   functionCallStateByOutputIndex: Map<number, FunctionCallStreamState>
   toolSearchName: string
+  hasToolCall: boolean
 }
 
 type FunctionCallStreamState = {
@@ -92,6 +93,7 @@ export const createResponsesStreamState = (options?: {
   blockHasDelta: new Set(),
   functionCallStateByOutputIndex: new Map(),
   toolSearchName: options?.toolSearchName ?? BRIDGE_TOOL_SEARCH_NAME,
+  hasToolCall: false,
 })
 
 export const translateResponsesStreamEvent = (
@@ -499,7 +501,10 @@ const handleResponseCompleted = (
   const events = new Array<AnthropicStreamEventData>()
 
   closeAllOpenBlocks(state, events)
-  const anthropic = translateResponsesResultToAnthropic(response)
+  const anthropic = translateResponsesResultToAnthropic(response, {
+    hasToolCall: state.hasToolCall,
+    toolSearchName: state.toolSearchName,
+  })
   events.push(
     {
       type: "message_delta",
@@ -708,6 +713,8 @@ const openFunctionCallBlock = (
   },
 ): number => {
   const { outputIndex, toolCallId, name, events } = params
+
+  state.hasToolCall = true
 
   let functionCallState = state.functionCallStateByOutputIndex.get(outputIndex)
 

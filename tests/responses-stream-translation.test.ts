@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 
 import type { AnthropicStreamEventData } from "~/routes/messages/anthropic-types"
 import type {
+  ResponseCompletedEvent,
   ResponseOutputItemAddedEvent,
   ResponseFunctionCallArgumentsDeltaEvent,
   ResponseFunctionCallArgumentsDoneEvent,
@@ -136,6 +137,65 @@ describe("translateResponsesStreamEvent tool calls", () => {
 
     expect(state.openBlocks.size).toBe(1)
     expect(state.functionCallStateByOutputIndex.size).toBe(0)
+  })
+
+  test("uses streamed tool call state when completed output is empty", () => {
+    const state = createResponsesStreamState()
+
+    const events = [
+      translateResponsesStreamEvent(createFunctionCallAddedEvent(), state),
+      translateResponsesStreamEvent(
+        {
+          type: "response.function_call_arguments.done",
+          item_id: "item-1",
+          name: "TodoWrite",
+          output_index: 1,
+          sequence_number: 2,
+          arguments: '{"todos":[]}',
+        } as ResponseFunctionCallArgumentsDoneEvent,
+        state,
+      ),
+      translateResponsesStreamEvent(
+        {
+          type: "response.completed",
+          sequence_number: 3,
+          response: {
+            id: "resp-1",
+            object: "response",
+            created_at: 0,
+            model: "gpt-5.4",
+            output: [],
+            output_text: "",
+            status: "completed",
+            usage: null,
+            error: null,
+            incomplete_details: null,
+            instructions: null,
+            metadata: null,
+            parallel_tool_calls: false,
+            temperature: null,
+            tool_choice: null,
+            tools: [],
+            top_p: null,
+          },
+        } as ResponseCompletedEvent,
+        state,
+      ),
+    ].flat()
+
+    const messageDelta = events.find((event) => event.type === "message_delta")
+    expect(messageDelta).toEqual({
+      type: "message_delta",
+      delta: {
+        stop_reason: "tool_use",
+        stop_sequence: null,
+      },
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+      },
+    })
+    expect(state.hasToolCall).toBe(true)
   })
 
   test("uses namespace as streamed function call tool name", () => {

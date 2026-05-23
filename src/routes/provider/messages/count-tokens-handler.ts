@@ -1,7 +1,7 @@
 import type { Context, Env } from "hono"
 
-import { getProviderConfig } from "~/lib/config"
 import { createHandlerLogger } from "~/lib/logger"
+import { resolveProviderConfig } from "~/lib/provider-resolver"
 import { createFallbackModel } from "~/lib/provider-model"
 import { getTokenCount } from "~/lib/tokenizer"
 import { type AnthropicMessagesPayload } from "~/routes/messages/anthropic-types"
@@ -27,7 +27,7 @@ export async function handleProviderCountTokensForProvider(
   const { payload: anthropicPayload, provider } = options
   const modelId = anthropicPayload.model.trim()
 
-  const providerConfig = getProviderConfig(provider)
+  const providerConfig = await resolveProviderConfig(provider)
   if (!providerConfig) {
     return c.json(
       {
@@ -42,7 +42,10 @@ export async function handleProviderCountTokensForProvider(
 
   const modelConfig = providerConfig.models?.[modelId]
   const translationOptions =
-    providerConfig.type === "openai-compatible" ?
+    (
+      providerConfig.type === "openai-compatible"
+      || providerConfig.type === "openai-responses"
+    ) ?
       {
         supportPdf: modelConfig?.supportPdf,
         toolContentSupportType: modelConfig?.toolContentSupportType ?? [],

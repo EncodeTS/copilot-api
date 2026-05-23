@@ -5,7 +5,7 @@ import {
   type ResolvedProviderConfig,
 } from "~/lib/config"
 
-import { buildProviderUpstreamHeaders } from "../src/services/providers/anthropic-proxy"
+import { buildProviderUpstreamHeaders } from "../src/services/providers/provider-proxy"
 
 function createProviderConfig(
   overrides: Partial<ResolvedProviderConfig> = {},
@@ -86,5 +86,11 @@ describe("resolveProviderAuthType", () => {
     expect(
       resolveProviderAuthType("custom", "invalid-auth-type", "anthropic"),
     ).toBe("x-api-key")
+  })
+
+  test("falls back for non-codex oauth2 providers", () => {
+    expect(
+      resolveProviderAuthType("custom", "oauth2", "openai-responses"),
+    ).toBe("authorization")
   })
 })
