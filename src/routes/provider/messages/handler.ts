@@ -22,6 +22,7 @@ import type {
 } from "~/services/copilot/create-responses"
 
 import { type ModelConfig, type ResolvedProviderConfig } from "~/lib/config"
+import { logCodexRateLimitsEvent } from "~/lib/codex-rate-limit"
 import { HTTPError } from "~/lib/error"
 import { createHandlerLogger, debugJson, debugLazy } from "~/lib/logger"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
@@ -739,10 +740,14 @@ const parseResponsesProviderStreamChunk = (
   providerConfig: ResolvedProviderConfig,
 ): ResponseStreamEvent | null => {
   try {
-    const parsed = JSON.parse(data) as ResponseStreamEvent
+    const parsed = JSON.parse(data) as Record<string, unknown>
+    if (providerConfig.name === "codex") {
+      logCodexRateLimitsEvent(parsed)
+    }
+
     return providerConfig.name === "codex" ?
         normalizeCodexResponsesEvent(parsed)
-      : parsed
+      : (parsed as unknown as ResponseStreamEvent)
   } catch (error) {
     logger.error("provider.messages.responses.parse_chunk_error", {
       provider: providerConfig.name,
