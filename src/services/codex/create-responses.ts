@@ -16,6 +16,7 @@ import {
   createWebSocketUrl,
   type PooledWebSocketRequest,
 } from "~/services/responses-websocket"
+import { requestContext } from "~/lib/request-context"
 
 export const CODEX_API_BASE_URL = "https://chatgpt.com/backend-api"
 
@@ -143,6 +144,13 @@ export function buildCodexResponsesHeaders(
   }
   if (!headers.has("user-agent")) {
     headers.set("user-agent", "copilot-api")
+  }
+  if (headers.get("user-agent")?.startsWith("opencode")) {
+    headers.set("originator", "opencode")
+    const sessionId = requestContext.getStore()?.sessionAffinity
+    if (sessionId) {
+      headers.set("session_id", sessionId)
+    }
   }
   return headers
 }
