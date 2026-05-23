@@ -8,6 +8,7 @@ import type {
   ResponsesTransport,
 } from "~/services/copilot/create-responses"
 
+import { logCodexRateLimitsEvent } from "~/lib/codex-rate-limit"
 import { isResponsesApiWebSocketEnabled as isConfiguredResponsesApiWebSocketEnabled } from "~/lib/config"
 import { state } from "~/lib/state"
 import {
@@ -463,6 +464,7 @@ const normalizeCodexResponsesStandardChunk = (
 
   try {
     const parsed = JSON.parse(chunk.data) as Record<string, unknown>
+    logCodexRateLimitsEvent(parsed)
     const normalized = normalizeCodexResponsesEvent(parsed)
     if (!normalized) {
       return chunk
