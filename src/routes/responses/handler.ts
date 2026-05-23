@@ -1,14 +1,20 @@
 import type { Context } from "hono"
 
+import { events } from "fetch-event-stream"
 import { streamSSE } from "hono/streaming"
 
 import { awaitApproval } from "~/lib/approval"
 import { isResponsesApiWebSearchEnabled as isConfiguredResponsesApiWebSearchEnabled } from "~/lib/config"
+import { HTTPError } from "~/lib/error"
 import { createHandlerLogger, debugJson, debugJsonTail } from "~/lib/logger"
+import { parseProviderModelAlias } from "~/lib/provider-model"
+import { resolveProviderConfig } from "~/lib/provider-resolver"
 import { checkRateLimit as checkConfiguredRateLimit } from "~/lib/rate-limit"
+import { requestContext } from "~/lib/request-context"
 import { state } from "~/lib/state"
 import {
   createCopilotTokenUsageRecorder,
+  createProviderTokenUsageRecorder,
   normalizeResponsesUsage,
   type UsageTokens,
 } from "~/lib/token-usage"
@@ -19,6 +25,15 @@ import {
   type ResponsesResult,
   type ResponseStreamEvent,
 } from "~/services/copilot/create-responses"
+import {
+  createStandardizedCodexResponsesEventStream,
+  forwardCodexResponses,
+  normalizeCodexResponsesEvent,
+} from "~/services/codex/create-responses"
+import {
+  createProviderProxyResponse,
+  forwardProviderResponses,
+} from "~/services/providers/provider-proxy"
 
 import { createStreamIdTracker, fixStreamIds } from "./stream-id-sync"
 import {
@@ -37,10 +52,19 @@ export const responsesHandlerDependencies = {
 }
 
 export const handleResponses = async (c: Context) => {
-  await responsesHandlerDependencies.checkRateLimit(state)
-
   const payload = await c.req.json<ResponsesPayload>()
   debugJson(logger, "Responses request payload:", payload)
+
+  const providerModelAlias = parseProviderModelAlias(payload.model)
+  if (providerModelAlias) {
+    payload.model = providerModelAlias.model
+    return await handleProviderResponsesForProvider(c, {
+      payload,
+      provider: providerModelAlias.provider,
+    })
+  }
+
+  await responsesHandlerDependencies.checkRateLimit(state)
 
   // not support subagent marker for now , set sessionId = getUUID(requestId)
   const requestId = generateRequestIdFromPayload({ messages: payload.input })
@@ -143,6 +167,70 @@ export const handleResponses = async (c: Context) => {
   return c.json(response as ResponsesResult)
 }
 
+const handleProviderResponsesForProvider = async (
+  c: Context,
+  options: {
+    payload: ResponsesPayload
+    provider: string
+  },
+): Promise<Response> => {
+  const { payload, provider } = options
+  const providerConfig = await resolveProviderConfig(provider)
+  if (providerConfig?.type !== "openai-responses") {
+    return c.json(
+      {
+        error: {
+          message: `Provider '${provider}' does not support the /v1/responses endpoint`,
+          type: "invalid_request_error",
+        },
+      },
+      400,
+    )
+  }
+
+  const upstreamResponse =
+    providerConfig.name === "codex" ?
+      await forwardCodexResponses(
+        payload,
+        c.req.raw.headers,
+        providerConfig.baseUrl,
+      )
+    : await forwardProviderResponses(providerConfig, payload, c.req.raw.headers)
+
+  if (!upstreamResponse.ok) {
+    throw new HTTPError(
+      `Failed to create ${provider} responses`,
+      upstreamResponse,
+    )
+  }
+
+  const recordUsage = createProviderResponsesUsageRecorder(payload, provider)
+
+  if (payload.stream) {
+    void recordProviderResponsesStreamUsage(upstreamResponse.clone(), {
+      normalizeCodex: providerConfig.name === "codex",
+      provider,
+      recordUsage,
+    })
+  } else {
+    const responseBody = (await upstreamResponse
+      .clone()
+      .json()) as ResponsesResult
+    recordUsage(normalizeResponsesUsage(responseBody.usage))
+  }
+
+  if (providerConfig.name === "codex" && payload.stream) {
+    return createProviderProxyResponse(
+      upstreamResponse,
+      createStandardizedCodexResponsesEventStream(
+        getResponsesEvents(upstreamResponse),
+      ),
+    )
+  }
+
+  return createProviderProxyResponse(upstreamResponse)
+}
+
 const isAsyncIterable = <T>(value: unknown): value is AsyncIterable<T> =>
   Boolean(value)
   && typeof (value as AsyncIterable<T>)[Symbol.asyncIterator] === "function"
@@ -163,6 +251,81 @@ const parseResponsesStreamEvent = (
   } catch {
     return null
   }
+}
+
+const createProviderResponsesUsageRecorder = (
+  payload: ResponsesPayload,
+  provider: string,
+): ((usage: UsageTokens) => void) => {
+  const sessionAffinity =
+    requestContext.getStore()?.sessionAffinity?.trim() || null
+
+  return createProviderTokenUsageRecorder({
+    endpoint: "responses",
+    model: payload.model,
+    providerName: provider,
+    sessionId: sessionAffinity ?? "",
+  })
+}
+
+const recordProviderResponsesStreamUsage = async (
+  upstreamResponse: unknown,
+  options: {
+    normalizeCodex: boolean
+    provider: string
+    recordUsage: (usage: UsageTokens) => void
+  },
+): Promise<void> => {
+  let usage: UsageTokens = {}
+
+  try {
+    for await (const chunk of getResponsesEvents(upstreamResponse)) {
+      debugJson(logger, "Responses stream chunk:", chunk)
+      if (!chunk.data || chunk.data === "[DONE]") {
+        continue
+      }
+
+      const parsed = parseProviderResponsesStreamEvent(chunk.data, {
+        normalizeCodex: options.normalizeCodex,
+        provider: options.provider,
+      })
+      if (
+        parsed?.type === "response.completed"
+        || parsed?.type === "response.failed"
+        || parsed?.type === "response.incomplete"
+      ) {
+        usage = normalizeResponsesUsage(parsed.response.usage)
+      }
+    }
+  } finally {
+    options.recordUsage(usage)
+  }
+}
+
+const parseProviderResponsesStreamEvent = (
+  data: string,
+  options: {
+    normalizeCodex: boolean
+    provider: string
+  },
+): ResponseStreamEvent | null => {
+  try {
+    const parsed = JSON.parse(data) as ResponseStreamEvent
+    return options.normalizeCodex ?
+        normalizeCodexResponsesEvent(parsed)
+      : parsed
+  } catch (error) {
+    logger.error("provider.responses.parse_chunk_error", {
+      provider: options.provider,
+      data,
+      error,
+    })
+    return null
+  }
+}
+
+const getResponsesEvents = (response: unknown) => {
+  return events(response as Parameters<typeof events>[0])
 }
 
 const removeWebSearchTool = (payload: ResponsesPayload): void => {

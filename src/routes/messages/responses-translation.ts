@@ -789,6 +789,7 @@ const convertAnthropicToolChoice = (
 
 interface ResponsesToAnthropicOptions {
   toolSearchName?: string
+  hasToolCall?: boolean
 }
 
 export const translateResponsesResultToAnthropic = (
@@ -802,7 +803,7 @@ export const translateResponsesResultToAnthropic = (
     anthropicContent = contentBlocks
   }
 
-  const stopReason = mapResponsesStopReason(response)
+  const stopReason = mapResponsesStopReason(response, options)
 
   return {
     id: response.id,
@@ -1057,10 +1058,15 @@ const fallbackContentBlocks = (
 
 const mapResponsesStopReason = (
   response: ResponsesResult,
+  options?: ResponsesToAnthropicOptions,
 ): AnthropicResponse["stop_reason"] => {
   const { status, incomplete_details: incompleteDetails } = response
 
   if (status === "completed") {
+    if (response.output.length === 0) {
+      return options?.hasToolCall ? "tool_use" : "end_turn"
+    }
+
     if (
       response.output.some(
         (item) =>

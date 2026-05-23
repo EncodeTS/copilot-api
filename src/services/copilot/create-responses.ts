@@ -1,9 +1,9 @@
 import consola from "consola"
 import { events } from "fetch-event-stream"
 import { createHash } from "node:crypto"
-import { WebSocket } from "undici"
 
 import type { SubagentMarker } from "~/lib/subagent"
+import type { PooledWebSocketRequest } from "~/services/responses-websocket"
 
 import {
   copilotBaseUrl,
@@ -19,8 +19,11 @@ import {
   type CopilotQuotaSnapshot,
 } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
-import { getProxyEnvDispatcher } from "~/lib/proxy"
 import { state } from "~/lib/state"
+import {
+  createPooledWebSocketStream,
+  createWebSocketUrl,
+} from "~/services/responses-websocket"
 
 export interface ResponsesPayload {
   model: string
@@ -443,8 +446,6 @@ interface ResponsesRequestOptions {
   transport?: ResponsesTransport
 }
 
-const RESPONSES_WEBSOCKET_IDLE_TIMEOUT_MS = 60_000
-
 export const createResponses = async (
   payload: ResponsesPayload,
   {
@@ -526,15 +527,8 @@ type ResponsesWebSocketPayload = ResponsesPayload & {
   initiator: "agent" | "user"
 }
 
-interface ResponsesWebSocketRequest {
-  headers: Record<string, string>
-  poolKey: string
-  payload: ResponsesWebSocketPayload
-}
-
-type ResponsesWebSocketErrorEvent = Parameters<
-  NonNullable<InstanceType<typeof WebSocket>["onerror"]>
->[0]
+type ResponsesWebSocketRequest =
+  PooledWebSocketRequest<ResponsesWebSocketPayload>
 
 export const prepareResponsesWebSocketRequest = (
   payload: ResponsesPayload,
@@ -550,6 +544,7 @@ export const prepareResponsesWebSocketRequest = (
     headers: copilotWebSocketHeaders(preparedHeaders),
     poolKey: buildResponsesWebSocketPoolKey(payload, options),
     payload: buildResponsesWebSocketPayload(payload, initiator),
+    url: buildResponsesWebSocketUrl(copilotBaseUrl(state)),
   }
 }
 
@@ -590,7 +585,15 @@ export const getResponsesWebSocketInitiator = (
 
 const createPooledResponsesWebSocketStream = (
   request: ResponsesWebSocketRequest,
-): ResponsesStream => runResponsesWebSocketRequest(request)
+): ResponsesStream =>
+  createPooledWebSocketStream(request, {
+    createChunk: createResponsesWebSocketStreamChunk,
+    isTerminalChunk: isTerminalResponsesStreamChunk,
+    openErrorMessage: "Failed to create responses websocket",
+    streamErrorMessage: "Responses websocket stream error",
+    terminalChunkMissingMessage:
+      "Responses websocket ended without a terminal response",
+  }) as ResponsesStream
 
 export const buildResponsesWebSocketPayload = (
   payload: ResponsesPayload,
@@ -610,411 +613,7 @@ export const buildResponsesWebSocketPayload = (
 }
 
 export const buildResponsesWebSocketUrl = (baseUrl: string): string => {
-  const url = new URL(`${baseUrl.replace(/\/+$/u, "")}/responses`)
-
-  if (url.protocol === "https:") {
-    url.protocol = "wss:"
-  } else if (url.protocol === "http:") {
-    url.protocol = "ws:"
-  }
-
-  return url.toString()
-}
-
-const responsesWebSocketPool = new Map<string, ResponsesWebSocketEntry>()
-const responsesWebSocketActiveRequests = new Map<string, number>()
-
-interface ResponsesWebSocketEntry {
-  closed: boolean
-  idleTimer: ReturnType<typeof setTimeout> | null
-  requestCount: number
-  websocketPromise: Promise<InstanceType<typeof WebSocket>>
-}
-
-interface ResponsesWebSocketRequestTarget {
-  entry: ResponsesWebSocketEntry
-  pooled: boolean
-}
-
-const runResponsesWebSocketRequest = async function* (
-  request: ResponsesWebSocketRequest,
-): ResponsesStream {
-  const { entry, pooled } = getResponsesWebSocketRequestTarget(request)
-  const release = acquireResponsesWebSocketEntry(request.poolKey, entry, pooled)
-
-  try {
-    const websocket = await getReadyResponsesWebSocket(
-      request.poolKey,
-      entry,
-      pooled,
-    )
-    websocket.send(JSON.stringify(request.payload))
-
-    for await (const data of createWebSocketMessageStream(websocket)) {
-      const chunk = createResponsesWebSocketStreamChunk(data)
-      yield chunk
-
-      if (isTerminalResponsesStreamChunk(chunk)) {
-        return
-      }
-    }
-
-    removeResponsesWebSocketPoolEntry(request.poolKey, entry)
-    throw new Error("Responses websocket ended without a terminal response")
-  } catch (error) {
-    removeResponsesWebSocketPoolEntry(request.poolKey, entry)
-    throw toError(error)
-  } finally {
-    release()
-  }
-}
-
-const getResponsesWebSocketRequestTarget = (
-  request: ResponsesWebSocketRequest,
-): ResponsesWebSocketRequestTarget => {
-  if (getResponsesWebSocketActiveRequestCount(request.poolKey) > 0) {
-    return {
-      entry: createResponsesWebSocketEntry(request),
-      pooled: false,
-    }
-  }
-
-  const existing = responsesWebSocketPool.get(request.poolKey)
-  if (existing && !existing.closed) {
-    clearResponsesWebSocketIdleTimer(existing)
-    return {
-      entry: existing,
-      pooled: true,
-    }
-  }
-
-  const entry = createResponsesWebSocketEntry(request)
-  responsesWebSocketPool.set(request.poolKey, entry)
-  return {
-    entry,
-    pooled: true,
-  }
-}
-
-const createResponsesWebSocketEntry = (
-  request: ResponsesWebSocketRequest,
-): ResponsesWebSocketEntry => {
-  const entry: ResponsesWebSocketEntry = {
-    closed: false,
-    idleTimer: null,
-    requestCount: 0,
-    websocketPromise: openResponsesWebSocket({
-      headers: request.headers,
-      url: buildResponsesWebSocketUrl(copilotBaseUrl(state)),
-    }),
-  }
-
-  entry.websocketPromise
-    .then((websocket) => {
-      websocket.addEventListener("close", () => {
-        removeResponsesWebSocketPoolEntry(request.poolKey, entry)
-      })
-      websocket.addEventListener("error", () => {
-        removeResponsesWebSocketPoolEntry(request.poolKey, entry)
-      })
-    })
-    .catch(() => {
-      removeResponsesWebSocketPoolEntry(request.poolKey, entry)
-    })
-
-  return entry
-}
-
-const acquireResponsesWebSocketEntry = (
-  poolKey: string,
-  entry: ResponsesWebSocketEntry,
-  pooled: boolean,
-): (() => void) => {
-  clearResponsesWebSocketIdleTimer(entry)
-  incrementResponsesWebSocketActiveRequestCount(poolKey)
-  entry.requestCount += 1
-
-  let released = false
-  return () => {
-    if (released) {
-      return
-    }
-
-    released = true
-    entry.requestCount -= 1
-
-    decrementResponsesWebSocketActiveRequestCount(poolKey)
-    if (entry.closed || entry.requestCount > 0) {
-      return
-    }
-
-    if (pooled && responsesWebSocketPool.get(poolKey) === entry) {
-      scheduleResponsesWebSocketIdleClose(poolKey, entry)
-      return
-    }
-
-    removeResponsesWebSocketPoolEntry(poolKey, entry)
-  }
-}
-
-const getReadyResponsesWebSocket = async (
-  poolKey: string,
-  entry: ResponsesWebSocketEntry,
-  pooled: boolean,
-): Promise<InstanceType<typeof WebSocket>> => {
-  if (entry.closed) {
-    throw new Error(
-      "Responses websocket became unavailable before the request started",
-    )
-  }
-
-  const websocket = await entry.websocketPromise
-  if (
-    entry.closed
-    || (pooled && responsesWebSocketPool.get(poolKey) !== entry)
-  ) {
-    throw new Error(
-      "Responses websocket became unavailable before the request started",
-    )
-  }
-
-  if (websocket.readyState !== WebSocket.OPEN) {
-    removeResponsesWebSocketPoolEntry(poolKey, entry)
-    throw new Error(
-      "Responses websocket became unavailable before the request started",
-    )
-  }
-
-  return websocket
-}
-
-const scheduleResponsesWebSocketIdleClose = (
-  poolKey: string,
-  entry: ResponsesWebSocketEntry,
-): void => {
-  clearResponsesWebSocketIdleTimer(entry)
-  entry.idleTimer = setTimeout(() => {
-    removeResponsesWebSocketPoolEntry(poolKey, entry)
-  }, RESPONSES_WEBSOCKET_IDLE_TIMEOUT_MS)
-  unrefTimer(entry.idleTimer)
-}
-
-const clearResponsesWebSocketIdleTimer = (
-  entry: ResponsesWebSocketEntry,
-): void => {
-  if (entry.idleTimer) {
-    clearTimeout(entry.idleTimer)
-    entry.idleTimer = null
-  }
-}
-
-const getResponsesWebSocketActiveRequestCount = (poolKey: string): number =>
-  responsesWebSocketActiveRequests.get(poolKey) ?? 0
-
-const incrementResponsesWebSocketActiveRequestCount = (
-  poolKey: string,
-): void => {
-  responsesWebSocketActiveRequests.set(
-    poolKey,
-    getResponsesWebSocketActiveRequestCount(poolKey) + 1,
-  )
-}
-
-const decrementResponsesWebSocketActiveRequestCount = (
-  poolKey: string,
-): void => {
-  const nextCount = getResponsesWebSocketActiveRequestCount(poolKey) - 1
-  if (nextCount <= 0) {
-    responsesWebSocketActiveRequests.delete(poolKey)
-    return
-  }
-
-  responsesWebSocketActiveRequests.set(poolKey, nextCount)
-}
-
-const removeResponsesWebSocketPoolEntry = (
-  poolKey: string,
-  entry: ResponsesWebSocketEntry,
-): void => {
-  if (responsesWebSocketPool.get(poolKey) === entry) {
-    responsesWebSocketPool.delete(poolKey)
-  }
-
-  if (entry.closed) {
-    return
-  }
-
-  entry.closed = true
-  clearResponsesWebSocketIdleTimer(entry)
-  entry.websocketPromise.then(closeResponsesWebSocket).catch(() => {})
-}
-
-const unrefTimer = (timer: ReturnType<typeof setTimeout>): void => {
-  if (
-    typeof timer === "object"
-    && "unref" in timer
-    && typeof timer.unref === "function"
-  ) {
-    timer.unref()
-  }
-}
-
-const createResponsesWebSocketError = (
-  message: string,
-  event?: Pick<ResponsesWebSocketErrorEvent, "error" | "message">,
-): Error => {
-  const reason = event?.error ?? event?.message
-  if (reason === undefined || reason === "") {
-    return new Error(message)
-  }
-
-  const cause = toError(reason)
-  return new Error(`${message}: ${cause.message}`, { cause })
-}
-
-const openResponsesWebSocket = async ({
-  headers,
-  url,
-}: {
-  headers: Record<string, string>
-  url: string
-}): Promise<InstanceType<typeof WebSocket>> =>
-  await new Promise((resolve, reject) => {
-    const dispatcher = getProxyEnvDispatcher()
-    const init = dispatcher ? { dispatcher, headers } : { headers }
-    const websocket = new WebSocket(url, init)
-
-    const cleanup = () => {
-      websocket.removeEventListener("open", onOpen)
-      websocket.removeEventListener("error", onError)
-    }
-
-    const onOpen = () => {
-      cleanup()
-      resolve(websocket)
-    }
-
-    const onError = (event: ResponsesWebSocketErrorEvent) => {
-      cleanup()
-      reject(
-        createResponsesWebSocketError(
-          "Failed to create responses websocket",
-          event,
-        ),
-      )
-    }
-
-    websocket.addEventListener("open", onOpen)
-    websocket.addEventListener("error", onError)
-  })
-
-const createWebSocketMessageStream = async function* (
-  websocket: InstanceType<typeof WebSocket>,
-): AsyncIterable<string> {
-  const queue: Array<Promise<string>> = []
-  let closed = false
-  let error: Error | null = null
-  let notify: (() => void) | null = null
-
-  const wake = () => {
-    notify?.()
-    notify = null
-  }
-
-  const onMessage = (event: { data: unknown }) => {
-    queue.push(normalizeWebSocketMessageData(event.data))
-    wake()
-  }
-
-  const onClose = () => {
-    closed = true
-    wake()
-  }
-
-  const onError = (event: ResponsesWebSocketErrorEvent) => {
-    error = createResponsesWebSocketError(
-      "Responses websocket stream error",
-      event,
-    )
-    wake()
-  }
-
-  websocket.addEventListener("message", onMessage)
-  websocket.addEventListener("close", onClose)
-  websocket.addEventListener("error", onError)
-
-  try {
-    while (true) {
-      const item = queue.shift()
-      if (item) {
-        yield await item
-        continue
-      }
-
-      if (error) {
-        throw toError(error)
-      }
-
-      if (closed) {
-        break
-      }
-
-      await new Promise<void>((resolve) => {
-        notify = resolve
-      })
-    }
-  } finally {
-    websocket.removeEventListener("message", onMessage)
-    websocket.removeEventListener("close", onClose)
-    websocket.removeEventListener("error", onError)
-  }
-}
-
-const normalizeWebSocketMessageData = async (
-  data: unknown,
-): Promise<string> => {
-  if (typeof data === "string") {
-    return data
-  }
-
-  if (data instanceof ArrayBuffer) {
-    return new TextDecoder().decode(data)
-  }
-
-  if (ArrayBuffer.isView(data)) {
-    const view = data
-    return new TextDecoder().decode(
-      new Uint8Array(
-        view.buffer as ArrayBuffer,
-        view.byteOffset,
-        view.byteLength,
-      ),
-    )
-  }
-
-  if (isTextReadable(data)) {
-    return await data.text()
-  }
-
-  return String(data)
-}
-
-const isTextReadable = (
-  value: unknown,
-): value is { text: () => Promise<string> } => {
-  if (!value || typeof value !== "object" || !("text" in value)) {
-    return false
-  }
-
-  return typeof (value as { text?: unknown }).text === "function"
-}
-
-const toError = (value: unknown): Error => {
-  if (value instanceof Error) {
-    return value
-  }
-
-  return new Error(String(value))
+  return createWebSocketUrl(`${baseUrl.replace(/\/+$/u, "")}/responses`)
 }
 
 const getHeaderValue = (
@@ -1098,15 +697,4 @@ const consumeResponsesWebSocketStream = async (
   }
 
   throw new Error("Responses websocket ended without a terminal response")
-}
-
-const closeResponsesWebSocket = (
-  websocket: InstanceType<typeof WebSocket>,
-): void => {
-  if (
-    websocket.readyState === WebSocket.CONNECTING
-    || websocket.readyState === WebSocket.OPEN
-  ) {
-    websocket.close()
-  }
 }

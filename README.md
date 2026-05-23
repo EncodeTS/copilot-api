@@ -372,11 +372,11 @@ The following command line options are available for the `start` command:
 - **auth.adminApiKey:** Single admin key used only for `/admin/*` routes. If missing, the server generates a random key at startup and writes it back to `config.json`. Requests use the same `x-api-key` or `Authorization: Bearer` headers, but regular `auth.apiKeys` never grant access to `/admin/*`.
 - **modelMappings:** Exact `sourceModel -> targetModel` rewrites for top-level `POST /v1/messages` and `POST /v1/messages/count_tokens` requests. Omit it or leave it as `{}` to disable rewrites. Both the source and target must be non-empty strings. Targets can be regular model IDs or `provider/model` aliases such as `dashscope/qwen3.6-plus`, and the rewrite happens before provider alias parsing. The admin endpoints `GET/POST /admin/config/model-mappings` read and update only this field.
 - **extraPrompts:** Map of `model -> prompt` appended to the first system prompt when translating Anthropic-style requests to Copilot. Use this to inject guardrails or guidance per model. Missing default entries are auto-added without overwriting your custom prompts. The built-in prompts for `gpt-5.3-codex` and `gpt-5.4` enable phase-aware commentary, which lets the model emit a short user-facing progress update before tools or deeper reasoning.
-- **providers:** Global upstream provider map. Each provider key (for example `custom`) becomes a route prefix (`/custom/v1/messages`). Supports `type: "anthropic"` and `type: "openai-compatible"`. Top-level Anthropic clients can also use `model: "custom/model-id"` with `/v1/messages` and `/v1/messages/count_tokens`; the proxy strips the `custom/` prefix before forwarding upstream. `GET /v1/models` does not aggregate provider models; use `GET /custom/v1/models` for provider model lists.
+- **providers:** Global upstream provider map. Each provider key (for example `custom`) becomes a route prefix (`/custom/v1/messages`). Supports `type: "anthropic"`, `type: "openai-compatible"`, and `type: "openai-responses"`. Top-level clients can also use `model: "custom/model-id"` with `/v1/messages`, `/v1/messages/count_tokens`, and `/v1/responses`; the proxy strips the `custom/` prefix before forwarding upstream. `GET /v1/models` does not aggregate provider models; use `GET /custom/v1/models` for provider model lists.
   - `enabled` defaults to `true` if omitted.
-  - `baseUrl` should be provider API base URL without the final endpoint. For Anthropic providers, omit `/v1/messages`; for OpenAI-compatible providers, omit `/v1/chat/completions`.
-  - `apiKey` is used as the upstream credential value.
-  - `authType` (optional): Controls how `apiKey` is sent upstream. Supports `x-api-key` and `authorization`. Anthropic providers default to `x-api-key`; OpenAI-compatible providers default to `authorization`. When set to `authorization`, the proxy sends `Authorization: Bearer <apiKey>`.
+  - `baseUrl` should be provider API base URL without the final endpoint. For Anthropic providers, omit `/v1/messages`; for OpenAI-compatible providers, omit `/v1/chat/completions`; for OpenAI Responses providers, omit `/v1/responses`.
+  - `apiKey` is used as the upstream credential value and is required for regular providers.
+  - `authType` (optional): Controls how `apiKey` is sent upstream. Supports `x-api-key` and `authorization` for regular providers. Anthropic providers default to `x-api-key`; OpenAI-compatible and OpenAI Responses providers default to `authorization`. When set to `authorization`, the proxy sends `Authorization: Bearer <apiKey>`. `oauth2` is reserved for the built-in `codex` provider and is written automatically by `auth login --provider codex`.
   - `adjustInputTokens` (optional): When `true`, the proxy will adjust the `input_tokens` in the usage response by subtracting `cache_read_input_tokens` and `cache_creation_input_tokens`. 
   - `models` (optional): Per-model configuration map. Each key is a model ID (matching the model name in requests), and the value is:
     - `temperature` (optional): Default temperature value used when the request does not specify one.
@@ -431,7 +431,7 @@ These endpoints mimic the OpenAI API structure.
 
 | Endpoint                    | Method | Description                                                      |
 | --------------------------- | ------ | ---------------------------------------------------------------- |
-| `POST /v1/responses`        | `POST` | OpenAI Most advanced interface for generating model responses.          |
+| `POST /v1/responses`        | `POST` | OpenAI Most advanced interface for generating model responses. Supports `provider/model` aliases for `openai-responses` providers. |
 | `POST /v1/chat/completions` | `POST` | Creates a model response for the given chat conversation.        |
 | `GET /v1/models`            | `GET`  | Lists the currently available models.                            |
 | `POST /v1/embeddings`       | `POST` | Creates an embedding vector representing the input text.         |
@@ -444,7 +444,7 @@ These endpoints are designed to be compatible with the Anthropic Messages API.
 | -------------------------------- | ------ | ------------------------------------------------------------ |
 | `POST /v1/messages`              | `POST` | Creates a model response for a given conversation. Supports `provider/model` aliases for configured providers. |
 | `POST /v1/messages/count_tokens` | `POST` | Calculates the number of tokens for a given set of messages. Supports `provider/model` aliases for configured providers. |
-| `POST /:provider/v1/messages`       | `POST` | Proxies Anthropic Messages requests to the configured Anthropic or OpenAI-compatible provider. |
+| `POST /:provider/v1/messages`       | `POST` | Proxies Anthropic Messages requests to the configured Anthropic, OpenAI-compatible, or OpenAI Responses provider. |
 | `GET /:provider/v1/models`          | `GET`  | Proxies model listing requests to the configured provider.   |
 | `POST /:provider/v1/messages/count_tokens` | `POST` | Calculates tokens locally for provider route requests. |
 
@@ -495,11 +495,14 @@ npx @jeffreycao/copilot-api@latest start --rate-limit 30 --wait
 # Provide GitHub token directly
 npx @jeffreycao/copilot-api@latest start --github-token ghp_YOUR_TOKEN_HERE
 
-# Run only the auth flow
-npx @jeffreycao/copilot-api@latest auth
+# Run only the auth flow and choose a builtin provider interactively
+npx @jeffreycao/copilot-api@latest auth login
 
-# Run auth flow with verbose logging
-npx @jeffreycao/copilot-api@latest auth --verbose
+# Authenticate Codex explicitly
+npx @jeffreycao/copilot-api@latest auth login --provider codex
+
+# Authenticate Copilot explicitly with verbose logging
+npx @jeffreycao/copilot-api@latest auth login --provider copilot --verbose
 
 # Show your Copilot usage/quota in the terminal (no server needed)
 npx @jeffreycao/copilot-api@latest check-usage
@@ -734,7 +737,7 @@ The Claude Code integration is packaged as two plugins:
 - `tool-search` registers the `tool_search` MCP bridge used for GPT Responses deferred tool loading.
 
 - Marketplace catalog in this repository: `.claude-plugin/marketplace.json`
-- Plugin sources in this repository: `claude-plugin/agent-inject`, `claude-plugin/tool-search`
+- Plugin sources in this repository: `plugin/claude/agent-inject`, `plugin/claude/tool-search`
 
 Add the marketplace remotely:
 
@@ -760,7 +763,7 @@ The `tool-search` plugin bundles the same MCP bridge described in [GPT Tool Sear
 
 #### Opencode plugin
 
-The subagent marker producer is packaged as an opencode plugin located at `.opencode/plugins/subagent-marker.js`.
+The subagent marker producer is packaged as an opencode plugin located at `plugin/opencode/subagent-marker.js`.
 
 **Installation:**
 
@@ -768,7 +771,7 @@ Copy the plugin file to your opencode plugins directory:
 
 ```sh
 # Clone or download this repository, then copy the plugin
-cp .opencode/plugins/subagent-marker.js ~/.config/opencode/plugins/
+cp plugin/opencode/subagent-marker.js ~/.config/opencode/plugins/
 ```
 
 Or manually create the file at `~/.config/opencode/plugins/subagent-marker.js` with the plugin content.
