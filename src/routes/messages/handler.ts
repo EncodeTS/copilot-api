@@ -5,7 +5,7 @@ import consola from "consola"
 import type { Model } from "~/services/copilot/get-models"
 
 import { awaitApproval } from "~/lib/approval"
-import { COMPACT_REQUEST } from "~/lib/compact"
+import { COMPACT_REQUEST, type CompactType } from "~/lib/compact"
 import {
   getSmallModel,
   isMessagesApiEnabled,
@@ -73,14 +73,14 @@ const logRoute = (options: {
   requestedModel: string
   payload: AnthropicMessagesPayload
   selectedModel: Model | undefined
-  compactType: number
+  compactType: CompactType
 }): void => {
   const { requestedModel, payload, selectedModel, compactType } = options
   if (state.verbose) {
     let apiFlow = "Chat Completions"
     if (shouldUseMessagesApi(selectedModel)) {
       apiFlow = "Messages API"
-    } else if (shouldUseResponsesApi(selectedModel)) {
+    } else if (shouldUseResponsesApi(selectedModel, compactType)) {
       apiFlow = "Responses API"
     }
     consola.info(
@@ -187,7 +187,7 @@ export async function handleCompletion(c: Context) {
     })
   }
 
-  if (shouldUseResponsesApi(selectedModel)) {
+  if (shouldUseResponsesApi(selectedModel, compactType)) {
     return await handleWithResponsesApi(c, anthropicPayload, {
       subagentMarker,
       selectedModel,
@@ -209,8 +209,11 @@ export async function handleCompletion(c: Context) {
 
 const MESSAGES_ENDPOINT = "/v1/messages"
 
-const shouldUseResponsesApi = (selectedModel: Model | undefined): boolean => {
-  return Boolean(getResponsesTransportForModel(selectedModel))
+const shouldUseResponsesApi = (
+  selectedModel: Model | undefined,
+  compactType: ReturnType<typeof getCompactType>,
+): boolean => {
+  return Boolean(getResponsesTransportForModel(selectedModel, { compactType }))
 }
 
 const shouldUseMessagesApi = (selectedModel: Model | undefined): boolean => {

@@ -5,6 +5,7 @@ import type {
   ResponsesTransport,
 } from "~/services/copilot/create-responses"
 
+import { COMPACT_REQUEST, type CompactType } from "~/lib/compact"
 import {
   isResponsesApiContextManagementModel,
   isResponsesApiWebSocketEnabled,
@@ -28,11 +29,18 @@ export const getResponsesTransportForModel = (
         supported_endpoints?: Array<string>
       }
     | undefined,
+  options: {
+    compactType?: CompactType
+  } = {},
 ): ResponsesTransport | null => {
   const supportedEndpoints = selectedModel?.supported_endpoints ?? []
   const useWebSocket = isResponsesApiWebSocketEnabled()
 
-  if (useWebSocket && supportedEndpoints.includes(RESPONSES_WS_ENDPOINT)) {
+  if (
+    options.compactType !== COMPACT_REQUEST
+    && useWebSocket
+    && supportedEndpoints.includes(RESPONSES_WS_ENDPOINT)
+  ) {
     return "websocket"
   }
 
