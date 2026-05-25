@@ -211,7 +211,11 @@ test("forwardCodexResponses falls back to HTTP for non-streaming responses", asy
   )
 
   expect(fetchMock).toHaveBeenCalledTimes(1)
-  expect(response.status).toBe(200)
+  expect(response).toMatchObject({
+    id: "resp-http",
+    model: "gpt-5.4",
+    status: "completed",
+  })
   expect(MockWebSocket.instances).toHaveLength(0)
 
   const request = fetchMock.mock.calls[0]?.[0]
@@ -239,11 +243,61 @@ test("forwardCodexResponses falls back to HTTP for non-streaming responses", asy
   expect(payload.stream).toBeUndefined()
   expect(payload.type).toBeUndefined()
 
-  expect(await response.json()).toMatchObject({
+  expect(response).toMatchObject({
     id: "resp-http",
     model: "gpt-5.4",
     status: "completed",
   })
+})
+
+test("forwardCodexResponses returns HTTP event streams when stream=true", async () => {
+  fetchMock.mockImplementation(() => {
+    return Promise.resolve(
+      new Response(
+        [
+          "event: response.completed",
+          `data: ${JSON.stringify({
+            response: createResponsesResult("gpt-5.4", "resp-http-stream"),
+            sequence_number: 1,
+            type: "response.completed",
+          })}`,
+          "",
+          "data: [DONE]",
+          "",
+        ].join("\n"),
+        {
+          headers: {
+            "content-type": "text/event-stream; charset=utf-8",
+          },
+          status: 200,
+        },
+      ),
+    )
+  })
+
+  const response = await forwardCodexResponses(
+    {
+      input: "hello",
+      model: "gpt-5.4",
+      stream: true,
+    },
+    new Headers({
+      accept: "text/event-stream",
+      "content-type": "application/json",
+    }),
+    undefined,
+    {
+      transport: "http",
+    },
+  )
+
+  const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
+
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(MockWebSocket.instances).toHaveLength(0)
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("response.completed")
+  expect(chunks[0]?.data).toContain('"type":"response.completed"')
 })
 
 test("forwardCodexResponses preserves response.completed while using websocket", async () => {
@@ -261,18 +315,15 @@ test("forwardCodexResponses preserves response.completed while using websocket",
   )
 
   expect(fetchMock).not.toHaveBeenCalled()
-  expect(response.status).toBe(200)
-  expect(response.headers.get("content-type")).toContain("text/event-stream")
-
-  const body = await response.text()
+  const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
 
   expect(MockWebSocket.instances).toHaveLength(1)
-  expect(body).toContain("event: response.completed")
-  expect(body).toContain('"type":"response.completed"')
-  expect(body).not.toContain('"type":"response.done"')
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("response.completed")
+  expect(chunks[0]?.data).toContain('"type":"response.completed"')
 })
 
-test("forwardCodexResponses emits an SSE error when the websocket closes without a terminal response", async () => {
+test("forwardCodexResponses emits an error event when the websocket closes without a terminal response", async () => {
   MockWebSocket.autoComplete = false
 
   const response = await forwardCodexResponses(
@@ -289,21 +340,41 @@ test("forwardCodexResponses emits an SSE error when the websocket closes without
   )
 
   expect(fetchMock).not.toHaveBeenCalled()
-  expect(response.status).toBe(200)
 
-  const bodyPromise = response.text()
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
 
   await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
 
   MockWebSocket.instances[0]?.close()
 
-  const body = await bodyPromise
+  const chunks = await chunksPromise
 
-  expect(body).toContain("event: error")
-  expect(body).toContain(
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("error")
+  expect(chunks[0]?.data).toContain(
     '"message":"Codex responses websocket ended without a terminal response"',
   )
 })
+
+const collectStreamChunks = async (
+  stream: AsyncIterable<unknown>,
+): Promise<Array<{ data?: string; event?: string; id?: string | number }>> => {
+  const chunks: Array<{
+    data?: string
+    event?: string
+    id?: string | number
+  }> = []
+
+  for await (const chunk of stream as AsyncIterable<{
+    data?: string
+    event?: string
+    id?: string | number
+  }>) {
+    chunks.push(chunk)
+  }
+
+  return chunks
+}
 
 const waitFor = async (predicate: () => boolean): Promise<void> => {
   for (let attempt = 0; attempt < 20; attempt += 1) {

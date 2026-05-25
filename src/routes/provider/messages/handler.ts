@@ -19,6 +19,7 @@ import type {
 import type {
   ResponsesResult,
   ResponseStreamEvent,
+  ResponsesStream,
 } from "~/services/copilot/create-responses"
 
 import { type ModelConfig, type ResolvedProviderConfig } from "~/lib/config"
@@ -58,10 +59,7 @@ import {
   compactInputByLatestCompaction,
 } from "~/routes/responses/utils"
 import { getModels as getCodexModels } from "~/services/codex/get-models"
-import {
-  forwardCodexResponses,
-  normalizeCodexResponsesEvent,
-} from "~/services/codex/create-responses"
+import { forwardCodexResponses } from "~/services/codex/create-responses"
 import {
   forwardProviderChatCompletions,
   forwardProviderMessages,
@@ -206,18 +204,36 @@ const handleOpenAIResponsesProviderMessages = async (
     provider,
   })
 
-  const upstreamResponse =
-    providerConfig.name === "codex" ?
-      await forwardCodexResponses(
-        responsesPayload,
-        c.req.raw.headers,
-        providerConfig.baseUrl,
-      )
-    : await forwardProviderResponses(
+  if (providerConfig.name === "codex") {
+    const upstreamResponse = await forwardCodexResponses(
+      responsesPayload,
+      c.req.raw.headers,
+      providerConfig.baseUrl,
+    )
+
+    if (responsesPayload.stream && isResponsesStream(upstreamResponse)) {
+      return streamResponsesProviderMessages({
+        c,
+        payload,
+        provider,
         providerConfig,
-        responsesPayload,
-        c.req.raw.headers,
-      )
+        upstreamResponse,
+      })
+    }
+
+    return respondResponsesProviderMessagesJson(c, {
+      body: upstreamResponse as ResponsesResult,
+      payload,
+      provider,
+      providerConfig,
+    })
+  }
+
+  const upstreamResponse = await forwardProviderResponses(
+    providerConfig,
+    responsesPayload,
+    c.req.raw.headers,
+  )
 
   if (!upstreamResponse.ok) {
     logger.error("Failed to create provider responses", upstreamResponse)
@@ -230,7 +246,7 @@ const handleOpenAIResponsesProviderMessages = async (
       payload,
       provider,
       providerConfig,
-      upstreamResponse,
+      upstreamResponse: events(upstreamResponse),
     })
   }
 
@@ -650,7 +666,7 @@ const streamResponsesProviderMessages = ({
   payload: AnthropicMessagesPayload
   provider: string
   providerConfig: ResolvedProviderConfig
-  upstreamResponse: Response
+  upstreamResponse: ResponsesStream
 }): Response => {
   logger.debug("provider.messages.responses.streaming", {
     provider,
@@ -662,7 +678,7 @@ const streamResponsesProviderMessages = ({
       toolSearchName: resolveBridgeToolSearchName(payload.tools),
     })
 
-    for await (const chunk of events(upstreamResponse)) {
+    for await (const chunk of upstreamResponse) {
       logger.debug("provider.messages.responses.raw_stream_event:", chunk.data)
       const eventName = chunk.event
       if (eventName === "ping") {
@@ -721,6 +737,13 @@ const streamResponsesProviderMessages = ({
   })
 }
 
+const isResponsesStream = (value: unknown): value is ResponsesStream => {
+  return (
+    Boolean(value)
+    && typeof (value as ResponsesStream)[Symbol.asyncIterator] === "function"
+  )
+}
+
 const parseOpenAICompatibleStreamChunk = (
   data: string,
 ): ChatCompletionChunk | null => {
@@ -740,14 +763,12 @@ const parseResponsesProviderStreamChunk = (
   providerConfig: ResolvedProviderConfig,
 ): ResponseStreamEvent | null => {
   try {
-    const parsed = JSON.parse(data) as Record<string, unknown>
+    const parsed = JSON.parse(data) as ResponseStreamEvent
     if (providerConfig.name === "codex") {
       logCodexRateLimitsEvent(parsed)
     }
 
-    return providerConfig.name === "codex" ?
-        normalizeCodexResponsesEvent(parsed)
-      : (parsed as unknown as ResponseStreamEvent)
+    return parsed
   } catch (error) {
     logger.error("provider.messages.responses.parse_chunk_error", {
       provider: providerConfig.name,
