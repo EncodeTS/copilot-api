@@ -246,7 +246,7 @@ test("forwardCodexResponses falls back to HTTP for non-streaming responses", asy
   })
 })
 
-test("forwardCodexResponses keeps the HTTP SSE shape while using websocket", async () => {
+test("forwardCodexResponses preserves response.completed while using websocket", async () => {
   const response = await forwardCodexResponses(
     {
       input: "hello",
@@ -267,9 +267,9 @@ test("forwardCodexResponses keeps the HTTP SSE shape while using websocket", asy
   const body = await response.text()
 
   expect(MockWebSocket.instances).toHaveLength(1)
-  expect(body).toContain("event: response.done")
-  expect(body).toContain('"type":"response.done"')
-  expect(body).not.toContain('"type":"response.completed"')
+  expect(body).toContain("event: response.completed")
+  expect(body).toContain('"type":"response.completed"')
+  expect(body).not.toContain('"type":"response.done"')
 })
 
 test("forwardCodexResponses emits an SSE error when the websocket closes without a terminal response", async () => {
