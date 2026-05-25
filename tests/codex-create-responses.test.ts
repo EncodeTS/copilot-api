@@ -51,9 +51,9 @@ describe("codex api helpers", () => {
     ).toBe("https://chatgpt.com/backend-api/codex/responses")
   })
 
-  test("normalizes codex response.done events", () => {
+  test("preserves codex response.completed events without status filtering", () => {
     const normalized = normalizeCodexResponsesEvent({
-      type: "response.done",
+      type: "response.completed",
       response: {
         created_at: 0,
         error: null,
@@ -66,7 +66,7 @@ describe("codex api helpers", () => {
         output: [],
         output_text: "",
         parallel_tool_calls: true,
-        status: "completed",
+        status: "pending_review",
         temperature: null,
         tool_choice: "auto",
         tools: [],
@@ -78,12 +78,12 @@ describe("codex api helpers", () => {
     expect(normalized).toMatchObject({
       type: "response.completed",
       response: {
-        status: "completed",
+        status: "pending_review",
       },
     })
   })
 
-  test("standardizes codex SSE events to response.completed", async () => {
+  test("preserves codex SSE response.completed events", async () => {
     const stream = createStandardizedCodexResponsesEventStream(
       streamChunks([
         {
@@ -108,9 +108,9 @@ describe("codex api helpers", () => {
               usage: null,
             },
             sequence_number: 1,
-            type: "response.done",
+            type: "response.completed",
           }),
-          event: "response.done",
+          event: "response.completed",
           id: "event_1",
         },
         {
@@ -124,7 +124,6 @@ describe("codex api helpers", () => {
     expect(body).toContain("id: event_1")
     expect(body).toContain("event: response.completed")
     expect(body).toContain('"type":"response.completed"')
-    expect(body).not.toContain('"type":"response.done"')
     expect(body).toContain("data: [DONE]")
   })
 
@@ -160,7 +159,7 @@ describe("codex api helpers", () => {
               },
             },
             sequence_number: 1,
-            type: "response.done",
+            type: "response.completed",
           }),
         },
         {

@@ -66,23 +66,6 @@ const STRIPPED_CODEX_REQUEST_HEADERS = new Set([
 
 const STRIPPED_CODEX_WEBSOCKET_HEADERS = new Set(["accept", "content-type"])
 
-const CODEX_RESPONSE_STATUSES = new Set([
-  "completed",
-  "incomplete",
-  "failed",
-  "cancelled",
-  "queued",
-  "in_progress",
-])
-
-type CodexResponseStatus =
-  | "completed"
-  | "incomplete"
-  | "failed"
-  | "cancelled"
-  | "queued"
-  | "in_progress"
-
 const requireCodexAuthContext = (): {
   accessToken: string
   accountId: string
@@ -349,7 +332,6 @@ const isTerminalCodexResponsesWebSocketChunk = (
     const parsed = JSON.parse(chunk.data) as { type?: unknown }
     return (
       parsed.type === "response.completed"
-      || parsed.type === "response.done"
       || parsed.type === "response.failed"
       || parsed.type === "response.incomplete"
       || parsed.type === "error"
@@ -362,16 +344,13 @@ const isTerminalCodexResponsesWebSocketChunk = (
 const createCodexResponsesWebSocketProxyResponse = (
   stream: AsyncIterable<CodexResponsesWebSocketChunk>,
 ): Response => {
-  return new Response(
-    createServerSentEventStream(normalizeCodexResponsesWebSocketStream(stream)),
-    {
-      headers: {
-        "cache-control": "no-cache",
-        "content-type": "text/event-stream; charset=utf-8",
-      },
-      status: 200,
+  return new Response(createServerSentEventStream(stream), {
+    headers: {
+      "cache-control": "no-cache",
+      "content-type": "text/event-stream; charset=utf-8",
     },
-  )
+    status: 200,
+  })
 }
 
 export const createStandardizedCodexResponsesEventStream = (
@@ -381,14 +360,6 @@ export const createStandardizedCodexResponsesEventStream = (
   return createServerSentEventStream(
     normalizeCodexResponsesStandardStream(source, options),
   )
-}
-
-const normalizeCodexResponsesWebSocketStream = async function* (
-  stream: AsyncIterable<CodexResponsesWebSocketChunk>,
-): AsyncIterable<CodexResponsesWebSocketChunk> {
-  for await (const chunk of stream) {
-    yield normalizeCodexResponsesProxyChunk(chunk)
-  }
 }
 
 const normalizeCodexResponsesStandardStream = async function* (
@@ -407,32 +378,6 @@ const normalizeCodexResponsesStandardStream = async function* (
     }
   } finally {
     await options.onClose?.()
-  }
-}
-
-const normalizeCodexResponsesProxyChunk = (
-  chunk: CodexResponsesWebSocketChunk,
-): CodexResponsesWebSocketChunk => {
-  if (!chunk.data || chunk.data === "[DONE]") {
-    return chunk
-  }
-
-  try {
-    const parsed = JSON.parse(chunk.data) as { type?: unknown }
-    if (parsed.type !== "response.completed") {
-      return chunk
-    }
-
-    return {
-      ...chunk,
-      data: JSON.stringify({
-        ...parsed,
-        type: "response.done",
-      }),
-      event: "response.done",
-    }
-  } catch {
-    return chunk
   }
 }
 
@@ -556,38 +501,6 @@ const getErrorMessage = (error: unknown): string => {
 
 const encodePoolKeyPart = (value: string): string => encodeURIComponent(value)
 
-function normalizeCodexResponseStatus(
-  status: unknown,
-): CodexResponseStatus | undefined {
-  return typeof status === "string" && CODEX_RESPONSE_STATUSES.has(status) ?
-      (status as CodexResponseStatus)
-    : undefined
-}
-
-function normalizeCodexResponseRecord(
-  eventRecord: Record<string, unknown>,
-): Record<string, unknown> {
-  const response = eventRecord.response
-  if (!response || typeof response !== "object") {
-    return eventRecord
-  }
-
-  const normalizedStatus = normalizeCodexResponseStatus(
-    (response as { status?: unknown }).status,
-  )
-  if (!normalizedStatus) {
-    return eventRecord
-  }
-
-  return {
-    ...eventRecord,
-    response: {
-      ...response,
-      status: normalizedStatus,
-    },
-  }
-}
-
 export function normalizeCodexResponsesEvent(
   event: unknown,
 ): ResponseStreamEvent | null {
@@ -595,19 +508,10 @@ export function normalizeCodexResponsesEvent(
     return null
   }
 
-  const eventRecord = normalizeCodexResponseRecord(
-    event as Record<string, unknown>,
-  )
+  const eventRecord = event as Record<string, unknown>
   const type = eventRecord.type
   if (typeof type !== "string") {
     return null
-  }
-
-  if (type === "response.done") {
-    return {
-      ...eventRecord,
-      type: "response.completed",
-    } as ResponseStreamEvent
   }
 
   return eventRecord as unknown as ResponseStreamEvent
