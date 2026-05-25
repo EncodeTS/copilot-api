@@ -2,7 +2,6 @@ import { createHash } from "node:crypto"
 
 import type {
   ResponsesPayload,
-  ResponsesResult,
   ResponseErrorEvent,
   ResponseStreamEvent,
   ResponsesTransport,
@@ -240,7 +239,7 @@ export async function forwardCodexResponses(
     normalizedPayload.stream
     && resolveCodexResponsesTransport(options.transport) === "websocket"
   ) {
-    return await forwardCodexResponsesOverWebSocket(
+    return forwardCodexResponsesOverWebSocket(
       normalizedPayload,
       requestHeaders,
       baseUrl,
@@ -289,11 +288,11 @@ const buildCodexResponsesWebSocketPoolKey = (
     .join("|")
 }
 
-const forwardCodexResponsesOverWebSocket = async (
+const forwardCodexResponsesOverWebSocket = (
   payload: ResponsesPayload,
   requestHeaders: Headers,
   baseUrl: string,
-): Promise<Response> => {
+): Response => {
   const websocketRequest = prepareCodexResponsesWebSocketRequest(
     payload,
     requestHeaders,
@@ -301,17 +300,7 @@ const forwardCodexResponsesOverWebSocket = async (
   )
   const stream = createCodexResponsesWebSocketStream(websocketRequest)
 
-  if (payload.stream) {
-    return createCodexResponsesWebSocketProxyResponse(stream)
-  }
-
-  const response = await consumeCodexResponsesWebSocketStream(stream)
-  return new Response(JSON.stringify(response), {
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-    },
-    status: 200,
-  })
+  return createCodexResponsesWebSocketProxyResponse(stream)
 }
 
 const createCodexResponsesWebSocketStream = (
@@ -368,45 +357,6 @@ const isTerminalCodexResponsesWebSocketChunk = (
   } catch {
     return false
   }
-}
-
-const consumeCodexResponsesWebSocketStream = async (
-  stream: AsyncIterable<CodexResponsesWebSocketChunk>,
-): Promise<ResponsesResult> => {
-  for await (const chunk of stream) {
-    if (!chunk.data || chunk.data === "[DONE]") {
-      continue
-    }
-
-    const event = JSON.parse(chunk.data) as {
-      message?: unknown
-      response?: ResponsesResult
-      type?: unknown
-    }
-    if (event.type === "error") {
-      throw new Error(
-        typeof event.message === "string" ?
-          event.message
-        : "Codex responses websocket returned an error event",
-      )
-    }
-
-    if (
-      (event.type === "response.completed" || event.type === "response.done")
-      && event.response
-    ) {
-      return event.response
-    }
-
-    if (
-      (event.type === "response.failed" || event.type === "response.incomplete")
-      && event.response
-    ) {
-      return event.response
-    }
-  }
-
-  throw new Error("Codex responses websocket ended without a terminal response")
 }
 
 const createCodexResponsesWebSocketProxyResponse = (
