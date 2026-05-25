@@ -123,6 +123,24 @@ describe("createResponses", () => {
     expect(body.type).toBeUndefined()
   })
 
+  test("uses HTTP when websocket transport is requested without stream=true", async () => {
+    const payload: ResponsesPayload = {
+      input: "hello",
+      model: "gpt-test",
+      stream: false,
+    }
+
+    const response = await createResponses(payload, {
+      initiator: "user",
+      requestId: "request-1",
+      transport: "websocket",
+      vision: false,
+    })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(response).toEqual(createResponsesResult("gpt-test"))
+  })
+
   test("builds the first websocket frame as response.create", () => {
     const payload = {
       background: true,
