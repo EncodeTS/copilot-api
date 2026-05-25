@@ -477,7 +477,7 @@ export const createResponses = async (
   const effectiveTransport =
     compactType === COMPACT_REQUEST ? "http" : transport
 
-  if (effectiveTransport === "websocket") {
+  if (payload.stream === true && effectiveTransport === "websocket") {
     const websocketRequest = prepareResponsesWebSocketRequest(
       payload,
       headers,
@@ -487,12 +487,7 @@ export const createResponses = async (
       },
     )
     const stream = createPooledResponsesWebSocketStream(websocketRequest)
-
-    if (payload.stream) {
-      return stream
-    }
-
-    return await consumeResponsesWebSocketStream(stream)
+    return stream
   }
 
   return await createHttpResponses(payload, headers)
@@ -672,29 +667,4 @@ const isTerminalResponsesStreamChunk = (chunk: { data?: string }): boolean => {
   } catch {
     return false
   }
-}
-
-const consumeResponsesWebSocketStream = async (
-  stream: ResponsesStream,
-): Promise<ResponsesResult> => {
-  for await (const chunk of stream) {
-    if (!chunk.data || chunk.data === "[DONE]") {
-      continue
-    }
-
-    const event = JSON.parse(chunk.data) as ResponseStreamEvent
-    if (event.type === "error") {
-      throw new Error(event.message)
-    }
-
-    if (
-      event.type === "response.completed"
-      || event.type === "response.failed"
-      || event.type === "response.incomplete"
-    ) {
-      return event.response
-    }
-  }
-
-  throw new Error("Responses websocket ended without a terminal response")
 }
