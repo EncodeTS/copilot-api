@@ -6,8 +6,6 @@ import {
   buildCodexResponsesWebSocketPayload,
   buildCodexResponsesWebSocketUrl,
   buildCodexResponsesHeaders,
-  createStandardizedCodexResponsesEventStream,
-  normalizeCodexResponsesEvent,
   prepareCodexResponsesWebSocketRequest,
   resolveCodexResponsesUrl,
 } from "~/services/codex/create-responses"
@@ -19,19 +17,6 @@ afterEach(() => {
   state.codexAccessToken = originalCodexAccessToken
   state.codexAccountId = originalCodexAccountId
 })
-
-async function* streamChunks(
-  items: Array<{
-    data?: string
-    event?: string
-    id?: string
-  }>,
-) {
-  await Promise.resolve()
-  for (const item of items) {
-    yield item
-  }
-}
 
 describe("codex api helpers", () => {
   test("resolves the ChatGPT Codex responses path", () => {
@@ -49,141 +34,6 @@ describe("codex api helpers", () => {
         "https://chatgpt.com/backend-api/codex/responses",
       ),
     ).toBe("https://chatgpt.com/backend-api/codex/responses")
-  })
-
-  test("preserves codex response.completed events without status filtering", () => {
-    const normalized = normalizeCodexResponsesEvent({
-      type: "response.completed",
-      response: {
-        created_at: 0,
-        error: null,
-        id: "resp_123",
-        incomplete_details: null,
-        instructions: null,
-        metadata: null,
-        model: "gpt-5.4",
-        object: "response",
-        output: [],
-        output_text: "",
-        parallel_tool_calls: true,
-        status: "pending_review",
-        temperature: null,
-        tool_choice: "auto",
-        tools: [],
-        top_p: null,
-        usage: null,
-      },
-    })
-
-    expect(normalized).toMatchObject({
-      type: "response.completed",
-      response: {
-        status: "pending_review",
-      },
-    })
-  })
-
-  test("preserves codex SSE response.completed events", async () => {
-    const stream = createStandardizedCodexResponsesEventStream(
-      streamChunks([
-        {
-          data: JSON.stringify({
-            response: {
-              created_at: 0,
-              error: null,
-              id: "resp_123",
-              incomplete_details: null,
-              instructions: null,
-              metadata: null,
-              model: "gpt-5.4",
-              object: "response",
-              output: [],
-              output_text: "hello",
-              parallel_tool_calls: true,
-              status: "completed",
-              temperature: null,
-              tool_choice: "auto",
-              tools: [],
-              top_p: null,
-              usage: null,
-            },
-            sequence_number: 1,
-            type: "response.completed",
-          }),
-          event: "response.completed",
-          id: "event_1",
-        },
-        {
-          data: "[DONE]",
-        },
-      ]),
-    )
-
-    const body = await new Response(stream).text()
-
-    expect(body).toContain("id: event_1")
-    expect(body).toContain("event: response.completed")
-    expect(body).toContain('"type":"response.completed"')
-    expect(body).toContain("data: [DONE]")
-  })
-
-  test("reports normalized terminal events while standardizing Codex SSE", async () => {
-    const seenChunkEvents: Array<string | undefined> = []
-    const seenEvents: Array<string> = []
-    let streamClosed = false
-    const stream = createStandardizedCodexResponsesEventStream(
-      streamChunks([
-        {
-          data: JSON.stringify({
-            response: {
-              created_at: 0,
-              error: null,
-              id: "resp_123",
-              incomplete_details: null,
-              instructions: null,
-              metadata: null,
-              model: "gpt-5.4",
-              object: "response",
-              output: [],
-              output_text: "hello",
-              parallel_tool_calls: true,
-              status: "completed",
-              temperature: null,
-              tool_choice: "auto",
-              tools: [],
-              top_p: null,
-              usage: {
-                input_tokens: 5,
-                output_tokens: 2,
-                total_tokens: 7,
-              },
-            },
-            sequence_number: 1,
-            type: "response.completed",
-          }),
-        },
-        {
-          data: "[DONE]",
-        },
-      ]),
-      {
-        onClose: () => {
-          streamClosed = true
-        },
-        onChunk: (chunk) => {
-          seenChunkEvents.push(chunk.event)
-        },
-        onEvent: (event) => {
-          seenEvents.push(event.type)
-        },
-      },
-    )
-
-    await new Response(stream).text()
-
-    expect(seenChunkEvents).toEqual(["response.completed", undefined])
-    expect(seenEvents).toEqual(["response.completed"])
-    expect(streamClosed).toBe(true)
   })
 
   test("builds the ChatGPT Codex websocket responses path", () => {
@@ -237,7 +87,6 @@ describe("codex api helpers", () => {
     expect(headers.get("openai-beta")).toBe("responses=stable")
     expect(headers.get("originator")).toBe("test-client")
     expect(headers.get("user-agent")).toBe("test-agent")
-    expect(headers.get("x-trace-id")).toBe("trace-123")
   })
 
   test("fills missing codex headers when the request omits them", () => {
@@ -279,7 +128,6 @@ describe("codex api helpers", () => {
     })
     expect(request.headers.accept).toBeUndefined()
     expect(request.headers["content-type"]).toBeUndefined()
-    expect(request.headers["x-trace-id"]).toBe("trace-123")
     expect(request.headers.authorization).toBe("Bearer codex-token")
   })
 

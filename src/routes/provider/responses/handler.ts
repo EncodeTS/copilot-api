@@ -1,7 +1,9 @@
 import type { Context } from "hono"
 
 import { events } from "fetch-event-stream"
+import { streamSSE } from "hono/streaming"
 
+import { logCodexRateLimitsEvent } from "~/lib/codex-rate-limit"
 import { HTTPError } from "~/lib/error"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
@@ -16,12 +18,9 @@ import type {
   ResponsesPayload,
   ResponsesResult,
   ResponseStreamEvent,
+  ResponsesStream,
 } from "~/services/copilot/create-responses"
-import {
-  createStandardizedCodexResponsesEventStream,
-  forwardCodexResponses,
-  normalizeCodexResponsesEvent,
-} from "~/services/codex/create-responses"
+import { forwardCodexResponses } from "~/services/codex/create-responses"
 import { getModels as getCodexModels } from "~/services/codex/get-models"
 import {
   createProviderProxyResponse,
@@ -69,14 +68,32 @@ export async function handleProviderResponsesForProvider(
     provider,
   })
 
-  const upstreamResponse =
-    providerConfig.name === "codex" ?
-      await forwardCodexResponses(
-        payload,
-        c.req.raw.headers,
-        providerConfig.baseUrl,
-      )
-    : await forwardProviderResponses(providerConfig, payload, c.req.raw.headers)
+  if (providerConfig.name === "codex") {
+    const upstreamResponse = await forwardCodexResponses(
+      payload,
+      c.req.raw.headers,
+      providerConfig.baseUrl,
+    )
+    const recordUsage = createProviderResponsesUsageRecorder(payload, provider)
+
+    if (payload.stream && isResponsesStream(upstreamResponse)) {
+      return streamProviderResponses(c, upstreamResponse, {
+        normalizeCodex: true,
+        provider,
+        recordUsage,
+      })
+    }
+
+    const responseBody = upstreamResponse as ResponsesResult
+    recordUsage(normalizeResponsesUsage(responseBody.usage))
+    return c.json(responseBody)
+  }
+
+  const upstreamResponse = await forwardProviderResponses(
+    providerConfig,
+    payload,
+    c.req.raw.headers,
+  )
 
   if (!upstreamResponse.ok) {
     throw new HTTPError(
@@ -87,58 +104,20 @@ export async function handleProviderResponsesForProvider(
 
   const recordUsage = createProviderResponsesUsageRecorder(payload, provider)
 
-  if (providerConfig.name === "codex" && payload.stream) {
-    let usage: UsageTokens = {}
-
-    return createProviderProxyResponse(
-      upstreamResponse,
-      createStandardizedCodexResponsesEventStream(
-        getResponsesEvents(upstreamResponse),
-        {
-          onClose: () => {
-            recordUsage(usage)
-          },
-          onChunk: (chunk) => {
-            debugJson(logger, "Responses stream chunk:", chunk)
-          },
-          onEvent: (event) => {
-            const nextUsage = getResponsesStreamEventUsage(event)
-            if (nextUsage) {
-              usage = nextUsage
-            }
-          },
-        },
-      ),
-    )
-  }
-
   if (payload.stream) {
-    void recordProviderResponsesStreamUsage(upstreamResponse.clone(), {
-      normalizeCodex: providerConfig.name === "codex",
+    return streamProviderResponses(c, getResponsesEvents(upstreamResponse), {
+      normalizeCodex: false,
       provider,
       recordUsage,
-    }).catch((error) => {
-      logger.warn("provider.responses.usage_stream_error", {
-        provider,
-        error: getErrorMessage(error),
-      })
     })
-  } else {
-    const responseBody = (await upstreamResponse
-      .clone()
-      .json()) as ResponsesResult
-    recordUsage(normalizeResponsesUsage(responseBody.usage))
   }
+
+  const responseBody = (await upstreamResponse
+    .clone()
+    .json()) as ResponsesResult
+  recordUsage(normalizeResponsesUsage(responseBody.usage))
 
   return createProviderProxyResponse(upstreamResponse)
-}
-
-const getErrorMessage = (error: unknown): string => {
-  if (error instanceof Error && error.message) {
-    return error.message
-  }
-
-  return String(error)
 }
 
 const createProviderResponsesUsageRecorder = (
@@ -156,37 +135,54 @@ const createProviderResponsesUsageRecorder = (
   })
 }
 
-const recordProviderResponsesStreamUsage = async (
-  upstreamResponse: unknown,
+const streamProviderResponses = (
+  c: Context,
+  upstreamResponse: ResponsesStream,
   options: {
     normalizeCodex: boolean
     provider: string
     recordUsage: (usage: UsageTokens) => void
   },
-): Promise<void> => {
-  let usage: UsageTokens = {}
+): Response => {
+  return streamSSE(c, async (stream) => {
+    let usage: UsageTokens = {}
 
-  try {
-    for await (const chunk of getResponsesEvents(upstreamResponse)) {
-      debugJson(logger, "Responses stream chunk:", chunk)
-      if (!chunk.data || chunk.data === "[DONE]") {
-        continue
-      }
+    try {
+      for await (const chunk of upstreamResponse) {
+        debugJson(logger, "Responses stream chunk:", chunk)
+        let responseChunk = chunk
+        let event: ResponseStreamEvent | null = null
 
-      const parsed = parseProviderResponsesStreamEvent(chunk.data, {
-        normalizeCodex: options.normalizeCodex,
-        provider: options.provider,
-      })
-      if (parsed) {
-        const nextUsage = getResponsesStreamEventUsage(parsed)
-        if (nextUsage) {
-          usage = nextUsage
+        if (chunk.data && chunk.data !== "[DONE]") {
+          event = parseProviderResponsesStreamEvent(chunk.data, {
+            normalizeCodex: options.normalizeCodex,
+            provider: options.provider,
+          })
+          if (event && options.normalizeCodex) {
+            responseChunk = {
+              ...chunk,
+              data: JSON.stringify(event),
+              event: event.type,
+            }
+          }
         }
+
+        if (event) {
+          const nextUsage = getResponsesStreamEventUsage(event)
+          if (nextUsage) {
+            usage = nextUsage
+          }
+        }
+
+        await stream.writeSSE({
+          data: responseChunk.data ?? "",
+          event: responseChunk.event,
+        })
       }
+    } finally {
+      options.recordUsage(usage)
     }
-  } finally {
-    options.recordUsage(usage)
-  }
+  })
 }
 
 const parseProviderResponsesStreamEvent = (
@@ -198,9 +194,10 @@ const parseProviderResponsesStreamEvent = (
 ): ResponseStreamEvent | null => {
   try {
     const parsed = JSON.parse(data) as ResponseStreamEvent
-    return options.normalizeCodex ?
-        normalizeCodexResponsesEvent(parsed)
-      : parsed
+    if (options.normalizeCodex) {
+      logCodexRateLimitsEvent(parsed)
+    }
+    return parsed
   } catch (error) {
     logger.error("provider.responses.parse_chunk_error", {
       provider: options.provider,
@@ -225,6 +222,12 @@ const getResponsesStreamEventUsage = (
   return null
 }
 
-const getResponsesEvents = (response: unknown) => {
-  return events(response as Parameters<typeof events>[0])
+const getResponsesEvents = (response: Response): ResponsesStream =>
+  events(response)
+
+const isResponsesStream = (value: unknown): value is ResponsesStream => {
+  return (
+    Boolean(value)
+    && typeof (value as ResponsesStream)[Symbol.asyncIterator] === "function"
+  )
 }
