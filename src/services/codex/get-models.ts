@@ -10,21 +10,21 @@ interface CodexModelDefinition {
 
 const CODEX_MODELS: Array<CodexModelDefinition> = [
   {
-    contextWindow: 272_000,
+    contextWindow: 100_000,
     id: "gpt-5.3-codex-spark",
     input: ["text"],
-    maxTokens: 128_000,
+    maxTokens: 32_000,
     name: "GPT-5.3 Codex Spark",
   },
   {
-    contextWindow: 1_000_000,
+    contextWindow: 400_000,
     id: "gpt-5.4",
     input: ["text", "image"],
     maxTokens: 128_000,
     name: "GPT-5.4",
   },
   {
-    contextWindow: 1_000_000,
+    contextWindow: 400_000,
     id: "gpt-5.4-mini",
     input: ["text", "image"],
     maxTokens: 128_000,
