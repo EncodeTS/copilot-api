@@ -822,7 +822,9 @@ const mapOutputToAnthropicContent = (
   options?: ResponsesToAnthropicOptions,
 ): Array<AnthropicAssistantContentBlock> => {
   const contentBlocks: Array<AnthropicAssistantContentBlock> = []
-
+  if (!output) {
+    output = []
+  }
   for (const item of output) {
     switch (item.type) {
       case "reasoning": {
@@ -1063,7 +1065,7 @@ const mapResponsesStopReason = (
   const { status, incomplete_details: incompleteDetails } = response
 
   if (status === "completed") {
-    if (response.output.length === 0) {
+    if (!response.output || response.output.length === 0) {
       return options?.hasToolCall ? "tool_use" : "end_turn"
     }
 
