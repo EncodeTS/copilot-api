@@ -65,7 +65,7 @@ const ensureSystemReminderText = (text: string): string => {
     return text
   }
 
-  return `${SYSTEM_REMINDER_START}\n${text}\n${SYSTEM_REMINDER_END}`
+  return `${SYSTEM_REMINDER_START}\n${text.trim()}\n${SYSTEM_REMINDER_END}`
 }
 
 const normalizeSystemStringForMerge = (
