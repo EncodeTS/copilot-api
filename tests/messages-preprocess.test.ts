@@ -39,7 +39,8 @@ describe("normalizeSystemMessages", () => {
     expect(payload.messages).toEqual([
       {
         role: "user",
-        content: "follow the repo style\n\nhello",
+        content:
+          "<system-reminder>\nfollow the repo style\n</system-reminder>\n\nhello",
       },
       {
         role: "assistant",
@@ -80,14 +81,16 @@ describe("normalizeSystemMessages", () => {
 
     normalizeSystemMessages(payload)
 
-    expect(payload.system).toBe("leading system prompt")
+    expect(payload.system).toBe(
+      "<system-reminder>\nleading system prompt\n</system-reminder>",
+    )
     expect(payload.messages).toEqual([
       {
         role: "user",
         content: [
           {
             type: "text",
-            text: "follow the repo style",
+            text: "<system-reminder>\nfollow the repo style\n</system-reminder>",
           },
           {
             type: "text",
@@ -137,7 +140,7 @@ describe("normalizeSystemMessages", () => {
           },
           {
             type: "text",
-            text: "follow the repo style",
+            text: "<system-reminder>\nfollow the repo style\n</system-reminder>",
           },
           {
             type: "text",

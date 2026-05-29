@@ -111,10 +111,10 @@ export async function handleProviderMessagesForProvider(
 
   try {
     const modelConfig = providerConfig.models?.[payload.model]
+    debugJson(logger, "provider.messages.request", { payload, provider })
+
     normalizeSystemMessages(payload)
     applyModelDefaults(payload, modelConfig)
-
-    debugJson(logger, "provider.messages.request", { payload, provider })
 
     if (providerConfig.type === "openai-responses") {
       return await handleOpenAIResponsesProviderMessages(c, {
@@ -138,6 +138,10 @@ export async function handleProviderMessagesForProvider(
       extraBody: modelConfig?.extraBody,
     })
 
+    debugJson(logger, "Translated provider.messages.request", {
+      payload,
+      provider,
+    })
     const upstreamResponse = await forwardProviderMessages(
       providerConfig,
       payload,

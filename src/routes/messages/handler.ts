@@ -62,11 +62,11 @@ export async function handleCompletion(c: Context) {
     })
   }
 
+  debugJson(logger, "Anthropic request payload:", anthropicPayload)
+
   normalizeSystemMessages(anthropicPayload)
 
   await checkRateLimit(state)
-
-  debugJson(logger, "Anthropic request payload:", anthropicPayload)
 
   sanitizeIdeTools(anthropicPayload)
 

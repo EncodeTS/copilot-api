@@ -191,7 +191,8 @@ describe("messages handler orchestration", () => {
     expect(forwardedPayload.messages).toEqual([
       {
         role: "user",
-        content: "follow the repo style\n\nhello",
+        content:
+          "<system-reminder>\nfollow the repo style\n</system-reminder>\n\nhello",
       },
       {
         role: "assistant",
