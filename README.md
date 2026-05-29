@@ -2,9 +2,6 @@
 
 English | [简体中文](./README.zh-CN.md)
 
-> [!WARNING]
-> Claude Code 2.1.150 is recommended for now. Recent Claude Code versions changed the Messages protocol, and compatibility support is still pending.
-
 ## Important Notes
 
 > [!IMPORTANT]
