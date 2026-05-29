@@ -18,12 +18,14 @@ import type {
   AnthropicCacheControl,
   AnthropicDocumentBlock,
   AnthropicImageBlock,
+  AnthropicInputMessage,
   AnthropicMessage,
   AnthropicMessagesPayload,
   AnthropicTextBlock,
   AnthropicToolResultBlock,
   AnthropicToolResultContentBlock,
   AnthropicUserContentBlock,
+  AnthropicUserMessage,
 } from "./anthropic-types"
 
 export const TOOL_REFERENCE_TURN_BOUNDARY = "Tool loaded."
@@ -38,6 +40,102 @@ type AnthropicAttachmentBlock = AnthropicImageBlock | AnthropicDocumentBlock
 type AnthropicMessageContentBlock =
   | AnthropicUserContentBlock
   | AnthropicAssistantContentBlock
+
+const createTextBlock = (text: string): AnthropicTextBlock => ({
+  type: "text",
+  text,
+})
+
+const appendTextSegment = (base: string, addition: string): string => {
+  if (base.length === 0) {
+    return addition
+  }
+  if (addition.length === 0) {
+    return base
+  }
+
+  return `${base}\n\n${addition}`
+}
+
+const toSystemTextBlocks = (
+  content: string | Array<AnthropicTextBlock>,
+): Array<AnthropicTextBlock> => {
+  return typeof content === "string" ? [createTextBlock(content)] : [...content]
+}
+
+const mergeSystemPromptContent = (
+  current: string | Array<AnthropicTextBlock> | undefined,
+  addition: string | Array<AnthropicTextBlock>,
+): string | Array<AnthropicTextBlock> => {
+  if (current === undefined) {
+    return typeof addition === "string" ? addition : [...addition]
+  }
+
+  if (typeof current === "string" && typeof addition === "string") {
+    return appendTextSegment(current, addition)
+  }
+
+  return [...toSystemTextBlocks(current), ...toSystemTextBlocks(addition)]
+}
+
+const prependSystemContentToUserMessage = (
+  message: AnthropicUserMessage,
+  addition: string | Array<AnthropicTextBlock>,
+): void => {
+  if (typeof message.content === "string" && typeof addition === "string") {
+    message.content = appendTextSegment(addition, message.content)
+    return
+  }
+
+  if (Array.isArray(message.content)) {
+    const lastToolResultIndex = message.content.findLastIndex(
+      (block) => block.type === "tool_result",
+    )
+    if (lastToolResultIndex >= 0) {
+      message.content = [
+        ...message.content.slice(0, lastToolResultIndex + 1),
+        ...toSystemTextBlocks(addition),
+        ...message.content.slice(lastToolResultIndex + 1),
+      ]
+      return
+    }
+  }
+
+  message.content = [
+    ...toSystemTextBlocks(addition),
+    ...(typeof message.content === "string" ?
+      [createTextBlock(message.content)]
+    : message.content),
+  ]
+}
+
+export const normalizeSystemMessages = (
+  payload: AnthropicMessagesPayload,
+): void => {
+  if (!payload.messages.some((msg) => msg.role === "system")) {
+    return
+  }
+
+  const normalizedMessages: Array<AnthropicMessage> = []
+  let system = payload.system
+
+  for (const message of payload.messages) {
+    if (message.role === "system") {
+      const previousMessage = normalizedMessages.at(-1)
+      if (previousMessage?.role === "user") {
+        prependSystemContentToUserMessage(previousMessage, message.content)
+      } else if (!previousMessage) {
+        system = mergeSystemPromptContent(system, message.content)
+      }
+      continue
+    }
+
+    normalizedMessages.push(message)
+  }
+
+  payload.messages = normalizedMessages
+  payload.system = system
+}
 
 const isVersionAtLeast = (
   version: string,
@@ -82,7 +180,7 @@ const getBlockCacheControl = (
 }
 
 export const getLastMessageContentCacheControl = (
-  lastMessage: AnthropicMessage | undefined,
+  lastMessage: AnthropicInputMessage | undefined,
 ): AnthropicCacheControl | undefined => {
   if (!lastMessage || !Array.isArray(lastMessage.content)) {
     return undefined
@@ -115,7 +213,7 @@ export const applyLastMessageCacheControl = (
   lastBlock.cache_control = { ...cacheControl }
 }
 
-const getCompactCandidateText = (message: AnthropicMessage): string => {
+const getCompactCandidateText = (message: AnthropicInputMessage): string => {
   if (message.role !== "user") {
     return ""
   }
@@ -133,7 +231,7 @@ const getCompactCandidateText = (message: AnthropicMessage): string => {
     .join("\n\n")
 }
 
-const isCompactMessage = (lastMessage: AnthropicMessage): boolean => {
+const isCompactMessage = (lastMessage: AnthropicInputMessage): boolean => {
   const text = getCompactCandidateText(lastMessage)
   if (!text) {
     return false
@@ -147,7 +245,7 @@ const isCompactMessage = (lastMessage: AnthropicMessage): boolean => {
 }
 
 const isCompactAutoContinueMessage = (
-  lastMessage: AnthropicMessage,
+  lastMessage: AnthropicInputMessage,
 ): boolean => {
   const text = getCompactCandidateText(lastMessage)
   return (

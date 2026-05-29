@@ -6,10 +6,148 @@ import {
   applyLastMessageCacheControl,
   getLastMessageContentCacheControl,
   mergeToolResultForClaude,
+  normalizeSystemMessages,
   prepareMessagesApiPayload,
   sanitizeIdeTools,
   stripToolReferenceTurnBoundary,
 } from "../src/routes/messages/preprocess"
+
+describe("normalizeSystemMessages", () => {
+  test("merges system string content into the previous message", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4.6",
+      max_tokens: 128,
+      messages: [
+        {
+          role: "user",
+          content: "hello",
+        },
+        {
+          role: "system",
+          content: "follow the repo style",
+        },
+        {
+          role: "assistant",
+          content: "working on it",
+        },
+      ],
+    }
+
+    normalizeSystemMessages(payload)
+
+    expect(payload.system).toBeUndefined()
+    expect(payload.messages).toEqual([
+      {
+        role: "user",
+        content: "follow the repo style\n\nhello",
+      },
+      {
+        role: "assistant",
+        content: "working on it",
+      },
+    ])
+  })
+
+  test("moves leading system messages to payload.system and appends block content to the previous array message", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4.6",
+      max_tokens: 128,
+      messages: [
+        {
+          role: "system",
+          content: "leading system prompt",
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "hello",
+            },
+          ],
+        },
+        {
+          role: "system",
+          content: [
+            {
+              type: "text",
+              text: "follow the repo style",
+            },
+          ],
+        },
+      ],
+    }
+
+    normalizeSystemMessages(payload)
+
+    expect(payload.system).toBe("leading system prompt")
+    expect(payload.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "follow the repo style",
+          },
+          {
+            type: "text",
+            text: "hello",
+          },
+        ],
+      },
+    ])
+  })
+
+  test("inserts system text after tool_result blocks in user array content", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4.6",
+      max_tokens: 128,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-1",
+              content: "tool output",
+            },
+            {
+              type: "text",
+              text: "hello",
+            },
+          ],
+        },
+        {
+          role: "system",
+          content: "follow the repo style",
+        },
+      ],
+    }
+
+    normalizeSystemMessages(payload)
+
+    expect(payload.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "tool-1",
+            content: "tool output",
+          },
+          {
+            type: "text",
+            text: "follow the repo style",
+          },
+          {
+            type: "text",
+            text: "hello",
+          },
+        ],
+      },
+    ])
+  })
+})
 
 describe("mergeToolResultForClaude", () => {
   test("removes tool reference turn boundaries before merging", () => {

@@ -104,7 +104,7 @@ export const translateAnthropicMessagesToResponsesPayload = (
     toolUseNameById: new Map(),
   }
 
-  for (const message of payload.messages) {
+  for (const message of payload.messages as Array<AnthropicMessage>) {
     input.push(
       ...translateMessage(message, payload.model, applyPhase, translationState),
     )

@@ -29,6 +29,7 @@ import {
   getCompactType,
   getLastMessageContentCacheControl,
   mergeToolResultForClaude,
+  normalizeSystemMessages,
   sanitizeIdeTools,
   stripToolReferenceTurnBoundary,
 } from "./preprocess"
@@ -60,6 +61,8 @@ export async function handleCompletion(c: Context) {
       provider: providerModelAlias.provider,
     })
   }
+
+  normalizeSystemMessages(anthropicPayload)
 
   await checkRateLimit(state)
 

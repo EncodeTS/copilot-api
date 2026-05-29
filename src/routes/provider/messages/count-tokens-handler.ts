@@ -6,6 +6,7 @@ import { createFallbackModel } from "~/lib/provider-model"
 import { getTokenCount } from "~/lib/tokenizer"
 import { type AnthropicMessagesPayload } from "~/routes/messages/anthropic-types"
 import { translateToOpenAI } from "~/routes/messages/non-stream-translation"
+import { normalizeSystemMessages } from "~/routes/messages/preprocess"
 
 const logger = createHandlerLogger("provider-count-tokens-handler")
 
@@ -25,6 +26,7 @@ export async function handleProviderCountTokensForProvider(
   },
 ): Promise<Response> {
   const { payload: anthropicPayload, provider } = options
+  normalizeSystemMessages(anthropicPayload)
   const modelId = anthropicPayload.model.trim()
 
   const providerConfig = await resolveProviderConfig(provider)

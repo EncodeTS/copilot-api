@@ -54,6 +54,7 @@ import {
   translateAnthropicMessagesToResponsesPayload,
   translateResponsesResultToAnthropic,
 } from "~/routes/messages/responses-translation"
+import { normalizeSystemMessages } from "~/routes/messages/preprocess"
 import {
   applyResponsesApiContextManagement,
   compactInputByLatestCompaction,
@@ -110,6 +111,7 @@ export async function handleProviderMessagesForProvider(
 
   try {
     const modelConfig = providerConfig.models?.[payload.model]
+    normalizeSystemMessages(payload)
     applyModelDefaults(payload, modelConfig)
 
     debugJson(logger, "provider.messages.request", { payload, provider })
