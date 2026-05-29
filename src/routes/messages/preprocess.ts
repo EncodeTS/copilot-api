@@ -31,6 +31,7 @@ import type {
 export const TOOL_REFERENCE_TURN_BOUNDARY = "Tool loaded."
 const SYSTEM_REMINDER_START = "<system-reminder>"
 const SYSTEM_REMINDER_END = "</system-reminder>"
+const SUBAGENT_START_HOOK_ADDITIONAL_PREFIX = "SubagentStart hook additional"
 
 const IDE_EXECUTE_CODE_TOOL = "mcp__ide__executeCode"
 const IDE_GET_DIAGNOSTICS_TOOL = "mcp__ide__getDiagnostics"
@@ -67,11 +68,33 @@ const ensureSystemReminderText = (text: string): string => {
   return `${SYSTEM_REMINDER_START}\n${text}\n${SYSTEM_REMINDER_END}`
 }
 
+const normalizeSystemStringForMerge = (
+  text: string,
+): string | Array<AnthropicTextBlock> => {
+  if (!text.startsWith(SUBAGENT_START_HOOK_ADDITIONAL_PREFIX)) {
+    return ensureSystemReminderText(text)
+  }
+
+  const lineBreakMatch = /\r?\n/.exec(text)
+  if (!lineBreakMatch) {
+    return [createTextBlock(ensureSystemReminderText(text))]
+  }
+
+  const firstLine = text.slice(0, lineBreakMatch.index)
+  const rest = text.slice(lineBreakMatch.index + lineBreakMatch[0].length)
+  return [
+    createTextBlock(ensureSystemReminderText(firstLine)),
+    ...(rest.length > 0 ?
+      [createTextBlock(ensureSystemReminderText(rest))]
+    : []),
+  ]
+}
+
 const normalizeSystemContentForMerge = (
   content: string | Array<AnthropicTextBlock>,
 ): string | Array<AnthropicTextBlock> => {
   if (typeof content === "string") {
-    return ensureSystemReminderText(content)
+    return normalizeSystemStringForMerge(content)
   }
 
   return content.map((block) =>

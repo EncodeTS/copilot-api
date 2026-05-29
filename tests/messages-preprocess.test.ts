@@ -150,6 +150,45 @@ describe("normalizeSystemMessages", () => {
       },
     ])
   })
+
+  test("splits SubagentStart hook additional first line into its own content block", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4.6",
+      max_tokens: 128,
+      messages: [
+        {
+          role: "user",
+          content: "hello",
+        },
+        {
+          role: "system",
+          content: "SubagentStart hook additional\nextra reminder",
+        },
+      ],
+    }
+
+    normalizeSystemMessages(payload)
+
+    expect(payload.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "<system-reminder>\nSubagentStart hook additional\n</system-reminder>",
+          },
+          {
+            type: "text",
+            text: "<system-reminder>\nextra reminder\n</system-reminder>",
+          },
+          {
+            type: "text",
+            text: "hello",
+          },
+        ],
+      },
+    ])
+  })
 })
 
 describe("mergeToolResultForClaude", () => {
