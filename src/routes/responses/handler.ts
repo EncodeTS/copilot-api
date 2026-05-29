@@ -261,5 +261,5 @@ const getCodexResponsesSubagentMarker = (c: Context): SubagentMarker | null => {
 
 const getTrimmedHeader = (c: Context, name: string): string | undefined => {
   const value = c.req.header(name)?.trim()
-  return value ? value : undefined
+  return value || undefined
 }
