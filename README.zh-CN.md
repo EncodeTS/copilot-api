@@ -2,6 +2,9 @@
 
 [English](./README.md) | 简体中文
 
+> [!WARNING]
+> 建议暂时使用 Claude Code 2.1.150 版本。近期版本的 Claude Code 修改了 Messages 协议，当前仍在适配兼容。
+
 ## 重要说明
 
 > [!IMPORTANT]
