@@ -21,7 +21,6 @@ import {
   type ResponsesResult,
   type ResponseStreamEvent,
 } from "~/services/copilot/create-responses"
-import { HTTPError } from "~/lib/error"
 
 import { createStreamIdTracker, fixStreamIds } from "./stream-id-sync"
 import {
@@ -29,7 +28,6 @@ import {
   compactInputByLatestCompaction,
   getResponsesTransportForModel,
   getResponsesRequestOptions,
-  sanitizeAllInputImages,
   sanitizeOversizedInputImages,
 } from "./utils"
 
@@ -117,41 +115,13 @@ export const handleResponses = async (c: Context) => {
     await awaitApproval()
   }
 
-  const responseOptions = {
+  const response = await responsesHandlerDependencies.createResponses(payload, {
     vision,
     initiator,
     requestId,
     sessionId: sessionId,
     transport: responsesTransport,
-  }
-  let response: Awaited<ReturnType<typeof createCopilotResponses>>
-  try {
-    response = await responsesHandlerDependencies.createResponses(
-      payload,
-      responseOptions,
-    )
-  } catch (error) {
-    if (!(error instanceof HTTPError) || error.response.status !== 413) {
-      throw error
-    }
-
-    const retrySanitizedImageCount = sanitizeAllInputImages(payload)
-    if (retrySanitizedImageCount === 0) {
-      throw error
-    }
-
-    logger.warn(
-      `Omitted ${retrySanitizedImageCount} input image(s) after Copilot Responses rejected the payload as too large`,
-    )
-    const retryOptions = {
-      ...responseOptions,
-      vision: getResponsesRequestOptions(payload).vision,
-    }
-    response = await responsesHandlerDependencies.createResponses(
-      payload,
-      retryOptions,
-    )
-  }
+  })
 
   if (isStreamingRequested(payload) && isAsyncIterable(response)) {
     logger.debug("Forwarding native Responses stream")
