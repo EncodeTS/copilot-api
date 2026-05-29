@@ -1,4 +1,4 @@
-const FALLBACK = "1.122.0"
+const FALLBACK = "1.122.1"
 
 export async function getVSCodeVersion() {
   await Promise.resolve()
