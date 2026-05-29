@@ -110,8 +110,7 @@ export const createMessages = async (
   const { safetyIdentifier, sessionId } = parseUserIdMetadata(
     payload.metadata?.user_id,
   )
-  // from claude code
-  //
+
   // claude-opus-4.8 is excluded: Copilot's upstream WAF returns a generic
   // "Access to this endpoint is forbidden" 403 whenever a request carries
   // the Claude-Code-style user-agent without a `copilot-integration-id`
@@ -122,11 +121,7 @@ export const createMessages = async (
   // conversation-agent intent) in place; that path is 200. Remove this
   // skip once Copilot's upstream accepts the Claude-Code identity on 4.8.
   // Probed 2026-05-29.
-  if (
-    safetyIdentifier &&
-    sessionId &&
-    payload.model !== "claude-opus-4.8"
-  ) {
+  if (safetyIdentifier && sessionId && payload.model !== "claude-opus-4.8") {
     prepareMessageProxyHeaders(headers)
   }
 
