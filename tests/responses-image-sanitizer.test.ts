@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test"
 
-import type { ResponsesPayload } from "~/services/copilot/create-responses"
+import type {
+  ResponseFunctionCallOutputItem,
+  ResponseInputImage,
+  ResponsesPayload,
+} from "~/services/copilot/create-responses"
 
 import {
   sanitizeAllInputImages,
@@ -51,11 +55,11 @@ describe("sanitizeOversizedInputImages", () => {
     expect(image.text).toBeUndefined()
   })
 
-  test("keeps input images within the model size limit", () => {
+  test("keeps input images within the estimated data URL size limit", () => {
     const imageUrl = imageDataUrl(8)
     const payload = makePayload(imageUrl)
 
-    const sanitized = sanitizeOversizedInputImages(payload, 8)
+    const sanitized = sanitizeOversizedInputImages(payload, 22)
 
     expect(sanitized).toBe(0)
     expect(
@@ -98,5 +102,43 @@ describe("sanitizeOversizedInputImages", () => {
     expect(JSON.stringify(payload)).not.toContain(firstImageUrl)
     expect(JSON.stringify(payload)).not.toContain(secondImageUrl)
     expect(JSON.stringify(payload)).toContain("data:image/png;base64")
+  })
+
+  test("estimates image size from the full data URL string", () => {
+    const payload = makePayload(imageDataUrl(4))
+
+    const sanitized = sanitizeOversizedInputImages(payload, 10)
+
+    expect(sanitized).toBe(1)
+  })
+
+  test("sanitizes images inside function call outputs", () => {
+    const toolImageUrl = imageDataUrl(128)
+    const toolOutputImage: ResponseInputImage = {
+      detail: "high",
+      image_url: toolImageUrl,
+      type: "input_image",
+    }
+    const payload = {
+      input: [
+        {
+          call_id: "call_123",
+          output: [toolOutputImage],
+          status: "completed",
+          type: "function_call_output",
+        } satisfies ResponseFunctionCallOutputItem,
+      ],
+      model: "gpt-test",
+    } satisfies ResponsesPayload
+
+    const sanitized = sanitizeOversizedInputImages(payload, 64)
+
+    expect(sanitized).toBe(1)
+    expect(toolOutputImage.type).toBe("input_image")
+    expect(toolOutputImage.detail).toBe("low")
+    expect(
+      toolOutputImage.image_url?.startsWith("data:image/png;base64,"),
+    ).toBe(true)
+    expect(toolOutputImage.image_url).not.toBe(toolImageUrl)
   })
 })
