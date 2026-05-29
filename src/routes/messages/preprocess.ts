@@ -29,6 +29,8 @@ import type {
 } from "./anthropic-types"
 
 export const TOOL_REFERENCE_TURN_BOUNDARY = "Tool loaded."
+const SYSTEM_REMINDER_START = "<system-reminder>"
+const SYSTEM_REMINDER_END = "</system-reminder>"
 
 const IDE_EXECUTE_CODE_TOOL = "mcp__ide__executeCode"
 const IDE_GET_DIAGNOSTICS_TOOL = "mcp__ide__getDiagnostics"
@@ -55,6 +57,31 @@ const appendTextSegment = (base: string, addition: string): string => {
   }
 
   return `${base}\n\n${addition}`
+}
+
+const ensureSystemReminderText = (text: string): string => {
+  if (text.startsWith(SYSTEM_REMINDER_START)) {
+    return text
+  }
+
+  return `${SYSTEM_REMINDER_START}\n${text}\n${SYSTEM_REMINDER_END}`
+}
+
+const normalizeSystemContentForMerge = (
+  content: string | Array<AnthropicTextBlock>,
+): string | Array<AnthropicTextBlock> => {
+  if (typeof content === "string") {
+    return ensureSystemReminderText(content)
+  }
+
+  return content.map((block) =>
+    block.text.startsWith(SYSTEM_REMINDER_START) ?
+      block
+    : {
+        ...block,
+        text: ensureSystemReminderText(block.text),
+      },
+  )
 }
 
 const toSystemTextBlocks = (
@@ -121,11 +148,12 @@ export const normalizeSystemMessages = (
 
   for (const message of payload.messages) {
     if (message.role === "system") {
+      const normalizedContent = normalizeSystemContentForMerge(message.content)
       const previousMessage = normalizedMessages.at(-1)
       if (previousMessage?.role === "user") {
-        prependSystemContentToUserMessage(previousMessage, message.content)
+        prependSystemContentToUserMessage(previousMessage, normalizedContent)
       } else if (!previousMessage) {
-        system = mergeSystemPromptContent(system, message.content)
+        system = mergeSystemPromptContent(system, normalizedContent)
       }
       continue
     }
