@@ -131,6 +131,84 @@ afterEach(() => {
 })
 
 describe("messages handler orchestration", () => {
+  test("merges message-level system prompts before forwarding to the selected flow", async () => {
+    selectedModel = {
+      id: "messages-model",
+      supported_endpoints: ["/v1/messages"],
+    }
+
+    const payload: AnthropicMessagesPayload = {
+      model: "original-model",
+      max_tokens: 128,
+      messages: [
+        {
+          role: "user",
+          content: "hello",
+        },
+        {
+          role: "system",
+          content: "follow the repo style",
+        },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: "working on it",
+            },
+          ],
+        },
+        {
+          role: "system",
+          content: [
+            {
+              type: "text",
+              text: "keep answers short",
+            },
+          ],
+        },
+        {
+          role: "user",
+          content: "next question",
+        },
+      ],
+    }
+
+    const app = createApp()
+    const response = await app.request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe("messages")
+
+    const [, forwardedPayload] = handleWithMessagesApi.mock.calls[0]
+    expect(forwardedPayload.system).toBeUndefined()
+    expect(forwardedPayload.messages).toEqual([
+      {
+        role: "user",
+        content: "follow the repo style\n\nhello",
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: "working on it",
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: "next question",
+      },
+    ])
+  })
+
   test("removes executeCode and rewrites getDiagnostics before forwarding tools", async () => {
     selectedModel = {
       id: "messages-model",

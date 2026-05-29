@@ -105,6 +105,53 @@ afterEach(() => {
 })
 
 describe("openai-compatible provider messages", () => {
+  test("merges message-level system prompts before OpenAI-compatible translation", async () => {
+    providerConfig = {
+      ...providerConfig,
+      models: {
+        "qwen-plus": {
+          contextCache: false,
+          toolContentSupportType: [],
+        },
+      },
+    } as ResolvedProviderConfig
+
+    const app = createApp()
+    const response = await app.request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [
+          { role: "user", content: "hello" },
+          { role: "system", content: "follow the repo style" },
+          { role: "assistant", content: "working on it" },
+          { role: "system", content: "keep answers short" },
+        ],
+        model: "qwen-plus",
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    const body = JSON.parse(init.body as string) as {
+      messages: Array<{ content: unknown; role: string }>
+    }
+
+    expect(body.messages).toEqual([
+      {
+        role: "user",
+        content: "follow the repo style\n\nhello",
+      },
+      {
+        role: "assistant",
+        content: "working on it",
+      },
+    ])
+  })
+
   test("translates Anthropic messages to OpenAI chat completions", async () => {
     const app = createApp()
     const response = await app.request("/dash/v1/messages", {
