@@ -11,7 +11,7 @@ import type {
 
 import { COMPACT_REQUEST, type CompactType } from "~/lib/compact"
 import {
-  isResponsesApiContextManagementModel as isConfiguredResponsesApiContextManagementModel,
+  isResponsesApiContextManagementEnabled as isConfiguredResponsesApiContextManagementEnabled,
   isResponsesApiWebSocketEnabled as isConfiguredResponsesApiWebSocketEnabled,
 } from "~/lib/config"
 
@@ -20,8 +20,8 @@ export const RESPONSES_WS_ENDPOINT = "ws:/responses"
 export const DEFAULT_RESPONSES_COMPACT_THRESHOLD_RATIO = 0.9
 
 export const responsesUtilsDependencies = {
-  isResponsesApiContextManagementModel:
-    isConfiguredResponsesApiContextManagementModel,
+  isResponsesApiContextManagementEnabled:
+    isConfiguredResponsesApiContextManagementEnabled,
   isResponsesApiWebSocketEnabled: isConfiguredResponsesApiWebSocketEnabled,
 }
 
@@ -284,11 +284,7 @@ export const applyResponsesApiContextManagement = (
     return
   }
 
-  if (
-    !responsesUtilsDependencies.isResponsesApiContextManagementModel(
-      payload.model,
-    )
-  ) {
+  if (!responsesUtilsDependencies.isResponsesApiContextManagementEnabled()) {
     return
   }
 

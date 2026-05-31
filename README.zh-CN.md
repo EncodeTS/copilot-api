@@ -230,7 +230,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
       "gpt-5.4": "<built-in commentary prompt>"
     },
     "smallModel": "gpt-5-mini",
-    "responsesApiContextManagementModels": [],
+    "useResponsesApiContextManagement": true,
     "modelReasoningEfforts": {
       "gpt-5-mini": "low",
       "gpt-5.3-codex": "xhigh",
@@ -261,7 +261,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
     - `supportPdf`：可选，控制该模型是否支持 PDF/document content。默认 `false`，不支持时会把 PDF 转成提示文本；设为 `true` 时会把 PDF/document 转成 OpenAI Chat Completions 的 file part。
     - `toolContentSupportType`：可选，配置该模型的 tool result content 支持能力，值为 `array`、`image`、`pdf` 的数组。provider 侧未配置时默认只发送 string tool content。若 `supportPdf` 为 `true` 但这里不包含 `pdf`，tool result 里的 file part 会被转成 user role 消息。Copilot 主链路不使用这个 provider 默认，仍按 array + image 且不支持 PDF 的能力处理。
 - **smallModel：** 无工具预热消息的回退模型（例如 Claude Code 的探测请求）；默认是 `gpt-5-mini`。
-- **responsesApiContextManagementModels：** 需要启用 Responses API `context_management` 压缩指令的 GPT 模型 ID 列表。默认是 `[]`，需要你显式开启。一个不错的起点是 `["gpt-5-mini", "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.4"]`。启用后，请求体会带上 `context_management`，并在后续轮次中仅保留最新的压缩承载内容。实际压缩由服务端完成，看起来会在 usage 接近模型 `maxPromptTokens` 的约 90% 时开始，因此特别适合长任务场景。实践中 `compact_threshold` 似乎也是服务端固定的，所以在本项目中修改它目前不会改变压缩行为。当前该优化仅面向 GPT 系模型。
+- **useResponsesApiContextManagement：** 当为 `true` 时，代理会为 Responses API 附加 `context_management` 压缩指令。默认值为 `true`。如需全局关闭，可设为 `false`。启用后，请求体会带上 `context_management`，并在后续轮次中仅保留最新的压缩承载内容，因此特别适合长任务场景。
 - **modelReasoningEfforts：** 按模型配置发送到 Copilot Responses API 的 `reasoning.effort`。可选值包括 `none`、`minimal`、`low`、`medium`、`high` 和 `xhigh`。若某模型未配置，则默认使用 `high`。
 - **useMessagesApi：** 当为 `true` 时，支持 Copilot 原生 `/v1/messages` 的 Claude 系模型会走 Messages API；否则回退到 `/chat/completions`。设为 `false` 可禁用 Messages API 路由，始终使用 `/chat/completions`。默认值为 `true`。
 - **useResponsesApiWebSocket：** 当为 `true` 时，Responses API 请求会优先对声明了 `ws:/responses` 的模型使用 Copilot websocket transport；仅声明 `/responses` 的模型仍走 HTTP。设为 `false` 可禁用 websocket 路由，并在模型支持 `/responses` 时使用 HTTP `/responses`。默认值为 `true`。

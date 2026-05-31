@@ -13,7 +13,10 @@ import {
   normalizeResponsesUsage,
   type UsageTokens,
 } from "~/lib/token-usage"
-import { applyResponsesApiContextManagement } from "~/routes/responses/utils"
+import {
+  applyResponsesApiContextManagement,
+  compactInputByLatestCompaction,
+} from "~/routes/responses/utils"
 import type {
   ResponsesPayload,
   ResponsesResult,
@@ -68,6 +71,8 @@ export async function handleProviderResponsesForProvider(
     contextManagement,
     provider,
   })
+
+  compactInputByLatestCompaction(payload)
 
   if (providerConfig.name === "codex") {
     const upstreamResponse = await forwardCodexResponses(

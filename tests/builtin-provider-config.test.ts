@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 
 interface ConfigFileShape {
   builtinProviders?: Record<string, unknown>
+  useResponsesApiContextManagement?: boolean
   providers?: Record<
     string,
     {
@@ -79,6 +80,35 @@ describe("builtin provider config", () => {
     )
 
     expect(readConfigFile(configPath).builtinProviders).toBeUndefined()
+  })
+
+  test("enables Responses API context management by default", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = path.join(tempDir, "config.json")
+
+    const output = runScript(
+      tempDir,
+      'const { isResponsesApiContextManagementEnabled } = await import("./src/lib/config"); console.log(JSON.stringify({ enabled: isResponsesApiContextManagementEnabled() }));',
+    )
+
+    expect(JSON.parse(output)).toEqual({ enabled: true })
+    expect(readConfigFile(configPath).useResponsesApiContextManagement).toBe(
+      true,
+    )
+  })
+
+  test("allows disabling Responses API context management", () => {
+    const tempDir = createTempConfigDir()
+    writeConfigFile(tempDir, {
+      useResponsesApiContextManagement: false,
+    })
+
+    const output = runScript(
+      tempDir,
+      'const { isResponsesApiContextManagementEnabled } = await import("./src/lib/config"); console.log(JSON.stringify({ enabled: isResponsesApiContextManagementEnabled() }));',
+    )
+
+    expect(JSON.parse(output)).toEqual({ enabled: false })
   })
 
   test("allows codex to be configured in config.providers", () => {
