@@ -135,7 +135,7 @@ export function buildCodexResponsesHeaders(
     headers.set("originator", "opencode")
     const sessionId = requestContext.getStore()?.sessionAffinity
     if (sessionId) {
-      headers.set("session_id", sessionId)
+      headers.set("session-id", sessionId)
     }
   }
   return headers
@@ -372,9 +372,9 @@ const buildCodexResponsesWebSocketPoolKey = (
   const headerFingerprint = createHash("sha256")
     .update(
       JSON.stringify(
-        Object.entries(headers).sort(([left], [right]) =>
-          left.localeCompare(right),
-        ),
+        Object.entries(headers)
+          .filter(([headerName]) => !headerName.toLowerCase().includes("trace"))
+          .sort(([left], [right]) => left.localeCompare(right)),
       ),
     )
     .digest("hex")
