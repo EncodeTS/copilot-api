@@ -228,7 +228,7 @@ The following command line options are available for the `start` command:
       "gpt-5.4": "<built-in commentary prompt>"
     },
     "smallModel": "gpt-5-mini",
-    "responsesApiContextManagementModels": [],
+    "useResponsesApiContextManagement": true,
     "modelReasoningEfforts": {
       "gpt-5-mini": "low",
       "gpt-5.3-codex": "xhigh",
@@ -259,7 +259,7 @@ The following command line options are available for the `start` command:
     - `supportPdf` (optional): Controls whether the model supports PDF/document content. Defaults to `false`; unsupported PDFs are converted to a text notice. Set it to `true` to send PDF/document blocks as OpenAI Chat Completions file parts.
     - `toolContentSupportType` (optional): Tool result content capabilities for that model, as an array of `array`, `image`, and `pdf`. Provider routes default to string-only tool content when omitted. If `supportPdf` is `true` but this list does not include `pdf`, file parts in tool results are moved to user role messages. This provider default does not change the Copilot main flow, which continues to support array + image and not PDF.
 - **smallModel:** Fallback model used for tool-less warmup messages (e.g., Claude Code probe requests); defaults to gpt-5-mini.
-- **responsesApiContextManagementModels:** List of GPT model IDs that should receive Responses API `context_management` compaction instructions. This defaults to `[]`, so you need to opt in explicitly. A good starting point is `["gpt-5-mini", "gpt-5.3-codex", "gpt-5.4-mini", "gpt-5.4"]`. When enabled, the request includes `context_management` in the body and keeps only the latest compaction carrier on follow-up turns. The actual compaction is handled server-side and appears to begin when usage approaches roughly 90% of the model's `maxPromptTokens`, which makes it especially useful for long-running tasks. In practice, the effective `compact_threshold` also appears to be fixed on the server side, so changing it in this project does not currently alter compaction behavior. At the moment, this optimization is intended for GPT-family models only.
+- **useResponsesApiContextManagement:** When `true`, the proxy adds Responses API `context_management` compaction instructions. Defaults to `true`. Set it to `false` to disable this globally. When enabled, the request includes `context_management` in the body and keeps only the latest compaction carrier on follow-up turns. This is especially useful for long-running tasks.
 - **modelReasoningEfforts:** Per-model `reasoning.effort` sent to the Copilot Responses API. Allowed values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`. If a model isn’t listed, `high` is used by default.
 - **useMessagesApi:** When `true`, Claude-family models that support Copilot's native `/v1/messages` endpoint will use the Messages API; otherwise they fall back to `/chat/completions`. Set to `false` to disable Messages API routing and always use `/chat/completions`. Defaults to `true`.
 - **useResponsesApiWebSocket:** When `true`, Responses API requests use Copilot's websocket transport for models that advertise `ws:/responses`; models that only advertise `/responses` continue to use HTTP. Set to `false` to disable websocket routing and use HTTP `/responses` whenever the selected model supports it. Defaults to `true`.
