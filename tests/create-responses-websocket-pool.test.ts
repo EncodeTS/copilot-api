@@ -228,17 +228,26 @@ test("Responses websocket open failure includes the underlying reason", async ()
     error: new Error("tls handshake failed"),
   }
 
-  let thrown: unknown = null
+  const response = await createResponses(
+    {
+      input: "hello",
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      initiator: "user",
+      requestId: "request-1",
+      transport: "websocket",
+      vision: false,
+    },
+  )
 
-  try {
-    await collectResponsesStream("request-1")
-  } catch (error) {
-    thrown = error
-  }
+  const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
 
-  expect(thrown).toBeInstanceOf(Error)
-  expect((thrown as Error).message).toBe(
-    "Failed to create responses websocket: tls handshake failed",
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("error")
+  expect(chunks[0]?.data).toContain(
+    '"message":"Failed to create responses websocket: tls handshake failed"',
   )
 })
 
@@ -490,24 +499,64 @@ test("Responses websocket sequential request reuses the pooled connection after 
 test("Responses websocket stream failure includes the underlying reason", async () => {
   MockWebSocket.autoComplete = false
 
-  const streamPromise = collectResponsesStream("request-1")
+  const response = await createResponses(
+    {
+      input: "hello",
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      initiator: "user",
+      requestId: "request-1",
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+
   await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
 
   MockWebSocket.instances[0]?.emitError({
     error: new Error("socket hang up"),
   })
 
-  let thrown: unknown = null
+  const chunks = await chunksPromise
 
-  try {
-    await streamPromise
-  } catch (error) {
-    thrown = error
-  }
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("error")
+  expect(chunks[0]?.data).toContain(
+    '"message":"Responses websocket stream error: socket hang up"',
+  )
+})
 
-  expect(thrown).toBeInstanceOf(Error)
-  expect((thrown as Error).message).toBe(
-    "Responses websocket stream error: socket hang up",
+test("Responses websocket emits an error event when the websocket closes without a terminal response", async () => {
+  MockWebSocket.autoComplete = false
+
+  const response = await createResponses(
+    {
+      input: "hello",
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      initiator: "user",
+      requestId: "request-1",
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+
+  MockWebSocket.instances[0]?.close()
+
+  const chunks = await chunksPromise
+
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("error")
+  expect(chunks[0]?.data).toContain(
+    '"message":"Responses websocket ended without a terminal response"',
   )
 })
 
@@ -550,6 +599,23 @@ const collectResponsesStream = async (requestId: string): Promise<void> => {
   for await (const _chunk of response as AsyncIterable<unknown>) {
     // consume stream
   }
+}
+
+const collectStreamChunks = async (
+  stream: AsyncIterable<unknown>,
+): Promise<Array<{ data?: string; event?: string; id?: string | number }>> => {
+  const chunks: Array<{ data?: string; event?: string; id?: string | number }> =
+    []
+
+  for await (const chunk of stream as AsyncIterable<{
+    data?: string
+    event?: string
+    id?: string | number
+  }>) {
+    chunks.push(chunk)
+  }
+
+  return chunks
 }
 
 const waitFor = async (predicate: () => boolean): Promise<void> => {
