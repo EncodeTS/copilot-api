@@ -62,6 +62,48 @@ describe("codex api helpers", () => {
     expect("stream" in payload).toBe(false)
   })
 
+  test("moves system input messages into instructions when they are empty", () => {
+    const payload = buildCodexResponsesWebSocketPayload({
+      input: [
+        { role: "system", content: "follow the repo style" },
+        { role: "user", content: "hello" },
+      ],
+      instructions: "",
+      model: "gpt-5.4",
+      stream: true,
+    })
+
+    expect(payload).toEqual({
+      input: [{ role: "user", content: "hello" }],
+      instructions: "follow the repo style",
+      model: "gpt-5.4",
+      store: false,
+      type: "response.create",
+    })
+  })
+
+  test("keeps system messages after the first three messages in input", () => {
+    const payload = buildCodexResponsesWebSocketPayload({
+      input: [
+        { role: "user", content: "first" },
+        { role: "assistant", content: "second" },
+        { role: "user", content: "third" },
+        { role: "system", content: "late system prompt" },
+      ],
+      instructions: null,
+      model: "gpt-5.4",
+      stream: true,
+    })
+
+    expect(payload.instructions).toBeNull()
+    expect(payload.input).toEqual([
+      { role: "user", content: "first" },
+      { role: "assistant", content: "second" },
+      { role: "user", content: "third" },
+      { role: "system", content: "late system prompt" },
+    ])
+  })
+
   test("overrides request account headers with loaded codex auth context", () => {
     state.codexAccessToken = "codex-token"
     state.codexAccountId = "codex-account"

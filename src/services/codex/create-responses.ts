@@ -4,6 +4,9 @@ import { events, type ServerSentEventMessage } from "fetch-event-stream"
 
 import type {
   CreateResponsesReturn,
+  ResponseInputContent,
+  ResponseInputItem,
+  ResponseInputMessage,
   ResponsesPayload,
   ResponseErrorEvent,
   ResponsesResult,
@@ -161,7 +164,7 @@ export function buildCodexResponsesWebSocketPayload(
   payload: ResponsesPayload,
 ): CodexResponsesWebSocketPayload {
   const websocketPayload: CodexResponsesWebSocketPayload = {
-    ...payload,
+    ...normalizeCodexResponsesPayload(payload),
     type: "response.create",
   }
 
@@ -199,23 +202,12 @@ export async function forwardCodexResponses(
     transport?: ResponsesTransport
   } = {},
 ): Promise<CreateResponsesReturn> {
-  const normalizedPayload: ResponsesPayload = {
-    ...payload,
-    store: false,
-    temperature: undefined,
-    top_p: undefined,
-    max_output_tokens: undefined,
-    metadata: undefined,
+  const transport = resolveCodexResponsesTransport(options.transport)
+  if (payload.stream && transport === "websocket") {
+    return forwardCodexResponsesOverWebSocket(payload, requestHeaders, baseUrl)
   }
 
-  const transport = resolveCodexResponsesTransport(options.transport)
-  if (normalizedPayload.stream && transport === "websocket") {
-    return forwardCodexResponsesOverWebSocket(
-      normalizedPayload,
-      requestHeaders,
-      baseUrl,
-    )
-  }
+  const normalizedPayload = normalizeCodexResponsesPayload(payload)
 
   const response = await fetch(resolveCodexResponsesUrl(baseUrl), {
     method: "POST",
@@ -234,6 +226,136 @@ export async function forwardCodexResponses(
   }
 
   return (await response.json()) as ResponsesResult
+}
+
+const normalizeCodexResponsesPayload = (
+  payload: ResponsesPayload,
+): ResponsesPayload => {
+  const normalizedPayload: ResponsesPayload = {
+    ...payload,
+    store: false,
+  }
+
+  delete normalizedPayload.temperature
+  delete normalizedPayload.top_p
+  delete normalizedPayload.max_output_tokens
+  delete normalizedPayload.metadata
+
+  if (
+    (typeof normalizedPayload.instructions === "string"
+      && normalizedPayload.instructions.trim().length > 0)
+    || !Array.isArray(normalizedPayload.input)
+  ) {
+    return normalizedPayload
+  }
+
+  const instructions: Array<string> = []
+  let messageCount = 0
+  const remainingInput = normalizedPayload.input.filter((inputItem) => {
+    const message = getResponseInputMessage(inputItem)
+    if (!message) {
+      return true
+    }
+
+    messageCount += 1
+    if (message.role !== "system" || messageCount > 3) {
+      return true
+    }
+
+    const systemPrompt = getTextContent(message.content)
+    if (systemPrompt === undefined) {
+      return true
+    }
+    if (systemPrompt.trim().length > 0) {
+      instructions.push(systemPrompt)
+    }
+
+    return false
+  })
+
+  if (remainingInput.length === normalizedPayload.input.length) {
+    return normalizedPayload
+  }
+
+  if (instructions.length > 0) {
+    // Codex expects system prompts in instructions instead of input messages.
+    normalizedPayload.instructions = instructions.join("\n\n")
+  }
+
+  if (remainingInput.length > 0) {
+    normalizedPayload.input = remainingInput
+  } else {
+    delete normalizedPayload.input
+  }
+
+  return normalizedPayload
+}
+
+const getResponseInputMessage = (
+  inputItem: ResponseInputItem,
+): ResponseInputMessage | undefined => {
+  if (typeof inputItem !== "object" || inputItem === null) {
+    return undefined
+  }
+
+  const { role, type } = inputItem as {
+    role?: unknown
+    type?: unknown
+  }
+  if (typeof role !== "string" || (type !== undefined && type !== "message")) {
+    return undefined
+  }
+
+  return inputItem as ResponseInputMessage
+}
+
+const getTextContent = (
+  content: ResponseInputMessage["content"],
+): string | undefined => {
+  if (typeof content === "string") {
+    return content
+  }
+
+  if (content === undefined) {
+    return ""
+  }
+
+  if (!Array.isArray(content)) {
+    return undefined
+  }
+
+  const textBlocks: Array<string> = []
+  for (const contentBlock of content) {
+    const text = getTextBlock(contentBlock)
+    if (text === undefined) {
+      return undefined
+    }
+
+    if (text.length > 0) {
+      textBlocks.push(text)
+    }
+  }
+
+  return textBlocks.join("\n\n")
+}
+
+const getTextBlock = (
+  contentBlock: ResponseInputContent,
+): string | undefined => {
+  if (typeof contentBlock !== "object" || contentBlock === null) {
+    return undefined
+  }
+
+  const { text, type } = contentBlock as {
+    text?: unknown
+    type?: unknown
+  }
+
+  if (type !== undefined && type !== "input_text" && type !== "output_text") {
+    return undefined
+  }
+
+  return typeof text === "string" ? text : undefined
 }
 
 const buildCodexResponsesWebSocketPoolKey = (
