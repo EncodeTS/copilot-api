@@ -3,7 +3,10 @@ import type { Context } from "hono"
 import { streamSSE } from "hono/streaming"
 
 import { awaitApproval } from "~/lib/approval"
-import { isResponsesApiWebSearchEnabled as isConfiguredResponsesApiWebSearchEnabled } from "~/lib/config"
+import {
+  isResponsesApiWebSearchEnabled as isConfiguredResponsesApiWebSearchEnabled,
+  resolveMappedModel,
+} from "~/lib/config"
 import { createHandlerLogger, debugJson, debugJsonTail } from "~/lib/logger"
 import { parseProviderModelAlias } from "~/lib/provider-model"
 import { checkRateLimit as checkConfiguredRateLimit } from "~/lib/rate-limit"
@@ -42,6 +45,13 @@ export const responsesHandlerDependencies = {
 
 export const handleResponses = async (c: Context) => {
   const payload = await c.req.json<ResponsesPayload>()
+  const requestedModel = payload.model
+  payload.model = resolveMappedModel(payload.model)
+  if (payload.model !== requestedModel) {
+    logger.debug(
+      `Resolved model mapping: ${requestedModel} -> ${payload.model}`,
+    )
+  }
 
   const providerModelAlias = parseProviderModelAlias(payload.model)
   if (providerModelAlias) {

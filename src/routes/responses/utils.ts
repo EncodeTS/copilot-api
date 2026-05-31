@@ -17,6 +17,7 @@ import {
 
 export const RESPONSES_ENDPOINT = "/responses"
 export const RESPONSES_WS_ENDPOINT = "ws:/responses"
+export const DEFAULT_RESPONSES_COMPACT_THRESHOLD_RATIO = 0.9
 
 export const responsesUtilsDependencies = {
   isResponsesApiContextManagementModel:
@@ -256,12 +257,13 @@ const isResponseInputImage = (
 
 export const resolveResponsesCompactThreshold = (
   maxPromptTokens?: number,
+  compactThresholdRatio = DEFAULT_RESPONSES_COMPACT_THRESHOLD_RATIO,
 ): number => {
   if (typeof maxPromptTokens === "number" && maxPromptTokens > 0) {
-    return Math.floor(maxPromptTokens * 0.9)
+    return Math.floor(maxPromptTokens * compactThresholdRatio)
   }
 
-  return 272_000 * 0.9
+  return 200_000 * compactThresholdRatio
 }
 
 const createCompactionContextManagement = (
@@ -276,6 +278,7 @@ const createCompactionContextManagement = (
 export const applyResponsesApiContextManagement = (
   payload: ResponsesPayload,
   maxPromptTokens?: number,
+  compactThresholdRatio = DEFAULT_RESPONSES_COMPACT_THRESHOLD_RATIO,
 ): void => {
   if (payload.context_management !== undefined) {
     return
@@ -290,7 +293,7 @@ export const applyResponsesApiContextManagement = (
   }
 
   payload.context_management = createCompactionContextManagement(
-    resolveResponsesCompactThreshold(maxPromptTokens),
+    resolveResponsesCompactThreshold(maxPromptTokens, compactThresholdRatio),
   )
 }
 
