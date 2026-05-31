@@ -161,6 +161,19 @@ const createResponsesResult = (
   usage: null,
 })
 
+const mockFetchJsonResponse = (body: unknown): void => {
+  fetchMock.mockImplementation(() =>
+    Promise.resolve(
+      new Response(JSON.stringify(body), {
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+        },
+        status: 200,
+      }),
+    ),
+  )
+}
+
 beforeEach(() => {
   MockWebSocket.autoComplete = true
   MockWebSocket.instances = []
@@ -182,19 +195,7 @@ afterEach(() => {
 })
 
 test("forwardCodexResponses falls back to HTTP for non-streaming responses", async () => {
-  fetchMock.mockImplementation(() => {
-    return Promise.resolve(
-      new Response(
-        JSON.stringify(createResponsesResult("gpt-5.4", "resp-http")),
-        {
-          headers: {
-            "content-type": "application/json; charset=utf-8",
-          },
-          status: 200,
-        },
-      ),
-    )
-  })
+  mockFetchJsonResponse(createResponsesResult("gpt-5.4", "resp-http"))
 
   const response = await forwardCodexResponses(
     {
@@ -248,6 +249,39 @@ test("forwardCodexResponses falls back to HTTP for non-streaming responses", asy
     model: "gpt-5.4",
     status: "completed",
   })
+})
+
+test("forwardCodexResponses moves system input messages into instructions for HTTP requests", async () => {
+  mockFetchJsonResponse(createResponsesResult("gpt-5.4", "resp-http-system"))
+
+  await forwardCodexResponses(
+    {
+      input: [
+        { role: "system", content: "follow the repo style" },
+        { role: "user", content: "hello" },
+      ],
+      instructions: null,
+      model: "gpt-5.4",
+    },
+    new Headers({
+      "content-type": "application/json",
+    }),
+  )
+
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+
+  const requestInit = fetchMock.mock.calls[0]?.[1]
+  if (typeof requestInit?.body !== "string") {
+    throw new Error("Expected codex HTTP request body to be a string")
+  }
+
+  const payload = JSON.parse(requestInit.body) as {
+    input?: Array<{ content?: string; role?: string }>
+    instructions?: string | null
+  }
+
+  expect(payload.instructions).toBe("follow the repo style")
+  expect(payload.input).toEqual([{ role: "user", content: "hello" }])
 })
 
 test("forwardCodexResponses returns HTTP event streams when stream=true", async () => {
