@@ -357,6 +357,10 @@ export interface ResponseErrorEvent {
   param: string | null
   sequence_number: number
   type: "error"
+  error?: {
+    code: string | null
+    message: string
+  }
 }
 
 export interface ResponseFunctionCallArgumentsDeltaEvent {
@@ -655,9 +659,19 @@ const createResponsesWebSocketStreamChunk = (
       copilot_quota_snapshots?: Record<string, CopilotQuotaSnapshot>
       id?: unknown
       type?: unknown
+      error?: {
+        code: string | null
+        message: string
+      }
+      code?: string | null
+      message?: string
     }
     if (parsed.type === "response.completed") {
       logCopilotQuotaSnapshots(parsed.copilot_quota_snapshots)
+    }
+    if (parsed.type === "error" && parsed.error) {
+      parsed.code = parsed.error.code
+      parsed.message = parsed.error.message
     }
     return {
       data: JSON.stringify(parsed),
