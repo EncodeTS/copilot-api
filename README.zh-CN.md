@@ -16,9 +16,7 @@
 >
 > 3. **内置 `codex` provider：** 执行一次 `npx @jeffreycao/copilot-api@latest auth login --provider codex` 后，AI gateway 会自动持久化并刷新 Codex OAuth 凭据。
 >
-> 4. **通过 codex 使用时请关闭 multi agent：** 如果你是通过 GitHub Copilot 使用 codex，请关闭 multi agent。当前 Copilot 会按最后一条消息是否为 user role 对 codex 流量计费，而这部分逻辑尚未调整。
->
-> 5. **注意事项：** README 顶部移除的 GitHub Copilot warning 见 [GitHub Copilot 安全提示](./NOTICE.md#github-copilot-security-notice)。
+> 4. **注意事项：** README 顶部移除的 GitHub Copilot warning 见 [GitHub Copilot 安全提示](./NOTICE.md#github-copilot-security-notice)。
 
 ---
 
@@ -197,14 +195,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
         "enabled": true,
         "baseUrl": "your-base-url",
         "apiKey": "sk-your-provider-key",
-        "authType": "x-api-key",
-        "adjustInputTokens": false,
-        "models": {
-          "kimi-k2.5": {
-            "temperature": 1,
-            "topP": 0.95
-          }
-        }
+        "authType": "x-api-key"
       },
       "dashscope": {
         "type": "openai-compatible",
@@ -218,8 +209,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
             "topK": 20,
             "extraBody": {
               "preserve_thinking": true
-            },
-            "contextCache": true
+            }
           },
           "glm-5.1": {
             "temperature": 0.7,
@@ -524,14 +514,14 @@ npx @jeffreycao/copilot-api@latest --oauth-app=opencode start
             "output": ["text"]
           },
           "limit": {
-            "context": 272000,
+            "context": 300000,
             "output": 128000
           }
         },
         "gpt-5-mini": {
           "name": "gpt-5-mini",
           "limit": {
-            "context": 128000,
+            "context": 200000,
             "output": 64000
           }
         },
@@ -543,7 +533,7 @@ npx @jeffreycao/copilot-api@latest --oauth-app=opencode start
             "output": ["text"]
           },
           "limit": {
-            "context": 128000,
+            "context": 200000,
             "output": 32000
           },
           "options": {

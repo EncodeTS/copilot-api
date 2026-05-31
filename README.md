@@ -16,9 +16,7 @@ English | [简体中文](./README.zh-CN.md)
 >
 > 3. **Built-in `codex` provider:** Run `npx @jeffreycao/copilot-api@latest auth login --provider codex` once and the gateway will persist and refresh Codex OAuth credentials automatically.
 >
-> 4. **Disable multi agent when using codex:** If you're using codex via GitHub Copilot, disable multi agent. Copilot currently charges codex traffic based on whether the last message is a user role, and that billing logic has not been adjusted.
->
-> 5. **Note:** See [GitHub Copilot Security Notice](./NOTICE.md#github-copilot-security-notice) for the warning removed from the README header.
+> 4. **Note:** See [GitHub Copilot Security Notice](./NOTICE.md#github-copilot-security-notice) for the warning removed from the README header.
 
 ---
 
@@ -195,14 +193,7 @@ The following command line options are available for the `start` command:
         "enabled": true,
         "baseUrl": "your-base-url",
         "apiKey": "sk-your-provider-key",
-        "authType": "x-api-key",
-        "adjustInputTokens": false,
-        "models": {
-          "kimi-k2.5": {
-            "temperature": 1,
-            "topP": 0.95
-          }
-        }
+        "authType": "x-api-key"
       },
       "dashscope": {
         "type": "openai-compatible",
@@ -216,8 +207,7 @@ The following command line options are available for the `start` command:
             "topK": 20,
             "extraBody": {
               "preserve_thinking": true
-            },
-            "contextCache": true
+            }
           },
           "glm-5.1": {
             "temperature": 0.7,
@@ -520,14 +510,14 @@ Example `~/.config/opencode/opencode.json`:
             "output": ["text"]
           },
           "limit": {
-            "context": 272000,
+            "context": 300000,
             "output": 128000
           }
         },
         "gpt-5-mini": {
           "name": "gpt-5-mini",
           "limit": {
-            "context": 128000,
+            "context": 200000,
             "output": 64000
           }
         },
@@ -539,7 +529,7 @@ Example `~/.config/opencode/opencode.json`:
             "output": ["text"]
           },          
           "limit": {
-            "context": 128000,
+            "context": 200000,
             "output": 32000
           },
           "options": {
