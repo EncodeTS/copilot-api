@@ -122,10 +122,9 @@ export const handleResponses = async (c: Context) => {
     )
   }
 
-  applyResponsesApiContextManagement(
-    payload,
-    selectedModel?.capabilities.limits.max_prompt_tokens,
-  )
+  // Smaller than the client compaction threshold, use server-side compaction to maintain cache hit rate
+  const maxPromptTokens = selectedModel?.capabilities.limits.max_prompt_tokens
+  applyResponsesApiContextManagement(payload, maxPromptTokens, 0.8)
 
   debugJson(logger, "Translated Responses payload:", payload)
 
