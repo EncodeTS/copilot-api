@@ -69,8 +69,8 @@ export const handleResponses = async (c: Context) => {
   if (subagentMarker) {
     debugJson(logger, "Detected Codex subagent headers:", subagentMarker)
   }
-  const incomingSessionId =
-    subagentMarker ? getIncomingResponsesSessionId(c) : undefined
+
+  const incomingSessionId = getIncomingResponsesSessionId(c)
   const sessionId = incomingSessionId ? getUUID(incomingSessionId) : undefined
   const requestId = generateRequestIdFromPayload(
     { messages: payload.input },
@@ -237,7 +237,9 @@ export const removeUnsupportedTools = (payload: ResponsesPayload): void => {
 }
 
 const getIncomingResponsesSessionId = (c: Context): string | undefined =>
-  getTrimmedHeader(c, "session-id") ?? getTrimmedHeader(c, "x-session-id")
+  getTrimmedHeader(c, "x-codex-parent-thread-id")
+  ?? getTrimmedHeader(c, "session-id")
+  ?? getTrimmedHeader(c, "x-session-id")
 
 const codexSubagentHeaderValues = new Set([
   "collab_spawn",
