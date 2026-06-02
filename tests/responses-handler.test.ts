@@ -303,7 +303,7 @@ describe("responses handler token usage", () => {
     expect(createResponses).toHaveBeenCalledTimes(1)
 
     const options = createResponses.mock.calls[0][1]
-    const expectedSessionId = getUUID("root-session")
+    const expectedSessionId = getUUID("parent-thread")
     expect(options?.initiator).toBe("agent")
     expect(options?.sessionId).toBe(expectedSessionId)
     expect(options?.requestId).toBe(
@@ -319,7 +319,55 @@ describe("responses handler token usage", () => {
     })
   })
 
-  test("ignores session headers when Codex subagent header is missing", async () => {
+  test("uses Codex parent thread header before session headers for Responses session", async () => {
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+
+    const payload = {
+      input: [
+        {
+          content: [{ text: "SUBAGENT_PROBE", type: "input_text" }],
+          role: "user",
+        },
+      ],
+      model: "gpt-test",
+    }
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify(payload),
+      headers: {
+        "content-type": "application/json",
+        "session-id": "root-session",
+        "x-codex-parent-thread-id": "parent-thread",
+        "x-openai-subagent": "collab_spawn",
+        "x-session-id": "alternate-session",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(1)
+
+    const options = createResponses.mock.calls[0][1]
+    const expectedSessionId = getUUID("parent-thread")
+    expect(options?.initiator).toBe("agent")
+    expect(options?.sessionId).toBe(expectedSessionId)
+    expect(options?.requestId).toBe(
+      generateRequestIdFromPayload(
+        { messages: payload.input },
+        expectedSessionId,
+      ),
+    )
+    expect(options?.subagentMarker).toEqual({
+      agent_id: "parent-thread",
+      agent_type: "collab_spawn",
+      session_id: "parent-thread",
+    })
+  })
+
+  test("uses session headers when Codex subagent header is missing", async () => {
     createResponses.mockImplementation((payload) =>
       Promise.resolve(createResponsesResult(payload.model)),
     )
@@ -341,6 +389,7 @@ describe("responses handler token usage", () => {
         "content-type": "application/json",
         "session-id": "root-session",
         "thread-id": "child-thread",
+        "x-codex-parent-thread-id": "parent-thread",
       },
       method: "POST",
     })
@@ -349,12 +398,14 @@ describe("responses handler token usage", () => {
     expect(createResponses).toHaveBeenCalledTimes(1)
 
     const options = createResponses.mock.calls[0][1]
-    const expectedRequestId = generateRequestIdFromPayload({
-      messages: payload.input,
-    })
+    const expectedSessionId = getUUID("parent-thread")
+    const expectedRequestId = generateRequestIdFromPayload(
+      { messages: payload.input },
+      expectedSessionId,
+    )
     expect(options?.initiator).toBe("user")
     expect(options?.requestId).toBe(expectedRequestId)
-    expect(options?.sessionId).toBe(getUUID(expectedRequestId))
+    expect(options?.sessionId).toBe(expectedSessionId)
     expect(options?.subagentMarker).toBeNull()
   })
 
