@@ -14,7 +14,11 @@ import { findEndpointModel } from "~/lib/models"
 import { parseProviderModelAlias } from "~/lib/provider-model"
 import { checkRateLimit } from "~/lib/rate-limit"
 import { state } from "~/lib/state"
-import { generateRequestIdFromPayload, getRootSessionId } from "~/lib/utils"
+import {
+  generateRequestIdFromPayload,
+  getRootSessionId,
+  getUUID,
+} from "~/lib/utils"
 import { handleProviderMessagesForProvider } from "~/routes/provider/messages/handler"
 import { getResponsesTransportForModel } from "~/routes/responses/utils"
 
@@ -75,8 +79,7 @@ export async function handleCompletion(c: Context) {
     debugJson(logger, "Detected Subagent marker:", subagentMarker)
   }
 
-  const sessionId = getRootSessionId(anthropicPayload, c)
-  logger.debug("Extracted session ID:", sessionId)
+  let sessionId = getRootSessionId(anthropicPayload, c)
 
   // claude code and opencode compact / auto-continue detection
   const compactType = getCompactType(anthropicPayload)
@@ -113,6 +116,11 @@ export async function handleCompletion(c: Context) {
 
   const requestId = generateRequestIdFromPayload(anthropicPayload, sessionId)
   logger.debug("Generated request ID:", requestId)
+
+  if (!sessionId) {
+    sessionId = getUUID(requestId)
+  }
+  logger.debug("Extracted session ID:", sessionId)
 
   if (state.manualApprove) {
     await awaitApproval()
