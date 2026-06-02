@@ -303,7 +303,7 @@ describe("responses handler token usage", () => {
     expect(createResponses).toHaveBeenCalledTimes(1)
 
     const options = createResponses.mock.calls[0][1]
-    const expectedSessionId = getUUID("parent-thread")
+    const expectedSessionId = getUUID("root-session")
     expect(options?.initiator).toBe("agent")
     expect(options?.sessionId).toBe(expectedSessionId)
     expect(options?.requestId).toBe(
@@ -319,7 +319,7 @@ describe("responses handler token usage", () => {
     })
   })
 
-  test("uses Codex parent thread header before session headers for Responses session", async () => {
+  test("does not use Codex parent thread header as Responses session", async () => {
     createResponses.mockImplementation((payload) =>
       Promise.resolve(createResponsesResult(payload.model)),
     )
@@ -351,7 +351,7 @@ describe("responses handler token usage", () => {
     expect(createResponses).toHaveBeenCalledTimes(1)
 
     const options = createResponses.mock.calls[0][1]
-    const expectedSessionId = getUUID("parent-thread")
+    const expectedSessionId = getUUID("root-session")
     expect(options?.initiator).toBe("agent")
     expect(options?.sessionId).toBe(expectedSessionId)
     expect(options?.requestId).toBe(
@@ -363,7 +363,7 @@ describe("responses handler token usage", () => {
     expect(options?.subagentMarker).toEqual({
       agent_id: "parent-thread",
       agent_type: "collab_spawn",
-      session_id: "parent-thread",
+      session_id: "root-session",
     })
   })
 
@@ -398,7 +398,7 @@ describe("responses handler token usage", () => {
     expect(createResponses).toHaveBeenCalledTimes(1)
 
     const options = createResponses.mock.calls[0][1]
-    const expectedSessionId = getUUID("parent-thread")
+    const expectedSessionId = getUUID("root-session")
     const expectedRequestId = generateRequestIdFromPayload(
       { messages: payload.input },
       expectedSessionId,

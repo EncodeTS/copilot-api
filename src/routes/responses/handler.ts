@@ -237,9 +237,7 @@ export const removeUnsupportedTools = (payload: ResponsesPayload): void => {
 }
 
 const getIncomingResponsesSessionId = (c: Context): string | undefined =>
-  getTrimmedHeader(c, "x-codex-parent-thread-id")
-  ?? getTrimmedHeader(c, "session-id")
-  ?? getTrimmedHeader(c, "x-session-id")
+  getTrimmedHeader(c, "session-id") ?? getTrimmedHeader(c, "x-session-id")
 
 const codexSubagentHeaderValues = new Set([
   "collab_spawn",
