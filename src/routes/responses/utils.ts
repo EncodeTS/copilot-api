@@ -11,6 +11,7 @@ import type {
 
 import { COMPACT_REQUEST, type CompactType } from "~/lib/compact"
 import {
+  getModelResponsesApiCompactThreshold as getConfiguredModelResponsesApiCompactThreshold,
   isResponsesApiContextManagementEnabled as isConfiguredResponsesApiContextManagementEnabled,
   isResponsesApiWebSocketEnabled as isConfiguredResponsesApiWebSocketEnabled,
 } from "~/lib/config"
@@ -20,6 +21,8 @@ export const RESPONSES_WS_ENDPOINT = "ws:/responses"
 export const DEFAULT_RESPONSES_COMPACT_THRESHOLD_RATIO = 0.9
 
 export const responsesUtilsDependencies = {
+  getModelResponsesApiCompactThreshold:
+    getConfiguredModelResponsesApiCompactThreshold,
   isResponsesApiContextManagementEnabled:
     isConfiguredResponsesApiContextManagementEnabled,
   isResponsesApiWebSocketEnabled: isConfiguredResponsesApiWebSocketEnabled,
@@ -266,6 +269,23 @@ export const resolveResponsesCompactThreshold = (
   return 200_000 * compactThresholdRatio
 }
 
+const getModelResponsesApiCompactThreshold = (
+  model: string,
+): number | undefined => {
+  const threshold =
+    responsesUtilsDependencies.getModelResponsesApiCompactThreshold(model)
+
+  if (
+    typeof threshold !== "number"
+    || !Number.isFinite(threshold)
+    || threshold <= 0
+  ) {
+    return undefined
+  }
+
+  return threshold
+}
+
 const createCompactionContextManagement = (
   compactThreshold: number,
 ): Array<ResponseContextManagementCompactionItem> => [
@@ -288,8 +308,15 @@ export const applyResponsesApiContextManagement = (
     return
   }
 
+  const modelCompactThreshold = getModelResponsesApiCompactThreshold(
+    payload.model,
+  )
   payload.context_management = createCompactionContextManagement(
-    resolveResponsesCompactThreshold(maxPromptTokens, compactThresholdRatio),
+    modelCompactThreshold
+      ?? resolveResponsesCompactThreshold(
+        maxPromptTokens,
+        compactThresholdRatio,
+      ),
   )
 }
 

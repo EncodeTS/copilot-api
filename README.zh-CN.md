@@ -227,15 +227,21 @@ Copilot API 现在使用子命令结构，主要命令包括：
       "gpt-5-mini": "<built-in exploration prompt>",
       "gpt-5.3-codex": "<built-in commentary prompt>",
       "gpt-5.4-mini": "<built-in commentary prompt>",
-      "gpt-5.4": "<built-in commentary prompt>"
+      "gpt-5.4": "<built-in commentary prompt>",
+      "gpt-5.5": "<built-in commentary prompt>"
     },
     "smallModel": "gpt-5-mini",
     "useResponsesApiContextManagement": true,
+    "modelResponsesApiCompactThresholds": {
+      "gpt-5.4": 217600,
+      "gpt-5.5": 217600
+    },
     "modelReasoningEfforts": {
       "gpt-5-mini": "low",
       "gpt-5.3-codex": "xhigh",
       "gpt-5.4-mini": "xhigh",
-      "gpt-5.4": "xhigh"
+      "gpt-5.4": "xhigh",
+      "gpt-5.5": "xhigh"
     },
     "useMessagesApi": true,
     "useResponsesApiWebSocket": true,
@@ -262,6 +268,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
     - `toolContentSupportType`：可选，配置该模型的 tool result content 支持能力，值为 `array`、`image`、`pdf` 的数组。provider 侧未配置时默认只发送 string tool content。若 `supportPdf` 为 `true` 但这里不包含 `pdf`，tool result 里的 file part 会被转成 user role 消息。Copilot 主链路不使用这个 provider 默认，仍按 array + image 且不支持 PDF 的能力处理。
 - **smallModel：** 无工具预热消息的回退模型（例如 Claude Code 的探测请求）；默认是 `gpt-5-mini`。
 - **useResponsesApiContextManagement：** 当为 `true` 时，代理会为 Responses API 附加 `context_management` 压缩指令。默认值为 `true`。如需全局关闭，可设为 `false`。启用后，请求体会带上 `context_management`，并在后续轮次中仅保留最新的压缩承载内容，因此特别适合长任务场景。
+- **modelResponsesApiCompactThresholds：** 按模型覆盖 Responses API 的 `compact_threshold`，仅在代理自动附加 `context_management` 时使用。它的优先级高于 `resolveResponsesCompactThreshold` 基于 `max_prompt_tokens * ratio` 的兜底阈值。默认将 `gpt-5.4` 和 `gpt-5.5` 设为 `217600`（`272000 * 0.8`）。未列出的模型继续使用原有兜底逻辑。
 - **modelReasoningEfforts：** 按模型配置发送到 Copilot Responses API 的 `reasoning.effort`。可选值包括 `none`、`minimal`、`low`、`medium`、`high` 和 `xhigh`。若某模型未配置，则默认使用 `high`。
 - **useMessagesApi：** 当为 `true` 时，支持 Copilot 原生 `/v1/messages` 的 Claude 系模型会走 Messages API；否则回退到 `/chat/completions`。设为 `false` 可禁用 Messages API 路由，始终使用 `/chat/completions`。默认值为 `true`。
 - **useResponsesApiWebSocket：** 当为 `true` 时，Responses API 请求会优先对声明了 `ws:/responses` 的模型使用 Copilot websocket transport；仅声明 `/responses` 的模型仍走 HTTP。设为 `false` 可禁用 websocket 路由，并在模型支持 `/responses` 时使用 HTTP `/responses`。默认值为 `true`。
