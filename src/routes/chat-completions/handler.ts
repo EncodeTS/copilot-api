@@ -6,6 +6,7 @@ import { streamSSE, type SSEMessage } from "hono/streaming"
 import { awaitApproval } from "~/lib/approval"
 import { resolveMappedModel } from "~/lib/config"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
+import { parseProviderModelAlias } from "~/lib/provider-model"
 import { checkRateLimit } from "~/lib/rate-limit"
 import { state } from "~/lib/state"
 import {
@@ -14,6 +15,7 @@ import {
   type UsageTokens,
 } from "~/lib/token-usage"
 import { generateRequestIdFromPayload, getUUID, isNullish } from "~/lib/utils"
+import { handleProviderChatCompletionsForProvider } from "~/routes/provider/chat-completions/handler"
 import {
   createChatCompletions,
   type ChatCompletionChunk,
@@ -31,6 +33,15 @@ export async function handleCompletion(c: Context) {
     consola.debug(
       `Resolved model mapping: ${requestedModel} -> ${payload.model}`,
     )
+  }
+
+  const providerModelAlias = parseProviderModelAlias(payload.model)
+  if (providerModelAlias) {
+    payload.model = providerModelAlias.model
+    return await handleProviderChatCompletionsForProvider(c, {
+      payload,
+      provider: providerModelAlias.provider,
+    })
   }
 
   await checkRateLimit(state)
