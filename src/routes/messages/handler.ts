@@ -38,6 +38,7 @@ import {
   stripToolReferenceTurnBoundary,
 } from "./preprocess"
 import { parseSubagentMarkerFromFirstUser } from "./subagent-marker"
+import consola from "consola"
 
 const logger = createHandlerLogger("messages-handler")
 
@@ -52,7 +53,7 @@ export async function handleCompletion(c: Context) {
   const requestedModel = anthropicPayload.model
   anthropicPayload.model = resolveMappedModel(anthropicPayload.model)
   if (anthropicPayload.model !== requestedModel) {
-    logger.debug(
+    consola.debug(
       `Resolved model mapping: ${requestedModel} -> ${anthropicPayload.model}`,
     )
   }

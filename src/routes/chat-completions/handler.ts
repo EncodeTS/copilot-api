@@ -1,10 +1,11 @@
+import consola from "consola"
 import type { Context } from "hono"
 
 import { streamSSE, type SSEMessage } from "hono/streaming"
 
 import { awaitApproval } from "~/lib/approval"
 import { resolveMappedModel } from "~/lib/config"
-import { createHandlerLogger, debugJson, debugJsonTail } from "~/lib/logger"
+import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { checkRateLimit } from "~/lib/rate-limit"
 import { state } from "~/lib/state"
 import {
@@ -27,14 +28,14 @@ export async function handleCompletion(c: Context) {
   const requestedModel = payload.model
   payload.model = resolveMappedModel(payload.model)
   if (payload.model !== requestedModel) {
-    logger.debug(
+    consola.debug(
       `Resolved model mapping: ${requestedModel} -> ${payload.model}`,
     )
   }
 
   await checkRateLimit(state)
 
-  debugJsonTail(logger, "Request payload:", { value: payload, tailLength: 400 })
+  debugJson(logger, "Request payload:", payload)
 
   // Find the selected model
   const selectedModel = state.models?.data.find(
