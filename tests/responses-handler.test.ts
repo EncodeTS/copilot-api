@@ -112,6 +112,9 @@ beforeEach(async () => {
   responsesHandlerDependencies.checkRateLimit = async () => {}
   responsesHandlerDependencies.createResponses = createResponses
   responsesHandlerDependencies.isResponsesApiWebSearchEnabled = () => true
+  responsesUtilsDependencies.getModelResponsesApiCompactThreshold = () =>
+    undefined
+  responsesUtilsDependencies.isResponsesApiContextManagementEnabled = () => true
   responsesUtilsDependencies.isResponsesApiWebSocketEnabled = () =>
     responsesApiWebSocketEnabled
   createResponses.mockReset()
@@ -236,6 +239,50 @@ describe("responses handler token usage", () => {
     expect(response.status).toBe(200)
     expect(createResponses).toHaveBeenCalledTimes(1)
     expect(createResponses.mock.calls[0][1]?.transport).toBe("http")
+  })
+
+  test("uses model Responses API compact threshold before max token fallback", async () => {
+    state.models = {
+      object: "list",
+      data: [
+        {
+          capabilities: {
+            limits: {
+              max_prompt_tokens: 128000,
+            },
+          },
+          id: "gpt-5.4",
+          supported_endpoints: ["/responses"],
+        },
+      ],
+    } as typeof state.models
+    responsesUtilsDependencies.getModelResponsesApiCompactThreshold = (
+      model,
+    ) => (model === "gpt-5.4" ? 272_000 * 0.8 : undefined)
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        input: "hello",
+        model: "gpt-5.4",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(1)
+    expect(createResponses.mock.calls[0][0].context_management).toEqual([
+      {
+        type: "compaction",
+        compact_threshold: 217600,
+      },
+    ])
   })
 
   test("preserves custom apply_patch tools for Copilot Responses", async () => {
