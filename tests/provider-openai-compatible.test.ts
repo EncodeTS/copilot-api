@@ -8,9 +8,9 @@ const actualTokenUsageModule = await import("../src/lib/token-usage")
 
 let providerConfig: ResolvedProviderConfig | null = null
 
-const noopTokenUsageRecorder = () => {}
+const providerUsageRecorder = mock((_usage: Record<string, unknown>) => {})
 
-const createNoopProviderTokenUsageRecorder = () => noopTokenUsageRecorder
+const createNoopProviderTokenUsageRecorder = () => providerUsageRecorder
 
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
@@ -73,6 +73,33 @@ const createApp = () => {
   return app
 }
 
+const createResponsesResult = () => ({
+  created_at: 0,
+  error: null,
+  id: "resp-test",
+  incomplete_details: null,
+  instructions: null,
+  metadata: null,
+  model: "gpt-resp",
+  object: "response",
+  output: [],
+  output_text: "",
+  parallel_tool_calls: false,
+  status: "completed",
+  temperature: null,
+  tool_choice: "auto",
+  tools: [],
+  top_p: null,
+  usage: {
+    input_tokens: 12,
+    input_tokens_details: {
+      cached_tokens: 2,
+    },
+    output_tokens: 4,
+    total_tokens: 16,
+  },
+})
+
 beforeEach(() => {
   providerConfig = {
     name: "dash",
@@ -95,6 +122,7 @@ beforeEach(() => {
     },
   }
   fetchMock.mockClear()
+  providerUsageRecorder.mockClear()
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
     fetchMock as unknown as typeof fetch
 })
@@ -269,6 +297,183 @@ describe("openai-compatible provider messages", () => {
     })
   })
 
+  test("translates OpenAI-compatible stream errors to Anthropic error events", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          'event: error\ndata: {"error":{"message":"upstream failed","type":"invalid_request_error"}}\n\n',
+          {
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      ),
+    )
+
+    const app = createApp()
+    const response = await app.request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("event: error")
+    expect(body).toContain('"message":"upstream failed"')
+    expect(body).toContain('"type":"invalid_request_error"')
+  })
+
+  test("translates plain-text OpenAI-compatible stream error events", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response("event: error\ndata: upstream failed\n\n", {
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        }),
+      ),
+    )
+
+    const app = createApp()
+    const response = await app.request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("event: error")
+    expect(body).toContain('"message":"upstream failed"')
+    expect(body).toContain('"type":"api_error"')
+  })
+
+  test("translates empty OpenAI-compatible stream error events", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response("event: error\n\n", {
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        }),
+      ),
+    )
+
+    const app = createApp()
+    const response = await app.request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("event: error")
+    expect(body).toContain(
+      '"message":"Upstream provider stream returned an error event."',
+    )
+  })
+
+  test("translates string-valued OpenAI-compatible stream errors", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response('data: {"error":"quota hit"}\n\n', {
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        }),
+      ),
+    )
+
+    const app = createApp()
+    const response = await app.request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("event: error")
+    expect(body).toContain('"message":"quota hit"')
+    expect(body).toContain('"type":"api_error"')
+  })
+
+  test("records usage collected before OpenAI-compatible stream errors", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          [
+            'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[],"usage":{"prompt_tokens":8,"completion_tokens":3,"total_tokens":11,"prompt_tokens_details":{"cache_creation_input_tokens":2,"cached_tokens":1}}}',
+            'event: error\ndata: {"message":"quota hit","type":"rate_limit_error"}',
+            "",
+          ].join("\n\n"),
+          {
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      ),
+    )
+
+    const app = createApp()
+    const response = await app.request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain('"message":"quota hit"')
+    expect(body).toContain('"type":"rate_limit_error"')
+    expect(providerUsageRecorder).toHaveBeenCalledWith({
+      cache_creation_input_tokens: 2,
+      cache_read_input_tokens: 1,
+      input_tokens: 5,
+      output_tokens: 3,
+      total_tokens: 11,
+    })
+  })
+
   test("allows extraBody to disable parallel tool calls", async () => {
     providerConfig = {
       ...providerConfig,
@@ -360,6 +565,78 @@ describe("openai-compatible provider messages", () => {
     const init = fetchMock.mock.calls[0][1] as RequestInit
     const body = JSON.parse(init.body as string) as Record<string, unknown>
     expect(body.thinking_budget).toBe(8192)
+  })
+})
+
+describe("openai-responses provider messages", () => {
+  test("records usage when Responses provider streams throw after usage", async () => {
+    providerConfig = {
+      apiKey: "provider-key",
+      authType: "authorization",
+      baseUrl: "https://responses.example",
+      models: {
+        "gpt-resp": {},
+      },
+      name: "dash",
+      type: "openai-responses",
+    }
+
+    const encoder = new TextEncoder()
+    let emittedUsage = false
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (emittedUsage) {
+          controller.error(new Error("stream failed"))
+          return
+        }
+        emittedUsage = true
+        controller.enqueue(
+          encoder.encode(
+            `event: response.completed\ndata: ${JSON.stringify({
+              response: createResponsesResult(),
+              sequence_number: 1,
+              type: "response.completed",
+            })}\n\n`,
+          ),
+        )
+      },
+    })
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(stream, {
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        }),
+      ),
+    )
+
+    const app = createApp()
+    const response = await app.request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-resp",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    try {
+      await response.text()
+    } catch {
+      // The upstream stream failed after emitting usage; usage should still be recorded.
+    }
+    expect(providerUsageRecorder).toHaveBeenCalledWith({
+      cache_read_input_tokens: 2,
+      input_tokens: 10,
+      output_tokens: 4,
+      total_tokens: 16,
+    })
   })
 })
 
