@@ -1096,13 +1096,12 @@ describe("prepareMessagesApiPayload", () => {
     expect(payload.output_config).toEqual({ effort: "xhigh" })
   })
 
-  test("sets summarized display for Claude versions at least 4.7", () => {
+  test("uses adaptive thinking for Claude Opus versions at least 4.7", () => {
     const models = [
       "claude-opus-4.7",
       "claude-opus-4.8",
       "claude-opus-4.10",
       "claude-opus-4-7-20260101",
-      "claude-sonnet-4.7",
     ]
 
     for (const model of models) {
@@ -1114,12 +1113,16 @@ describe("prepareMessagesApiPayload", () => {
           type: "enabled",
           budget_tokens: 1024,
         },
+        output_config: {
+          effort: "low",
+        },
       }
 
       prepareMessagesApiPayload(payload, {
         capabilities: {
           supports: {
             adaptive_thinking: true,
+            reasoning_effort: ["low", "medium", "high", "xhigh"],
           },
         },
       } as never)
@@ -1128,10 +1131,39 @@ describe("prepareMessagesApiPayload", () => {
         type: "adaptive",
         display: "summarized",
       })
+      expect(payload.output_config).toEqual({
+        effort: "low",
+      })
     }
   })
 
-  test("does not force summarized display for Claude versions before 4.7", () => {
+  test("sets summarized display for non-Opus Claude versions at least 4.7", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-sonnet-4.7",
+      max_tokens: 128,
+      messages: [{ role: "user", content: "hello" }],
+      thinking: {
+        type: "enabled",
+        budget_tokens: 1024,
+      },
+    }
+
+    prepareMessagesApiPayload(payload, {
+      capabilities: {
+        supports: {
+          adaptive_thinking: true,
+        },
+      },
+    } as never)
+
+    expect(payload.thinking).toEqual({
+      type: "enabled",
+      budget_tokens: 1024,
+      display: "summarized",
+    })
+  })
+
+  test("preserves client thinking for Claude versions before 4.7", () => {
     const payload: AnthropicMessagesPayload = {
       model: "claude-opus-4.6",
       max_tokens: 128,
@@ -1151,8 +1183,101 @@ describe("prepareMessagesApiPayload", () => {
     } as never)
 
     expect(payload.thinking).toEqual({
-      type: "adaptive",
+      type: "enabled",
+      budget_tokens: 1024,
     })
+  })
+
+  test("preserves client effort when thinking is active", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "gpt-5.4",
+      max_tokens: 128,
+      messages: [{ role: "user", content: "hello" }],
+      thinking: {
+        type: "enabled",
+        budget_tokens: 1024,
+      },
+      output_config: {
+        effort: "low",
+      },
+      temperature: 0.7,
+    }
+
+    prepareMessagesApiPayload(payload, {
+      capabilities: {
+        supports: {
+          adaptive_thinking: true,
+          reasoning_effort: ["low", "medium", "high", "xhigh"],
+        },
+      },
+    } as never)
+
+    expect(payload.thinking).toEqual({
+      type: "enabled",
+      budget_tokens: 1024,
+    })
+    expect(payload.output_config).toEqual({
+      effort: "low",
+    })
+    expect(payload.temperature).toBeUndefined()
+  })
+
+  test("does not synthesize effort for manual budget thinking", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "gpt-5.4",
+      max_tokens: 128,
+      messages: [{ role: "user", content: "hello" }],
+      thinking: {
+        type: "enabled",
+        budget_tokens: 1024,
+      },
+      temperature: 0.7,
+    }
+
+    prepareMessagesApiPayload(payload, {
+      capabilities: {
+        supports: {
+          adaptive_thinking: true,
+          reasoning_effort: ["low", "medium", "high", "xhigh"],
+        },
+      },
+    } as never)
+
+    expect(payload.thinking).toEqual({
+      type: "enabled",
+      budget_tokens: 1024,
+    })
+    expect(payload.output_config).toBeUndefined()
+    expect(payload.temperature).toBeUndefined()
+  })
+
+  test("preserves disabled thinking without setting effort", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4.8",
+      max_tokens: 128,
+      messages: [{ role: "user", content: "hello" }],
+      thinking: {
+        type: "disabled",
+        budget_tokens: 1024,
+        display: "summarized",
+      },
+      temperature: 0.7,
+    } as unknown as AnthropicMessagesPayload
+
+    prepareMessagesApiPayload(payload, {
+      capabilities: {
+        supports: {
+          adaptive_thinking: true,
+          reasoning_effort: ["low", "medium", "high", "xhigh"],
+        },
+      },
+    } as never)
+
+    expect(payload.thinking).toEqual({
+      type: "disabled",
+    })
+    expect(payload.output_config).toBeUndefined()
+    expect(payload.temperature).toBe(0.7)
   })
 
   test("does not enable adaptive thinking when tool choice forces tool use", () => {
