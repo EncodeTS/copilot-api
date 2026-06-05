@@ -603,61 +603,87 @@ const streamOpenAICompatibleProviderMessages = ({
       toolCalls: {},
       thinkingBlockOpen: false,
     }
+    let terminatedWithError = false
 
-    for await (const chunk of events(upstreamResponse)) {
-      logger.debug(
-        "provider.messages.openai_compatible.raw_stream_event:",
-        chunk.data,
-      )
-      const eventName = chunk.event
-      if (eventName === "ping") {
-        await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
-        continue
-      }
+    try {
+      for await (const chunk of events(upstreamResponse)) {
+        logger.debug(
+          "provider.messages.openai_compatible.raw_stream_event:",
+          chunk.data,
+        )
+        const eventName = chunk.event
+        if (eventName === "ping") {
+          await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
+          continue
+        }
 
-      if (!chunk.data || chunk.data === "[DONE]") {
         if (chunk.data === "[DONE]") {
           break
         }
-        continue
+
+        if (!chunk.data && eventName !== "error") {
+          continue
+        }
+
+        const parsed = parseOpenAICompatibleStreamFrame(
+          chunk.data ?? "",
+          eventName,
+        )
+        if (parsed.kind === "skip") {
+          continue
+        }
+
+        if (parsed.kind === "error") {
+          const eventData = JSON.stringify(parsed.event)
+          debugLazy(logger, () => [
+            "provider.messages.openai_compatible.translated_event:",
+            eventData,
+          ])
+          await stream.writeSSE({
+            event: parsed.event.type,
+            data: eventData,
+          })
+          terminatedWithError = true
+          break
+        }
+
+        if (parsed.chunk.usage) {
+          usage = normalizeOpenAIUsage(parsed.chunk.usage)
+        }
+
+        const events = translateChunkToAnthropicEvents(
+          parsed.chunk,
+          streamState,
+        )
+        for (const event of events) {
+          const eventData = JSON.stringify(event)
+          debugLazy(logger, () => [
+            "provider.messages.openai_compatible.translated_event:",
+            eventData,
+          ])
+          await stream.writeSSE({
+            event: event.type,
+            data: eventData,
+          })
+        }
       }
 
-      const parsed = parseOpenAICompatibleStreamChunk(chunk.data)
-      if (!parsed) {
-        continue
+      if (!terminatedWithError) {
+        for (const event of flushPendingAnthropicStreamEvents(streamState)) {
+          const eventData = JSON.stringify(event)
+          debugLazy(logger, () => [
+            "provider.messages.openai_compatible.translated_event:",
+            eventData,
+          ])
+          await stream.writeSSE({
+            event: event.type,
+            data: eventData,
+          })
+        }
       }
-
-      if (parsed.usage) {
-        usage = normalizeOpenAIUsage(parsed.usage)
-      }
-
-      const events = translateChunkToAnthropicEvents(parsed, streamState)
-      for (const event of events) {
-        const eventData = JSON.stringify(event)
-        debugLazy(logger, () => [
-          "provider.messages.openai_compatible.translated_event:",
-          eventData,
-        ])
-        await stream.writeSSE({
-          event: event.type,
-          data: eventData,
-        })
-      }
+    } finally {
+      recordUsage(usage)
     }
-
-    for (const event of flushPendingAnthropicStreamEvents(streamState)) {
-      const eventData = JSON.stringify(event)
-      debugLazy(logger, () => [
-        "provider.messages.openai_compatible.translated_event:",
-        eventData,
-      ])
-      await stream.writeSSE({
-        event: event.type,
-        data: eventData,
-      })
-    }
-
-    recordUsage(usage)
   })
 }
 
@@ -684,62 +710,68 @@ const streamResponsesProviderMessages = ({
       toolSearchName: resolveBridgeToolSearchName(payload.tools),
     })
 
-    for await (const chunk of upstreamResponse) {
-      logger.debug("provider.messages.responses.raw_stream_event:", chunk.data)
-      const eventName = chunk.event
-      if (eventName === "ping") {
-        await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
-        continue
-      }
+    try {
+      for await (const chunk of upstreamResponse) {
+        logger.debug(
+          "provider.messages.responses.raw_stream_event:",
+          chunk.data,
+        )
+        const eventName = chunk.event
+        if (eventName === "ping") {
+          await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
+          continue
+        }
 
-      if (!chunk.data || chunk.data === "[DONE]") {
         if (chunk.data === "[DONE]") {
           break
         }
-        continue
+
+        if (!chunk.data) {
+          continue
+        }
+
+        const parsed = parseResponsesProviderStreamChunk(
+          chunk.data,
+          providerConfig,
+        )
+        if (!parsed) {
+          continue
+        }
+
+        if (
+          parsed.type === "response.completed"
+          || parsed.type === "response.failed"
+          || parsed.type === "response.incomplete"
+        ) {
+          usage = normalizeResponsesUsage(parsed.response.usage)
+        }
+
+        const events = translateResponsesStreamEvent(parsed, streamState)
+        for (const event of events) {
+          const eventData = JSON.stringify(event)
+          debugLazy(logger, () => [
+            "provider.messages.responses.translated_event:",
+            eventData,
+          ])
+          await stream.writeSSE({
+            event: event.type,
+            data: eventData,
+          })
+        }
       }
 
-      const parsed = parseResponsesProviderStreamChunk(
-        chunk.data,
-        providerConfig,
-      )
-      if (!parsed) {
-        continue
-      }
-
-      if (
-        parsed.type === "response.completed"
-        || parsed.type === "response.failed"
-        || parsed.type === "response.incomplete"
-      ) {
-        usage = normalizeResponsesUsage(parsed.response.usage)
-      }
-
-      const events = translateResponsesStreamEvent(parsed, streamState)
-      for (const event of events) {
-        const eventData = JSON.stringify(event)
-        debugLazy(logger, () => [
-          "provider.messages.responses.translated_event:",
-          eventData,
-        ])
+      if (!streamState.messageCompleted) {
+        const errorEvent = buildErrorEvent(
+          `${provider} stream ended without a completion event`,
+        )
         await stream.writeSSE({
-          event: event.type,
-          data: eventData,
+          event: errorEvent.type,
+          data: JSON.stringify(errorEvent),
         })
       }
+    } finally {
+      recordUsage(usage)
     }
-
-    if (!streamState.messageCompleted) {
-      const errorEvent = buildErrorEvent(
-        `${provider} stream ended without a completion event`,
-      )
-      await stream.writeSSE({
-        event: errorEvent.type,
-        data: JSON.stringify(errorEvent),
-      })
-    }
-
-    recordUsage(usage)
   })
 }
 
@@ -750,19 +782,152 @@ const isResponsesStream = (value: unknown): value is ResponsesStream => {
   )
 }
 
-const parseOpenAICompatibleStreamChunk = (
+type OpenAICompatibleStreamFrame =
+  | { kind: "chunk"; chunk: ChatCompletionChunk }
+  | { kind: "error"; event: AnthropicStreamEventData }
+  | { kind: "skip" }
+
+const parseOpenAICompatibleStreamFrame = (
   data: string,
-): ChatCompletionChunk | null => {
+  eventName: string | undefined,
+): OpenAICompatibleStreamFrame => {
+  if (eventName === "error") {
+    return {
+      kind: "error",
+      event: createOpenAICompatibleStreamErrorEventFromData(data),
+    }
+  }
+
   try {
-    return JSON.parse(data) as ChatCompletionChunk
+    const parsed: unknown = JSON.parse(data)
+    if (isOpenAICompatibleStreamChunk(parsed)) {
+      return { kind: "chunk", chunk: parsed }
+    }
+
+    const errorEvent = createOpenAICompatibleStreamErrorEvent(parsed, eventName)
+    if (errorEvent) {
+      return { kind: "error", event: errorEvent }
+    }
+
+    logger.error("provider.messages.openai_compatible.invalid_chunk", {
+      data: parsed,
+      eventName,
+    })
+    return { kind: "skip" }
   } catch (error) {
     logger.error("provider.messages.openai_compatible.parse_chunk_error", {
       data,
       error,
     })
-    return null
+    return { kind: "skip" }
   }
 }
+
+const createOpenAICompatibleStreamErrorEventFromData = (
+  data: string,
+): AnthropicStreamEventData => {
+  try {
+    const parsed: unknown = JSON.parse(data)
+    return (
+      createOpenAICompatibleStreamErrorEvent(parsed, "error")
+      ?? createAnthropicStreamErrorEvent({
+        message: "Upstream provider stream returned an error event.",
+        type: "api_error",
+      })
+    )
+  } catch {
+    return createAnthropicStreamErrorEvent({
+      message: data || "Upstream provider stream returned an error event.",
+      type: "api_error",
+    })
+  }
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null
+
+const isOpenAICompatibleStreamChunk = (
+  value: unknown,
+): value is ChatCompletionChunk =>
+  isRecord(value) && Array.isArray(value.choices)
+
+const createOpenAICompatibleStreamErrorEvent = (
+  value: unknown,
+  eventName: string | undefined,
+): AnthropicStreamEventData | null => {
+  if (!isRecord(value) && eventName !== "error") {
+    return null
+  }
+
+  const errorPayload = isRecord(value) ? value.error : undefined
+  if (isRecord(errorPayload)) {
+    return createAnthropicStreamErrorEvent({
+      message:
+        typeof errorPayload.message === "string" ?
+          errorPayload.message
+        : "Upstream provider stream failed.",
+      type:
+        typeof errorPayload.type === "string" ? errorPayload.type : "api_error",
+    })
+  }
+
+  if (typeof errorPayload === "string") {
+    return createAnthropicStreamErrorEvent({
+      message: errorPayload,
+      type: "api_error",
+    })
+  }
+
+  if (isRecord(value) && typeof value.message === "string") {
+    return createAnthropicStreamErrorEvent({
+      message: value.message,
+      type:
+        typeof value.type === "string" && value.type !== "error" ?
+          value.type
+        : "api_error",
+    })
+  }
+
+  if (isRecord(value) && value.type === "error") {
+    return createAnthropicStreamErrorEvent({
+      message:
+        typeof value.message === "string" ?
+          value.message
+        : "Upstream provider stream failed.",
+      type: "api_error",
+    })
+  }
+
+  if (typeof value === "string" && eventName === "error") {
+    return createAnthropicStreamErrorEvent({
+      message: value,
+      type: "api_error",
+    })
+  }
+
+  if (eventName === "error") {
+    return createAnthropicStreamErrorEvent({
+      message: "Upstream provider stream returned an error event.",
+      type: "api_error",
+    })
+  }
+
+  return null
+}
+
+const createAnthropicStreamErrorEvent = ({
+  message,
+  type,
+}: {
+  message: string
+  type: string
+}): AnthropicStreamEventData => ({
+  type: "error",
+  error: {
+    type,
+    message,
+  },
+})
 
 const parseResponsesProviderStreamChunk = (
   data: string,
