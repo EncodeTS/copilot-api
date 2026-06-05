@@ -8,47 +8,14 @@ on:
 permissions:
   contents: write
 
+# macOS .dmg builds (arm64 + x64) are produced by the local release script on
+# the maintainer's Mac, which creates the GitHub Release and uploads the dmg
+# assets. CI is responsible only for the Windows installer, which cannot be
+# built reliably on an Apple Silicon Mac (it needs Wine + x64 emulation).
 jobs:
-  # ─── macOS Apple Silicon (arm64) ─────────────────────────────────────────
-  build-mac-arm64:
-    name: Build macOS (Apple Silicon)
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install root dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Build server
-        run: bun run build
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22.13.0"
-
-      - name: Install desktop dependencies
-        working-directory: desktop
-        run: npm ci
-
-      - name: Build macOS arm64 package
-        working-directory: desktop
-        run: npm run package:mac
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: false
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: mac-arm64
-          path: desktop/release/*.dmg
-          if-no-files-found: warn
-
   # ─── Windows ─────────────────────────────────────────────────────────────
   build-win:
-    name: Build Windows
+    name: Build & publish Windows installer
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -77,46 +44,43 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: win
-          path: |
-            desktop/release/*.exe
-            desktop/release/*.msi
-          if-no-files-found: warn
-
-  # ─── Upload all artifacts to the GitHub Release ──────────────────────────
-  release-upload:
-    name: Upload to Release
-    needs: [ build-mac-arm64, build-win ]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-
-      - name: List artifacts
-        run: find artifacts -type f | sort
-
-      - name: Wait for GitHub Release to be created
+      - name: Stage installer with friendly name + checksum
+        working-directory: desktop
+        shell: bash
         run: |
+          tag="${{ github.ref_name }}"
+          base="Copilot-API-${tag}-windows-x64"
+          mkdir -p upload
+          exe=$(ls release/*.exe | head -n1)
+          cp "$exe" "upload/${base}.exe"
+          ( cd upload && sha256sum "${base}.exe" > "${base}.sha256.txt" )
+          ls -la upload
+
+      - name: Upload Windows installer to the GitHub Release
+        working-directory: desktop
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="${{ github.ref_name }}"
+          base="Copilot-API-${tag}-windows-x64"
+
+          # The Release is created by the macOS release script; wait for it so
+          # this upload doesn't fail on a race when CI finishes first.
           for i in {1..12}; do
-            if gh release view "${{ github.ref_name }}" \
-                 --repo "${{ github.repository }}" > /dev/null 2>&1; then
-              echo "Release exists, proceeding."
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "Release $tag exists, uploading."
               break
             fi
             echo "Release not found yet, waiting 30s... ($i/12)"
             sleep 30
           done
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload artifacts to GitHub Release
-        run: |
-          find artifacts -type f -exec \
-            gh release upload "${{ github.ref_name }}" {} --clobber \;
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
+          # Single explicit upload (no `find -exec`, which hides a failing
+          # upload behind find's exit code). With pipefail + errexit a failed
+          # upload now fails the job loudly instead of silently dropping the exe.
+          gh release upload "$tag" \
+            "upload/${base}.exe" \
+            "upload/${base}.sha256.txt" \
+            --clobber
