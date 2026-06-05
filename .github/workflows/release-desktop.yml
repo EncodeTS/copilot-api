@@ -4,21 +4,90 @@ on:
   push:
     tags:
       - "v*"
+  # Allow re-publishing the desktop assets for an existing tag by hand
+  # (e.g. to rebuild a release). Provide the tag to build against.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build & publish (e.g. v1.10.32-r1)"
+        required: true
+        type: string
 
 permissions:
   contents: write
 
-# macOS .dmg builds (arm64 + x64) are produced by the local release script on
-# the maintainer's Mac, which creates the GitHub Release and uploads the dmg
-# assets. CI is responsible only for the Windows installer, which cannot be
-# built reliably on an Apple Silicon Mac (it needs Wine + x64 emulation).
+# Everything (macOS arm64 + x64 dmg, Windows x64 exe) is built and published by
+# CI. macOS builds run natively on the Apple Silicon runner; the x64 dmg is
+# cross-packaged from the same runner. All assets use the friendly naming
+# convention Copilot-API-<tag>-<arch>.<ext> with matching .blockmap / .sha256.txt.
 jobs:
-  # ─── Windows ─────────────────────────────────────────────────────────────
+  # ─── macOS (arm64 + x64) ─────────────────────────────────────────────────
+  build-mac:
+    name: Build macOS (${{ matrix.arch }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install root dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build server
+        run: bun run build
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.0"
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build macOS ${{ matrix.arch }} package
+        working-directory: desktop
+        run: npm run package:mac -- --${{ matrix.arch }}
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Stage dmg with friendly name + checksum
+        working-directory: desktop
+        shell: bash
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          arch="${{ matrix.arch }}"
+          base="Copilot-API-${tag}-${arch}"
+          mkdir -p upload
+          dmg=$(ls release/*.dmg | head -n1)
+          cp "$dmg" "upload/${base}.dmg"
+          if ls release/*.dmg.blockmap >/dev/null 2>&1; then
+            cp "$(ls release/*.dmg.blockmap | head -n1)" "upload/${base}.dmg.blockmap"
+          fi
+          ( cd upload && sha256sum ${base}.dmg ${base}.dmg.blockmap 2>/dev/null > "${base}.sha256.txt" )
+          ls -la upload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-mac-${{ matrix.arch }}
+          path: desktop/upload/*
+          if-no-files-found: error
+
+  # ─── Windows (x64) ───────────────────────────────────────────────────────
   build-win:
-    name: Build & publish Windows installer
+    name: Build Windows (x64)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -48,7 +117,7 @@ jobs:
         working-directory: desktop
         shell: bash
         run: |
-          tag="${{ github.ref_name }}"
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
           base="Copilot-API-${tag}-windows-x64"
           mkdir -p upload
           exe=$(ls release/*.exe | head -n1)
@@ -56,31 +125,47 @@ jobs:
           ( cd upload && sha256sum "${base}.exe" > "${base}.sha256.txt" )
           ls -la upload
 
-      - name: Upload Windows installer to the GitHub Release
-        working-directory: desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-win
+          path: desktop/upload/*
+          if-no-files-found: error
+
+  # ─── Publish all assets to the GitHub Release ────────────────────────────
+  publish:
+    name: Publish to GitHub Release
+    needs: [build-mac, build-win]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-assets
+          merge-multiple: true
+
+      - name: List assets
+        run: find dist-assets -type f | sort
+
+      - name: Upload assets to the GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
-          tag="${{ github.ref_name }}"
-          base="Copilot-API-${tag}-windows-x64"
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
 
-          # The Release is created by the macOS release script; wait for it so
-          # this upload doesn't fail on a race when CI finishes first.
-          for i in {1..12}; do
-            if gh release view "$tag" >/dev/null 2>&1; then
-              echo "Release $tag exists, uploading."
-              break
-            fi
-            echo "Release not found yet, waiting 30s... ($i/12)"
-            sleep 30
-          done
+          # Ensure the release exists. If it was already created (e.g. by the
+          # changelog workflow or by hand) we keep its notes untouched and only
+          # attach assets; otherwise create a minimal release with auto notes.
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag not found — creating it."
+            gh release create "$tag" \
+              --title "$tag" \
+              --generate-notes \
+              --verify-tag
+          else
+            echo "Release $tag exists — keeping its notes, attaching assets."
+          fi
 
-          # Single explicit upload (no `find -exec`, which hides a failing
-          # upload behind find's exit code). With pipefail + errexit a failed
-          # upload now fails the job loudly instead of silently dropping the exe.
-          gh release upload "$tag" \
-            "upload/${base}.exe" \
-            "upload/${base}.sha256.txt" \
-            --clobber
+          # Single explicit upload; --clobber replaces same-named assets in
+          # place. With pipefail + errexit any failed upload fails the job.
+          gh release upload "$tag" dist-assets/* --clobber
