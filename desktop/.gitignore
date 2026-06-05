@@ -1,6 +1,7 @@
 node_modules/
 out/
 release/
+release-unsigned/
 *.tsbuildinfo
 .DS_Store
 electron.vite.config.*.mjs
