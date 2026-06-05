@@ -24,6 +24,7 @@ export interface AppConfig {
   anthropicApiKey?: string
   useResponsesApiWebSearch?: boolean
   claudeTokenMultiplier?: number
+  parityFirst?: boolean
 }
 
 export interface ModelConfig {
@@ -121,6 +122,7 @@ const defaultConfig: AppConfig = {
   useMessagesApi: true,
   useResponsesApiWebSocket: true,
   useResponsesApiWebSearch: true,
+  parityFirst: true,
 }
 
 let cachedConfig: AppConfig | null = null
@@ -246,11 +248,13 @@ function mergeDefaultConfig(config: AppConfig): {
   const hasReasoningEffortChanges = missingReasoningEffortModels.length > 0
   const hasResponsesApiCompactThresholdChanges =
     missingResponsesApiCompactThresholdModels.length > 0
+  const hasParityFirstChange = config.parityFirst === undefined
 
   if (
     !hasExtraPromptChanges
     && !hasReasoningEffortChanges
     && !hasResponsesApiCompactThresholdChanges
+    && !hasParityFirstChange
   ) {
     return { mergedConfig: config, changed: false }
   }
@@ -270,6 +274,7 @@ function mergeDefaultConfig(config: AppConfig): {
         ...defaultModelReasoningEfforts,
         ...modelReasoningEfforts,
       },
+      parityFirst: config.parityFirst ?? defaultConfig.parityFirst,
     },
     changed: true,
   }
@@ -409,6 +414,11 @@ export function resolveMappedModel(model: string): string {
 export function getSmallModel(): string {
   const config = getConfig()
   return config.smallModel ?? "gpt-5-mini"
+}
+
+export function isParityFirstEnabled(): boolean {
+  const config = getConfig()
+  return config.parityFirst ?? true
 }
 
 export function isResponsesApiContextManagementEnabled(): boolean {
