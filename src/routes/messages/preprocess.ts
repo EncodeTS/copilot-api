@@ -784,9 +784,7 @@ const applyTopLevelCacheControl = (payload: AnthropicMessagesPayload): void => {
       ) {
         continue
       }
-      if (!block.cache_control) {
-        block.cache_control = { ...topLevel }
-      }
+      block.cache_control ??= { ...topLevel }
       return
     }
   }
