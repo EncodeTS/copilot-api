@@ -17,19 +17,18 @@ const imageDataUrl = (base64Length: number): string =>
 const tinyPngDataUrl =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
 
-const makePayload = (imageUrl: string): ResponsesPayload =>
-  ({
-    input: [
-      {
-        content: [
-          { text: "look", type: "input_text" },
-          { detail: "low", image_url: imageUrl, type: "input_image" },
-        ],
-        role: "user",
-      },
-    ],
-    model: "gpt-test",
-  }) as unknown as ResponsesPayload
+const makePayload = (imageUrl: string): ResponsesPayload => ({
+  input: [
+    {
+      content: [
+        { text: "look", type: "input_text" },
+        { detail: "low", image_url: imageUrl, type: "input_image" },
+      ],
+      role: "user",
+    },
+  ],
+  model: "gpt-test",
+})
 
 describe("sanitizeOversizedInputImages", () => {
   test("replaces oversized input images with placeholder images", () => {

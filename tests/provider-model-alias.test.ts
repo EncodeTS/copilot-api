@@ -51,9 +51,8 @@ await mock.module("~/lib/token-usage", () => ({
 }))
 
 const { messageRoutes } = await import("../src/routes/messages/route")
-const { resolveCountTokensModel } = await import(
-  "../src/routes/messages/count-tokens-handler"
-)
+const { resolveCountTokensModel } =
+  await import("../src/routes/messages/count-tokens-handler")
 
 const originalFetch = globalThis.fetch
 
@@ -211,10 +210,7 @@ describe("provider/model aliases on top-level messages routes", () => {
     })
     expect(getTokenCount).toHaveBeenCalledTimes(1)
 
-    const [openAIPayload, selectedModel] = getTokenCount.mock.calls[0] as [
-      TokenCountPayload,
-      TokenCountModel,
-    ]
+    const [openAIPayload, selectedModel] = getTokenCount.mock.calls[0]
     expect(openAIPayload.model).toBe("qwen-plus")
     expect(selectedModel.id).toBe("qwen-plus")
     expect(selectedModel.capabilities.tokenizer).toBe("o200k_base")
@@ -244,10 +240,7 @@ describe("provider/model aliases on top-level messages routes", () => {
     })
     expect(getTokenCount).toHaveBeenCalledTimes(1)
 
-    const [openAIPayload, selectedModel] = getTokenCount.mock.calls[0] as [
-      TokenCountPayload,
-      TokenCountModel,
-    ]
+    const [openAIPayload, selectedModel] = getTokenCount.mock.calls[0]
     expect(openAIPayload.model).toBe("qwen-plus")
     expect(selectedModel.id).toBe("qwen-plus")
     expect(selectedModel.capabilities.tokenizer).toBe("o200k_base")
