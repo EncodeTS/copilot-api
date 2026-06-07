@@ -84,9 +84,8 @@ await mock.module("~/lib/models", () => ({
 await mock.module("~/lib/utils", () => ({
   ...actualUtilsModule,
 }))
-const { handleCompletion, messagesFlowHandlers } = await import(
-  "../src/routes/messages/handler"
-)
+const { handleCompletion, messagesFlowHandlers } =
+  await import("../src/routes/messages/handler")
 
 const defaultMessagesFlowHandlers = { ...messagesFlowHandlers }
 
