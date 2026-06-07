@@ -5,8 +5,9 @@ import type { createResponses as createCopilotResponses } from "../src/services/
 
 let responsesApiWebSocketEnabled = true
 
-const createResponses = mock((() =>
-  Promise.resolve(streamChunks([]))) as typeof createCopilotResponses)
+const createResponsesImpl: typeof createCopilotResponses = () =>
+  Promise.resolve(streamChunks([]))
+const createResponses = mock(createResponsesImpl)
 
 const createResponsesResult = (model: string) => ({
   created_at: 0,
@@ -31,16 +32,13 @@ const createResponsesResult = (model: string) => ({
 const { state } = await import("../src/lib/state")
 const { closeUsageStore } = await import("../src/lib/token-usage")
 const { tokenUsageRoute } = await import("../src/routes/token-usage/route")
-const { responsesHandlerDependencies } = await import(
-  "../src/routes/responses/handler"
-)
+const { responsesHandlerDependencies } =
+  await import("../src/routes/responses/handler")
 const { responsesRoutes } = await import("../src/routes/responses/route")
-const { responsesUtilsDependencies } = await import(
-  "../src/routes/responses/utils"
-)
-const { generateRequestIdFromPayload, getUUID } = await import(
-  "../src/lib/utils"
-)
+const { responsesUtilsDependencies } =
+  await import("../src/routes/responses/utils")
+const { generateRequestIdFromPayload, getUUID } =
+  await import("../src/lib/utils")
 
 const defaultResponsesHandlerDependencies = {
   ...responsesHandlerDependencies,

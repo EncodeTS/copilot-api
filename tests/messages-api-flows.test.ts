@@ -63,9 +63,8 @@ const {
   messagesApiFlowDependencies,
   prepareCopilotChatCompletionsPayload,
 } = await import("../src/routes/messages/api-flows")
-const { responsesUtilsDependencies } = await import(
-  "../src/routes/responses/utils"
-)
+const { responsesUtilsDependencies } =
+  await import("../src/routes/responses/utils")
 
 const defaultMessagesApiFlowDependencies = { ...messagesApiFlowDependencies }
 const defaultResponsesUtilsDependencies = { ...responsesUtilsDependencies }

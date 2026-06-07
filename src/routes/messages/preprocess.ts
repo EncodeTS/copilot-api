@@ -214,8 +214,8 @@ const shouldUseAdaptiveThinkingForModel = (model: string): boolean => {
   const normalized = normalizeSdkModelId(model)
   return Boolean(
     normalized
-      && normalized.family === "opus"
-      && isVersionAtLeast(normalized.version, 4, 7),
+    && normalized.family === "opus"
+    && isVersionAtLeast(normalized.version, 4, 7),
   )
 }
 
