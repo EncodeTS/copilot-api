@@ -71,4 +71,5 @@ interface CopilotUsageResponse {
     api: string
     telemetry: string
   }
+  token_based_billing?: boolean
 }
