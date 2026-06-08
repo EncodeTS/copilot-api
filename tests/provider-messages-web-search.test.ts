@@ -11,8 +11,9 @@ const actualRateLimitModule = await import("../src/lib/rate-limit")
 const actualStateModule = await import("../src/lib/state")
 const actualTokenUsageModule = await import("../src/lib/token-usage")
 
-let providerConfig: ResolvedProviderConfig | null = null
+let providerConfigs: Record<string, ResolvedProviderConfig> = {}
 let messageApiWebSearchModel: string | undefined
+let providerMessageApiWebSearchModel: string | undefined
 
 const noopTokenUsageRecorder = () => {}
 const checkRateLimit = mock(async () => {})
@@ -24,7 +25,8 @@ const findEndpointModel = mock((model: string) => ({
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
   getMessageApiWebSearchModel: () => messageApiWebSearchModel,
-  getProviderConfig: () => providerConfig,
+  getProviderMessageApiWebSearchModel: () => providerMessageApiWebSearchModel,
+  getProviderConfig: (name: string) => providerConfigs[name] ?? null,
   isResponsesApiWebSearchEnabled: () => true,
   resolveMappedModel: (model: string) => model,
 }))
@@ -164,19 +166,22 @@ const webSearchTool = {
 }
 
 beforeEach(() => {
-  providerConfig = {
-    name: "search",
-    type: "openai-responses",
-    baseUrl: "https://provider.example",
-    apiKey: "provider-key",
-    authType: "authorization",
-    models: {
-      "gpt-search": {
-        toolContentSupportType: [],
+  providerConfigs = {
+    search: {
+      name: "search",
+      type: "openai-responses",
+      baseUrl: "https://provider.example",
+      apiKey: "provider-key",
+      authType: "authorization",
+      models: {
+        "gpt-search": {
+          toolContentSupportType: [],
+        },
       },
     },
   }
   messageApiWebSearchModel = undefined
+  providerMessageApiWebSearchModel = undefined
   checkRateLimit.mockClear()
   findEndpointModel.mockClear()
   fetchMock.mockClear()
@@ -186,8 +191,9 @@ beforeEach(() => {
 
 afterEach(() => {
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
-  providerConfig = null
+  providerConfigs = {}
   messageApiWebSearchModel = undefined
+  providerMessageApiWebSearchModel = undefined
 })
 
 describe("provider messages web_search", () => {
@@ -301,6 +307,68 @@ describe("provider messages web_search", () => {
     })
   })
 
+  test("reroutes provider messages web_search through configured provider/model", async () => {
+    providerMessageApiWebSearchModel = "search/gpt-search"
+    providerConfigs.dash = {
+      name: "dash",
+      type: "openai-compatible",
+      baseUrl: "https://dashscope.example/compatible-mode",
+      apiKey: "dash-key",
+      authType: "authorization",
+      models: {
+        "qwen-plus": {
+          toolContentSupportType: [],
+        },
+      },
+    }
+
+    const app = createApp()
+    const response = await app.request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "What is the Node.js LTS?" }],
+        model: "qwen-plus",
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe("https://provider.example/v1/responses")
+
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      model: string
+      tools?: Array<Record<string, unknown>>
+    }
+    expect(upstreamBody.model).toBe("gpt-search")
+    expect(upstreamBody.tools).toEqual([
+      {
+        type: "web_search",
+        filters: {
+          allowed_domains: ["nodejs.org"],
+        },
+        user_location: {
+          type: "approximate",
+          country: "US",
+        },
+      },
+    ])
+
+    const json = (await response.json()) as AnthropicResponse
+    expect(json.model).toBe("gpt-search")
+    expect(json.content.map((block) => block.type)).toEqual([
+      "server_tool_use",
+      "web_search_tool_result",
+      "text",
+    ])
+  })
+
   test("strips Anthropic web_search when mixed with normal tools", async () => {
     const app = createApp()
     const response = await app.request("/search/v1/messages", {
@@ -338,8 +406,8 @@ describe("provider messages web_search", () => {
   })
 
   test("strips Anthropic web_search before OpenAI-compatible translation", async () => {
-    providerConfig = {
-      ...providerConfig,
+    providerConfigs.search = {
+      ...providerConfigs.search,
       type: "openai-compatible",
       baseUrl: "https://provider.example/compatible-mode",
       models: {
