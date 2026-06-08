@@ -580,7 +580,7 @@ export function getProviderConfig(name: string): ResolvedProviderConfig | null {
   )
   const apiKey = (provider.apiKey ?? "").trim()
   const missingFields = [
-    ...(!baseUrl ? ["baseUrl"] : []),
+    ...(baseUrl ? [] : ["baseUrl"]),
     ...(isProviderApiKeyRequired(providerName, authType) && !apiKey ?
       ["apiKey"]
     : []),

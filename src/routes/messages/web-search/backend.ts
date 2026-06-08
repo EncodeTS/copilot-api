@@ -51,6 +51,48 @@ const isMessageItem = (
   item: ResponsesResult["output"][number],
 ): item is ResponseOutputMessage => item.type === "message"
 
+const isValidUrlCitation = (
+  annotation: unknown,
+  seenUrls: Set<string>,
+): annotation is UrlCitationAnnotation => {
+  const ann = annotation as UrlCitationAnnotation
+  return (
+    ann.type === "url_citation" && Boolean(ann.url) && !seenUrls.has(ann.url)
+  )
+}
+
+const collectTextParts = (
+  blocks:
+    | Array<{ type?: string; text?: string; annotations?: Array<unknown> }>
+    | undefined,
+  seenUrls: Set<string>,
+): { textParts: Array<string>; sources: Array<WebSearchSource> } => {
+  const textParts: Array<string> = []
+  const sources: Array<WebSearchSource> = []
+  for (const block of blocks ?? []) {
+    if (block.type !== "output_text") continue
+    if (block.text) textParts.push(block.text)
+    for (const annotation of block.annotations ?? []) {
+      if (!isValidUrlCitation(annotation, seenUrls)) continue
+      const ann = annotation
+      seenUrls.add(ann.url)
+      sources.push({ url: ann.url, title: ann.title ?? ann.url })
+    }
+  }
+  return { textParts, sources }
+}
+
+const collectQuery = (
+  item: { action?: { query?: string; queries?: Array<string> } },
+  queries: Array<string>,
+): void => {
+  if (item.action?.queries?.length) {
+    queries.push(...item.action.queries)
+  } else if (item.action?.query) {
+    queries.push(item.action.query)
+  }
+}
+
 /**
  * Extracts the answer text, deduped sources, and run queries from a GPT
  * /responses web_search result.
@@ -65,34 +107,16 @@ export const extractWebSearchResult = (
 
   for (const item of result.output) {
     if (isMessageItem(item)) {
-      for (const block of item.content ?? []) {
-        if ((block as { type?: string }).type !== "output_text") continue
-        const textBlock = block as {
-          text?: string
-          annotations?: Array<unknown>
-        }
-        if (textBlock.text) textParts.push(textBlock.text)
-        for (const annotation of textBlock.annotations ?? []) {
-          const ann = annotation as UrlCitationAnnotation
-          if (
-            ann.type === "url_citation"
-            && ann.url
-            && !seenUrls.has(ann.url)
-          ) {
-            seenUrls.add(ann.url)
-            sources.push({ url: ann.url, title: ann.title ?? ann.url })
-          }
-        }
-      }
+      const collected = collectTextParts(item.content, seenUrls)
+      textParts.push(...collected.textParts)
+      sources.push(...collected.sources)
       continue
     }
-
     if ((item as { type?: string }).type === "web_search_call") {
-      const action = (
-        item as { action?: { query?: string; queries?: Array<string> } }
-      ).action
-      if (action?.queries?.length) queries.push(...action.queries)
-      else if (action?.query) queries.push(action.query)
+      collectQuery(
+        item as { action?: { query?: string; queries?: Array<string> } },
+        queries,
+      )
     }
   }
 
