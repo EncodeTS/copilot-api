@@ -178,13 +178,15 @@ const buildResponseContent = (
   const query = extract.queries[0] ?? ""
   if (extract.sources.length > 0 || query) {
     const toolUseId = `srvtoolu_${getUUID(requestId)}`
-    blocks.push({
-      type: "server_tool_use",
-      id: toolUseId,
-      name: "web_search",
-      input: { query },
-    })
-    blocks.push(buildWebSearchResultBlock(toolUseId, extract))
+    blocks.push(
+      {
+        type: "server_tool_use",
+        id: toolUseId,
+        name: "web_search",
+        input: { query },
+      },
+      buildWebSearchResultBlock(toolUseId, extract),
+    )
   }
   blocks.push({ type: "text", text: extract.answerText })
   return blocks
@@ -371,15 +373,17 @@ export const buildSyntheticStreamEvents = (
     events.push(...blockToStreamEvents(block, index))
   })
 
-  events.push({
-    type: "message_delta",
-    delta: {
-      stop_reason: response.stop_reason,
-      stop_sequence: response.stop_sequence,
+  events.push(
+    {
+      type: "message_delta",
+      delta: {
+        stop_reason: response.stop_reason,
+        stop_sequence: response.stop_sequence,
+      },
+      usage: { output_tokens: response.usage.output_tokens },
     },
-    usage: { output_tokens: response.usage.output_tokens },
-  })
-  events.push({ type: "message_stop" })
+    { type: "message_stop" },
+  )
 
   return events
 }
