@@ -20,6 +20,7 @@ import {
 import { getUUID, parseUserIdMetadata } from "~/lib/utils"
 import {
   createResponses as createCopilotResponses,
+  type ResponsesPayload,
   type ResponsesResult,
 } from "~/services/copilot/create-responses"
 
@@ -131,7 +132,7 @@ export const resolveWebSearchRoute = (
   return { kind: "strip" }
 }
 
-const extractWebSearchConfig = (
+export const extractWebSearchConfig = (
   payload: AnthropicMessagesPayload,
 ): WebSearchToolConfig => {
   const tool = payload.tools?.find(isWebSearchServerTool)
@@ -142,7 +143,8 @@ const extractWebSearchConfig = (
   }
 }
 
-interface ReconstructedResponse extends Omit<AnthropicResponse, "content"> {
+export interface ReconstructedWebSearchResponse
+  extends Omit<AnthropicResponse, "content"> {
   content: Array<AnthropicTextBlock | AnthropicWebSearchContentBlock>
 }
 
@@ -192,6 +194,59 @@ const buildResponseContent = (
   return blocks
 }
 
+export const prepareWebSearchResponsesPayload = (
+  payload: AnthropicMessagesPayload,
+  options: {
+    model?: string
+    subagentAgentId?: string | null
+  } = {},
+): ResponsesPayload => {
+  const config = extractWebSearchConfig(payload)
+  const switchedPayload: AnthropicMessagesPayload = {
+    ...payload,
+    model: options.model ?? payload.model,
+    tools: [],
+    stream: false,
+  }
+
+  const responsesPayload = translateAnthropicMessagesToResponsesPayload(
+    switchedPayload,
+    options.subagentAgentId,
+  )
+  responsesPayload.tools = [buildResponsesWebSearchTool(config)]
+  responsesPayload.tool_choice = undefined
+  return responsesPayload
+}
+
+export const reconstructWebSearchResponse = (
+  payload: AnthropicMessagesPayload,
+  result: ResponsesResult,
+  options: { requestId: string },
+): {
+  extract: WebSearchExtract
+  response: ReconstructedWebSearchResponse
+} => {
+  const extract = extractWebSearchResult(result)
+  const response: ReconstructedWebSearchResponse = {
+    id: result.id || getUUID(options.requestId),
+    type: "message",
+    role: "assistant",
+    content: buildResponseContent(options.requestId, extract),
+    model: payload.model,
+    stop_reason: "end_turn",
+    stop_sequence: null,
+    usage: {
+      input_tokens: result.usage?.input_tokens ?? 0,
+      output_tokens: result.usage?.output_tokens ?? 0,
+      server_tool_use: {
+        web_search_requests: Math.max(extract.queries.length, 1),
+      },
+    } as AnthropicResponse["usage"],
+  }
+
+  return { extract, response }
+}
+
 const createUsageRecorder = (
   payload: AnthropicMessagesPayload,
   sessionId?: string,
@@ -212,24 +267,14 @@ export const handleWebSearchViaResponses = async (
 ) => {
   const { logger, webSearchModel } = options
   const wantsStream = Boolean(payload.stream)
-  const config = extractWebSearchConfig(payload)
 
   // Switch to the GPT web search model and drop the Anthropic server tool so the
   // standard Anthropic -> Responses translation does not choke on it; the
   // Responses web_search tool is attached to the translated payload instead.
-  const switchedPayload: AnthropicMessagesPayload = {
-    ...payload,
+  const responsesPayload = prepareWebSearchResponsesPayload(payload, {
     model: webSearchModel,
-    tools: [],
-    stream: false,
-  }
-
-  const responsesPayload = translateAnthropicMessagesToResponsesPayload(
-    switchedPayload,
-    options.subagentMarker?.agent_id,
-  )
-  responsesPayload.tools = [buildResponsesWebSearchTool(config)]
-  responsesPayload.tool_choice = undefined
+    subagentAgentId: options.subagentMarker?.agent_id,
+  })
 
   const selectedModel: Model | undefined = findEndpointModel(webSearchModel)
   const { vision, initiator } = getResponsesRequestOptions(responsesPayload)
@@ -252,30 +297,15 @@ export const handleWebSearchViaResponses = async (
     },
   )) as ResponsesResult
 
-  const extract = extractWebSearchResult(result)
+  const { extract, response } = reconstructWebSearchResponse(payload, result, {
+    requestId: options.requestId,
+  })
   logger.debug(
     `Web search via responses: ${extract.queries.length} quer(y/ies), ${extract.sources.length} source(s)`,
   )
 
   const recordUsage = createUsageRecorder(payload, options.sessionId)
   recordUsage(normalizeResponsesUsage(result.usage))
-
-  const response: ReconstructedResponse = {
-    id: result.id || getUUID(options.requestId),
-    type: "message",
-    role: "assistant",
-    content: buildResponseContent(options.requestId, extract),
-    model: payload.model,
-    stop_reason: "end_turn",
-    stop_sequence: null,
-    usage: {
-      input_tokens: result.usage?.input_tokens ?? 0,
-      output_tokens: result.usage?.output_tokens ?? 0,
-      server_tool_use: {
-        web_search_requests: Math.max(extract.queries.length, 1),
-      },
-    } as AnthropicResponse["usage"],
-  }
 
   if (!wantsStream) {
     return c.json(response)
@@ -351,7 +381,7 @@ const blockToStreamEvents = (
 }
 
 export const buildSyntheticStreamEvents = (
-  response: ReconstructedResponse,
+  response: ReconstructedWebSearchResponse,
 ): Array<SyntheticEvent> => {
   const events: Array<SyntheticEvent> = []
 

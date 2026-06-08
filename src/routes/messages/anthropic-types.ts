@@ -182,7 +182,9 @@ export interface AnthropicResponse {
   id: string
   type: "message"
   role: "assistant"
-  content: Array<AnthropicAssistantContentBlock>
+  content: Array<
+    AnthropicAssistantContentBlock | AnthropicWebSearchContentBlock
+  >
   model: string
   stop_reason:
     | "end_turn"
@@ -202,7 +204,9 @@ export interface AnthropicResponse {
   }
 }
 
-export type AnthropicResponseContentBlock = AnthropicAssistantContentBlock
+export type AnthropicResponseContentBlock =
+  | AnthropicAssistantContentBlock
+  | AnthropicWebSearchContentBlock
 
 // Anthropic Stream Event Types
 export interface AnthropicMessageStartEvent {

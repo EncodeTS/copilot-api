@@ -54,6 +54,14 @@ import {
   translateAnthropicMessagesToResponsesPayload,
   translateResponsesResultToAnthropic,
 } from "~/routes/messages/responses-translation"
+import {
+  buildSyntheticStreamEvents,
+  hasWebSearchServerTool,
+  isWebSearchOnlyRequest,
+  prepareWebSearchResponsesPayload,
+  reconstructWebSearchResponse,
+  stripWebSearchServerTool,
+} from "~/routes/messages/web-search/fulfill"
 import { normalizeSystemMessages } from "~/routes/messages/preprocess"
 import {
   applyResponsesApiContextManagement,
@@ -117,6 +125,18 @@ export async function handleProviderMessagesForProvider(
     applyModelDefaults(payload, modelConfig)
 
     if (providerConfig.type === "openai-responses") {
+      if (hasWebSearchServerTool(payload)) {
+        if (isWebSearchOnlyRequest(payload)) {
+          return await handleOpenAIResponsesProviderWebSearchMessages(c, {
+            payload,
+            provider,
+            providerConfig,
+          })
+        }
+
+        stripWebSearchServerTool(payload)
+      }
+
       return await handleOpenAIResponsesProviderMessages(c, {
         modelConfig,
         payload,
@@ -126,6 +146,8 @@ export async function handleProviderMessagesForProvider(
     }
 
     if (providerConfig.type === "openai-compatible") {
+      stripWebSearchServerTool(payload)
+
       return await handleOpenAICompatibleProviderMessages(c, {
         modelConfig,
         payload,
@@ -181,6 +203,71 @@ export async function handleProviderMessagesForProvider(
     })
     throw error
   }
+}
+
+const handleOpenAIResponsesProviderWebSearchMessages = async (
+  c: Context,
+  options: {
+    payload: AnthropicMessagesPayload
+    provider: string
+    providerConfig: ResolvedProviderConfig
+  },
+): Promise<Response> => {
+  const { payload, provider, providerConfig } = options
+  const selectedModel =
+    providerConfig.name === "codex" ?
+      getCodexModels().data.find((model) => model.id === payload.model)
+    : undefined
+  const responsesPayload = prepareWebSearchResponsesPayload(payload)
+
+  applyResponsesApiContextManagement(
+    responsesPayload,
+    selectedModel?.capabilities.limits.max_prompt_tokens,
+  )
+  compactInputByLatestCompaction(responsesPayload)
+
+  debugJson(logger, "provider.messages.responses.web_search.request", {
+    payload: responsesPayload,
+    provider,
+  })
+
+  if (providerConfig.name === "codex") {
+    const upstreamResponse = await forwardCodexResponses(
+      responsesPayload,
+      c.req.raw.headers,
+      providerConfig.baseUrl,
+    )
+
+    return respondWebSearchProviderMessagesJson(c, {
+      body: upstreamResponse as ResponsesResult,
+      payload,
+      provider,
+    })
+  }
+
+  const upstreamResponse = await forwardProviderResponses(
+    providerConfig,
+    responsesPayload,
+    c.req.raw.headers,
+  )
+
+  if (!upstreamResponse.ok) {
+    logger.error("Failed to create provider web search responses", {
+      provider,
+      upstreamResponse,
+    })
+    throw new HTTPError(
+      "Failed to create provider web search responses",
+      upstreamResponse,
+    )
+  }
+
+  const jsonBody = (await upstreamResponse.json()) as ResponsesResult
+  return respondWebSearchProviderMessagesJson(c, {
+    body: jsonBody,
+    payload,
+    provider,
+  })
 }
 
 const handleOpenAIResponsesProviderMessages = async (
@@ -881,6 +968,39 @@ const respondResponsesProviderMessagesJson = (
     logger.debug("provider.messages.codex.no_stream.result")
   }
   return c.json(anthropicResponse)
+}
+
+const respondWebSearchProviderMessagesJson = (
+  c: Context,
+  options: {
+    body: ResponsesResult
+    payload: AnthropicMessagesPayload
+    provider: string
+  },
+): Response => {
+  const { body, payload, provider } = options
+  const recordUsage = createProviderMessagesUsageRecorder(payload, provider)
+  recordUsage(normalizeResponsesUsage(body.usage))
+
+  const { extract, response } = reconstructWebSearchResponse(payload, body, {
+    requestId: body.id || `${provider}:${payload.model}`,
+  })
+  logger.debug(
+    `provider.messages.responses.web_search: ${extract.queries.length} quer(y/ies), ${extract.sources.length} source(s)`,
+  )
+
+  if (!payload.stream) {
+    return c.json(response)
+  }
+
+  return streamSSE(c, async (stream) => {
+    for (const event of buildSyntheticStreamEvents(response)) {
+      await stream.writeSSE({
+        event: event.type,
+        data: JSON.stringify(event),
+      })
+    }
+  })
 }
 
 const createProviderMessagesUsageRecorder = (
