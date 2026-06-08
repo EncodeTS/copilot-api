@@ -23,6 +23,12 @@ export interface AppConfig {
   useResponsesApiWebSocket?: boolean
   anthropicApiKey?: string
   useResponsesApiWebSearch?: boolean
+  // Copilot rejects Anthropic's web_search server tool on /v1/messages, so a
+  // Claude request that only asks for web search is switched to this
+  // Responses-capable GPT model, which runs the search natively. Leave unset to
+  // disable (the tool is then stripped). Mixing web_search with other tools is
+  // not supported.
+  messageApiWebSearchModel?: string
   claudeTokenMultiplier?: number
 }
 
@@ -121,6 +127,7 @@ const defaultConfig: AppConfig = {
   useMessagesApi: true,
   useResponsesApiWebSocket: true,
   useResponsesApiWebSearch: true,
+  messageApiWebSearchModel: "gpt-5-mini",
 }
 
 let cachedConfig: AppConfig | null = null
@@ -625,6 +632,16 @@ export function getAnthropicApiKey(): string | undefined {
 export function isResponsesApiWebSearchEnabled(): boolean {
   const config = getConfig()
   return config.useResponsesApiWebSearch ?? true
+}
+
+export function isMessagesApiWebSearchEnabled(): boolean {
+  return Boolean(getMessageApiWebSearchModel())
+}
+
+export function getMessageApiWebSearchModel(): string | undefined {
+  const config = getConfig()
+  const model = config.messageApiWebSearchModel
+  return model && model.trim().length > 0 ? model : undefined
 }
 
 export function getClaudeTokenMultiplier(): number {
