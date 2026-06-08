@@ -22,10 +22,15 @@ import type {
   ResponsesStream,
 } from "~/services/copilot/create-responses"
 
-import { type ModelConfig, type ResolvedProviderConfig } from "~/lib/config"
+import {
+  getProviderMessageApiWebSearchModel,
+  type ModelConfig,
+  type ResolvedProviderConfig,
+} from "~/lib/config"
 import { logCodexRateLimitsEvent } from "~/lib/codex-rate-limit"
 import { HTTPError } from "~/lib/error"
 import { createHandlerLogger, debugJson, debugLazy } from "~/lib/logger"
+import { parseProviderModelAlias } from "~/lib/provider-model"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
 import { resolveBridgeToolSearchName } from "~/lib/tool-search"
 import {
@@ -101,9 +106,11 @@ export async function handleProviderMessagesForProvider(
   options: {
     payload: AnthropicMessagesPayload
     provider: string
+    webSearchRerouteDepth?: number
   },
 ): Promise<Response> {
   const { payload, provider } = options
+  const webSearchRerouteDepth = options.webSearchRerouteDepth ?? 0
   const providerConfig = await resolveProviderConfig(provider)
   if (!providerConfig) {
     return c.json(
@@ -122,6 +129,24 @@ export async function handleProviderMessagesForProvider(
     debugJson(logger, "provider.messages.request", { payload, provider })
 
     normalizeSystemMessages(payload)
+
+    const providerWebSearchRoute =
+      webSearchRerouteDepth === 0 ?
+        resolveProviderWebSearchRoute(payload, {
+          provider,
+        })
+      : null
+    if (providerWebSearchRoute) {
+      return await handleProviderMessagesForProvider(c, {
+        payload: {
+          ...payload,
+          model: providerWebSearchRoute.model,
+        },
+        provider: providerWebSearchRoute.provider,
+        webSearchRerouteDepth: webSearchRerouteDepth + 1,
+      })
+    }
+
     applyModelDefaults(payload, modelConfig)
 
     if (providerConfig.type === "openai-responses") {
@@ -203,6 +228,31 @@ export async function handleProviderMessagesForProvider(
     })
     throw error
   }
+}
+
+const resolveProviderWebSearchRoute = (
+  payload: AnthropicMessagesPayload,
+  options: {
+    provider: string
+  },
+): { model: string; provider: string } | null => {
+  if (!hasWebSearchServerTool(payload) || !isWebSearchOnlyRequest(payload)) {
+    return null
+  }
+
+  const configuredModel = getProviderMessageApiWebSearchModel()
+  if (!configuredModel) {
+    return null
+  }
+
+  const alias = parseProviderModelAlias(configuredModel)
+  const provider = alias?.provider ?? options.provider
+  const model = alias?.model ?? configuredModel
+  if (provider === options.provider && model === payload.model) {
+    return null
+  }
+
+  return { model, provider }
 }
 
 const handleOpenAIResponsesProviderWebSearchMessages = async (
