@@ -49,11 +49,12 @@ export const webSearchFlowDependencies = {
   createUsageRecorder: (
     payload: AnthropicMessagesPayload,
     sessionId?: string,
+    webSearchModel?: string,
   ): ((usage: UsageTokens) => void) =>
     createCopilotTokenUsageRecorder({
       endpoint: "responses",
       fallbackSessionId: sessionId,
-      model: payload.model,
+      model: webSearchModel ?? payload.model,
       sessionId: parseUserIdMetadata(payload.metadata?.user_id).sessionId,
     }),
 }
@@ -250,8 +251,13 @@ export const reconstructWebSearchResponse = (
 const createUsageRecorder = (
   payload: AnthropicMessagesPayload,
   sessionId?: string,
+  webSearchModel?: string,
 ): ((usage: UsageTokens) => void) =>
-  webSearchFlowDependencies.createUsageRecorder(payload, sessionId)
+  webSearchFlowDependencies.createUsageRecorder(
+    payload,
+    sessionId,
+    webSearchModel,
+  )
 
 /**
  * Handles a web-search-only Claude (Messages API) request by switching it to a
@@ -283,7 +289,9 @@ export const handleWebSearchViaResponses = async (
       compactType: options.compactType,
     }) ?? "http"
 
-  logger.debug(`Switching web search request to model: ${webSearchModel}`)
+  logger.debug(
+    `Switching web search request to model: ${webSearchModel} ${JSON.stringify(responsesPayload)}`,
+  )
   const result = (await webSearchFlowDependencies.createResponses(
     responsesPayload,
     {
@@ -301,10 +309,14 @@ export const handleWebSearchViaResponses = async (
     requestId: options.requestId,
   })
   logger.debug(
-    `Web search via responses: ${extract.queries.length} quer(y/ies), ${extract.sources.length} source(s)`,
+    `Web search via responses: ${extract.queries.length} quer(y/ies), ${extract.sources.length} source(s), ${JSON.stringify(result)}`,
   )
 
-  const recordUsage = createUsageRecorder(payload, options.sessionId)
+  const recordUsage = createUsageRecorder(
+    payload,
+    options.sessionId,
+    webSearchModel,
+  )
   recordUsage(normalizeResponsesUsage(result.usage))
 
   if (!wantsStream) {
