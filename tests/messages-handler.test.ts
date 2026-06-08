@@ -17,6 +17,7 @@ const actualUtilsModule = await import("../src/lib/utils")
 const state = {
   ...actualStateModule.state,
   manualApprove: false,
+  tokenBasedBilling: false,
   verbose: false,
 }
 
