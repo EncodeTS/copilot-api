@@ -1,3 +1,4 @@
+import consola from "consola"
 import type { ResolvedProviderConfig } from "~/lib/config"
 import type { AnthropicMessagesPayload } from "~/routes/messages/anthropic-types"
 import type { ChatCompletionsPayload } from "~/services/copilot/create-chat-completions"
@@ -83,6 +84,7 @@ export async function forwardProviderMessages(
   payload: AnthropicMessagesPayload,
   requestHeaders: Headers,
 ): Promise<Response> {
+  consola.log(`<-- model: ${payload.model}`)
   return await fetch(`${providerConfig.baseUrl}/v1/messages`, {
     method: "POST",
     headers: buildProviderUpstreamHeaders(providerConfig, requestHeaders),
@@ -95,6 +97,7 @@ export async function forwardProviderChatCompletions(
   payload: ChatCompletionsPayload,
   requestHeaders: Headers,
 ): Promise<Response> {
+  consola.log(`<-- model: ${payload.model}`)
   return await fetch(`${providerConfig.baseUrl}/v1/chat/completions`, {
     method: "POST",
     headers: buildProviderUpstreamHeaders(providerConfig, requestHeaders),
@@ -107,6 +110,7 @@ export async function forwardProviderResponses(
   payload: ResponsesPayload,
   requestHeaders: Headers,
 ): Promise<Response> {
+  consola.log(`<-- model: ${payload.model}`)
   return await fetch(`${providerConfig.baseUrl}/v1/responses`, {
     method: "POST",
     headers: buildProviderUpstreamHeaders(providerConfig, requestHeaders),
