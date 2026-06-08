@@ -645,7 +645,7 @@ export function isMessagesApiWebSearchEnabled(): boolean {
 
 export function getMessageApiWebSearchModel(): string | undefined {
   const config = getConfig()
-  const model = config.messageApiWebSearchModel
+  const model = config.messageApiWebSearchModel ?? "gpt-5-mini"
   return model && model.trim().length > 0 ? model : undefined
 }
 
