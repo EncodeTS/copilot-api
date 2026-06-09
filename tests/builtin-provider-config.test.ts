@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 
 interface ConfigFileShape {
   builtinProviders?: Record<string, unknown>
+  messageApiWebSearchModel?: string
   modelResponsesApiCompactThresholds?: Record<string, number>
   parityFirst?: boolean
   useResponsesApiContextManagement?: boolean
@@ -110,6 +111,33 @@ describe("builtin provider config", () => {
 
     expect(JSON.parse(output)).toEqual({ enabled: true })
     expect(readConfigFile(configPath).parityFirst).toBe(true)
+  })
+
+  test("routes Messages API web search through gpt-5.5 by default", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = path.join(tempDir, "config.json")
+
+    const output = runScript(
+      tempDir,
+      'const { getMessageApiWebSearchModel } = await import("./src/lib/config"); console.log(JSON.stringify({ model: getMessageApiWebSearchModel() ?? null }));',
+    )
+
+    expect(JSON.parse(output)).toEqual({ model: "gpt-5.5" })
+    expect(readConfigFile(configPath).messageApiWebSearchModel).toBe("gpt-5.5")
+  })
+
+  test("allows disabling Messages API web search routing", () => {
+    const tempDir = createTempConfigDir()
+    writeConfigFile(tempDir, {
+      messageApiWebSearchModel: "",
+    })
+
+    const output = runScript(
+      tempDir,
+      'const { getMessageApiWebSearchModel } = await import("./src/lib/config"); console.log(JSON.stringify({ model: getMessageApiWebSearchModel() ?? null }));',
+    )
+
+    expect(JSON.parse(output)).toEqual({ model: null })
   })
 
   test("allows disabling Responses API context management", () => {
