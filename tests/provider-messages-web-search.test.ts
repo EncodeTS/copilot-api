@@ -26,6 +26,7 @@ await mock.module("~/lib/config", () => ({
   getMessageApiWebSearchModel: () => messageApiWebSearchModel,
   getProviderConfig: (name: string) => providerConfigs[name] ?? null,
   isResponsesApiWebSearchEnabled: () => true,
+  isResponsesApiWebSocketEnabled: () => false,
   resolveMappedModel: (model: string) => model,
 }))
 
@@ -58,6 +59,10 @@ const { providerMessageRoutes } = await import(
   "../src/routes/provider/messages/route"
 )
 const { messageRoutes } = await import("../src/routes/messages/route")
+const { state } = await import("../src/lib/state")
+
+const originalCodexAccessToken = state.codexAccessToken
+const originalCodexAccountId = state.codexAccountId
 
 const makeResponsesResult = (
   overrides: Partial<ResponsesResult> = {},
@@ -126,17 +131,138 @@ const makeChatCompletionResponse = () => ({
   },
 })
 
+const makeResponsesStreamResponse = (body: ResponsesResult) =>
+  new Response(
+    [
+      "event: response.created",
+      `data: ${JSON.stringify({
+        response: {
+          ...body,
+          output: [],
+          output_text: "",
+          usage: null,
+        },
+        sequence_number: 1,
+        type: "response.created",
+      })}`,
+      "",
+      "event: response.output_item.done",
+      `data: ${JSON.stringify({
+        item: body.output[0],
+        output_index: 0,
+        sequence_number: 2,
+        type: "response.output_item.done",
+      })}`,
+      "",
+      "event: response.output_item.added",
+      `data: ${JSON.stringify({
+        item: {
+          id: "msg-1",
+          role: "assistant",
+          status: "in_progress",
+          type: "message",
+        },
+        output_index: 1,
+        sequence_number: 3,
+        type: "response.output_item.added",
+      })}`,
+      "",
+      "event: response.output_text.delta",
+      `data: ${JSON.stringify({
+        content_index: 0,
+        delta: "Node.js 24 is the latest LTS.",
+        item_id: "msg-1",
+        output_index: 1,
+        sequence_number: 4,
+        type: "response.output_text.delta",
+      })}`,
+      "",
+      "event: response.output_text.annotation.added",
+      `data: ${JSON.stringify({
+        annotation: {
+          title: "Node.js",
+          type: "url_citation",
+          url: "https://nodejs.org",
+        },
+        annotation_index: 0,
+        content_index: 0,
+        item_id: "msg-1",
+        output_index: 1,
+        sequence_number: 5,
+        type: "response.output_text.annotation.added",
+      })}`,
+      "",
+      "event: response.output_text.done",
+      `data: ${JSON.stringify({
+        content_index: 0,
+        item_id: "msg-1",
+        output_index: 1,
+        sequence_number: 6,
+        text: "Node.js 24 is the latest LTS.",
+        type: "response.output_text.done",
+      })}`,
+      "",
+      "event: response.output_item.done",
+      `data: ${JSON.stringify({
+        item: {
+          id: "msg-1",
+          role: "assistant",
+          status: "completed",
+          type: "message",
+        },
+        output_index: 1,
+        sequence_number: 7,
+        type: "response.output_item.done",
+      })}`,
+      "",
+      "event: response.completed",
+      `data: ${JSON.stringify({
+        response: {
+          ...body,
+          output: [],
+          output_text: "",
+        },
+        sequence_number: 8,
+        type: "response.completed",
+      })}`,
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n"),
+    {
+      headers: { "content-type": "text/event-stream; charset=utf-8" },
+    },
+  )
+
 const originalFetch = globalThis.fetch
 
-const fetchMock = mock((url: string | URL | Request, _init?: RequestInit) => {
+const fetchMock = mock((url: string | URL | Request, init?: RequestInit) => {
   const urlString =
     typeof url === "string" ? url
     : url instanceof URL ? url.href
     : url.url
-  const body =
-    urlString.endsWith("/v1/chat/completions") ?
-      makeChatCompletionResponse()
-    : makeResponsesResult()
+  const requestPayload =
+    typeof init?.body === "string" ?
+      (JSON.parse(init.body) as { stream?: boolean })
+    : {}
+
+  if (urlString.endsWith("/v1/chat/completions")) {
+    return Promise.resolve(
+      new Response(JSON.stringify(makeChatCompletionResponse()), {
+        headers: { "content-type": "application/json" },
+      }),
+    )
+  }
+
+  const body = makeResponsesResult()
+
+  if (
+    (urlString.endsWith("/v1/responses")
+      || urlString.endsWith("/codex/responses"))
+    && requestPayload.stream === true
+  ) {
+    return Promise.resolve(makeResponsesStreamResponse(body))
+  }
 
   return Promise.resolve(
     new Response(JSON.stringify(body), {
@@ -178,6 +304,8 @@ beforeEach(() => {
       },
     },
   }
+  state.codexAccessToken = "codex-token"
+  state.codexAccountId = "codex-account"
   messageApiWebSearchModel = undefined
   checkRateLimit.mockClear()
   findEndpointModel.mockClear()
@@ -188,6 +316,8 @@ beforeEach(() => {
 
 afterEach(() => {
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
+  state.codexAccessToken = originalCodexAccessToken
+  state.codexAccountId = originalCodexAccountId
   providerConfigs = {}
   messageApiWebSearchModel = undefined
 })
@@ -219,9 +349,11 @@ describe("provider messages web_search", () => {
 
     const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
       model: string
+      stream?: boolean
       tools?: Array<Record<string, unknown>>
     }
     expect(upstreamBody.model).toBe("gpt-search")
+    expect(upstreamBody.stream).toBe(true)
     expect(upstreamBody.tools).toEqual([
       {
         type: "web_search",
@@ -272,7 +404,7 @@ describe("provider messages web_search", () => {
       tools?: Array<Record<string, unknown>>
     }
     expect(upstreamBody.model).toBe("gpt-search")
-    expect(upstreamBody.stream).toBe(false)
+    expect(upstreamBody.stream).toBe(true)
     expect(upstreamBody.tool_choice).toBeUndefined()
     expect(upstreamBody.tools).toEqual([
       {
@@ -301,6 +433,89 @@ describe("provider messages web_search", () => {
         web_search_requests: 1,
       },
     })
+  })
+
+  test("runs codex web_search through streaming Responses", async () => {
+    providerConfigs.codex = {
+      name: "codex",
+      type: "openai-responses",
+      baseUrl: "https://codex.example/backend-api",
+      apiKey: "unused",
+      authType: "authorization",
+      models: {
+        "gpt-search": {
+          toolContentSupportType: [],
+        },
+      },
+    }
+
+    const app = createApp()
+    const response = await app.request("/codex/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "What is the Node.js LTS?" }],
+        model: "gpt-search",
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe("https://codex.example/backend-api/codex/responses")
+
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      stream?: boolean
+    }
+    expect(upstreamBody.stream).toBe(true)
+
+    const upstreamHeaders = new Headers((init as RequestInit).headers)
+    expect(upstreamHeaders.get("accept")).toBe("text/event-stream")
+
+    const json = (await response.json()) as AnthropicResponse
+    expect(json.content.map((block) => block.type)).toEqual([
+      "server_tool_use",
+      "web_search_tool_result",
+      "text",
+    ])
+  })
+
+  test("streams synthetic Anthropic events after parsing upstream Responses stream", async () => {
+    const app = createApp()
+    const response = await app.request("/search/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "What is the Node.js LTS?" }],
+        model: "gpt-search",
+        stream: true,
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(response.status).toBe(200)
+
+    const [, init] = fetchMock.mock.calls[0]
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      stream?: boolean
+    }
+    expect(upstreamBody.stream).toBe(true)
+
+    const text = await response.text()
+    expect(text).toContain("event: message_start")
+    expect(text).toContain("event: content_block_start")
+    expect(text).toContain("server_tool_use")
+    expect(text).toContain("web_search_tool_result")
+    expect(text).toContain("Node.js 24 is the latest LTS.")
+    expect(text).toContain("event: message_stop")
   })
 
   test("strips Anthropic web_search when mixed with normal tools", async () => {

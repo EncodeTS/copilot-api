@@ -56,6 +56,7 @@ import {
 } from "~/routes/messages/responses-translation"
 import {
   buildSyntheticStreamEvents,
+  collectWebSearchResponsesStreamResult,
   hasWebSearchServerTool,
   isWebSearchOnlyRequest,
   prepareWebSearchResponsesPayload,
@@ -220,6 +221,7 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
       getCodexModels().data.find((model) => model.id === payload.model)
     : undefined
   const responsesPayload = prepareWebSearchResponsesPayload(payload)
+  responsesPayload.stream = true
 
   applyResponsesApiContextManagement(
     responsesPayload,
@@ -239,8 +241,23 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
       providerConfig.baseUrl,
     )
 
+    if (isResponsesStream(upstreamResponse)) {
+      const body = await collectWebSearchResponsesStreamResult({
+        errorMessagePrefix: `${provider} web search responses stream`,
+        parseEvent: (data) =>
+          parseResponsesProviderStreamChunk(data, providerConfig),
+        upstreamResponse,
+        logger,
+      })
+      return respondWebSearchProviderMessagesJson(c, {
+        body,
+        payload,
+        provider,
+      })
+    }
+
     return respondWebSearchProviderMessagesJson(c, {
-      body: upstreamResponse as ResponsesResult,
+      body: upstreamResponse,
       payload,
       provider,
     })
@@ -261,6 +278,22 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
       "Failed to create provider web search responses",
       upstreamResponse,
     )
+  }
+
+  const contentType = upstreamResponse.headers.get("content-type") ?? ""
+  if (contentType.includes("text/event-stream")) {
+    const body = await collectWebSearchResponsesStreamResult({
+      errorMessagePrefix: `${provider} web search responses stream`,
+      parseEvent: (data) =>
+        parseResponsesProviderStreamChunk(data, providerConfig),
+      upstreamResponse: events(upstreamResponse),
+      logger,
+    })
+    return respondWebSearchProviderMessagesJson(c, {
+      body,
+      payload,
+      provider,
+    })
   }
 
   const jsonBody = (await upstreamResponse.json()) as ResponsesResult

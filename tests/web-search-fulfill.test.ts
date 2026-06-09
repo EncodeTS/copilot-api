@@ -92,6 +92,110 @@ const makeResponsesResult = (
     ...overrides,
   }) as unknown as ResponsesResult
 
+async function* makeResponsesStream(result: ResponsesResult) {
+  await Promise.resolve()
+  yield {
+    event: "response.created",
+    data: JSON.stringify({
+      response: {
+        ...result,
+        output: [],
+        output_text: "",
+        usage: null,
+      },
+      sequence_number: 1,
+      type: "response.created",
+    }),
+  }
+  yield {
+    event: "response.output_item.done",
+    data: JSON.stringify({
+      item: result.output[0],
+      output_index: 0,
+      sequence_number: 2,
+      type: "response.output_item.done",
+    }),
+  }
+  yield {
+    event: "response.output_item.added",
+    data: JSON.stringify({
+      item: {
+        id: "msg-1",
+        role: "assistant",
+        status: "in_progress",
+        type: "message",
+      },
+      output_index: 1,
+      sequence_number: 3,
+      type: "response.output_item.added",
+    }),
+  }
+  yield {
+    event: "response.output_text.delta",
+    data: JSON.stringify({
+      content_index: 0,
+      delta: "Node.js 24 is the latest LTS.",
+      item_id: "msg-1",
+      output_index: 1,
+      sequence_number: 4,
+      type: "response.output_text.delta",
+    }),
+  }
+  yield {
+    event: "response.output_text.annotation.added",
+    data: JSON.stringify({
+      annotation: {
+        title: "Node.js",
+        type: "url_citation",
+        url: "https://nodejs.org",
+      },
+      annotation_index: 0,
+      content_index: 0,
+      item_id: "msg-1",
+      output_index: 1,
+      sequence_number: 5,
+      type: "response.output_text.annotation.added",
+    }),
+  }
+  yield {
+    event: "response.output_text.done",
+    data: JSON.stringify({
+      content_index: 0,
+      item_id: "msg-1",
+      output_index: 1,
+      sequence_number: 6,
+      text: "Node.js 24 is the latest LTS.",
+      type: "response.output_text.done",
+    }),
+  }
+  yield {
+    event: "response.output_item.done",
+    data: JSON.stringify({
+      item: {
+        id: "msg-1",
+        role: "assistant",
+        status: "completed",
+        type: "message",
+      },
+      output_index: 1,
+      sequence_number: 7,
+      type: "response.output_item.done",
+    }),
+  }
+  yield {
+    event: "response.completed",
+    data: JSON.stringify({
+      response: {
+        ...result,
+        output: [],
+        output_text: "",
+      },
+      sequence_number: 8,
+      type: "response.completed",
+    }),
+  }
+}
+
 const originalDeps = { ...webSearchFlowDependencies }
 
 afterEach(() => {
@@ -205,7 +309,7 @@ describe("handleWebSearchViaResponses", () => {
       payload: ResponsesPayload,
     ) => {
       sentPayload = payload
-      return Promise.resolve(makeResponsesResult())
+      return Promise.resolve(makeResponsesStream(makeResponsesResult()))
     }) as never
     webSearchFlowDependencies.createUsageRecorder = (() => () => {}) as never
 
@@ -214,6 +318,7 @@ describe("handleWebSearchViaResponses", () => {
 
     // Request was switched to the GPT model with a Responses web_search tool.
     expect(sentPayload?.model).toBe("gpt-5-mini")
+    expect(sentPayload?.stream).toBe(true)
     expect(sentPayload?.tools).toEqual([{ type: "web_search" }])
 
     const response = captured.json as AnthropicResponse
