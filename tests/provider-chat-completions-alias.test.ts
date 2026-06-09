@@ -31,8 +31,9 @@ await mock.module("~/lib/token-usage", () => ({
   createProviderTokenUsageRecorder: () => noopTokenUsageRecorder,
 }))
 
-const { completionRoutes } =
-  await import("../src/routes/chat-completions/route")
+const { completionRoutes } = await import(
+  "../src/routes/chat-completions/route"
+)
 
 const originalFetch = globalThis.fetch
 

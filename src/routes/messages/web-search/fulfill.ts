@@ -158,10 +158,8 @@ export const extractWebSearchConfig = (
   }
 }
 
-export interface ReconstructedWebSearchResponse extends Omit<
-  AnthropicResponse,
-  "content"
-> {
+export interface ReconstructedWebSearchResponse
+  extends Omit<AnthropicResponse, "content"> {
   content: Array<AnthropicTextBlock | AnthropicWebSearchContentBlock>
 }
 
