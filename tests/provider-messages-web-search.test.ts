@@ -570,7 +570,7 @@ describe("provider messages web_search", () => {
           toolContentSupportType: [],
         },
       },
-    } as ResolvedProviderConfig
+    }
 
     const app = createApp()
     const response = await app.request("/search/v1/messages", {
