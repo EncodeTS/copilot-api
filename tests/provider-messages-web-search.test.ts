@@ -13,7 +13,6 @@ const actualTokenUsageModule = await import("../src/lib/token-usage")
 
 let providerConfigs: Record<string, ResolvedProviderConfig> = {}
 let messageApiWebSearchModel: string | undefined
-let providerMessageApiWebSearchModel: string | undefined
 
 const noopTokenUsageRecorder = () => {}
 const checkRateLimit = mock(async () => {})
@@ -25,7 +24,6 @@ const findEndpointModel = mock((model: string) => ({
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
   getMessageApiWebSearchModel: () => messageApiWebSearchModel,
-  getProviderMessageApiWebSearchModel: () => providerMessageApiWebSearchModel,
   getProviderConfig: (name: string) => providerConfigs[name] ?? null,
   isResponsesApiWebSearchEnabled: () => true,
   resolveMappedModel: (model: string) => model,
@@ -181,7 +179,6 @@ beforeEach(() => {
     },
   }
   messageApiWebSearchModel = undefined
-  providerMessageApiWebSearchModel = undefined
   checkRateLimit.mockClear()
   findEndpointModel.mockClear()
   fetchMock.mockClear()
@@ -193,7 +190,6 @@ afterEach(() => {
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
   providerConfigs = {}
   messageApiWebSearchModel = undefined
-  providerMessageApiWebSearchModel = undefined
 })
 
 describe("provider messages web_search", () => {
@@ -215,7 +211,7 @@ describe("provider messages web_search", () => {
     })
 
     expect(response.status).toBe(200)
-    expect(checkRateLimit).toHaveBeenCalledTimes(1)
+    expect(checkRateLimit).toHaveBeenCalledTimes(0)
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
     const [url, init] = fetchMock.mock.calls[0]
@@ -305,68 +301,6 @@ describe("provider messages web_search", () => {
         web_search_requests: 1,
       },
     })
-  })
-
-  test("reroutes provider messages web_search through configured provider/model", async () => {
-    providerMessageApiWebSearchModel = "search/gpt-search"
-    providerConfigs.dash = {
-      name: "dash",
-      type: "openai-compatible",
-      baseUrl: "https://dashscope.example/compatible-mode",
-      apiKey: "dash-key",
-      authType: "authorization",
-      models: {
-        "qwen-plus": {
-          toolContentSupportType: [],
-        },
-      },
-    }
-
-    const app = createApp()
-    const response = await app.request("/dash/v1/messages", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        max_tokens: 128,
-        messages: [{ role: "user", content: "What is the Node.js LTS?" }],
-        model: "qwen-plus",
-        tools: [webSearchTool],
-      }),
-    })
-
-    expect(response.status).toBe(200)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-
-    const [url, init] = fetchMock.mock.calls[0]
-    expect(url).toBe("https://provider.example/v1/responses")
-
-    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
-      model: string
-      tools?: Array<Record<string, unknown>>
-    }
-    expect(upstreamBody.model).toBe("gpt-search")
-    expect(upstreamBody.tools).toEqual([
-      {
-        type: "web_search",
-        filters: {
-          allowed_domains: ["nodejs.org"],
-        },
-        user_location: {
-          type: "approximate",
-          country: "US",
-        },
-      },
-    ])
-
-    const json = (await response.json()) as AnthropicResponse
-    expect(json.model).toBe("gpt-search")
-    expect(json.content.map((block) => block.type)).toEqual([
-      "server_tool_use",
-      "web_search_tool_result",
-      "text",
-    ])
   })
 
   test("strips Anthropic web_search when mixed with normal tools", async () => {

@@ -23,15 +23,12 @@ export interface AppConfig {
   useResponsesApiWebSocket?: boolean
   anthropicApiKey?: string
   useResponsesApiWebSearch?: boolean
-  // Provider Messages routes can reroute Anthropic's web_search server tool to
-  // another provider/model that supports it. Leave empty to keep provider-local
-  // behavior.
-  providerMessageApiWebSearchModel?: string
   // Copilot rejects Anthropic's web_search server tool on /v1/messages, so a
-  // Claude request that only asks for web search is switched to this
-  // Responses-capable GPT model, which runs the search natively. Leave unset to
-  // disable (the tool is then stripped). Mixing web_search with other tools is
-  // not supported.
+  // Claude request that only asks for web search is switched to this model.
+  // A `provider/model` alias is passed straight through to that provider's
+  // (websearch-capable) message API, while a plain GPT model runs the search
+  // via /responses. Leave unset to disable (the tool is then stripped).
+  // Mixing web_search with other tools is not supported.
   messageApiWebSearchModel?: string
   claudeTokenMultiplier?: number
 }
@@ -131,7 +128,6 @@ const defaultConfig: AppConfig = {
   useMessagesApi: true,
   useResponsesApiWebSocket: true,
   useResponsesApiWebSearch: true,
-  providerMessageApiWebSearchModel: "",
   messageApiWebSearchModel: "gpt-5-mini",
 }
 
@@ -639,19 +635,9 @@ export function isResponsesApiWebSearchEnabled(): boolean {
   return config.useResponsesApiWebSearch ?? true
 }
 
-export function isMessagesApiWebSearchEnabled(): boolean {
-  return Boolean(getMessageApiWebSearchModel())
-}
-
 export function getMessageApiWebSearchModel(): string | undefined {
   const config = getConfig()
   const model = config.messageApiWebSearchModel ?? "gpt-5-mini"
-  return model && model.trim().length > 0 ? model : undefined
-}
-
-export function getProviderMessageApiWebSearchModel(): string | undefined {
-  const config = getConfig()
-  const model = config.providerMessageApiWebSearchModel
   return model && model.trim().length > 0 ? model : undefined
 }
 

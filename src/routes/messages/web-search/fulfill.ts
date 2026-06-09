@@ -7,6 +7,10 @@ import type { CompactType } from "~/lib/compact"
 import type { SubagentMarker } from "~/lib/subagent"
 import type { Model } from "~/services/copilot/get-models"
 
+import {
+  getMessageApiWebSearchModel,
+  isResponsesApiWebSearchEnabled,
+} from "~/lib/config"
 import { findEndpointModel } from "~/lib/models"
 import {
   parseProviderModelAlias,
@@ -17,7 +21,12 @@ import {
   normalizeResponsesUsage,
   type UsageTokens,
 } from "~/lib/token-usage"
-import { getUUID, parseUserIdMetadata } from "~/lib/utils"
+import {
+  generateRequestIdFromPayload,
+  getRootSessionId,
+  getUUID,
+  parseUserIdMetadata,
+} from "~/lib/utils"
 import {
   createResponses as createCopilotResponses,
   type ResponsesPayload,
@@ -32,7 +41,9 @@ import type {
   AnthropicWebSearchContentBlock,
   AnthropicWebSearchResultItem,
 } from "../anthropic-types"
+import { getCompactType } from "../preprocess"
 import { translateAnthropicMessagesToResponsesPayload } from "../responses-translation"
+import { parseSubagentMarkerFromFirstUser } from "../subagent-marker"
 import {
   getResponsesRequestOptions,
   getResponsesTransportForModel,
@@ -258,6 +269,61 @@ const createUsageRecorder = (
     sessionId,
     webSearchModel,
   )
+
+/**
+ * Entry point for web-search detection and routing on /v1/messages.
+ * Called after model mapping but before provider alias resolution and
+ * preprocessing. Returns a Response when web search is handled (provider
+ * reroute or responses-native), or `null` when no web_search tool is
+ * present or the tool was stripped (caller continues normal flow).
+ *
+ * Uses a callback for provider forwarding to avoid circular imports.
+ */
+export const tryHandleWebSearch = async (
+  c: Context,
+  payload: AnthropicMessagesPayload,
+  options: {
+    logger: ConsolaInstance
+    forwardToProvider: (
+      c: Context,
+      payload: AnthropicMessagesPayload,
+      provider: string,
+    ) => Promise<Response>
+  },
+): Promise<Response | null> => {
+  if (!hasWebSearchServerTool(payload)) return null
+
+  const route = resolveWebSearchRoute(payload, {
+    webSearchModel: getMessageApiWebSearchModel(),
+    responsesWebSearchEnabled: isResponsesApiWebSearchEnabled(),
+  })
+
+  if (route.kind === "provider") {
+    payload.model = route.alias.model
+    return await options.forwardToProvider(c, payload, route.alias.provider)
+  }
+
+  if (route.kind === "responses") {
+    const subagentMarker = parseSubagentMarkerFromFirstUser(payload)
+    let sessionId = getRootSessionId(payload, c)
+    const requestId = generateRequestIdFromPayload(payload, sessionId)
+    if (!sessionId) {
+      sessionId = getUUID(requestId)
+    }
+    const compactType = getCompactType(payload)
+    return await handleWebSearchViaResponses(c, payload, {
+      subagentMarker,
+      webSearchModel: route.model,
+      requestId,
+      sessionId,
+      compactType,
+      logger: options.logger,
+    })
+  }
+
+  stripWebSearchServerTool(payload)
+  return null
+}
 
 /**
  * Handles a web-search-only Claude (Messages API) request by switching it to a
