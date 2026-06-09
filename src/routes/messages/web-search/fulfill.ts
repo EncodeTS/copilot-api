@@ -672,9 +672,12 @@ export const handleWebSearchViaResponses = async (
       compactType: options.compactType,
     }) ?? "http"
 
-  logger.debug(
-    `Switching web search request to model: ${webSearchModel} ${JSON.stringify(responsesPayload)}`,
+  debugJson(
+    logger,
+    `Switching web search request to model: ${webSearchModel}`,
+    responsesPayload,
   )
+
   const upstreamResult = await webSearchFlowDependencies.createResponses(
     responsesPayload,
     {
@@ -700,8 +703,11 @@ export const handleWebSearchViaResponses = async (
   const { extract, response } = reconstructWebSearchResponse(payload, result, {
     requestId: options.requestId,
   })
-  logger.debug(
-    `Web search via responses: ${extract.queries.length} quer(y/ies), ${extract.sources.length} source(s), ${JSON.stringify(result)}`,
+
+  debugJson(
+    logger,
+    `Web search via responses: ${extract.queries.length} quer(y/ies), ${extract.sources.length} source(s)`,
+    result,
   )
 
   const recordUsage = createUsageRecorder(
