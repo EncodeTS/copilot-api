@@ -9,6 +9,7 @@ const actualConfigModule = await import("../src/lib/config")
 const actualModelsModule = await import("../src/lib/models")
 const actualRateLimitModule = await import("../src/lib/rate-limit")
 const actualStateModule = await import("../src/lib/state")
+const actualTokenModule = await import("../src/lib/token")
 const actualTokenUsageModule = await import("../src/lib/token-usage")
 
 let providerConfigs: Record<string, ResolvedProviderConfig> = {}
@@ -48,6 +49,11 @@ await mock.module("~/lib/state", () => ({
     tokenBasedBilling: true,
     verbose: false,
   },
+}))
+
+await mock.module("~/lib/token", () => ({
+  ...actualTokenModule,
+  setupCodexToken: async () => {},
 }))
 
 await mock.module("~/lib/token-usage", () => ({
