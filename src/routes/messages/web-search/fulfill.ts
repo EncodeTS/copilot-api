@@ -29,8 +29,10 @@ import {
 } from "~/lib/utils"
 import {
   createResponses as createCopilotResponses,
+  type ResponseStreamEvent,
   type ResponsesPayload,
   type ResponsesResult,
+  type ResponsesStream,
 } from "~/services/copilot/create-responses"
 
 import type {
@@ -54,6 +56,7 @@ import {
   type WebSearchExtract,
   type WebSearchToolConfig,
 } from "./backend"
+import { debugJson } from "~/lib/logger"
 
 export const webSearchFlowDependencies = {
   createResponses: createCopilotResponses,
@@ -218,7 +221,7 @@ export const prepareWebSearchResponsesPayload = (
     ...payload,
     model: options.model ?? payload.model,
     tools: [],
-    stream: false,
+    stream: true,
   }
 
   const responsesPayload = translateAnthropicMessagesToResponsesPayload(
@@ -258,6 +261,320 @@ export const reconstructWebSearchResponse = (
 
   return { extract, response }
 }
+
+type WebSearchResponsesStreamEvent = ResponseStreamEvent | StreamEventRecord
+
+type StreamEventRecord = Record<string, unknown> & {
+  type: string
+}
+
+interface CollectedOutputTextPart {
+  annotations: Array<unknown>
+  contentIndex: number
+  itemId?: string
+  outputIndex: number
+  text: string
+}
+
+interface WebSearchResponsesStreamCollection {
+  createdResponse?: ResponsesResult
+  outputItemsByIndex: Map<number, StreamEventRecord>
+  terminalResponse?: ResponsesResult
+  textPartsByKey: Map<string, CollectedOutputTextPart>
+}
+
+export const collectWebSearchResponsesStreamResult = async ({
+  errorMessagePrefix = "Web search responses stream",
+  parseEvent = parseWebSearchResponsesStreamEvent,
+  upstreamResponse,
+  logger,
+}: {
+  errorMessagePrefix?: string
+  parseEvent?: (data: string) => WebSearchResponsesStreamEvent | null
+  upstreamResponse: ResponsesStream
+  logger: ConsolaInstance
+}): Promise<ResponsesResult> => {
+  const state = createWebSearchResponsesStreamCollection()
+
+  for await (const chunk of upstreamResponse) {
+    debugJson(logger, "Received web search responses stream chunk:", chunk.data)
+    if (chunk.event === "ping") {
+      continue
+    }
+
+    if (!chunk.data || chunk.data === "[DONE]") {
+      continue
+    }
+
+    const parsed = parseEvent(chunk.data)
+    if (!parsed) {
+      continue
+    }
+
+    collectWebSearchResponsesStreamEvent(parsed, state)
+
+    if (parsed.type === "error") {
+      throw new Error(
+        getStreamErrorMessage(parsed) ?? `${errorMessagePrefix} failed`,
+      )
+    }
+
+    if (isResponsesTerminalEvent(parsed)) {
+      return buildWebSearchResponsesStreamResult(state)
+    }
+  }
+
+  throw new Error(`${errorMessagePrefix} ended without a terminal event`)
+}
+
+const parseWebSearchResponsesStreamEvent = (
+  data: string,
+): WebSearchResponsesStreamEvent | null => {
+  try {
+    return JSON.parse(data) as WebSearchResponsesStreamEvent
+  } catch {
+    return null
+  }
+}
+
+const isWebSearchResponsesStream = (
+  value: unknown,
+): value is ResponsesStream => {
+  return (
+    Boolean(value)
+    && typeof (value as ResponsesStream)[Symbol.asyncIterator] === "function"
+  )
+}
+
+const isResponsesTerminalEvent = (
+  event: WebSearchResponsesStreamEvent,
+): event is WebSearchResponsesStreamEvent & {
+  response: ResponsesResult
+  type: "response.completed" | "response.failed" | "response.incomplete"
+} =>
+  (event.type === "response.completed"
+    || event.type === "response.failed"
+    || event.type === "response.incomplete")
+  && getResponsesResult(event.response) !== undefined
+
+const createWebSearchResponsesStreamCollection =
+  (): WebSearchResponsesStreamCollection => ({
+    outputItemsByIndex: new Map(),
+    textPartsByKey: new Map(),
+  })
+
+const collectWebSearchResponsesStreamEvent = (
+  event: WebSearchResponsesStreamEvent,
+  state: WebSearchResponsesStreamCollection,
+): void => {
+  if (event.type === "response.created") {
+    state.createdResponse = getResponsesResult(event.response)
+    return
+  }
+
+  if (isResponsesTerminalEvent(event)) {
+    state.terminalResponse = event.response
+    return
+  }
+
+  if (
+    event.type === "response.output_item.added"
+    || event.type === "response.output_item.done"
+  ) {
+    const outputIndex = getNumber(event.output_index)
+    const item = getRecord(event.item)
+    if (outputIndex !== undefined && item) {
+      state.outputItemsByIndex.set(outputIndex, item)
+    }
+    return
+  }
+
+  if (event.type === "response.output_text.delta") {
+    const part = getOrCreateOutputTextPart(event, state)
+    const delta = getString(event.delta)
+    if (part && delta) {
+      part.text += delta
+    }
+    return
+  }
+
+  if (event.type === "response.output_text.done") {
+    const part = getOrCreateOutputTextPart(event, state)
+    const text = getString(event.text)
+    if (part && text !== undefined) {
+      part.text = text
+    }
+    return
+  }
+
+  if (event.type === "response.output_text.annotation.added") {
+    const part = getOrCreateOutputTextPart(event, state)
+    const annotation = event.annotation
+    if (part && annotation !== undefined) {
+      part.annotations.push(annotation)
+    }
+    return
+  }
+
+  if (event.type === "response.content_part.done") {
+    collectDoneContentPart(event, state)
+  }
+}
+
+const buildWebSearchResponsesStreamResult = (
+  state: WebSearchResponsesStreamCollection,
+): ResponsesResult => {
+  const response = state.terminalResponse ?? state.createdResponse
+  if (!response) {
+    throw new Error("Web search responses stream ended without a response")
+  }
+
+  const output = buildCollectedWebSearchOutput(state)
+  return {
+    ...response,
+    output: output.length > 0 ? output : response.output,
+  }
+}
+
+const buildCollectedWebSearchOutput = (
+  state: WebSearchResponsesStreamCollection,
+): ResponsesResult["output"] =>
+  [...state.outputItemsByIndex.entries()]
+    .sort(([leftIndex], [rightIndex]) => leftIndex - rightIndex)
+    .map(([outputIndex, item]) =>
+      mergeOutputItemWithCollectedText(outputIndex, item, state),
+    ) as unknown as ResponsesResult["output"]
+
+const mergeOutputItemWithCollectedText = (
+  outputIndex: number,
+  item: StreamEventRecord,
+  state: WebSearchResponsesStreamCollection,
+): StreamEventRecord => {
+  if (item.type !== "message") {
+    return item
+  }
+
+  const collectedParts = getCollectedTextParts(outputIndex, state)
+  if (collectedParts.length === 0) {
+    return item
+  }
+
+  const content = getArray(item.content)
+  for (const part of collectedParts) {
+    const existingPart = getRecord(content[part.contentIndex])
+    content[part.contentIndex] = {
+      ...existingPart,
+      type: "output_text",
+      text: part.text,
+      annotations: mergeAnnotations(
+        existingPart?.annotations,
+        part.annotations,
+      ),
+    }
+  }
+
+  return {
+    ...item,
+    content,
+  }
+}
+
+const collectDoneContentPart = (
+  event: WebSearchResponsesStreamEvent,
+  state: WebSearchResponsesStreamCollection,
+): void => {
+  const eventRecord = getRecord(event)
+  const partRecord = getRecord(eventRecord?.part)
+  if (partRecord?.type !== "output_text") {
+    return
+  }
+
+  const part = getOrCreateOutputTextPart(event, state)
+  if (!part) {
+    return
+  }
+
+  const text = getString(partRecord.text)
+  if (text !== undefined) {
+    part.text = text
+  }
+
+  const annotations = getArray(partRecord.annotations)
+  if (annotations.length > 0) {
+    part.annotations.push(...annotations)
+  }
+}
+
+const getOrCreateOutputTextPart = (
+  event: WebSearchResponsesStreamEvent,
+  state: WebSearchResponsesStreamCollection,
+): CollectedOutputTextPart | undefined => {
+  const eventRecord = getRecord(event)
+  const outputIndex = getNumber(eventRecord?.output_index)
+  const contentIndex = getNumber(eventRecord?.content_index)
+  if (outputIndex === undefined || contentIndex === undefined) {
+    return undefined
+  }
+
+  const key = `${outputIndex}:${contentIndex}`
+  let part = state.textPartsByKey.get(key)
+  if (!part) {
+    part = {
+      annotations: [],
+      contentIndex,
+      itemId: getString(eventRecord?.item_id),
+      outputIndex,
+      text: "",
+    }
+    state.textPartsByKey.set(key, part)
+  }
+
+  return part
+}
+
+const getCollectedTextParts = (
+  outputIndex: number,
+  state: WebSearchResponsesStreamCollection,
+): Array<CollectedOutputTextPart> =>
+  [...state.textPartsByKey.values()]
+    .filter((part) => part.outputIndex === outputIndex)
+    .sort(
+      (left, right) =>
+        left.contentIndex - right.contentIndex
+        || (left.itemId ?? "").localeCompare(right.itemId ?? ""),
+    )
+
+const mergeAnnotations = (
+  existingAnnotations: unknown,
+  collectedAnnotations: Array<unknown>,
+): Array<unknown> => {
+  const annotations = getArray(existingAnnotations)
+  annotations.push(...collectedAnnotations)
+  return annotations
+}
+
+const getResponsesResult = (value: unknown): ResponsesResult | undefined =>
+  getRecord(value) as ResponsesResult | undefined
+
+const getRecord = (value: unknown): StreamEventRecord | undefined =>
+  value && typeof value === "object" ? (value as StreamEventRecord) : undefined
+
+const getArray = (value: unknown): Array<unknown> =>
+  Array.isArray(value) ? Array.from(value as Array<unknown>) : []
+
+const getStreamErrorMessage = (
+  event: WebSearchResponsesStreamEvent,
+): string | undefined => {
+  const eventRecord = getRecord(event)
+  const error = getRecord(eventRecord?.error)
+  return getString(error?.message) ?? getString(eventRecord?.message)
+}
+
+const getNumber = (value: unknown): number | undefined =>
+  typeof value === "number" ? value : undefined
+
+const getString = (value: unknown): string | undefined =>
+  typeof value === "string" ? value : undefined
 
 const createUsageRecorder = (
   payload: AnthropicMessagesPayload,
@@ -358,7 +675,7 @@ export const handleWebSearchViaResponses = async (
   logger.debug(
     `Switching web search request to model: ${webSearchModel} ${JSON.stringify(responsesPayload)}`,
   )
-  const result = (await webSearchFlowDependencies.createResponses(
+  const upstreamResult = await webSearchFlowDependencies.createResponses(
     responsesPayload,
     {
       vision,
@@ -369,7 +686,16 @@ export const handleWebSearchViaResponses = async (
       sessionId: options.sessionId,
       compactType: options.compactType,
     },
-  )) as ResponsesResult
+  )
+
+  const result =
+    isWebSearchResponsesStream(upstreamResult) ?
+      await collectWebSearchResponsesStreamResult({
+        errorMessagePrefix: "Web search responses stream",
+        upstreamResponse: upstreamResult,
+        logger,
+      })
+    : upstreamResult
 
   const { extract, response } = reconstructWebSearchResponse(payload, result, {
     requestId: options.requestId,
