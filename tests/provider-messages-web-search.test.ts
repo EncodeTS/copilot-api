@@ -355,10 +355,12 @@ describe("provider messages web_search", () => {
 
     const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
       model: string
+      reasoning?: { effort?: string }
       stream?: boolean
       tools?: Array<Record<string, unknown>>
     }
     expect(upstreamBody.model).toBe("gpt-search")
+    expect(upstreamBody.reasoning?.effort).toBe("low")
     expect(upstreamBody.stream).toBe(true)
     expect(upstreamBody.tools).toEqual([
       {
