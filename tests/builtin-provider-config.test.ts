@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 
 interface ConfigFileShape {
   builtinProviders?: Record<string, unknown>
+  messageApiWebSearchModel?: string
   modelResponsesApiCompactThresholds?: Record<string, number>
   parityFirst?: boolean
   useResponsesApiContextManagement?: boolean
@@ -110,6 +111,19 @@ describe("builtin provider config", () => {
 
     expect(JSON.parse(output)).toEqual({ enabled: true })
     expect(readConfigFile(configPath).parityFirst).toBe(true)
+  })
+
+  test("does not route Messages API web search to a small model by default", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = path.join(tempDir, "config.json")
+
+    const output = runScript(
+      tempDir,
+      'const { getMessageApiWebSearchModel } = await import("./src/lib/config"); console.log(JSON.stringify({ model: getMessageApiWebSearchModel() ?? null }));',
+    )
+
+    expect(JSON.parse(output)).toEqual({ model: null })
+    expect(readConfigFile(configPath).messageApiWebSearchModel).toBeUndefined()
   })
 
   test("allows disabling Responses API context management", () => {

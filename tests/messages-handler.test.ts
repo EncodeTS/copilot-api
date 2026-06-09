@@ -13,6 +13,7 @@ const actualConfigModule = await import("../src/lib/config")
 const actualModelsModule = await import("../src/lib/models")
 const actualRateLimitModule = await import("../src/lib/rate-limit")
 const actualUtilsModule = await import("../src/lib/utils")
+const actualResponsesUtilsModule = await import("../src/routes/responses/utils")
 
 const state = {
   ...actualStateModule.state,
@@ -76,6 +77,7 @@ await mock.module("~/lib/config", () => ({
   getSmallModel: () => "small-model",
   isParityFirstEnabled: () => parityFirstEnabled,
   isMessagesApiEnabled: () => messagesApiEnabled,
+  isResponsesApiWebSocketEnabled: () => true,
   resolveMappedModel: (model: string) => modelMappings[model] ?? model,
 }))
 await mock.module("~/lib/models", () => ({
@@ -84,6 +86,28 @@ await mock.module("~/lib/models", () => ({
 }))
 await mock.module("~/lib/utils", () => ({
   ...actualUtilsModule,
+}))
+await mock.module("~/routes/responses/utils", () => ({
+  ...actualResponsesUtilsModule,
+  getResponsesTransportForModel: (
+    model:
+      | {
+          supported_endpoints?: Array<string>
+        }
+      | undefined,
+    options: {
+      compactType?: number
+    } = {},
+  ) => {
+    const endpoints = model?.supported_endpoints ?? []
+    if (options.compactType !== 1 && endpoints.includes("ws:/responses")) {
+      return "websocket"
+    }
+    if (endpoints.includes("/responses")) {
+      return "http"
+    }
+    return null
+  },
 }))
 const { handleCompletion, messagesFlowHandlers } =
   await import("../src/routes/messages/handler")
