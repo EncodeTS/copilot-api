@@ -142,10 +142,12 @@ await mock.module("undici", () => ({
 }))
 
 const { state } = await import("../src/lib/state")
-const { getProxyEnvDispatcher, initProxyFromEnv } =
-  await import("../src/lib/proxy")
-const { createResponses } =
-  await import("../src/services/copilot/create-responses")
+const { getProxyEnvDispatcher, initProxyFromEnv } = await import(
+  "../src/lib/proxy"
+)
+const { createResponses } = await import(
+  "../src/services/copilot/create-responses"
+)
 
 const originalState = {
   accountType: state.accountType,

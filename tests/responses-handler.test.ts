@@ -32,13 +32,16 @@ const createResponsesResult = (model: string) => ({
 const { state } = await import("../src/lib/state")
 const { closeUsageStore } = await import("../src/lib/token-usage")
 const { tokenUsageRoute } = await import("../src/routes/token-usage/route")
-const { responsesHandlerDependencies } =
-  await import("../src/routes/responses/handler")
+const { responsesHandlerDependencies } = await import(
+  "../src/routes/responses/handler"
+)
 const { responsesRoutes } = await import("../src/routes/responses/route")
-const { responsesUtilsDependencies } =
-  await import("../src/routes/responses/utils")
-const { generateRequestIdFromPayload, getUUID } =
-  await import("../src/lib/utils")
+const { responsesUtilsDependencies } = await import(
+  "../src/routes/responses/utils"
+)
+const { generateRequestIdFromPayload, getUUID } = await import(
+  "../src/lib/utils"
+)
 
 const defaultResponsesHandlerDependencies = {
   ...responsesHandlerDependencies,

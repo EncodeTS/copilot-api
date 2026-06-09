@@ -61,8 +61,9 @@ await mock.module("~/lib/token-usage", () => ({
   createProviderTokenUsageRecorder: () => noopTokenUsageRecorder,
 }))
 
-const { providerMessageRoutes } =
-  await import("../src/routes/provider/messages/route")
+const { providerMessageRoutes } = await import(
+  "../src/routes/provider/messages/route"
+)
 const { messageRoutes } = await import("../src/routes/messages/route")
 const { state } = await import("../src/lib/state")
 

@@ -51,8 +51,9 @@ await mock.module("~/lib/token-usage", () => ({
 }))
 
 const { messageRoutes } = await import("../src/routes/messages/route")
-const { resolveCountTokensModel } =
-  await import("../src/routes/messages/count-tokens-handler")
+const { resolveCountTokensModel } = await import(
+  "../src/routes/messages/count-tokens-handler"
+)
 
 const originalFetch = globalThis.fetch
 
