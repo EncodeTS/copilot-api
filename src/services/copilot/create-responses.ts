@@ -223,6 +223,7 @@ export interface IncompleteDetails {
 }
 
 export interface ResponseError {
+  code: string | null
   message: string
 }
 
@@ -358,9 +359,12 @@ export interface ResponseErrorEvent {
   sequence_number: number
   type: "error"
   error?: {
+    type?: string | null
     code: string | null
     message: string
   }
+  status_code?: number
+  headers?: Record<string, string>
 }
 
 export interface ResponseFunctionCallArgumentsDeltaEvent {
