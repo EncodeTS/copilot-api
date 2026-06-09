@@ -129,7 +129,7 @@ const defaultConfig: AppConfig = {
   useMessagesApi: true,
   useResponsesApiWebSocket: true,
   useResponsesApiWebSearch: true,
-  messageApiWebSearchModel: "gpt-5.5",
+  messageApiWebSearchModel: "gpt-5.4-mini",
   parityFirst: true,
 }
 
