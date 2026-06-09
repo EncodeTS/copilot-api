@@ -5,8 +5,9 @@ import type { createResponses as createCopilotResponses } from "../src/services/
 
 let responsesApiWebSocketEnabled = true
 
-const createResponses = mock((() =>
-  Promise.resolve(streamChunks([]))) as typeof createCopilotResponses)
+const createResponsesImpl: typeof createCopilotResponses = () =>
+  Promise.resolve(streamChunks([]))
+const createResponses = mock(createResponsesImpl)
 
 const createResponsesResult = (model: string) => ({
   created_at: 0,
