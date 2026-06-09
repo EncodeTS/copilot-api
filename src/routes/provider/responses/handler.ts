@@ -161,12 +161,7 @@ const streamProviderResponses = async (
   }
 
   const firstChunk = firstResult.value
-  const userAgent = requestContext.getStore()?.userAgent ?? ""
-  if (
-    userAgent.includes("codex")
-    && firstChunk.data
-    && firstChunk.data !== "[DONE]"
-  ) {
+  if (firstChunk.data && firstChunk.data !== "[DONE]") {
     const event = parseProviderResponsesStreamEvent(firstChunk.data, {
       normalizeCodex: options.normalizeCodex,
       provider: options.provider,
