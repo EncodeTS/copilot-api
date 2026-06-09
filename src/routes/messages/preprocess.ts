@@ -851,7 +851,8 @@ export const prepareMessagesApiPayload = (
     if (shouldSummarizeThinkingDisplayForModel(payload.model)) {
       payload.thinking.display = "summarized"
     }
-    let effort = getReasoningEffortForModel(payload.model)
+    let effort =
+      payload.output_config?.effort ?? getReasoningEffortForModel(payload.model)
     if (effort === "none" || effort === "minimal") {
       effort = "low"
     }
