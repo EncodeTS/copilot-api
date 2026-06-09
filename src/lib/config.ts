@@ -27,7 +27,7 @@ export interface AppConfig {
   // Claude request that only asks for web search is switched to this model.
   // A `provider/model` alias is passed straight through to that provider's
   // (websearch-capable) message API, while a plain GPT model runs the search
-  // via /responses. Leave unset to disable (the tool is then stripped).
+  // via /responses. Set to an empty string to disable (the tool is then stripped).
   // Mixing web_search with other tools is not supported.
   messageApiWebSearchModel?: string
   claudeTokenMultiplier?: number
@@ -129,6 +129,7 @@ const defaultConfig: AppConfig = {
   useMessagesApi: true,
   useResponsesApiWebSocket: true,
   useResponsesApiWebSearch: true,
+  messageApiWebSearchModel: "gpt-5.5",
   parityFirst: true,
 }
 
@@ -255,12 +256,15 @@ function mergeDefaultConfig(config: AppConfig): {
   const hasReasoningEffortChanges = missingReasoningEffortModels.length > 0
   const hasResponsesApiCompactThresholdChanges =
     missingResponsesApiCompactThresholdModels.length > 0
+  const hasMessageApiWebSearchModelChange =
+    config.messageApiWebSearchModel === undefined
   const hasParityFirstChange = config.parityFirst === undefined
 
   if (
     !hasExtraPromptChanges
     && !hasReasoningEffortChanges
     && !hasResponsesApiCompactThresholdChanges
+    && !hasMessageApiWebSearchModelChange
     && !hasParityFirstChange
   ) {
     return { mergedConfig: config, changed: false }
@@ -281,6 +285,9 @@ function mergeDefaultConfig(config: AppConfig): {
         ...defaultModelReasoningEfforts,
         ...modelReasoningEfforts,
       },
+      messageApiWebSearchModel:
+        config.messageApiWebSearchModel
+        ?? defaultConfig.messageApiWebSearchModel,
       parityFirst: config.parityFirst ?? defaultConfig.parityFirst,
     },
     changed: true,
