@@ -10,23 +10,20 @@ export const modelRoutes = new Hono()
 modelRoutes.get("/", async (c) => {
   try {
     if (!state.models) {
-      // This should be handled by startup logic, but as a fallback.
       await cacheModels()
     }
 
     const models = state.models?.data.map((model) => {
-      // limits is typed as required but is missing for embedding models at runtime
-      const is1m =
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-        model.capabilities.limits?.max_context_window_tokens === 1_000_000
+      const capabilities = model.capabilities
+      const contextWindow = capabilities?.limits?.max_context_window_tokens ?? 0
       const clientId = toClientModelId(model.id)
       return {
         ...model,
-        id: is1m ? `${clientId}[1m]` : clientId,
+        id: contextWindow > 1_000_000 ? `${clientId}[1m]` : clientId,
         object: "model",
         type: "model",
-        created: 0, // No date available from source
-        created_at: new Date(0).toISOString(), // No date available from source
+        created: 0,
+        created_at: new Date(0).toISOString(),
         owned_by: model.vendor,
         display_name: model.name,
       }
