@@ -43,7 +43,7 @@ import type {
   AnthropicWebSearchContentBlock,
   AnthropicWebSearchResultItem,
 } from "../anthropic-types"
-import { getCompactType } from "../preprocess"
+import { getCompactType, normalizeSystemMessages } from "../preprocess"
 import { translateAnthropicMessagesToResponsesPayload } from "../responses-translation"
 import { parseSubagentMarkerFromFirstUser } from "../subagent-marker"
 import {
@@ -609,6 +609,8 @@ export const tryHandleWebSearch = async (
   },
 ): Promise<Response | null> => {
   if (!hasWebSearchServerTool(payload)) return null
+
+  normalizeSystemMessages(payload)
 
   const route = resolveWebSearchRoute(payload, {
     webSearchModel: getMessageApiWebSearchModel(),
