@@ -196,6 +196,8 @@ export const normalizeClaudeCodeBillingHeaderInSystem = (
 export const normalizeSystemMessages = (
   payload: AnthropicMessagesPayload,
 ): void => {
+  normalizeClaudeCodeBillingHeaderInSystem(payload)
+
   if (!payload.messages.some((msg) => msg.role === "system")) {
     return
   }
