@@ -107,11 +107,11 @@ export async function handleCompletion(c: Context) {
     logger.debug("Compact request type:", compactType)
   }
 
-  const lastMessageCacheControl = getLastMessageContentCacheControl(
-    anthropicPayload.messages.at(-1),
-  )
-
   if (!state.tokenBasedBilling) {
+    const lastMessageCacheControl = getLastMessageContentCacheControl(
+      anthropicPayload.messages.at(-1),
+    )
+
     stripToolReferenceTurnBoundary(anthropicPayload)
 
     // Merge tool_result and text blocks into tool_result to avoid consuming premium requests
@@ -122,9 +122,9 @@ export async function handleCompletion(c: Context) {
     mergeToolResultForClaude(anthropicPayload, {
       skipLastMessage: compactType === COMPACT_REQUEST,
     })
-  }
 
-  applyLastMessageCacheControl(anthropicPayload, lastMessageCacheControl)
+    applyLastMessageCacheControl(anthropicPayload, lastMessageCacheControl)
+  }
 
   const requestId = generateRequestIdFromPayload(anthropicPayload, sessionId)
   logger.debug("Generated request ID:", requestId)
