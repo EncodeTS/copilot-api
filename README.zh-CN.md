@@ -7,7 +7,7 @@
 > [!IMPORTANT]
 > **使用前请先注意以下几点：**
 >
-> 1. **Claude Code 配置：** 与 Claude Code 搭配使用时，请将模型 ID 配置为 `claude-opus-4-6` 或 `claude-opus-4.6`（不要带 `[1m]` 后缀，超出 GitHub Copilot 上下文窗口限制太多可能导致账号被封）。示例 claude `settings.json` 见 [通过 `settings.json` 手动配置](#manual-configuration-with-settingsjson)。
+> 1. **Claude Code 配置：** 与 Claude Code 搭配使用时，请将模型 ID 配置为 `claude-opus-4-6` 或 `claude-opus-4.6`。示例 claude `settings.json` 见 [通过 `settings.json` 手动配置](#manual-configuration-with-settingsjson)。
 >
 > 2. **推荐给 opencode 用户：** 对 opencode 而言，优先使用 opencode OAuth app。它与 opencode 内置的 GitHub Copilot provider 行为一致，且没有 Terms of Service 风险：
 >    ```sh

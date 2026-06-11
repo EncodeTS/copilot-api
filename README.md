@@ -7,7 +7,7 @@ English | [简体中文](./README.zh-CN.md)
 > [!IMPORTANT]
 > **Before using, please be aware of the following:**
 >
-> 1. **Claude Code configuration:** When using with Claude Code, please configure the model ID as `claude-opus-4-6` or `claude-opus-4.6` (without the `[1m]` suffix, exceeding GitHub Copilot's context window limit too much may lead to being banned). Example claude `settings.json` see [Manual Configuration with `settings.json`](#manual-configuration-with-settingsjson). 
+> 1. **Claude Code configuration:** When using with Claude Code, please configure the model ID as `claude-opus-4-6` or `claude-opus-4.6`. Example claude `settings.json` see [Manual Configuration with `settings.json`](#manual-configuration-with-settingsjson). 
 >
 > 2. **Recommend for Opencode:** For opencode, prefer the opencode OAuth app. It matches opencode's built-in GitHub Copilot provider and avoids Terms of Service risk:
 >    ```sh
