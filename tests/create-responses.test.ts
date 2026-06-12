@@ -222,7 +222,7 @@ describe("createResponses", () => {
       "VScode-SessionId": "session-1",
       "VScode-MachineId": "machine-1",
       "X-Agent-Task-Id": "request-1",
-      "X-GitHub-Api-Version": "2026-01-09",
+      "X-GitHub-Api-Version": "2026-06-01",
       "X-Interaction-Id": "interaction-1",
       "X-Interaction-Type": "conversation-agent",
       "X-Request-Id": "request-1",
