@@ -1,11 +1,13 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "@jeffreycao/copilot-api",
-  "version": "1.11.8",
+  "version": "1.12.0",
   "description": "OpenAI and Anthropic-compatible gateway for GitHub Copilot or Codex or third-party providers.",
   "keywords": [
+    "github-copilot",
+    "codex",
     "ai-gateway",
-    "github-copilot"
+    "multi-provider"
   ],
   "homepage": "https://github.com/caozhiyuan/copilot-api",
   "bugs": "https://github.com/caozhiyuan/copilot-api/issues",
