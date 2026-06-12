@@ -11,7 +11,7 @@ import { state } from "~/lib/state"
 export const toClientModelId = (modelId: string): string => {
   const normalized = normalizeSdkModelId(modelId)
   if (!normalized) return modelId
-  const versionHyphenated = normalized.version.replace(/\./g, "-")
+  const versionHyphenated = normalized.version.replaceAll(".", "-")
   return `claude-${normalized.family}-${versionHyphenated}`
 }
 

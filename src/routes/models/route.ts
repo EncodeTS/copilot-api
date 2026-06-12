@@ -17,9 +17,11 @@ modelRoutes.get("/", async (c) => {
       const capabilities = model.capabilities
       const contextWindow = capabilities?.limits?.max_context_window_tokens ?? 0
       const clientId = toClientModelId(model.id)
+      const is1m = contextWindow >= 1_000_000
       return {
+        claude_model_id: is1m ? `${clientId}[1m]` : clientId,
         ...model,
-        id: contextWindow > 1_000_000 ? `${clientId}[1m]` : clientId,
+        id: clientId,
         object: "model",
         type: "model",
         created: 0,
