@@ -561,6 +561,40 @@ Why these fields matter:
 - `model`, `small_model`, and `agent.*.model` let you keep `gpt-5.4` for build/plan work while routing exploration and background work to `gpt-5-mini`.
 - If you enable `auth.apiKeys` in this AI gateway, replace `dummy` with a real key. Otherwise any placeholder value is fine.
 
+## Using with Codex
+
+This AI gateway can also power Codex.
+
+### Codex `config.toml` Reference
+
+Add the following `[model_providers.copilot_api]` section to your Codex `~/.codex/config.toml`:
+
+```toml
+model_provider = "copilot_api"
+model_reasoning_summary = "auto"
+model_verbosity = "medium"
+model_context_window = 272000
+model_auto_compact_token_limit = 244800
+
+[model_providers.copilot_api]
+name = "OpenAI"
+base_url = "http://localhost:4141"
+env_key = "GITHUB_COPILOT_API_KEY"
+requires_openai_auth = true
+supports_websockets = false
+wire_api = "responses"
+request_max_retries = 3
+stream_max_retries = 1
+stream_idle_timeout_ms = 300000
+
+[features]
+remote_compaction_v2 = true
+enable_request_compression = false
+```
+
+> [!NOTE]
+> This configuration is specific to Codex and the GitHub Copilot provider. `name` must be set to `"OpenAI"`. It can help mitigate Codex local compact cache miss issues. If you have enabled `useResponsesApiContextManagement` (Responses API context management compaction), `remote_compaction_v2` or local compact is generally not triggered, but it may still occur when tool results return a large number of tokens.
+
 ## Plugin Integrations
 
 Plugin integrations are available for Claude Code and opencode.
