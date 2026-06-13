@@ -565,6 +565,40 @@ npx @jeffreycao/copilot-api@latest --oauth-app=opencode start
 - `model`、`small_model` 与 `agent.*.model` 让你可以把 `gpt-5.4` 用于 build/plan，同时把探索和后台工作路由到 `gpt-5-mini`。
 - 如果你在此代理中启用了 `auth.apiKeys`，请把 `dummy` 替换为真实 key；否则任意占位值都可以。
 
+## 与 Codex 一起使用
+
+这个 AI gateway 也可以为 Codex 提供后端能力。
+
+### Codex `config.toml` 参考配置
+
+把以下 `[model_providers.copilot_api]` 段加入你的 Codex `~/.codex/config.toml`：
+
+```toml
+model_provider = "copilot_api"
+model_reasoning_summary = "auto"
+model_verbosity = "medium"
+model_context_window = 272000
+model_auto_compact_token_limit = 244800
+
+[model_providers.copilot_api]
+name = "OpenAI"
+base_url = "http://localhost:4141"
+env_key = "GITHUB_COPILOT_API_KEY"
+requires_openai_auth = true
+supports_websockets = false
+wire_api = "responses"
+request_max_retries = 3
+stream_max_retries = 1
+stream_idle_timeout_ms = 300000
+
+[features]
+remote_compaction_v2 = true
+enable_request_compression = false
+```
+
+> [!NOTE]
+> 此配置仅限于 Codex 与 GitHub Copilot provider。`name` 一定要配置为 `"OpenAI"`。它可以缓解 Codex local compact 不命中缓存的问题。如果你已开启 `useResponsesApiContextManagement`（Responses API context management 压缩），通常不会走到 `remote_compaction_v2` 或者 local compact，但如果工具返回 tokens 过大，仍有可能触发。
+
 <a id="plugin-integrations"></a>
 
 ## 插件集成
