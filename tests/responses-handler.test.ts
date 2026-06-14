@@ -251,14 +251,14 @@ describe("responses handler token usage", () => {
               max_prompt_tokens: 128000,
             },
           },
-          id: "gpt-5.4",
+          id: "gpt-threshold-test",
           supported_endpoints: ["/responses"],
         },
       ],
     } as typeof state.models
     responsesUtilsDependencies.getModelResponsesApiCompactThreshold = (
       model,
-    ) => (model === "gpt-5.4" ? 272_000 * 0.8 : undefined)
+    ) => (model === "gpt-threshold-test" ? 272_000 * 0.8 : undefined)
     createResponses.mockImplementation((payload) =>
       Promise.resolve(createResponsesResult(payload.model)),
     )
@@ -267,7 +267,7 @@ describe("responses handler token usage", () => {
     const response = await app.request("/v1/responses", {
       body: JSON.stringify({
         input: "hello",
-        model: "gpt-5.4",
+        model: "gpt-threshold-test",
       }),
       headers: {
         "content-type": "application/json",
@@ -283,6 +283,43 @@ describe("responses handler token usage", () => {
         compact_threshold: 217600,
       },
     ])
+  })
+
+  test("does not add context management when input ends with compaction trigger", async () => {
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        input: [
+          {
+            content: [
+              {
+                text: "Completed the review for the latest two commits.",
+                type: "output_text",
+              },
+            ],
+            phase: "final_answer",
+            role: "assistant",
+            type: "message",
+          },
+          {
+            type: "compaction_trigger",
+          },
+        ],
+        model: "gpt-test",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(1)
+    expect(createResponses.mock.calls[0][0].context_management).toBeUndefined()
   })
 
   test("preserves custom apply_patch tools for Copilot Responses", async () => {
