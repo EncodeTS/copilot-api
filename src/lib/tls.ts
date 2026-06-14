@@ -10,8 +10,8 @@ export function enableSystemCACompat() {
       tls.setDefaultCACertificates([...defaultCerts, ...systemCerts])
 
       consola.log("[tls] system ca enabled")
-    } catch (e) {
-      consola.warn("[tls] system ca not available:", e)
+    } catch {
+      consola.log("[tls] system ca not available")
     }
   }
 }
