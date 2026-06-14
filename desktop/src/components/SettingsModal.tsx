@@ -7,7 +7,7 @@ interface SettingsModalProps {
   onClose: () => void
 }
 
-type Section = 'general' | 'startup'
+type Section = 'general' | 'network' | 'startup'
 
 function requiresAppRestart(previous: DesktopSettings, next: DesktopSettings): boolean {
   return previous.apiHome !== next.apiHome
@@ -55,6 +55,12 @@ const IconStartup = () => (
   </svg>
 )
 
+const IconNetwork = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 0 20"/><path d="M12 2a15.3 15.3 0 0 0 0 20"/>
+  </svg>
+)
+
 export default function SettingsModal({ onClose }: SettingsModalProps) {
   const { t, setLangPref } = useLanguage()
   const [section, setSection] = useState<Section>('general')
@@ -68,6 +74,12 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
     verbose: false,
     showToken: false,
     language: 'auto',
+    proxy: {
+      enabled: false,
+      http_proxy: 'http://127.0.0.1:8888',
+      https_proxy: 'http://127.0.0.1:8888',
+      no_proxy: 'localhost,127.0.0.1',
+    },
   })
   const [initialSettings, setInitialSettings] = useState<DesktopSettings | null>(null)
   const [saving, setSaving] = useState(false)
@@ -105,6 +117,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
 
   const navItems: { key: Section; label: string; icon: React.ReactNode }[] = [
     { key: 'general',  label: t('settings.sectionGeneral'),  icon: <IconGeneral /> },
+    { key: 'network',  label: t('settings.sectionNetwork'),  icon: <IconNetwork /> },
     { key: 'startup',  label: t('settings.sectionStartup'),  icon: <IconStartup /> },
   ]
 
@@ -174,6 +187,51 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                     onChange={v => setSettings(s => ({ ...s, minimizeToTray: v }))}
                   />
                 </SettingRow>
+              </div>
+            )}
+
+            {section === 'network' && (
+              <div>
+                <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[12px] leading-relaxed text-slate-500">
+                  {t('settings.proxySystemNote')}
+                </div>
+                <SettingRow label={t('settings.proxyEnabled')} description={t('settings.proxyEnabledDesc')}>
+                  <Toggle
+                    checked={settings.proxy.enabled}
+                    onChange={v => setSettings(s => ({ ...s, proxy: { ...s.proxy, enabled: v } }))}
+                  />
+                </SettingRow>
+                <div className="mt-4">
+                  <div className="text-[13px] font-medium text-[#0f172a] mb-1.5">{t('settings.httpProxy')}</div>
+                  <input
+                    type="text"
+                    disabled={!settings.proxy.enabled}
+                    value={settings.proxy.http_proxy}
+                    onChange={e => setSettings(s => ({ ...s, proxy: { ...s.proxy, http_proxy: e.target.value } }))}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-[13px] bg-slate-50 text-[#0f172a] placeholder-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-300 focus:bg-white disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                  />
+                </div>
+                <div className="mt-4">
+                  <div className="text-[13px] font-medium text-[#0f172a] mb-1.5">{t('settings.httpsProxy')}</div>
+                  <input
+                    type="text"
+                    disabled={!settings.proxy.enabled}
+                    value={settings.proxy.https_proxy}
+                    onChange={e => setSettings(s => ({ ...s, proxy: { ...s.proxy, https_proxy: e.target.value } }))}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-[13px] bg-slate-50 text-[#0f172a] placeholder-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-300 focus:bg-white disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                  />
+                </div>
+                <div className="mt-4">
+                  <div className="text-[13px] font-medium text-[#0f172a] mb-1.5">{t('settings.noProxy')}</div>
+                  <input
+                    type="text"
+                    disabled={!settings.proxy.enabled}
+                    value={settings.proxy.no_proxy}
+                    onChange={e => setSettings(s => ({ ...s, proxy: { ...s.proxy, no_proxy: e.target.value } }))}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-[13px] bg-slate-50 text-[#0f172a] placeholder-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-300 focus:bg-white disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                  />
+                  <p className="text-[12px] text-slate-400 mt-1.5 leading-relaxed">{t('settings.noProxyDesc')}</p>
+                </div>
               </div>
             )}
 

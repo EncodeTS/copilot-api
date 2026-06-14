@@ -1,25 +1,26 @@
-const PROXY_ENV_KEYS = {
-  all: ['ALL_PROXY', 'all_proxy'],
-  http: ['HTTP_PROXY', 'http_proxy'],
-  https: ['HTTPS_PROXY', 'https_proxy'],
-  noProxy: ['NO_PROXY', 'no_proxy']
-} as const
+import type { DesktopProxySettings } from '../src/types/ipc'
 
-const DEFAULT_PROXY_BYPASS_RULES = ['<local>', 'localhost', '127.0.0.1', '[::1]']
+const PROXY_ENV_KEYS = [
+  'ALL_PROXY',
+  'all_proxy',
+  'HTTP_PROXY',
+  'http_proxy',
+  'HTTPS_PROXY',
+  'https_proxy',
+  'NO_PROXY',
+  'no_proxy'
+] as const
 
-export interface ElectronProxyConfig {
+export type ElectronProxyConfig = ElectronSystemProxyConfig | ElectronFixedProxyConfig
+
+export interface ElectronSystemProxyConfig {
+  mode: 'system'
+}
+
+export interface ElectronFixedProxyConfig {
   mode: 'fixed_servers'
   proxyBypassRules?: string
   proxyRules: string
-}
-
-function readEnvValue(env: NodeJS.ProcessEnv, keys: readonly string[]): string | null {
-  for (const key of keys) {
-    const value = env[key]?.trim()
-    if (value) return value
-  }
-
-  return null
 }
 
 function createProxyUrl(rawProxy: string): URL | null {
@@ -31,6 +32,11 @@ function createProxyUrl(rawProxy: string): URL | null {
   } catch {
     return null
   }
+}
+
+function normalizeProxyEnvValue(rawProxy: string): string | null {
+  const url = createProxyUrl(rawProxy)
+  return url?.toString() ?? null
 }
 
 function formatProxyHost(url: URL): string | null {
@@ -69,31 +75,30 @@ function normalizeNoProxyRule(rule: string): string | null {
   return trimmed
 }
 
-function buildProxyBypassRules(noProxy: string | null): string {
-  const rules = [...DEFAULT_PROXY_BYPASS_RULES]
+function buildProxyBypassRules(noProxy: string): string | undefined {
+  const rules: string[] = []
 
-  if (noProxy) {
-    for (const rawRule of noProxy.split(',')) {
-      const rule = normalizeNoProxyRule(rawRule)
-      if (rule && !rules.includes(rule)) {
-        rules.push(rule)
-      }
+  for (const rawRule of noProxy.split(',')) {
+    const rule = normalizeNoProxyRule(rawRule)
+    if (rule && !rules.includes(rule)) {
+      rules.push(rule)
     }
   }
 
-  return rules.join(';')
+  return rules.length > 0 ? rules.join(';') : undefined
 }
 
-export function resolveElectronProxyConfigFromEnv(
-  env: NodeJS.ProcessEnv = process.env
-): ElectronProxyConfig | null {
-  const allProxy = readEnvValue(env, PROXY_ENV_KEYS.all)
-  const httpProxy = readEnvValue(env, PROXY_ENV_KEYS.http) ?? allProxy
-  const httpsProxy = readEnvValue(env, PROXY_ENV_KEYS.https) ?? allProxy
+export function resolveElectronProxyConfigFromSettings(
+  proxySettings: DesktopProxySettings
+): ElectronProxyConfig {
+  if (!proxySettings.enabled) return { mode: 'system' }
+
+  const httpProxy = proxySettings.http_proxy.trim()
+  const httpsProxy = proxySettings.https_proxy.trim()
 
   const httpProxyServer = httpProxy ? formatProxyServer(httpProxy) : null
   const httpsProxyServer = httpsProxy ? formatProxyServer(httpsProxy) : null
-  if (!httpProxyServer && !httpsProxyServer) return null
+  if (!httpProxyServer && !httpsProxyServer) return { mode: 'system' }
 
   const proxyRules = [
     httpProxyServer ? `http=${httpProxyServer}` : null,
@@ -102,7 +107,40 @@ export function resolveElectronProxyConfigFromEnv(
 
   return {
     mode: 'fixed_servers',
-    proxyBypassRules: buildProxyBypassRules(readEnvValue(env, PROXY_ENV_KEYS.noProxy)),
+    proxyBypassRules: buildProxyBypassRules(proxySettings.no_proxy),
     proxyRules: proxyRules.join(';')
   }
+}
+
+export function applyDesktopProxySettingsToEnv(
+  env: NodeJS.ProcessEnv,
+  proxySettings: DesktopProxySettings
+): boolean {
+  for (const key of PROXY_ENV_KEYS) {
+    delete env[key]
+  }
+
+  if (!proxySettings.enabled) return false
+
+  const httpProxy = normalizeProxyEnvValue(proxySettings.http_proxy)
+  const httpsProxy = normalizeProxyEnvValue(proxySettings.https_proxy)
+  const noProxy = proxySettings.no_proxy.trim()
+  if (!httpProxy && !httpsProxy) return false
+
+  if (httpProxy) {
+    env.HTTP_PROXY = httpProxy
+    env.http_proxy = httpProxy
+  }
+
+  if (httpsProxy) {
+    env.HTTPS_PROXY = httpsProxy
+    env.https_proxy = httpsProxy
+  }
+
+  if (noProxy) {
+    env.NO_PROXY = noProxy
+    env.no_proxy = noProxy
+  }
+
+  return true
 }

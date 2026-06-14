@@ -101,6 +101,14 @@ export interface Locale {
     sectionGeneral: string
     minimizeToTray: string
     minimizeToTrayDesc: string
+    sectionNetwork: string
+    proxySystemNote: string
+    proxyEnabled: string
+    proxyEnabledDesc: string
+    httpProxy: string
+    httpsProxy: string
+    noProxy: string
+    noProxyDesc: string
     sectionStartup: string
     oauthApp: string
     oauthAppDefault: string
