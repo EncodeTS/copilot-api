@@ -161,6 +161,10 @@ export interface ResponseInputCompaction {
   encrypted_content: string
 }
 
+export interface ResponseInputCompactionTrigger {
+  type: "compaction_trigger"
+}
+
 export type ResponseInputItem =
   | ResponseInputMessage
   | ResponseFunctionToolCallItem
@@ -169,6 +173,7 @@ export type ResponseInputItem =
   | ResponseToolSearchOutputItem
   | ResponseInputReasoning
   | ResponseInputCompaction
+  | ResponseInputCompactionTrigger
   | Record<string, unknown>
 
 export type ResponseInputContent =
