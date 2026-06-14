@@ -35,7 +35,8 @@ interface RunServerOptions {
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
-  await import("./lib/tls")
+  const tlsModule = await import("./lib/tls")
+  tlsModule.enableSystemCACompat()
 
   // Work around unjs/consola#357 until a release includes PR #359.
   consola.options.throttle = 0
