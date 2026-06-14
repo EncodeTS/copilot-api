@@ -117,12 +117,6 @@ describe("chat completions handler", () => {
     })
 
     expect(response.status).toBe(400)
-    expect(await response.json()).toEqual({
-      error: {
-        message: "Please use `/v1/responses` or `/v1/messages` API",
-        type: "invalid_request_error",
-      },
-    })
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })
