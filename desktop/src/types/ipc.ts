@@ -112,6 +112,13 @@ export interface TokenUsageEventsPage {
   total_pages: number
 }
 
+export interface DesktopProxySettings {
+  enabled: boolean
+  http_proxy: string
+  https_proxy: string
+  no_proxy: string
+}
+
 export interface DesktopSettings {
   apiHome: string
   oauthApp: 'default' | 'opencode'
@@ -122,6 +129,7 @@ export interface DesktopSettings {
   verbose: boolean
   showToken: boolean
   language: LangPreference
+  proxy: DesktopProxySettings
 }
 
 // Extend the global window type for the renderer process.

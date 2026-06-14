@@ -4,7 +4,8 @@ import net from 'node:net'
 import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 
-import type { ServerStatus } from '../src/types/ipc'
+import type { DesktopProxySettings, ServerStatus } from '../src/types/ipc'
+import { applyDesktopProxySettingsToEnv } from './electron-proxy-config'
 import { tMain } from './i18n'
 
 let serverProcess: UtilityProcess | null = null
@@ -155,7 +156,12 @@ function getServerPath(): string {
 export async function startServer(
   port: number,
   token: string,
-  serverOptions?: { accountType?: string; verbose?: boolean; showToken?: boolean }
+  serverOptions?: {
+    accountType?: string
+    verbose?: boolean
+    showToken?: boolean
+    proxy?: DesktopProxySettings
+  }
 ): Promise<ServerStatus> {
   const available = await checkPortAvailable(port)
   if (!available) {
@@ -178,9 +184,13 @@ export async function startServer(
     ...process.env,
     NODE_ENV: 'production'
   }
+  const proxyEnabled = serverOptions?.proxy
+    ? applyDesktopProxySettingsToEnv(env, serverOptions.proxy)
+    : false
 
   const serverPath = getServerPath()
-  const args = ['start', '--github-token', token, '--port', String(port), '--proxy-env']
+  const args = ['start', '--github-token', token, '--port', String(port)]
+  if (proxyEnabled) args.push('--proxy-env')
   if (serverOptions?.accountType && serverOptions.accountType !== 'individual') {
     args.push('--account-type', serverOptions.accountType)
   }

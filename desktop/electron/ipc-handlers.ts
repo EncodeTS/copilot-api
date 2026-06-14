@@ -195,7 +195,8 @@ export function registerIpcHandlers(
     const serverOptions = {
       accountType: settings.accountType,
       verbose: settings.verbose,
-      showToken: settings.showToken
+      showToken: settings.showToken,
+      proxy: settings.proxy
     }
 
     // Persist the last used port

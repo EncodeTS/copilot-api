@@ -1,35 +1,45 @@
 import { app, session } from 'electron'
 
-import { resolveElectronProxyConfigFromEnv } from './electron-proxy-config'
+import type { DesktopProxySettings } from '../src/types/ipc'
+import {
+  resolveElectronProxyConfigFromSettings,
+  type ElectronProxyConfig
+} from './electron-proxy-config'
 
-export function applyElectronProxyCommandLineFromEnv(
-  env: NodeJS.ProcessEnv = process.env
+function isFixedProxyConfig(
+  proxyConfig: ElectronProxyConfig
+): proxyConfig is Extract<ElectronProxyConfig, { mode: 'fixed_servers' }> {
+  return proxyConfig.mode === 'fixed_servers'
+}
+
+export function applyElectronProxyCommandLine(
+  proxySettings: DesktopProxySettings
 ): boolean {
-  const proxyConfig = resolveElectronProxyConfigFromEnv(env)
-  if (!proxyConfig) return false
+  const proxyConfig = resolveElectronProxyConfigFromSettings(proxySettings)
+  if (!isFixedProxyConfig(proxyConfig)) return false
 
   app.commandLine.appendSwitch('proxy-server', proxyConfig.proxyRules)
   if (proxyConfig.proxyBypassRules) {
     app.commandLine.appendSwitch('proxy-bypass-list', proxyConfig.proxyBypassRules)
   }
 
-  console.info(`Electron command-line proxy configured from environment: ${proxyConfig.proxyRules}`)
+  console.info(`Electron command-line proxy configured from desktop settings: ${proxyConfig.proxyRules}`)
   return true
 }
 
-export async function applyElectronProxyFromEnv(
-  env: NodeJS.ProcessEnv = process.env
+export async function applyElectronProxy(
+  proxySettings: DesktopProxySettings
 ): Promise<void> {
-  const proxyConfig = resolveElectronProxyConfigFromEnv(env)
-  if (!proxyConfig) return
+  const proxyConfig = resolveElectronProxyConfigFromSettings(proxySettings)
 
   try {
     await app.setProxy(proxyConfig)
     await session.defaultSession.setProxy(proxyConfig)
     await session.defaultSession.closeAllConnections()
     await session.defaultSession.forceReloadProxyConfig()
-    console.info(`Electron proxy configured from environment: ${proxyConfig.proxyRules}`)
+    const source = isFixedProxyConfig(proxyConfig) ? `desktop settings: ${proxyConfig.proxyRules}` : 'system settings'
+    console.info(`Electron proxy configured from ${source}`)
   } catch (error) {
-    console.warn('Failed to configure Electron proxy from environment.', error)
+    console.warn('Failed to configure Electron proxy.', error)
   }
 }

@@ -1,8 +1,9 @@
+import fsSync from 'node:fs'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
-import type { DesktopSettings } from '../src/types/ipc'
+import type { DesktopProxySettings, DesktopSettings } from '../src/types/ipc'
 
 const SETTINGS_PATH = path.join(
   os.homedir(),
@@ -21,7 +22,24 @@ const DEFAULT_SETTINGS: DesktopSettings = {
   accountType: 'individual',
   verbose: false,
   showToken: false,
-  language: 'auto'
+  language: 'auto',
+  proxy: {
+    enabled: false,
+    http_proxy: 'http://127.0.0.1:8888',
+    https_proxy: 'http://127.0.0.1:8888',
+    no_proxy: 'localhost,127.0.0.1'
+  }
+}
+
+function normalizeProxySettings(
+  proxy: Partial<DesktopProxySettings> | null | undefined
+): DesktopProxySettings {
+  return {
+    enabled: typeof proxy?.enabled === 'boolean' ? proxy.enabled : DEFAULT_SETTINGS.proxy.enabled,
+    http_proxy: typeof proxy?.http_proxy === 'string' ? proxy.http_proxy : DEFAULT_SETTINGS.proxy.http_proxy,
+    https_proxy: typeof proxy?.https_proxy === 'string' ? proxy.https_proxy : DEFAULT_SETTINGS.proxy.https_proxy,
+    no_proxy: typeof proxy?.no_proxy === 'string' ? proxy.no_proxy : DEFAULT_SETTINGS.proxy.no_proxy
+  }
 }
 
 function normalizeSettings(settings: Partial<DesktopSettings> | null | undefined): DesktopSettings {
@@ -40,7 +58,17 @@ function normalizeSettings(settings: Partial<DesktopSettings> | null | undefined
     showToken: typeof settings?.showToken === 'boolean' ? settings.showToken : DEFAULT_SETTINGS.showToken,
     language: settings?.language === 'en' || settings?.language === 'zh' || settings?.language === 'auto'
       ? settings.language
-      : DEFAULT_SETTINGS.language
+      : DEFAULT_SETTINGS.language,
+    proxy: normalizeProxySettings(settings?.proxy)
+  }
+}
+
+export function readSettingsSync(): DesktopSettings {
+  try {
+    const raw = fsSync.readFileSync(SETTINGS_PATH, 'utf8')
+    return normalizeSettings(JSON.parse(raw) as Partial<DesktopSettings>)
+  } catch {
+    return { ...DEFAULT_SETTINGS, proxy: { ...DEFAULT_SETTINGS.proxy } }
   }
 }
 
@@ -49,7 +77,7 @@ export async function readSettings(): Promise<DesktopSettings> {
     const raw = await fs.readFile(SETTINGS_PATH, 'utf8')
     return normalizeSettings(JSON.parse(raw) as Partial<DesktopSettings>)
   } catch {
-    return { ...DEFAULT_SETTINGS }
+    return { ...DEFAULT_SETTINGS, proxy: { ...DEFAULT_SETTINGS.proxy } }
   }
 }
 
