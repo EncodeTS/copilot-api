@@ -3,6 +3,10 @@ import path from 'node:path'
 
 import { bindElectronFetch } from '../../src/lib/electron-fetch'
 import type { DesktopSettings } from '../src/types/ipc'
+import {
+  applyElectronProxyCommandLineFromEnv,
+  applyElectronProxyFromEnv
+} from './electron-proxy'
 import { tMain } from './i18n'
 
 const CLI_ENV_FLAGS = {
@@ -35,6 +39,7 @@ function applyCliEnvOverrides(argv: string[]): void {
 }
 
 applyCliEnvOverrides(process.argv)
+applyElectronProxyCommandLineFromEnv()
 bindElectronFetch()
 
 interface RuntimeDependencies {
@@ -250,6 +255,8 @@ function createWindow(): BrowserWindow {
 }
 
 app.whenReady().then(async () => {
+  await applyElectronProxyFromEnv()
+
   const { registerIpcHandlers, readSettings, onStatusChange, onLog } = await getRuntimeDependencies()
   const win = createWindow()
 
