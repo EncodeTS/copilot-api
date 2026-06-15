@@ -15,11 +15,22 @@ export interface AnthropicMessagesPayload {
     name?: string
   }
   max_tokens: number
-  thinking?: {
-    type: "enabled" | "adaptive"
-    budget_tokens?: number
-    display?: string
-  }
+  thinking?:
+    | {
+        type: "enabled"
+        budget_tokens?: number
+        display?: string
+      }
+    | {
+        type: "adaptive"
+        display?: string
+        budget_tokens?: never
+      }
+    | {
+        type: "disabled"
+        budget_tokens?: never
+        display?: never
+      }
   service_tier?: "auto" | "standard_only"
   output_config?: {
     effort?: "low" | "medium" | "high" | "xhigh" | "max"

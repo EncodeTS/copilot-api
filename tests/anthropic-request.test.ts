@@ -178,7 +178,7 @@ describe("Anthropic to OpenAI translation logic", () => {
     expect(isValidChatCompletionRequest(openAIPayload)).toBe(true)
   })
 
-  test("maps thinking budget within selected model limits", () => {
+  test("omits thinking budget when enabled thinking has no explicit budget", () => {
     const originalModels = state.models
     state.models = {
       object: "list",
@@ -198,6 +198,58 @@ describe("Anthropic to OpenAI translation logic", () => {
       const openAIPayload = translateToOpenAI(anthropicPayload)
 
       expect(openAIPayload.thinking_budget).toBeUndefined()
+    } finally {
+      state.models = originalModels
+    }
+  })
+
+  test("maps only enabled thinking with explicit budget to OpenAI thinking_budget", () => {
+    const originalModels = state.models
+    state.models = {
+      object: "list",
+      data: [createThinkingModel()],
+    }
+
+    try {
+      const enabledPayload = translateToOpenAI({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-thinking",
+        thinking: {
+          type: "enabled",
+          budget_tokens: 2048,
+        },
+      })
+      const overLimitPayload = translateToOpenAI({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-thinking",
+        thinking: {
+          type: "enabled",
+          budget_tokens: 4096,
+        },
+      })
+      const adaptivePayload = translateToOpenAI({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-thinking",
+        thinking: {
+          type: "adaptive",
+        },
+      })
+      const disabledPayload = translateToOpenAI({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-thinking",
+        thinking: {
+          type: "disabled",
+        },
+      })
+
+      expect(enabledPayload.thinking_budget).toBe(2048)
+      expect(overLimitPayload.thinking_budget).toBe(3000)
+      expect(adaptivePayload.thinking_budget).toBeUndefined()
+      expect(disabledPayload.thinking_budget).toBeUndefined()
     } finally {
       state.models = originalModels
     }
