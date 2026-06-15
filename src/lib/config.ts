@@ -31,6 +31,7 @@ export interface AppConfig {
   // Mixing web_search with other tools is not supported.
   messageApiWebSearchModel?: string
   claudeTokenMultiplier?: number
+  parityFirst?: boolean
 }
 
 export interface ModelConfig {
@@ -145,6 +146,7 @@ const defaultConfig: AppConfig = {
   useResponsesApiWebSocket: true,
   useResponsesApiWebSearch: true,
   messageApiWebSearchModel: "gpt-5-mini",
+  parityFirst: true,
 }
 
 let cachedConfig: AppConfig | null = null
@@ -270,11 +272,13 @@ function mergeDefaultConfig(config: AppConfig): {
   const hasReasoningEffortChanges = missingReasoningEffortModels.length > 0
   const hasResponsesApiCompactThresholdChanges =
     missingResponsesApiCompactThresholdModels.length > 0
+  const hasParityFirstChange = config.parityFirst === undefined
 
   if (
     !hasExtraPromptChanges
     && !hasReasoningEffortChanges
     && !hasResponsesApiCompactThresholdChanges
+    && !hasParityFirstChange
   ) {
     return { mergedConfig: config, changed: false }
   }
@@ -294,6 +298,7 @@ function mergeDefaultConfig(config: AppConfig): {
         ...defaultModelReasoningEfforts,
         ...modelReasoningEfforts,
       },
+      parityFirst: config.parityFirst ?? defaultConfig.parityFirst,
     },
     changed: true,
   }
@@ -433,6 +438,11 @@ export function resolveMappedModel(model: string): string {
 export function getSmallModel(): string {
   const config = getConfig()
   return config.smallModel ?? "gpt-5-mini"
+}
+
+export function isParityFirstEnabled(): boolean {
+  const config = getConfig()
+  return config.parityFirst ?? true
 }
 
 export function isResponsesApiContextManagementEnabled(): boolean {

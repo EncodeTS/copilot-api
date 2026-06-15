@@ -6,6 +6,7 @@ import { awaitApproval } from "~/lib/approval"
 import { COMPACT_REQUEST } from "~/lib/compact"
 import {
   getSmallModel,
+  isParityFirstEnabled,
   isMessagesApiEnabled,
   resolveMappedModel,
 } from "~/lib/config"
@@ -93,39 +94,40 @@ export async function handleCompletion(c: Context) {
 
   // claude code and opencode compact / auto-continue detection
   const compactType = getCompactType(anthropicPayload)
+  const parityFirst = isParityFirstEnabled()
 
-  // fix claude code 2.0.28+ warmup request consume premium request, forcing small model if no tools are used
-  // set "CLAUDE_CODE_SUBAGENT_MODEL": "you small model" also can avoid this
   const anthropicBeta = c.req.header("anthropic-beta")
   logger.debug("Anthropic Beta header:", anthropicBeta)
-  const noTools = !anthropicPayload.tools || anthropicPayload.tools.length === 0
-  if (anthropicBeta && noTools && compactType === 0) {
-    anthropicPayload.model = getSmallModel()
+  if (!parityFirst) {
+    // Legacy request-saving behavior: route warmup requests without tools to
+    // the configured small model.
+    const noTools =
+      !anthropicPayload.tools || anthropicPayload.tools.length === 0
+    if (anthropicBeta && noTools && compactType === 0) {
+      anthropicPayload.model = getSmallModel()
+    }
   }
 
   if (compactType) {
     logger.debug("Compact request type:", compactType)
   }
 
-  if (!state.tokenBasedBilling) {
-    const lastMessageCacheControl = getLastMessageContentCacheControl(
-      anthropicPayload.messages.at(-1),
+  const lastMessageCacheControl =
+    parityFirst ? undefined : (
+      getLastMessageContentCacheControl(anthropicPayload.messages.at(-1))
     )
 
-    stripToolReferenceTurnBoundary(anthropicPayload)
-
-    // Merge tool_result and text blocks into tool_result to avoid consuming premium requests
-    // (caused by skill invocations, edit hooks, plan or to do reminders)
-    // e.g. {"role":"user","content":[{"type":"tool_result","content":"Launching skill: xxx"},{"type":"text","text":"xxx"}]}
-    // not only for claude, but also for opencode
-    // compact requests still run this processing, except for the final compact message itself
-    mergeToolResultForClaude(anthropicPayload, {
-      skipLastMessage: compactType === COMPACT_REQUEST,
-    })
-
+  if (!parityFirst) {
+    if (!state.tokenBasedBilling) {
+      // Legacy request-saving behavior: merge tool_result and text blocks into
+      // tool_result to reduce extra model calls from tool reminders.
+      stripToolReferenceTurnBoundary(anthropicPayload)
+      mergeToolResultForClaude(anthropicPayload, {
+        skipLastMessage: compactType === COMPACT_REQUEST,
+      })
+    }
     applyLastMessageCacheControl(anthropicPayload, lastMessageCacheControl)
   }
-
   const requestId = generateRequestIdFromPayload(anthropicPayload, sessionId)
   logger.debug("Generated request ID:", requestId)
 
