@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url"
 interface ConfigFileShape {
   builtinProviders?: Record<string, unknown>
   modelResponsesApiCompactThresholds?: Record<string, number>
+  parityFirst?: boolean
   useResponsesApiContextManagement?: boolean
   providers?: Record<
     string,
@@ -96,6 +97,19 @@ describe("builtin provider config", () => {
     expect(readConfigFile(configPath).useResponsesApiContextManagement).toBe(
       true,
     )
+  })
+
+  test("persists parity-first mode by default", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = path.join(tempDir, "config.json")
+
+    const output = runScript(
+      tempDir,
+      'const { isParityFirstEnabled } = await import("./src/lib/config"); console.log(JSON.stringify({ enabled: isParityFirstEnabled() }));',
+    )
+
+    expect(JSON.parse(output)).toEqual({ enabled: true })
+    expect(readConfigFile(configPath).parityFirst).toBe(true)
   })
 
   test("allows disabling Responses API context management", () => {
