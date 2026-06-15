@@ -228,6 +228,10 @@ export const prepareWebSearchResponsesPayload = (
     switchedPayload,
     options.subagentAgentId,
   )
+  responsesPayload.reasoning = {
+    ...responsesPayload.reasoning,
+    effort: "low",
+  }
   responsesPayload.tools = [buildResponsesWebSearchTool(config)]
   responsesPayload.tool_choice = undefined
   return responsesPayload
