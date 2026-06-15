@@ -129,7 +129,7 @@ const defaultConfig: AppConfig = {
   useMessagesApi: true,
   useResponsesApiWebSocket: true,
   useResponsesApiWebSearch: true,
-  messageApiWebSearchModel: "gpt-5-mini",
+  messageApiWebSearchModel: "gpt-5.4-mini",
   parityFirst: true,
 }
 
@@ -256,12 +256,15 @@ function mergeDefaultConfig(config: AppConfig): {
   const hasReasoningEffortChanges = missingReasoningEffortModels.length > 0
   const hasResponsesApiCompactThresholdChanges =
     missingResponsesApiCompactThresholdModels.length > 0
+  const hasMessageApiWebSearchModelChange =
+    config.messageApiWebSearchModel === undefined
   const hasParityFirstChange = config.parityFirst === undefined
 
   if (
     !hasExtraPromptChanges
     && !hasReasoningEffortChanges
     && !hasResponsesApiCompactThresholdChanges
+    && !hasMessageApiWebSearchModelChange
     && !hasParityFirstChange
   ) {
     return { mergedConfig: config, changed: false }
@@ -282,6 +285,9 @@ function mergeDefaultConfig(config: AppConfig): {
         ...defaultModelReasoningEfforts,
         ...modelReasoningEfforts,
       },
+      messageApiWebSearchModel:
+        config.messageApiWebSearchModel
+        ?? defaultConfig.messageApiWebSearchModel,
       parityFirst: config.parityFirst ?? defaultConfig.parityFirst,
     },
     changed: true,
@@ -647,7 +653,7 @@ export function isResponsesApiWebSearchEnabled(): boolean {
 
 export function getMessageApiWebSearchModel(): string | undefined {
   const config = getConfig()
-  const model = config.messageApiWebSearchModel ?? "gpt-5-mini"
+  const model = config.messageApiWebSearchModel
   return model && model.trim().length > 0 ? model : undefined
 }
 
