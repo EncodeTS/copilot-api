@@ -2,6 +2,18 @@
 
 English | [简体中文](./README.zh-CN.md)
 
+## EncodeTS Fork Notice
+
+This repository is an EncodeTS fork of [caozhiyuan/copilot-api](https://github.com/caozhiyuan/copilot-api). It tracks upstream closely; most of this README still describes upstream behavior.
+
+Fork-specific builds and defaults:
+
+- Desktop releases are published in [this fork's GitHub Releases](https://github.com/EncodeTS/copilot-api/releases).
+- `parityFirst` defaults to `true`, so warmup/no-tools Messages API requests stay on the client-requested model instead of falling back to `smallModel` (`gpt-5-mini` by default), and `tool_result` boundaries are preserved.
+- Client `thinking` / `effort` payloads are preserved and normalized where compatible, and provider stream error handling has small robustness fixes.
+
+The `npx @jeffreycao/copilot-api@latest` examples below use the upstream npm package. To use this fork's patches, run from this source tree or install the desktop app from this fork's Releases.
+
 ## Important Notes
 
 > [!IMPORTANT]
@@ -131,9 +143,11 @@ docker run -p 4141:4141 -e GH_TOKEN=your_github_token_here copilot-api
 
 If you prefer a GUI, this repository also includes an Electron desktop app in `desktop/`. It supports GitHub Copilot sign-in, OpenAI Codex OAuth, and API-key configuration for DeepSeek, DashScope, OpenRouter, or a custom provider. After authorization or provider configuration, it can start and stop the local proxy with one click and shows the local endpoint, auth header, available models, usage, and logs in the app.
 
-The settings screen also exposes `OAuth App`, `API Home`, `Enterprise URL`, verbose logging, and minimize-to-tray. Desktop packages are published in GitHub Releases:
+The settings screen also exposes `OAuth App`, `API Home`, `Enterprise URL`, verbose logging, and minimize-to-tray. Desktop packages for this fork are published in GitHub Releases:
 
-https://github.com/caozhiyuan/copilot-api/releases
+https://github.com/EncodeTS/copilot-api/releases
+
+Choose `*-arm64.dmg` for Apple Silicon Macs and `*-x64.dmg` for Intel Macs. These fork desktop builds are unsigned/ad-hoc signed and not notarized.
 
 Download the installer for your platform, authorize or configure a provider inside the app, choose a port, start the server, then point your client at the local endpoint shown in the app. Packaged desktop builds use the bundled Electron runtime, so normal desktop usage does not require installing Node.js separately. Token usage history is enabled when that bundled runtime supports SQLite.
 
@@ -370,7 +384,7 @@ The Claude Code integration is packaged as two plugins:
 Add the marketplace remotely:
 
 ```sh
-/plugin marketplace add https://github.com/caozhiyuan/copilot-api.git
+/plugin marketplace add https://github.com/EncodeTS/copilot-api.git
 ```
 
 Install the plugins from the marketplace:
