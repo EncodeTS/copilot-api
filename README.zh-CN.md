@@ -2,6 +2,18 @@
 
 [English](./README.md) | 简体中文
 
+## EncodeTS Fork 说明
+
+本仓库是 [caozhiyuan/copilot-api](https://github.com/caozhiyuan/copilot-api) 的 EncodeTS fork，并尽量贴近上游；README 大部分仍描述上游通用行为。
+
+本 fork 的差异：
+
+- 桌面安装包发布在 [本 fork 的 GitHub Releases](https://github.com/EncodeTS/copilot-api/releases)。
+- `parityFirst` 默认 `true`，无工具预热的 Messages API 请求会保留客户端请求的模型，不再自动回退到 `smallModel`（默认 `gpt-5-mini`），并保留 `tool_result` 边界。
+- 在兼容前提下保留并规范化客户端传入的 `thinking` / `effort`，并对 provider stream error 做了小幅健壮性修正。
+
+下面的 `npx @jeffreycao/copilot-api@latest` 示例使用的是上游 npm 包。要使用本 fork 的 patch，请从本仓库源码运行，或安装本 fork Releases 中的桌面应用。
+
 ## 重要说明
 
 > [!IMPORTANT]
@@ -86,9 +98,11 @@ npx @jeffreycao/copilot-api@latest auth
 
 如果你更喜欢图形界面，仓库里还提供了位于 `desktop/` 的 Electron 桌面应用。它支持 GitHub Copilot 登录或手动填入 token，可以一键启动或停止本地代理，并在界面里直接查看本地端点、鉴权 Header、可用模型、额度和日志。
 
-设置页还可以配置 `OAuth App`、`API Home`、`Enterprise URL`、详细日志以及最小化到托盘。桌面安装包发布在 GitHub Releases：
+设置页还可以配置 `OAuth App`、`API Home`、`Enterprise URL`、详细日志以及最小化到托盘。本 fork 的桌面安装包发布在 GitHub Releases：
 
-https://github.com/caozhiyuan/copilot-api/releases
+https://github.com/EncodeTS/copilot-api/releases
+
+Apple Silicon Mac 请选择 `*-arm64.dmg`，Intel Mac 请选择 `*-x64.dmg`。本 fork 的桌面构建是 unsigned/ad-hoc signed，未经过 notarization。
 
 下载对应平台的安装包后，在应用内登录、选择端口并启动服务，再把你的客户端指向应用里显示的本地端点即可。发布版桌面应用使用随包内置的 Electron 运行时，正常使用不需要额外安装 Node.js；token usage 历史记录会在该内置运行时支持 SQLite 时启用。
 
@@ -624,7 +638,7 @@ Claude Code 集成现在拆分为两个插件：
 远程添加 marketplace：
 
 ```sh
-/plugin marketplace add https://github.com/caozhiyuan/copilot-api.git
+/plugin marketplace add https://github.com/EncodeTS/copilot-api.git
 ```
 
 从 marketplace 安装插件：
