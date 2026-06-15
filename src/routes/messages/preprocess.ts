@@ -246,6 +246,15 @@ const shouldSummarizeThinkingDisplayForModel = (model: string): boolean => {
   return Boolean(normalized && isVersionAtLeast(normalized.version, 4, 7))
 }
 
+const shouldUseAdaptiveThinkingForModel = (model: string): boolean => {
+  const normalized = normalizeSdkModelId(model)
+  return Boolean(
+    normalized
+      && normalized.family === "opus"
+      && isVersionAtLeast(normalized.version, 4, 7),
+  )
+}
+
 type IndexedAttachment = {
   attachment: AnthropicAttachmentBlock
   order: number
@@ -869,25 +878,40 @@ export const prepareMessagesApiPayload = (
   stripToolEagerInputStreaming(payload)
   filterAssistantThinkingBlocks(payload)
 
-  const hasThinking = Boolean(payload.thinking)
-
   // https://platform.claude.com/docs/en/build-with-claude/extended-thinking#extended-thinking-with-tool-use
   // Using tool_choice: {"type": "any"} or tool_choice: {"type": "tool", "name": "..."} will result in an error because these options force tool use, which is incompatible with extended thinking.
   const toolChoice = payload.tool_choice
   const disableThink = toolChoice?.type === "any" || toolChoice?.type === "tool"
 
   if (selectedModel?.capabilities.supports.adaptive_thinking && !disableThink) {
-    payload.thinking = {
-      type: "adaptive",
-    }
-    // align with vscode copilot
-    if (!hasThinking) {
+    if (!payload.thinking) {
+      payload.thinking = {
+        type: "adaptive",
+      }
+      // align with vscode copilot
+      payload.thinking.display = "summarized"
+    } else if (payload.thinking.type === "disabled") {
+      delete payload.thinking.display
+      delete payload.thinking.budget_tokens
+      return
+    } else if (shouldUseAdaptiveThinkingForModel(payload.model)) {
+      payload.thinking = {
+        type: "adaptive",
+        display: payload.thinking.display ?? "summarized",
+      }
+    } else if (
+      shouldSummarizeThinkingDisplayForModel(payload.model)
+      && !payload.thinking.display
+    ) {
       payload.thinking.display = "summarized"
     }
-    if (shouldSummarizeThinkingDisplayForModel(payload.model)) {
-      payload.thinking.display = "summarized"
+
+    delete payload.temperature
+
+    if (payload.thinking.type !== "adaptive") {
+      return
     }
-    let effort =
+    let effort: string =
       payload.output_config?.effort ?? getReasoningEffortForModel(payload.model)
     if (effort === "none" || effort === "minimal") {
       effort = "low"
@@ -897,7 +921,8 @@ export const prepareMessagesApiPayload = (
       effort = reasoningEffort.at(-1) as "low" | "medium" | "high"
     }
     payload.output_config = {
-      effort: effort,
+      ...payload.output_config,
+      effort: effort as "low" | "medium" | "high" | "xhigh" | "max",
     }
   }
 }
