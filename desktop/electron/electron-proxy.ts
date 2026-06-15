@@ -16,6 +16,12 @@ export function applyElectronProxyCommandLine(
   proxySettings: DesktopProxySettings
 ): boolean {
   const proxyConfig = resolveElectronProxyConfigFromSettings(proxySettings)
+  if (proxyConfig.mode === 'direct') {
+    app.commandLine.appendSwitch('no-proxy-server')
+    console.info('Electron command-line proxy disabled from desktop settings')
+    return true
+  }
+
   if (!isFixedProxyConfig(proxyConfig)) return false
 
   app.commandLine.appendSwitch('proxy-server', proxyConfig.proxyRules)

@@ -11,7 +11,14 @@ const PROXY_ENV_KEYS = [
   'no_proxy'
 ] as const
 
-export type ElectronProxyConfig = ElectronSystemProxyConfig | ElectronFixedProxyConfig
+export type ElectronProxyConfig =
+  | ElectronDirectProxyConfig
+  | ElectronSystemProxyConfig
+  | ElectronFixedProxyConfig
+
+export interface ElectronDirectProxyConfig {
+  mode: 'direct'
+}
 
 export interface ElectronSystemProxyConfig {
   mode: 'system'
@@ -88,10 +95,26 @@ function buildProxyBypassRules(noProxy: string): string | undefined {
   return rules.length > 0 ? rules.join(';') : undefined
 }
 
+export function hasNoProxyServerSwitch(argv: readonly string[]): boolean {
+  return argv.includes('--no-proxy-server')
+}
+
+export function applyNoProxyServerOverride(
+  proxySettings: DesktopProxySettings,
+  noProxyServer: boolean
+): DesktopProxySettings {
+  if (!noProxyServer) return proxySettings
+  return {
+    ...proxySettings,
+    mode: 'direct'
+  }
+}
+
 export function resolveElectronProxyConfigFromSettings(
   proxySettings: DesktopProxySettings
 ): ElectronProxyConfig {
-  if (!proxySettings.enabled) return { mode: 'system' }
+  if (proxySettings.mode === 'direct') return { mode: 'direct' }
+  if (proxySettings.mode !== 'custom') return { mode: 'system' }
 
   const httpProxy = proxySettings.http_proxy.trim()
   const httpsProxy = proxySettings.https_proxy.trim()
@@ -120,7 +143,7 @@ export function applyDesktopProxySettingsToEnv(
     delete env[key]
   }
 
-  if (!proxySettings.enabled) return false
+  if (proxySettings.mode !== 'custom') return false
 
   const httpProxy = normalizeProxyEnvValue(proxySettings.http_proxy)
   const httpsProxy = normalizeProxyEnvValue(proxySettings.https_proxy)

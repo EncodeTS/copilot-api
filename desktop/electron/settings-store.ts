@@ -24,25 +24,29 @@ const DEFAULT_SETTINGS: DesktopSettings = {
   showToken: false,
   language: 'auto',
   proxy: {
-    enabled: false,
+    mode: 'system',
     http_proxy: 'http://127.0.0.1:8888',
     https_proxy: 'http://127.0.0.1:8888',
     no_proxy: 'localhost,127.0.0.1'
   }
 }
 
-function normalizeProxySettings(
+function isDesktopProxyMode(value: unknown): value is DesktopProxySettings['mode'] {
+  return value === 'system' || value === 'custom' || value === 'direct'
+}
+
+export function normalizeProxySettings(
   proxy: Partial<DesktopProxySettings> | null | undefined
 ): DesktopProxySettings {
   return {
-    enabled: typeof proxy?.enabled === 'boolean' ? proxy.enabled : DEFAULT_SETTINGS.proxy.enabled,
+    mode: isDesktopProxyMode(proxy?.mode) ? proxy.mode : DEFAULT_SETTINGS.proxy.mode,
     http_proxy: typeof proxy?.http_proxy === 'string' ? proxy.http_proxy : DEFAULT_SETTINGS.proxy.http_proxy,
     https_proxy: typeof proxy?.https_proxy === 'string' ? proxy.https_proxy : DEFAULT_SETTINGS.proxy.https_proxy,
     no_proxy: typeof proxy?.no_proxy === 'string' ? proxy.no_proxy : DEFAULT_SETTINGS.proxy.no_proxy
   }
 }
 
-function normalizeSettings(settings: Partial<DesktopSettings> | null | undefined): DesktopSettings {
+export function normalizeSettings(settings: Partial<DesktopSettings> | null | undefined): DesktopSettings {
   return {
     apiHome: typeof settings?.apiHome === 'string' ? settings.apiHome : DEFAULT_SETTINGS.apiHome,
     oauthApp: settings?.oauthApp === 'opencode' ? 'opencode' : DEFAULT_SETTINGS.oauthApp,
