@@ -112,8 +112,10 @@ export interface TokenUsageEventsPage {
   total_pages: number
 }
 
+export type DesktopProxyMode = 'system' | 'custom' | 'direct'
+
 export interface DesktopProxySettings {
-  enabled: boolean
+  mode: DesktopProxyMode
   http_proxy: string
   https_proxy: string
   no_proxy: string

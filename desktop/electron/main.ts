@@ -2,11 +2,15 @@ import { app, BrowserWindow, Tray, Menu, nativeImage } from 'electron'
 import path from 'node:path'
 
 import { bindElectronFetch } from '../../src/lib/electron-fetch'
-import type { DesktopSettings } from '../src/types/ipc'
+import type { DesktopProxySettings, DesktopSettings } from '../src/types/ipc'
 import {
   applyElectronProxy,
   applyElectronProxyCommandLine
 } from './electron-proxy'
+import {
+  applyNoProxyServerOverride,
+  hasNoProxyServerSwitch
+} from './electron-proxy-config'
 import { tMain } from './i18n'
 import { readSettings, readSettingsSync } from './settings-store'
 
@@ -40,9 +44,10 @@ function applyCliEnvOverrides(argv: string[]): void {
 }
 
 applyCliEnvOverrides(process.argv)
+const noProxyServerOverride = hasNoProxyServerSwitch(process.argv)
 const initialSettings = readSettingsSync()
 applySettingsEnvOverrides(initialSettings)
-applyElectronProxyCommandLine(initialSettings.proxy)
+applyElectronProxyCommandLine(getEffectiveProxySettings(initialSettings))
 bindElectronFetch()
 
 interface RuntimeDependencies {
@@ -52,6 +57,10 @@ interface RuntimeDependencies {
   onLog: typeof import('./server-manager').onLog
   clearCallbacks: typeof import('./server-manager').clearCallbacks
   readSettings: typeof readSettings
+}
+
+function getEffectiveProxySettings(settings: DesktopSettings): DesktopProxySettings {
+  return applyNoProxyServerOverride(settings.proxy, noProxyServerOverride)
 }
 
 let runtimeDependenciesPromise: Promise<RuntimeDependencies> | null = null
@@ -256,24 +265,27 @@ function createWindow(): BrowserWindow {
 app.whenReady().then(async () => {
   const { registerIpcHandlers, readSettings, onStatusChange, onLog } = await getRuntimeDependencies()
   const settings = await readSettings()
-  await applyElectronProxy(settings.proxy)
+  await applyElectronProxy(getEffectiveProxySettings(settings))
 
   const win = createWindow()
 
-  registerIpcHandlers(win, async (settings, prevSettings) => {
-    await applyElectronProxy(settings.proxy)
+  registerIpcHandlers(win, {
+    getEffectiveProxySettings,
+    onSettingsChange: async (settings, prevSettings) => {
+      await applyElectronProxy(getEffectiveProxySettings(settings))
 
-    if (settings.minimizeToTray) {
-      await createTray(win)
-      await refreshTrayContextMenu(win)
-      return
-    }
+      if (settings.minimizeToTray) {
+        await createTray(win)
+        await refreshTrayContextMenu(win)
+        return
+      }
 
-    if (prevSettings.minimizeToTray) {
-      destroyTray()
-      // Restore the window if it was hidden when this setting is turned off.
-      if (!win.isVisible()) {
-        showWindow(win)
+      if (prevSettings.minimizeToTray) {
+        destroyTray()
+        // Restore the window if it was hidden when this setting is turned off.
+        if (!win.isVisible()) {
+          showWindow(win)
+        }
       }
     }
   })

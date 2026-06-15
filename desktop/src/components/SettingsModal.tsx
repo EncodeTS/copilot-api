@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import type { DesktopSettings } from '../types/ipc'
+import type { DesktopProxyMode, DesktopSettings } from '../types/ipc'
 import { useLanguage } from '../contexts/LanguageContext'
 import { translate, type LangPreference } from '../locales'
 
@@ -75,7 +75,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
     showToken: false,
     language: 'auto',
     proxy: {
-      enabled: false,
+      mode: 'system',
       http_proxy: 'http://127.0.0.1:8888',
       https_proxy: 'http://127.0.0.1:8888',
       no_proxy: 'localhost,127.0.0.1',
@@ -120,6 +120,13 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
     { key: 'network',  label: t('settings.sectionNetwork'),  icon: <IconNetwork /> },
     { key: 'startup',  label: t('settings.sectionStartup'),  icon: <IconStartup /> },
   ]
+
+  const proxyModeOptions: { value: DesktopProxyMode; label: string }[] = [
+    { value: 'system', label: t('settings.proxyModeSystem') },
+    { value: 'custom', label: t('settings.proxyModeCustom') },
+    { value: 'direct', label: t('settings.proxyModeDirect') },
+  ]
+  const isCustomProxy = settings.proxy.mode === 'custom'
 
   return (
     <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
@@ -195,17 +202,31 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                 <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[12px] leading-relaxed text-slate-500">
                   {t('settings.proxySystemNote')}
                 </div>
-                <SettingRow label={t('settings.proxyEnabled')} description={t('settings.proxyEnabledDesc')}>
-                  <Toggle
-                    checked={settings.proxy.enabled}
-                    onChange={v => setSettings(s => ({ ...s, proxy: { ...s.proxy, enabled: v } }))}
-                  />
-                </SettingRow>
+                <div className="mb-4">
+                  <div className="text-[13px] font-medium text-[#0f172a] mb-1.5">{t('settings.proxyMode')}</div>
+                  <div className="grid grid-cols-3 gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
+                    {proxyModeOptions.map(opt => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        aria-pressed={settings.proxy.mode === opt.value}
+                        onClick={() => setSettings(s => ({ ...s, proxy: { ...s.proxy, mode: opt.value } }))}
+                        className={`min-h-8 rounded-md px-2 text-[12px] font-medium transition-colors ${
+                          settings.proxy.mode === opt.value
+                            ? 'bg-white text-[#0f172a] shadow-sm'
+                            : 'text-slate-500 hover:bg-white/70 hover:text-[#0f172a]'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <div className="mt-4">
                   <div className="text-[13px] font-medium text-[#0f172a] mb-1.5">{t('settings.httpProxy')}</div>
                   <input
                     type="text"
-                    disabled={!settings.proxy.enabled}
+                    disabled={!isCustomProxy}
                     value={settings.proxy.http_proxy}
                     onChange={e => setSettings(s => ({ ...s, proxy: { ...s.proxy, http_proxy: e.target.value } }))}
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg text-[13px] bg-slate-50 text-[#0f172a] placeholder-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-300 focus:bg-white disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
@@ -215,7 +236,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                   <div className="text-[13px] font-medium text-[#0f172a] mb-1.5">{t('settings.httpsProxy')}</div>
                   <input
                     type="text"
-                    disabled={!settings.proxy.enabled}
+                    disabled={!isCustomProxy}
                     value={settings.proxy.https_proxy}
                     onChange={e => setSettings(s => ({ ...s, proxy: { ...s.proxy, https_proxy: e.target.value } }))}
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg text-[13px] bg-slate-50 text-[#0f172a] placeholder-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-300 focus:bg-white disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
@@ -225,7 +246,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                   <div className="text-[13px] font-medium text-[#0f172a] mb-1.5">{t('settings.noProxy')}</div>
                   <input
                     type="text"
-                    disabled={!settings.proxy.enabled}
+                    disabled={!isCustomProxy}
                     value={settings.proxy.no_proxy}
                     onChange={e => setSettings(s => ({ ...s, proxy: { ...s.proxy, no_proxy: e.target.value } }))}
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg text-[13px] bg-slate-50 text-[#0f172a] placeholder-slate-300 focus:outline-none focus:ring-2 focus:ring-slate-300 focus:bg-white disabled:opacity-60 disabled:cursor-not-allowed transition-colors"

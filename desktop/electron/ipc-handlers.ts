@@ -9,6 +9,7 @@ import { tMain } from './i18n'
 import { startServer, stopServer, getPort, getLogs, isRunning } from './server-manager'
 import { readSettings, writeSettings } from './settings-store'
 import type {
+  DesktopProxySettings,
   DesktopSettings,
   ModelMappingsConfig,
   ServerAuthInfo,
@@ -21,6 +22,11 @@ interface ConfigApiErrorResponse {
 }
 
 type ServerAuthScope = 'default' | 'admin'
+
+interface IpcHandlersOptions {
+  getEffectiveProxySettings?: (settings: DesktopSettings) => DesktopProxySettings
+  onSettingsChange?: (settings: DesktopSettings, prevSettings: DesktopSettings) => void | Promise<void>
+}
 
 function normalizeApiKey(apiKey: unknown): string | null {
   if (typeof apiKey !== 'string') {
@@ -116,7 +122,7 @@ async function saveModelMappingsViaApi(
 
 export function registerIpcHandlers(
   mainWindow: BrowserWindow,
-  onSettingsChange?: (settings: DesktopSettings, prevSettings: DesktopSettings) => void | Promise<void>
+  options: IpcHandlersOptions = {}
 ): void {
   // Auth: Start the OAuth device flow
   ipcMain.handle('auth:get-device-code', async () => {
@@ -196,7 +202,7 @@ export function registerIpcHandlers(
       accountType: settings.accountType,
       verbose: settings.verbose,
       showToken: settings.showToken,
-      proxy: settings.proxy
+      proxy: options.getEffectiveProxySettings?.(settings) ?? settings.proxy
     }
 
     // Persist the last used port
@@ -216,8 +222,8 @@ export function registerIpcHandlers(
     const prev = await readSettings()
     await writeSettings(settings)
     // Notify the main process after settings are saved so tray state and labels stay in sync.
-    if (onSettingsChange) {
-      await onSettingsChange(settings, prev)
+    if (options.onSettingsChange) {
+      await options.onSettingsChange(settings, prev)
     }
   })
   ipcMain.handle('config:get-model-mappings', async () => fetchModelMappingsConfig())

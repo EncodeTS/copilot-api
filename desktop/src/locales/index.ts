@@ -103,8 +103,10 @@ export interface Locale {
     minimizeToTrayDesc: string
     sectionNetwork: string
     proxySystemNote: string
-    proxyEnabled: string
-    proxyEnabledDesc: string
+    proxyMode: string
+    proxyModeSystem: string
+    proxyModeCustom: string
+    proxyModeDirect: string
     httpProxy: string
     httpsProxy: string
     noProxy: string
