@@ -13,6 +13,7 @@ interface ConfigFileShape {
   extraPrompts?: Record<string, string>
   modelReasoningEfforts?: Record<string, string>
   modelResponsesApiCompactThresholds?: Record<string, number>
+  parityFirst?: boolean
   providers?: Record<
     string,
     {
@@ -105,6 +106,19 @@ describe("builtin provider config", () => {
       messages: true,
       responses: false,
     })
+  })
+
+  test("persists parity-first mode by default", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = path.join(tempDir, "config.json")
+
+    const output = runScript(
+      tempDir,
+      'const { isParityFirstEnabled } = await import("./src/lib/config"); console.log(JSON.stringify({ enabled: isParityFirstEnabled() }));',
+    )
+
+    expect(JSON.parse(output)).toEqual({ enabled: true })
+    expect(readConfigFile(configPath).parityFirst).toBe(true)
   })
 
   test("allows overriding context management per endpoint", () => {
