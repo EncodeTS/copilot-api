@@ -131,19 +131,25 @@ function getThinkingBudget(
   model: Model | undefined,
 ): number | undefined {
   const thinking = payload.thinking
-  if (model && thinking?.budget_tokens !== undefined) {
-    const maxThinkingBudget = Math.min(
-      model.capabilities.supports.max_thinking_budget ?? 0,
-      (model.capabilities.limits.max_output_tokens ?? 0) - 1,
+  if (
+    !model
+    || thinking?.type !== "enabled"
+    || thinking.budget_tokens === undefined
+  ) {
+    return undefined
+  }
+
+  const maxThinkingBudget = Math.min(
+    model.capabilities.supports.max_thinking_budget ?? 0,
+    (model.capabilities.limits.max_output_tokens ?? 0) - 1,
+  )
+  if (maxThinkingBudget > 0) {
+    const requestedBudget = thinking.budget_tokens
+    const budgetTokens = Math.min(requestedBudget, maxThinkingBudget)
+    return Math.max(
+      budgetTokens,
+      model.capabilities.supports.min_thinking_budget ?? 1024,
     )
-    thinking.budget_tokens ??= maxThinkingBudget
-    if (maxThinkingBudget > 0) {
-      const budgetTokens = Math.min(thinking.budget_tokens, maxThinkingBudget)
-      return Math.max(
-        budgetTokens,
-        model.capabilities.supports.min_thinking_budget ?? 1024,
-      )
-    }
   }
   return undefined
 }
