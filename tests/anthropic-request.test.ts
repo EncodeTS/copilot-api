@@ -203,6 +203,60 @@ describe("Anthropic to OpenAI translation logic", () => {
     }
   })
 
+  test("maps only enabled thinking to OpenAI thinking_budget", () => {
+    const originalModels = state.models
+    state.models = {
+      data: [
+        {
+          capabilities: {
+            limits: {
+              max_output_tokens: 8192,
+            },
+            supports: {
+              max_thinking_budget: 4096,
+              min_thinking_budget: 1024,
+            },
+          },
+          id: "gpt-thinking",
+        },
+      ],
+    } as never
+
+    try {
+      const enabledPayload = translateToOpenAI({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-thinking",
+        thinking: {
+          type: "enabled",
+          budget_tokens: 2048,
+        },
+      })
+      const adaptivePayload = translateToOpenAI({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-thinking",
+        thinking: {
+          type: "adaptive",
+        },
+      })
+      const disabledPayload = translateToOpenAI({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-thinking",
+        thinking: {
+          type: "disabled",
+        },
+      })
+
+      expect(enabledPayload.thinking_budget).toBe(2048)
+      expect(adaptivePayload.thinking_budget).toBeUndefined()
+      expect(disabledPayload.thinking_budget).toBeUndefined()
+    } finally {
+      state.models = originalModels
+    }
+  })
+
   test("should handle missing fields gracefully", () => {
     const anthropicPayload: AnthropicMessagesPayload = {
       model: "gpt-4o",
