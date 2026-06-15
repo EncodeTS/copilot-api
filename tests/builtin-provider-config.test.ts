@@ -112,6 +112,35 @@ describe("builtin provider config", () => {
     expect(readConfigFile(configPath).parityFirst).toBe(true)
   })
 
+  test("routes Messages API web search through gpt-5.4-mini by default", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = path.join(tempDir, "config.json")
+
+    const output = runScript(
+      tempDir,
+      'const { getMessageApiWebSearchModel } = await import("./src/lib/config"); console.log(JSON.stringify({ model: getMessageApiWebSearchModel() ?? null }));',
+    )
+
+    expect(JSON.parse(output)).toEqual({ model: "gpt-5.4-mini" })
+    expect(readConfigFile(configPath).messageApiWebSearchModel).toBe(
+      "gpt-5.4-mini",
+    )
+  })
+
+  test("allows disabling Messages API web search routing", () => {
+    const tempDir = createTempConfigDir()
+    writeConfigFile(tempDir, {
+      messageApiWebSearchModel: "",
+    })
+
+    const output = runScript(
+      tempDir,
+      'const { getMessageApiWebSearchModel } = await import("./src/lib/config"); console.log(JSON.stringify({ model: getMessageApiWebSearchModel() ?? null }));',
+    )
+
+    expect(JSON.parse(output)).toEqual({ model: null })
+  })
+
   test("allows disabling Responses API context management", () => {
     const tempDir = createTempConfigDir()
     writeConfigFile(tempDir, {
