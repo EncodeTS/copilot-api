@@ -37,26 +37,25 @@ const buildAnthropicBetaHeader = (
   _model: string,
 ): string | undefined => {
   const isAdaptiveThinking = thinking?.type === "adaptive"
-
-  if (anthropicBetaHeader) {
-    const filteredBeta = anthropicBetaHeader
-      .split(",")
+  const shouldEnableInterleavedThinking = Boolean(
+    thinking?.budget_tokens && !isAdaptiveThinking,
+  )
+  const filteredBetas =
+    anthropicBetaHeader
+      ?.split(",")
       .map((item) => item.trim())
       .filter((item) => item.length > 0)
-      .filter((item) => allowedAnthropicBetas.has(item))
+      .filter((item) => allowedAnthropicBetas.has(item)) ?? []
 
-    // in vscode copilot extension, advanced-tool-use is enabled by default
-    // align header with vscode copilot extension
-    const uniqueFilteredBetas = [...filteredBeta]
-    if (uniqueFilteredBetas.length > 0) {
-      return uniqueFilteredBetas.join(",")
-    }
-
-    return undefined
+  if (shouldEnableInterleavedThinking) {
+    filteredBetas.push(INTERLEAVED_THINKING_BETA)
   }
 
-  if (thinking?.budget_tokens && !isAdaptiveThinking) {
-    return INTERLEAVED_THINKING_BETA
+  // in vscode copilot extension, advanced-tool-use is enabled by default
+  // align header with vscode copilot extension
+  const uniqueFilteredBetas = [...new Set(filteredBetas)]
+  if (uniqueFilteredBetas.length > 0) {
+    return uniqueFilteredBetas.join(",")
   }
 
   return undefined
