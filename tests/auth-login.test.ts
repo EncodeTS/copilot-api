@@ -5,7 +5,17 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 interface ConfigFileShape {
-  providers?: Record<string, unknown>
+  providers?: Record<
+    string,
+    {
+      apiKey?: string
+      authType?: string
+      baseUrl?: string
+      enabled?: boolean
+      models?: Record<string, unknown>
+      type?: string
+    }
+  >
 }
 
 const cwd = fileURLToPath(new URL("../", import.meta.url))
@@ -24,6 +34,12 @@ function writeConfigFile(tempDir: string, config: ConfigFileShape): void {
     `${JSON.stringify(config, null, 2)}\n`,
     "utf8",
   )
+}
+
+function readConfigFile(tempDir: string): ConfigFileShape {
+  return JSON.parse(
+    fs.readFileSync(path.join(tempDir, "config.json"), "utf8"),
+  ) as ConfigFileShape
 }
 
 function runScript(tempDir: string, script: string): string {
@@ -64,7 +80,200 @@ describe("auth login validation", () => {
     )
 
     expect(output).toBe(
-      "Unknown provider 'unknown'. Expected one of: copilot, codex",
+      "Unknown provider 'unknown'. Expected one of: copilot, codex, custom",
     )
+  })
+
+  test("configures a custom provider with the default auth type", () => {
+    const tempDir = createTempDir()
+    writeConfigFile(tempDir, {})
+
+    runScript(
+      tempDir,
+      `
+      const consolaModule = await import("consola");
+      const consola = consolaModule.default ?? consolaModule;
+      const answers = ["dash", "openai-compatible", "https://dashscope.example///", "provider-key", "__default__"];
+      consola.prompt = async () => answers.shift();
+      consola.info = () => {};
+      consola.success = () => {};
+      const { runAuthLogin } = await import("./src/auth");
+      await runAuthLogin({ provider: "custom", verbose: false, showToken: false });
+      `,
+    )
+
+    expect(readConfigFile(tempDir).providers?.dash).toEqual({
+      apiKey: "provider-key",
+      baseUrl: "https://dashscope.example",
+      enabled: true,
+      type: "openai-compatible",
+    })
+  })
+
+  test("configures a custom provider selected from the provider prompt", () => {
+    const tempDir = createTempDir()
+    writeConfigFile(tempDir, {})
+
+    runScript(
+      tempDir,
+      `
+      const consolaModule = await import("consola");
+      const consola = consolaModule.default ?? consolaModule;
+      const answers = ["custom", "claude", "anthropic", "https://api.anthropic.example", "provider-key", "x-api-key"];
+      consola.prompt = async () => answers.shift();
+      consola.info = () => {};
+      consola.success = () => {};
+      const { runAuthLogin } = await import("./src/auth");
+      await runAuthLogin({ provider: undefined, verbose: false, showToken: false });
+      `,
+    )
+
+    expect(readConfigFile(tempDir).providers?.claude).toEqual({
+      apiKey: "provider-key",
+      authType: "x-api-key",
+      baseUrl: "https://api.anthropic.example",
+      enabled: true,
+      type: "anthropic",
+    })
+  })
+
+  test("writes the selected authorization auth type", () => {
+    const tempDir = createTempDir()
+    writeConfigFile(tempDir, {})
+
+    runScript(
+      tempDir,
+      `
+      const consolaModule = await import("consola");
+      const consola = consolaModule.default ?? consolaModule;
+      const answers = ["responses", "openai-responses", "https://responses.example", "provider-key", "authorization"];
+      consola.prompt = async () => answers.shift();
+      consola.info = () => {};
+      consola.success = () => {};
+      const { runAuthLogin } = await import("./src/auth");
+      await runAuthLogin({ provider: "custom", verbose: false, showToken: false });
+      `,
+    )
+
+    expect(readConfigFile(tempDir).providers?.responses).toEqual({
+      apiKey: "provider-key",
+      authType: "authorization",
+      baseUrl: "https://responses.example",
+      enabled: true,
+      type: "openai-responses",
+    })
+  })
+
+  test("preserves custom provider model settings when reconfiguring credentials", () => {
+    const tempDir = createTempDir()
+    writeConfigFile(tempDir, {
+      providers: {
+        dash: {
+          apiKey: "old-key",
+          authType: "x-api-key",
+          baseUrl: "https://old.example",
+          enabled: true,
+          models: {
+            "qwen-plus": {
+              temperature: 0.2,
+            },
+          },
+          type: "anthropic",
+        },
+      },
+    })
+
+    runScript(
+      tempDir,
+      `
+      const consolaModule = await import("consola");
+      const consola = consolaModule.default ?? consolaModule;
+      const answers = ["dash", "openai-compatible", "https://new.example", "new-key", "__default__"];
+      consola.prompt = async () => answers.shift();
+      consola.info = () => {};
+      consola.success = () => {};
+      const { runAuthLogin } = await import("./src/auth");
+      await runAuthLogin({ provider: "custom", verbose: false, showToken: false });
+      `,
+    )
+
+    expect(readConfigFile(tempDir).providers?.dash).toEqual({
+      apiKey: "new-key",
+      baseUrl: "https://new.example",
+      enabled: true,
+      models: {
+        "qwen-plus": {
+          temperature: 0.2,
+        },
+      },
+      type: "openai-compatible",
+    })
+  })
+
+  test("rejects invalid custom provider inputs without writing provider config", () => {
+    const cases: Array<{ answers: Array<string>; message: string }> = [
+      {
+        answers: ["copilot"],
+        message: "Provider name 'copilot' is reserved for a builtin provider",
+      },
+      {
+        answers: ["codex"],
+        message: "Provider name 'codex' is reserved for a builtin provider",
+      },
+      {
+        answers: ["bad/name"],
+        message:
+          "Provider name must start with a letter or number and contain only letters, numbers, underscores, or hyphens",
+      },
+      {
+        answers: ["dash", "unsupported"],
+        message: "No provider type selected",
+      },
+      {
+        answers: ["dash", "anthropic", "   "],
+        message: "baseUrl must be a non-empty string",
+      },
+      {
+        answers: ["dash", "anthropic", "https://example.com", "   "],
+        message: "apiKey must be a non-empty string",
+      },
+      {
+        answers: [
+          "dash",
+          "anthropic",
+          "https://example.com",
+          "provider-key",
+          "oauth2",
+        ],
+        message: "No provider auth type selected",
+      },
+    ]
+
+    for (const item of cases) {
+      const tempDir = createTempDir()
+      writeConfigFile(tempDir, {})
+
+      const output = runScript(
+        tempDir,
+        `
+        const consolaModule = await import("consola");
+        const consola = consolaModule.default ?? consolaModule;
+        const answers = ${JSON.stringify(item.answers)};
+        consola.prompt = async () => answers.shift();
+        consola.info = () => {};
+        consola.success = () => {};
+        const { runAuthLogin } = await import("./src/auth");
+        try {
+          await runAuthLogin({ provider: "custom", verbose: false, showToken: false });
+          console.log("unexpected-success");
+        } catch (error) {
+          console.log((error instanceof Error ? error.message : String(error)).trim());
+        }
+        `,
+      )
+
+      expect(output).toBe(item.message)
+      expect(readConfigFile(tempDir).providers).toBeUndefined()
+    }
   })
 })

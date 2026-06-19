@@ -168,8 +168,11 @@ Copilot API 现在使用子命令结构，主要命令包括：
 
 | 选项 | 说明 | 默认值 | 别名 |
 | --- | --- | --- | --- |
+| --provider | 要登录或配置的 provider（`copilot`、`codex` 或 `custom`） | 交互选择 | 无 |
 | --verbose | 启用详细日志 | false | -v |
 | --show-token | 认证时显示 GitHub token | false | 无 |
+
+使用 `copilot-api auth login --provider custom` 可以通过 CLI 新增或更新第三方 provider。命令会依次提示输入 provider name、项目支持的 type（`anthropic`、`openai-compatible` 或 `openai-responses`）、`baseUrl`、`apiKey` 和 `authType`；`authType` 可保持 type 默认值，也可选择 `x-api-key` / `authorization`。
 
 ### Debug 命令选项
 
@@ -258,7 +261,6 @@ Copilot API 现在使用子命令结构，主要命令包括：
   - `baseUrl`：provider API 的基础 URL，不要带结尾的 endpoint。Anthropic provider 不要带 `/v1/messages`；OpenAI 兼容 provider 不要带 `/v1/chat/completions`；OpenAI Responses provider 不要带 `/v1/responses`。
   - `apiKey`：作为上游凭据值使用；普通 provider 必须配置。
   - `authType`：可选，控制 `apiKey` 如何发送到上游。普通 provider 支持 `x-api-key` 和 `authorization`。Anthropic provider 默认 `x-api-key`；OpenAI 兼容和 OpenAI Responses provider 默认 `authorization`。当设置为 `authorization` 时，代理会发送 `Authorization: Bearer <apiKey>`。`oauth2` 仅保留给内置 `codex` provider，并由 `auth login --provider codex` 自动写入。
-  - `adjustInputTokens`：可选，当为 `true` 时，代理会在 usage 响应里用 `input_tokens` 减去 `cache_read_input_tokens` 和 `cache_creation_input_tokens`。
   - `models`：可选，按模型 ID 配置的映射。每个键为请求中的模型名，值支持：
     - `temperature`：可选，当请求未指定时使用的默认温度。
     - `topP`：可选，当请求未指定时使用的默认 `top_p`。

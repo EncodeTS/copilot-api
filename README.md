@@ -168,8 +168,11 @@ The following command line options are available for the `start` command:
 
 | Option       | Description               | Default | Alias |
 | ------------ | ------------------------- | ------- | ----- |
+| --provider   | Provider to log in with or configure (`copilot`, `codex`, or `custom`) | prompt | none |
 | --verbose    | Enable verbose logging    | false   | -v    |
 | --show-token | Show GitHub token on auth | false   | none  |
+
+Use `copilot-api auth login --provider custom` to add or update a third-party provider from the CLI. The command prompts for the provider name, supported type (`anthropic`, `openai-compatible`, or `openai-responses`), `baseUrl`, `apiKey`, and `authType`; `authType` may be left as the type default or set to `x-api-key` / `authorization`.
 
 ### Debug Command Options
 
@@ -256,7 +259,6 @@ The following command line options are available for the `start` command:
   - `baseUrl` should be provider API base URL without the final endpoint. For Anthropic providers, omit `/v1/messages`; for OpenAI-compatible providers, omit `/v1/chat/completions`; for OpenAI Responses providers, omit `/v1/responses`.
   - `apiKey` is used as the upstream credential value and is required for regular providers.
   - `authType` (optional): Controls how `apiKey` is sent upstream. Supports `x-api-key` and `authorization` for regular providers. Anthropic providers default to `x-api-key`; OpenAI-compatible and OpenAI Responses providers default to `authorization`. When set to `authorization`, the proxy sends `Authorization: Bearer <apiKey>`. `oauth2` is reserved for the built-in `codex` provider and is written automatically by `auth login --provider codex`.
-  - `adjustInputTokens` (optional): When `true`, the proxy will adjust the `input_tokens` in the usage response by subtracting `cache_read_input_tokens` and `cache_creation_input_tokens`. 
   - `models` (optional): Per-model configuration map. Each key is a model ID (matching the model name in requests), and the value is:
     - `temperature` (optional): Default temperature value used when the request does not specify one.
     - `topP` (optional): Default top_p value used when the request does not specify one.
