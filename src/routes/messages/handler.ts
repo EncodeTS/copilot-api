@@ -177,6 +177,7 @@ export async function handleCompletion(c: Context) {
     anthropicPayload,
     {
       subagentMarker,
+      selectedModel,
       requestId,
       sessionId,
       compactType,

@@ -92,13 +92,28 @@ interface MessagesFlowOptions extends FlowBaseOptions {
   selectedModel?: Model
 }
 
+interface ChatCompletionsFlowOptions extends FlowBaseOptions {
+  selectedModel?: Model
+}
+
 export const handleWithChatCompletions = async (
   c: Context,
   anthropicPayload: AnthropicMessagesPayload,
-  options: FlowBaseOptions,
+  options: ChatCompletionsFlowOptions,
 ) => {
-  const { logger, subagentMarker, requestId, sessionId, compactType } = options
-  const openAIPayload = translateToOpenAI(anthropicPayload)
+  const {
+    logger,
+    selectedModel,
+    subagentMarker,
+    requestId,
+    sessionId,
+    compactType,
+  } = options
+  const openAIPayload = translateToOpenAI(anthropicPayload, {
+    validateReasoningEffort: true,
+    reasoningEffortSupport:
+      selectedModel?.capabilities.supports.reasoning_effort,
+  })
   prepareCopilotChatCompletionsPayload(openAIPayload)
   const recordUsage = createCopilotUsageRecorder({
     endpoint: "chat_completions",
