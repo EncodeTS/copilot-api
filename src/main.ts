@@ -2,8 +2,6 @@
 
 import { defineCommand, runMain, parseArgs } from "citty"
 
-import { bindElectronFetch } from "./lib/electron-fetch"
-
 const cliArgs = {
   "api-home": {
     type: "string",
@@ -32,6 +30,16 @@ if (typeof args["enterprise-url"] === "string") {
   process.env.COPILOT_API_ENTERPRISE_URL = args["enterprise-url"]
 }
 
+// Work around unjs/consola#392 until consola ships the upstream fix.
+if (
+  process.platform === "win32"
+  && process.stdout.isTTY
+  && !process.env.WT_SESSION
+) {
+  process.env.WT_SESSION = "copilot-api"
+}
+
+const { bindElectronFetch } = await import("./lib/electron-fetch")
 bindElectronFetch()
 
 // Dynamically import other modules to ensure environment variables are set
