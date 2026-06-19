@@ -1,47 +1,32 @@
-# AGENTS.md
+# Repository Guidelines
 
-## Build, Lint, and Test Commands
+## Project Structure & Module Organization
 
-- **Build:**  
-  `bun run build` (uses tsup)
-- **Dev:**  
-  `bun run dev`
-- **Lint:**  
-  `bun run lint` (uses the local flat config in `eslint.config.js`)
-- **Lint & Fix staged files:**  
-  `bunx lint-staged`
-- **Test all:**  
-   `bun test`
-- **Test single file:**  
-   `bun test tests/claude-request.test.ts`
-- **Start (prod):**  
-  `bun run start`
+This is a Bun/TypeScript API gateway project. Core server and route code lives in `src/`, with shared utilities under `src/lib/`, provider integrations under `src/services/`, and HTTP routes under `src/routes/`. Tests are in `tests/` and follow the same feature names as the source modules they cover. Static web assets are in `pages/`; documentation and screenshots are in `docs/`. The Electron desktop app is isolated under `desktop/` with its own source, assets, and package files. Plugin scripts live in `plugin/` and are excluded from the root ESLint config.
 
-## Code Style Guidelines
+## Build, Test, and Development Commands
 
-- **Imports:**  
-  Use ESNext syntax. Prefer absolute imports via `~/*` for `src/*` (see `tsconfig.json`).
-- **Formatting:**  
-  Follows Prettier (with `prettier-plugin-packagejson`). Run `bun run lint` to auto-fix.
-- **Types:**  
-  Strict TypeScript (`strict: true`). Avoid `any`; use explicit types and interfaces.
-- **Naming:**  
-  Use `camelCase` for variables/functions, `PascalCase` for types/classes.
-- **Error Handling:**  
-  Use explicit error classes (see `src/lib/error.ts`). Avoid silent failures.
-- **Unused:**  
-  Unused imports/variables are errors (`noUnusedLocals`, `noUnusedParameters`).
-- **Switches:**  
-  No fallthrough in switch statements.
-- **Modules:**  
-  Use ESNext modules, no CommonJS.
-- **Testing:**  
-   Use Bun's built-in test runner. Place tests in `tests/`, name as `*.test.ts`.
-- **Linting:**  
-  Uses the local flat config in `eslint.config.js`. Includes JavaScript recommended rules, TypeScript recommended type-checked rules, unused import cleanup, and Prettier.
-- **Paths:**  
-  Use path aliases (`~/*`) for imports from `src/`.
+- `bun run dev`: run the API in watch mode with system CA enabled.
+- `bun run start`: run the production entrypoint locally.
+- `bun run build`: build the package with `tsdown`.
+- `bun run build:desktop`: build the desktop server bundle.
+- `bun run typecheck`: run TypeScript checks with `noEmit`.
+- `bun run lint` or `bun run lint:all`: run ESLint and Prettier checks.
+- `bun test`: run all Bun tests.
+- `bun test tests/provider-resolver.test.ts`: run one test file.
 
----
+## Coding Style & Naming Conventions
 
-This file is tailored for agentic coding agents. For more details, see the configs in `eslint.config.js` and `tsconfig.json`. No Cursor or Copilot rules detected.
+Use ES modules and strict TypeScript. Prefer `~/*` imports for files under `src/`. Use `camelCase` for variables and functions, `PascalCase` for types/classes, and descriptive filenames such as `responses-stream-translation.ts`. Avoid `any`; model request, response, entity, and DTO fields from the actual source types. Formatting is enforced by ESLint plus Prettier, with semicolons disabled.
+
+## Testing Guidelines
+
+Use Bun's built-in test runner. Add or update tests in `tests/` with `*.test.ts` names. When code changes are made, changed code must reach at least 85% unit test coverage. Cover request translation, provider behavior, auth, config, and streaming edge cases near the modified code.
+
+## Commit & Pull Request Guidelines
+
+Recent history uses Conventional Commit prefixes such as `feat:` and `chore:`. Keep commit subjects short and imperative, for example `feat: support custom provider auth flow`. Pull requests should include a clear summary, linked issues when applicable, test evidence (`bun test`, targeted tests, lint/typecheck), and screenshots for desktop or UI changes.
+
+## Security & Configuration Tips
+
+Do not commit tokens, local credentials, or generated secrets. Review auth, proxy, TLS, and token refresh changes carefully, especially files under `src/lib/`, `src/auth.ts`, and `src/services/github/`.

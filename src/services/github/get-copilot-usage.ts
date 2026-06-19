@@ -6,10 +6,10 @@ export type CopilotAccountType = "individual" | "business" | "enterprise"
 
 export const getCopilotUsage = async (
   githubToken?: string,
-): Promise<CopilotUsageResponse> => {
+): Promise<CopilotUsageResponse | null> => {
   const resolvedGithubToken = githubToken ?? state.githubToken
   if (!resolvedGithubToken) {
-    throw new Error("GitHub token not found")
+    return null
   }
 
   const authState = { ...state, githubToken: resolvedGithubToken }
@@ -31,6 +31,10 @@ export const getCopilotAccountType = async (
   githubToken?: string,
 ): Promise<CopilotAccountType> => {
   const usage = await getCopilotUsage(githubToken)
+  if (!usage) {
+    throw new Error("GitHub token not found")
+  }
+
   const plan = (usage.copilot_plan ?? "").toLowerCase()
 
   if (plan.includes("enterprise")) return "enterprise"

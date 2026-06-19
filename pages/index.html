@@ -692,6 +692,10 @@
          * @returns {string} HTML string for the full data section.
          */
         function renderDetailedData(data) {
+          if (!data || Object.keys(data).length === 0) {
+            return "";
+          }
+
           const formattedDetails = formatObject(data);
           return `
                     <section id="detailed-data">

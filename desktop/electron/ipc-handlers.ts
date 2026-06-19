@@ -199,7 +199,6 @@ export function registerIpcHandlers(
 
     const settings = await readSettings()
     const serverOptions = {
-      accountType: settings.accountType,
       verbose: settings.verbose,
       showToken: settings.showToken,
       proxy: options.getEffectiveProxySettings?.(settings) ?? settings.proxy

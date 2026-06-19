@@ -22,14 +22,19 @@
 
 ## 项目概览
 
-这个项目最初是一个通过逆向工程实现的 GitHub Copilot API 代理，但现在也可以看作一个小型 AI gateway。除了 Copilot，它还可以在同一个 OpenAI / Anthropic 兼容入口后面路由内置的 `codex` provider 和第三方 provider，例如 DashScope，让 [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) 这类工具复用同一个本地端点。
+这是一个小型 AI gateway，可以使用 GitHub Copilot、内置 `codex` provider，也可以使用 DashScope 等已配置的第三方 provider。GitHub Copilot 现在是可选能力：如果本地没有 GitHub token，只要至少配置了一个启用中的 provider，服务仍可按 provider-only 模式启动。
+
+AI gateway 会从同一个本地端点暴露 OpenAI / Anthropic 兼容 API，让 [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)、OpenCode、Codex 和 OpenAI 兼容客户端可以共用同一个本地服务。
 
 在 GitHub Copilot 路径上，AI gateway 会在可用时优先使用 Copilot 原生的 Anthropic 风格 Messages API，在重工具调用场景下保留更原生的 Claude 行为。
 
 ## 功能特性
 
 - **OpenAI 与 Anthropic 双兼容**：通过 `/v1/responses`、`/v1/chat/completions`、`/v1/models`、`/v1/embeddings` 和 `/v1/messages` 对外暴露同一个本地 AI gateway。
+- **Copilot 可选**：有 GitHub 凭据时可以使用 GitHub Copilot，没有 GitHub 凭据时也可以只依赖已配置的 provider 运行。
 - **同一网关接入 Copilot、`codex` 与第三方 provider**：可统一路由 GitHub Copilot、内置 `codex` provider 和配置好的外部 provider。
+- **第三方 provider 可独立启动**：配置 DashScope、DeepSeek、OpenRouter 或自定义 provider 后，不需要 GitHub Copilot 登录即可启动 AI gateway。
+- **OpenAI 兼容 provider 同时支持 chat 和 Messages API**：`openai-compatible` provider 可通过顶层 `/v1/chat/completions` 搭配 `model: "provider/model"` 提供 Chat Completions，也可通过 `/v1/messages` 完成 Anthropic Messages 的请求/响应翻译。
 - **面向 Claude 的更原生 Copilot 路由**：优先使用原生 `/v1/messages`，保留 Claude 风格工具流，支持 Anthropic beta 能力、通过 Responses-capable 模型支持 Claude WebSearch，并保留 subagent / session 标记。
 - **Claude Code 与 OpenCode 集成**：兼容 Claude Code 与 OpenCode，也支持通过 `@ai-sdk/anthropic` 直接作为 Anthropic provider 使用。
 - **灵活的认证与部署选项**：支持交互式登录、直接 token、个人 / Business / Enterprise、GitHub Enterprise、opencode OAuth 和自定义数据目录。
@@ -41,7 +46,8 @@
 
 - Bun（>= 1.2.x）
 - 如果要通过 `npx` 运行已发布 CLI，需要 Node.js
-- 已订阅 Copilot 的 GitHub 账号（个人版、Business 或 Enterprise）
+- 只有在使用 GitHub Copilot provider 时，才需要已订阅 Copilot 的 GitHub 账号
+- 如果不使用 GitHub Copilot，需要至少一个已配置 provider 的 API key 或 OAuth 登录
 
 ## 安装
 
@@ -76,10 +82,17 @@ npx @jeffreycao/copilot-api@latest start
 npx @jeffreycao/copilot-api@latest start --port 8080
 ```
 
-如果只想做认证：
+如果只想做认证或 provider 配置：
 
 ```sh
 npx @jeffreycao/copilot-api@latest auth
+```
+
+如果要不依赖 GitHub Copilot 运行，先配置至少一个 provider，然后正常启动服务：
+
+```sh
+npx @jeffreycao/copilot-api@latest auth login --provider dashscope
+npx @jeffreycao/copilot-api@latest start
 ```
 
 ## Electron 桌面应用
@@ -118,7 +131,7 @@ mkdir -p ./copilot-data
 docker run -p 4141:4141 -v $(pwd)/copilot-data:/root/.local/share/copilot-api copilot-api
 ```
 
-这会把宿主机上的 `./copilot-data` 映射到容器内的 `/root/.local/share/copilot-api`，用于持久化 GitHub 认证数据。
+这会把宿主机上的 `./copilot-data` 映射到容器内的 `/root/.local/share/copilot-api`，用于持久化 GitHub 认证数据、provider 配置和其他 gateway 状态。
 
 也可以直接通过环境变量传入 GitHub token：
 
@@ -130,9 +143,8 @@ docker run -p 4141:4141 -e GH_TOKEN=your_github_token_here copilot-api
 
 Copilot API 现在使用子命令结构，主要命令包括：
 
-- `start`：启动 Copilot API 服务。如有需要，也会自动处理认证。
-- `auth`：仅执行 GitHub 认证流程，不启动服务。通常用于生成可与 `--github-token` 一起使用的 token，尤其适合非交互环境。
-- `check-usage`：直接在终端中显示当前 GitHub Copilot 用量与额度信息（无需启动服务）。
+- `start`：启动 AI gateway 服务。如果已有 GitHub token，则启用 Copilot 路径；如果没有 GitHub token，但存在至少一个启用中的 provider，则按 provider-only 模式启动；如果两者都没有，会引导你配置 provider。
+- `auth`：仅执行 provider 登录或配置流程，不启动服务。可用于 GitHub Copilot 登录、Codex OAuth，或第三方 provider API key 配置。
 - `debug`：显示诊断信息，包括版本、运行时详情、文件路径以及认证状态，便于排障与支持。
 
 ## 命令行选项
@@ -155,7 +167,6 @@ Copilot API 现在使用子命令结构，主要命令包括：
 | --- | --- | --- | --- |
 | --port | 监听端口 | 4141 | -p |
 | --verbose | 启用详细日志 | false | -v |
-| --account-type | 使用的账号类型（individual、business、enterprise） | individual | -a |
 | --manual | 启用手动请求审批 | false | 无 |
 | --rate-limit | 请求之间的速率限制秒数 | 无 | -r |
 | --wait | 达到速率限制时等待，而不是直接报错 | false | -w |
@@ -172,7 +183,9 @@ Copilot API 现在使用子命令结构，主要命令包括：
 | --verbose | 启用详细日志 | false | -v |
 | --show-token | 认证时显示 GitHub token | false | 无 |
 
-使用 `copilot-api auth login --provider deepseek`、`--provider dashscope` 或 `--provider openrouter` 可以通过 CLI 快速新增或更新这些常用第三方 provider。DeepSeek 和 DashScope 会提示输入掩码显示的 `apiKey`、provider `type`（默认 `openai-compatible`）和预填默认值的 `baseUrl`。OpenRouter 只提示输入掩码显示的 `apiKey` 和预填默认值的 `baseUrl`，并固定写入 `type: "anthropic"`。
+只有在需要启用 GitHub Copilot provider 时，才需要执行 `copilot-api auth login --provider copilot`。使用 `codex` 或第三方 provider-only 模式不要求配置 Copilot。
+
+使用 `copilot-api auth login --provider deepseek`、`--provider dashscope` 或 `--provider openrouter` 可以通过 CLI 快速新增或更新这些常用第三方 provider。DeepSeek 和 DashScope 会提示输入掩码显示的 `apiKey`、provider `type`（默认 `openai-compatible`）和预填默认值的 `baseUrl`。OpenRouter 只提示输入掩码显示的 `apiKey` 和预填默认值的 `baseUrl`，并固定写入 `type: "anthropic"`。配置并启用 provider 后，`copilot-api start` 可在没有 GitHub token 的情况下启动。
 
 使用 `copilot-api auth login --provider custom` 可以通过 CLI 新增或更新其他第三方 provider。命令会依次提示输入 provider name、项目支持的 type（`anthropic`、`openai-compatible` 或 `openai-responses`）、`baseUrl`、掩码显示的 `apiKey` 和 `authType`；`authType` 可保持 type 默认值，也可选择 `x-api-key` / `authorization`。
 
@@ -226,7 +239,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
 - **auth.adminApiKey：** 仅用于 `/admin/*` 路由的单个 admin key。若未配置，服务会在启动时自动生成一个随机 key，并回写到 `config.json`。它同样使用 `x-api-key` 或 `Authorization: Bearer` 这两种头，但普通 `auth.apiKeys` 不能访问 `/admin/*`。
 - **modelMappings：** 用于顶层 `POST /v1/messages`、`POST /v1/messages/count_tokens`、`POST /v1/responses` 和 `POST /v1/chat/completions` 请求的精确 `sourceModel -> targetModel` 重写映射，这几类接口共用同一份规则。省略该字段或保留为 `{}` 时，不会做模型重写。`source` 和 `target` 都必须是非空字符串。`target` 可以是普通模型 ID，也可以是 `provider/model` 形式的别名，例如 `dashscope/qwen3.6-plus`；重写发生在 provider alias 解析之前。这些映射不再按接口区分。`GET/POST /admin/config/model-mappings` 管理接口读写的也只有这个字段。
 - **extraPrompts：** `model -> prompt` 的映射。把 Anthropic 风格请求翻译给 Copilot 时，会将其附加到第一条 system prompt 后面。你可以借此为不同模型注入护栏或指引。缺失的默认项会自动补齐，但不会覆盖你自定义的 prompt。内置的 `gpt-5.3-codex` 和 `gpt-5.4` prompt 会启用带阶段感知的 commentary，让模型在工具调用或更深层推理前先发出简短的用户可见进度说明。
-- **providers：** 全局上游 provider 映射。每个 provider key（例如 `dashscope`）都会变成一个路由前缀（`/dashscope/v1/messages`）。支持 `type: "anthropic"`、`type: "openai-compatible"` 和 `type: "openai-responses"`。顶层客户端也可以在 `/v1/messages`、`/v1/messages/count_tokens`、`/v1/responses` 和 `/v1/chat/completions` 中使用 `model: "dashscope/model-id"`；AI gateway 会在转发上游前移除 `dashscope/` 前缀。`GET /v1/models` 不聚合 provider 模型；provider 模型列表请使用 `GET /dashscope/v1/models`。
+- **providers：** 全局上游 provider 映射。每个 provider key（例如 `dashscope`）都会变成一个路由前缀（`/dashscope/v1/messages`）。支持 `type: "anthropic"`、`type: "openai-compatible"` 和 `type: "openai-responses"`。顶层客户端也可以在 `/v1/messages`、`/v1/messages/count_tokens`、`/v1/responses` 和 `/v1/chat/completions` 中使用 `model: "dashscope/model-id"`；AI gateway 会在转发上游前移除 `dashscope/` 前缀。`openai-compatible` provider 同时支持 chat 和 Messages 流程：`/v1/chat/completions` 会直连上游 `/v1/chat/completions`，而 `/v1/messages` 和 `/:provider/v1/messages` 会先翻译为上游 Chat Completions，再把响应翻译回 Anthropic Messages。`GET /v1/models` 不聚合 provider 模型；provider 模型列表请使用 `GET /dashscope/v1/models`。
   - `enabled`：可选，若省略则默认为 `true`。
   - `baseUrl`：provider API 的基础 URL，不要带结尾的 endpoint。Anthropic provider 不要带 `/v1/messages`；OpenAI 兼容 provider 不要带 `/v1/chat/completions`；OpenAI Responses provider 不要带 `/v1/responses`。
   - `apiKey`：作为上游凭据值使用；普通 provider 必须配置。
@@ -310,7 +323,7 @@ curl http://localhost:4141/admin/config/model-mappings \
 
 ## API 端点
 
-服务端提供多个端点来与 Copilot API 交互。它支持 OpenAI 兼容端点，也支持 Anthropic 兼容端点，因此可以更灵活地接入不同工具与服务。
+服务端提供多个 OpenAI / Anthropic 兼容端点。请求会根据所选模型和 `provider/model` 别名路由到 GitHub Copilot、内置 `codex` provider 或已配置的 provider。
 
 ### OpenAI 兼容端点
 
@@ -319,7 +332,7 @@ curl http://localhost:4141/admin/config/model-mappings \
 | 端点 | 方法 | 说明 |
 | --- | --- | --- |
 | `POST /v1/responses` | `POST` | OpenAI 中用于生成模型响应的高级接口。支持 `openai-responses` provider 的 `provider/model` 别名。 |
-| `POST /v1/chat/completions` | `POST` | 为给定聊天对话创建模型响应。支持 `openai-compatible` provider 的 `provider/model` 别名。 |
+| `POST /v1/chat/completions` | `POST` | 为给定聊天对话创建模型响应。支持 `openai-compatible` provider 的 `provider/model` 别名；目标 provider 已配置时可在没有 Copilot 的情况下使用。 |
 | `GET /v1/models` | `GET` | 列出当前可用模型。 |
 | `POST /v1/embeddings` | `POST` | 创建表示输入文本的向量嵌入。 |
 
@@ -329,9 +342,9 @@ curl http://localhost:4141/admin/config/model-mappings \
 
 | 端点 | 方法 | 说明 |
 | --- | --- | --- |
-| `POST /v1/messages` | `POST` | 为给定对话创建模型响应。支持已配置 provider 的 `provider/model` 别名。 |
+| `POST /v1/messages` | `POST` | 为给定对话创建模型响应。支持已配置 provider 的 `provider/model` 别名，包括通过 `openai-compatible` provider 做翻译。 |
 | `POST /v1/messages/count_tokens` | `POST` | 计算一组消息的 token 数。支持已配置 provider 的 `provider/model` 别名。 |
-| `POST /:provider/v1/messages` | `POST` | 将 Anthropic Messages 请求代理到已配置的 Anthropic、OpenAI 兼容或 OpenAI Responses provider。 |
+| `POST /:provider/v1/messages` | `POST` | 将 Anthropic Messages 请求代理到已配置的 Anthropic provider，或翻译到 OpenAI 兼容 / OpenAI Responses provider。 |
 | `GET /:provider/v1/models` | `GET` | 将模型列表请求代理到已配置的 provider。 |
 | `POST /:provider/v1/messages/count_tokens` | `POST` | 为 provider 路由请求在本地计算 token 数。 |
 
@@ -367,14 +380,27 @@ npx @jeffreycao/copilot-api@latest start --port 8080 --verbose
 # 执行认证流程
 npx @jeffreycao/copilot-api@latest auth login
 
-# 在终端中查看 Copilot 用量与额度（无需启动服务）
-npx @jeffreycao/copilot-api@latest check-usage
+# 配置第三方 provider，然后不依赖 GitHub Copilot 启动
+npx @jeffreycao/copilot-api@latest auth login --provider dashscope
+npx @jeffreycao/copilot-api@latest start
 
 # 以 JSON 格式输出调试信息
 npx @jeffreycao/copilot-api@latest debug --json
 
 # 用 Bun 而不是 Node.js 运行已发布 CLI
 bunx --bun @jeffreycao/copilot-api@latest start
+```
+
+配置 `dashscope` 后的 OpenAI 兼容 provider 调用示例：
+
+```sh
+curl http://localhost:4141/v1/chat/completions \
+  -H "content-type: application/json" \
+  -d '{"model":"dashscope/qwen3.6-plus","messages":[{"role":"user","content":"hello"}]}'
+
+curl http://localhost:4141/dashscope/v1/messages \
+  -H "content-type: application/json" \
+  -d '{"model":"qwen3.6-plus","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}'
 ```
 
 ## 与 Claude Code 一起使用
@@ -718,7 +744,6 @@ bun run start start
   - `--manual`：为每个请求启用手动审批，让你完全控制何时发送请求。
   - `--rate-limit <seconds>`：强制请求之间至少保持一定秒数的间隔。例如 `copilot-api start --rate-limit 30` 会确保两次请求之间至少间隔 30 秒。
   - `--wait`：与 `--rate-limit` 配合使用。在命中速率限制时，服务会等待冷却结束，而不是直接返回错误。对于不会自动重试的客户端，这会很有帮助。
-- 如果你使用的是 GitHub Business 或 Enterprise 版 Copilot 账号，请使用 `--account-type` 参数（例如 `--account-type business`）。详见 [官方文档](https://docs.github.com/en/enterprise-cloud@latest/copilot/managing-copilot/managing-github-copilot-in-your-organization/managing-access-to-github-copilot-in-your-organization/managing-github-copilot-access-to-your-organizations-network#configuring-copilot-subscription-based-network-routing-for-your-enterprise-or-organization)。
 
 <a id="claudemd-or-agentsmd-recommended-content"></a>
 

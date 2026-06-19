@@ -1,79 +1,32 @@
-# CLAUDE.md
+# Repository Guidelines
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## Project Structure & Module Organization
 
-## Commands
+This is a Bun/TypeScript API gateway project. Core server and route code lives in `src/`, with shared utilities under `src/lib/`, provider integrations under `src/services/`, and HTTP routes under `src/routes/`. Tests are in `tests/` and follow the same feature names as the source modules they cover. Static web assets are in `pages/`; documentation and screenshots are in `docs/`. The Electron desktop app is isolated under `desktop/` with its own source, assets, and package files. Plugin scripts live in `plugin/` and are excluded from the root ESLint config.
 
-```sh
-bun install          # Install dependencies
-bun run dev          # Dev mode with watch
-bun run build        # Build to dist/ via tsdown
-bun run start        # Production start (NODE_ENV=production)
-bun run lint         # ESLint with cache (auto-fixes staged files pre-commit)
-bun run lint:all     # ESLint on entire project
-bun run typecheck    # tsc type check only (no emit)
-bun test             # Run all tests
-bun test tests/foo.test.ts  # Run a single test file
-```
+## Build, Test, and Development Commands
 
-## Architecture
+- `bun run dev`: run the API in watch mode with system CA enabled.
+- `bun run start`: run the production entrypoint locally.
+- `bun run build`: build the package with `tsdown`.
+- `bun run build:desktop`: build the desktop server bundle.
+- `bun run typecheck`: run TypeScript checks with `noEmit`.
+- `bun run lint` or `bun run lint:all`: run ESLint and Prettier checks.
+- `bun test`: run all Bun tests.
+- `bun test tests/provider-resolver.test.ts`: run one test file.
 
-This is a reverse-engineered proxy that exposes the GitHub Copilot API as both an OpenAI-compatible and Anthropic-compatible HTTP service. The entry point is `src/main.ts` (CLI via `citty`), which dispatches to subcommands: `start`, `auth`, `check-usage`, `debug`.
+## Coding Style & Naming Conventions
 
-### Request flow for `/v1/messages` (Anthropic path)
+Use ES modules and strict TypeScript. Prefer `~/*` imports for files under `src/`. Use `camelCase` for variables and functions, `PascalCase` for types/classes, and descriptive filenames such as `responses-stream-translation.ts`. Avoid `any`; model request, response, entity, and DTO fields from the actual source types. Formatting is enforced by ESLint plus Prettier, with semicolons disabled.
 
-`src/routes/messages/handler.ts` is the core dispatch logic:
+## Testing Guidelines
 
-1. Rate limit check
-2. Parse Anthropic payload
-3. Detect subagent marker (`__SUBAGENT_MARKER__` in `<system-reminder>`) → sets `x-initiator: agent`
-4. Detect compact requests (Claude Code context compaction)
-5. Force `smallModel` for tool-less warmup/probe requests
-6. Merge mixed `tool_result` + text blocks to avoid fresh premium request
-7. Normalize model ID → look up Copilot model
-8. Route to one of three upstream flows:
-   - `handleWithMessagesApi` — Copilot native `/v1/messages` (Claude models, preferred)
-   - `handleWithResponsesApi` — Copilot `/responses` (GPT models)
-   - `handleWithChatCompletions` — fallback for everything else
+Use Bun's built-in test runner. Add or update tests in `tests/` with `*.test.ts` names. When code changes are made, changed code must reach at least 85% unit test coverage. Cover request translation, provider behavior, auth, config, and streaming edge cases near the modified code.
 
-### Key directories
+## Commit & Pull Request Guidelines
 
-| Path | Purpose |
-|---|---|
-| `src/server.ts` | Hono app, middleware stack, route registration |
-| `src/lib/` | Shared utilities: config, state, auth, tokens, rate-limit, models, tokenizer, trace |
-| `src/routes/` | Route handlers grouped by endpoint family |
-| `src/services/` | Upstream API clients (Copilot, GitHub, providers) |
-| `tests/` | All test files (`*.test.ts`), Bun built-in runner |
+Recent history uses Conventional Commit prefixes such as `feat:` and `chore:`. Keep commit subjects short and imperative, for example `feat: support custom provider auth flow`. Pull requests should include a clear summary, linked issues when applicable, test evidence (`bun test`, targeted tests, lint/typecheck), and screenshots for desktop or UI changes.
 
-### Middleware stack (in order)
+## Security & Configuration Tips
 
-`traceIdMiddleware` → `logger()` → `cors()` → `createAuthMiddleware` (API key validation via `x-api-key` or `Authorization: Bearer`; unauthenticated paths: `/`, `/usage-viewer`)
-
-### Model routing
-
-`src/lib/models.ts` normalizes Claude model IDs via 5 regex patterns (handles variants like `claude-opus-4-6`, `claude-opus-4.6`). The `useMessagesApi` config flag (default `true`) controls whether Claude-family models use the native Messages API or fall back to Chat Completions.
-
-### Config and state
-
-- `src/lib/config.ts` — `AppConfig` shape, disk read/write from `~/.local/share/copilot-api/config.json` (Linux/macOS) or `%USERPROFILE%\.local\share\copilot-api\config.json` (Windows). Also respects `COPILOT_API_HOME` env var.
-- `src/lib/state.ts` — singleton mutable state: tokens, accountType, rate-limit, models cache.
-
-### Token counting
-
-`/v1/messages/count_tokens`: when `anthropicApiKey` is configured, forwards Claude model requests to Anthropic's free `/v1/messages/count_tokens` endpoint for exact counts. Otherwise falls back to GPT `o200k_base` tokenizer with 1.15x multiplier (`src/lib/tokenizer.ts`).
-
-## Code Style
-
-- **Imports:** Use `~/` alias for `src/` (e.g., `import { foo } from '~/lib/foo'`)
-- **TypeScript:** Strict mode — no `any`, `noUnusedLocals`, `noUnusedParameters`
-- **Modules:** ESNext only, no CommonJS
-- **Naming:** `camelCase` for functions/variables, `PascalCase` for types/interfaces
-- **Error handling:** Route handlers catch and call `forwardError(c, error)`; use `HTTPError` from `src/lib/error.ts`
-- **Streaming:** All three API flows support both streaming (SSE via `streamSSE`) and non-streaming, switching on `payload.stream`
-
-## Plugin Integrations
-
-- **Claude Code agent-inject plugin:** Install from marketplace with `/plugin marketplace add https://github.com/caozhiyuan/copilot-api.git` then `/plugin install agent-inject@copilot-api-marketplace`. Injects `__SUBAGENT_MARKER__` on subagent starts.
-- **Claude Code tool-search plugin:** Install from the same marketplace with `/plugin install tool-search@copilot-api-marketplace`. Registers the `tool_search` MCP bridge.
-- **Opencode plugin:** Copy `plugin/opencode/subagent-marker.js` to `~/.config/opencode/plugins/`.
+Do not commit tokens, local credentials, or generated secrets. Review auth, proxy, TLS, and token refresh changes carefully, especially files under `src/lib/`, `src/auth.ts`, and `src/services/github/`.

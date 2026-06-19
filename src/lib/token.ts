@@ -338,6 +338,10 @@ export async function logUser() {
   consola.info(`Logged in as ${user.login}`)
 
   const copilotUser = await getCopilotUsage()
+  if (!copilotUser) {
+    throw new Error("GitHub token not found")
+  }
+
   state.copilotApiUrl = copilotUser.endpoints.api
   state.tokenBasedBilling = copilotUser.token_based_billing
 }

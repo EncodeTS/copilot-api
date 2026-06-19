@@ -22,14 +22,19 @@ English | [简体中文](./README.zh-CN.md)
 
 ## Project Overview
 
-A reverse-engineered GitHub Copilot integration that also works as a small AI gateway. Besides Copilot, it can route the built-in `codex` provider and configured third-party providers such as DashScope behind OpenAI- and Anthropic-compatible APIs, so tools like [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) can use one local endpoint.
+A small AI gateway that can use GitHub Copilot, the built-in `codex` provider, or configured third-party providers such as DashScope. GitHub Copilot is optional: if no GitHub token is available, the server can still start in provider-only mode as long as at least one enabled provider is configured.
+
+The gateway exposes OpenAI- and Anthropic-compatible APIs from one local endpoint, so tools like [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview), OpenCode, Codex, and OpenAI-compatible clients can share the same local server.
 
 On the GitHub Copilot path, the gateway prefers Copilot's native Anthropic-style Messages API when available, preserving more Claude-native behavior for tool-heavy workflows.
 
 ## Features
 
 - **OpenAI and Anthropic compatibility**: Serve `/v1/responses`, `/v1/chat/completions`, `/v1/models`, `/v1/embeddings`, and `/v1/messages` from one local gateway.
+- **Copilot is optional**: Use GitHub Copilot when credentials are present, or run the server with only configured providers.
 - **One gateway for Copilot, `codex`, and external providers**: Route GitHub Copilot, the built-in `codex` provider, and configured third-party providers behind the same endpoint.
+- **Standalone third-party providers**: Configure providers such as DashScope, DeepSeek, OpenRouter, or a custom provider and start the gateway without a GitHub Copilot login.
+- **OpenAI-compatible providers on chat and Messages APIs**: `openai-compatible` providers can serve top-level `/v1/chat/completions` through `model: "provider/model"` and Anthropic-style `/v1/messages` through request/response translation.
 - **Agent-friendly Claude handling on Copilot**: Prefer native `/v1/messages` when available, preserve Claude-style tool flows, support Anthropic beta features, Claude WebSearch through Responses-capable models, and keep subagent/session markers intact.
 - **Claude Code and OpenCode integration**: Works with Claude Code and OpenCode, including direct Anthropic-compatible usage through `@ai-sdk/anthropic`.
 - **Flexible auth and deployment options**: Supports interactive login or direct tokens, individual/business/enterprise plans, GitHub Enterprise, opencode OAuth, and custom data directories.
@@ -41,7 +46,8 @@ On the GitHub Copilot path, the gateway prefers Copilot's native Anthropic-style
 
 - Bun (>= 1.2.x)
 - Node.js if you plan to run the published CLI with `npx`
-- GitHub account with Copilot subscription (individual, business, or enterprise)
+- GitHub account with Copilot subscription only if you want to use the GitHub Copilot provider
+- An API key or OAuth login for at least one configured provider if you want to run without GitHub Copilot
 
 ## Installation
 
@@ -76,10 +82,17 @@ With options:
 npx @jeffreycao/copilot-api@latest start --port 8080
 ```
 
-For authentication only:
+For authentication or provider configuration only:
 
 ```sh
 npx @jeffreycao/copilot-api@latest auth
+```
+
+To run without GitHub Copilot, configure at least one provider first, then start the server normally:
+
+```sh
+npx @jeffreycao/copilot-api@latest auth login --provider dashscope
+npx @jeffreycao/copilot-api@latest start
 ```
 
 ## Electron Desktop App
@@ -118,7 +131,7 @@ mkdir -p ./copilot-data
 docker run -p 4141:4141 -v $(pwd)/copilot-data:/root/.local/share/copilot-api copilot-api
 ```
 
-This stores GitHub auth data in `./copilot-data` on the host, mapped to `/root/.local/share/copilot-api` in the container.
+This stores GitHub auth data, provider config, and other gateway state in `./copilot-data` on the host, mapped to `/root/.local/share/copilot-api` in the container.
 
 Or pass a GitHub token directly:
 
@@ -130,9 +143,8 @@ docker run -p 4141:4141 -e GH_TOKEN=your_github_token_here copilot-api
 
 Copilot API now uses a subcommand structure with these main commands:
 
-- `start`: Start the Copilot API server. This command will also handle authentication if needed.
-- `auth`: Run GitHub authentication flow without starting the server. This is typically used if you need to generate a token for use with the `--github-token` option, especially in non-interactive environments.
-- `check-usage`: Show your current GitHub Copilot usage and quota information directly in the terminal (no server required).
+- `start`: Start the gateway server. If a GitHub token is available, the server starts with Copilot enabled. If no GitHub token is available, it starts in provider-only mode when at least one enabled provider exists; otherwise it guides you through provider setup.
+- `auth`: Run provider login or configuration without starting the server. Use it for GitHub Copilot login, Codex OAuth, or third-party provider API key setup.
 - `debug`: Display diagnostic information including version, runtime details, file paths, and authentication status. Useful for troubleshooting and support.
 
 ## Command Line Options
@@ -155,7 +167,6 @@ The following command line options are available for the `start` command:
 | -------------- | ----------------------------------------------------------------------------- | ---------- | ----- |
 | --port         | Port to listen on                                                             | 4141       | -p    |
 | --verbose      | Enable verbose logging                                                        | false      | -v    |
-| --account-type | Account type to use (individual, business, enterprise)                        | individual | -a    |
 | --manual       | Enable manual request approval                                                | false      | none  |
 | --rate-limit   | Rate limit in seconds between requests                                        | none       | -r    |
 | --wait         | Wait instead of error when rate limit is hit                                  | false      | -w    |
@@ -172,7 +183,9 @@ The following command line options are available for the `start` command:
 | --verbose    | Enable verbose logging    | false   | -v    |
 | --show-token | Show GitHub token on auth | false   | none  |
 
-Use `copilot-api auth login --provider deepseek`, `--provider dashscope`, or `--provider openrouter` to add or update those common third-party providers from the CLI. DeepSeek and DashScope prompt for masked `apiKey`, provider `type` (default `openai-compatible`), and `baseUrl` with the provider default prefilled. OpenRouter prompts for masked `apiKey` and prefilled `baseUrl` only, and writes `type: "anthropic"`.
+Use `copilot-api auth login --provider copilot` only when you want to enable the GitHub Copilot provider. Copilot is not required for `codex` or third-party provider-only usage.
+
+Use `copilot-api auth login --provider deepseek`, `--provider dashscope`, or `--provider openrouter` to add or update those common third-party providers from the CLI. DeepSeek and DashScope prompt for masked `apiKey`, provider `type` (default `openai-compatible`), and `baseUrl` with the provider default prefilled. OpenRouter prompts for masked `apiKey` and prefilled `baseUrl` only, and writes `type: "anthropic"`. After a provider is configured and enabled, `copilot-api start` can run without any GitHub token.
 
 Use `copilot-api auth login --provider custom` to add or update another third-party provider from the CLI. The command prompts for the provider name, supported type (`anthropic`, `openai-compatible`, or `openai-responses`), `baseUrl`, masked `apiKey`, and `authType`; `authType` may be left as the type default or set to `x-api-key` / `authorization`.
 
@@ -224,7 +237,7 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
 - **auth.adminApiKey:** Single admin key used only for `/admin/*` routes. If missing, the server generates a random key at startup and writes it back to `config.json`. Requests use the same `x-api-key` or `Authorization: Bearer` headers, but regular `auth.apiKeys` never grant access to `/admin/*`.
 - **modelMappings:** Exact `sourceModel -> targetModel` rewrites shared by top-level `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/responses`, and `POST /v1/chat/completions` requests. Omit it or leave it as `{}` to disable rewrites. Both the source and target must be non-empty strings. Targets can be regular model IDs or `provider/model` aliases such as `dashscope/qwen3.6-plus`, and the rewrite happens before provider alias parsing. These mappings are not split per interface. The admin endpoints `GET/POST /admin/config/model-mappings` read and update only this field.
 - **extraPrompts:** Map of `model -> prompt` appended to the first system prompt when translating Anthropic-style requests to Copilot. Use this to inject guardrails or guidance per model. Missing default entries are auto-added without overwriting your custom prompts. The built-in prompts for `gpt-5.3-codex` and `gpt-5.4` enable phase-aware commentary, which lets the model emit a short user-facing progress update before tools or deeper reasoning.
-- **providers:** Global upstream provider map. Each provider key (for example `dashscope`) becomes a route prefix (`/dashscope/v1/messages`). Supports `type: "anthropic"`, `type: "openai-compatible"`, and `type: "openai-responses"`. Top-level clients can also use `model: "dashscope/model-id"` with `/v1/messages`, `/v1/messages/count_tokens`, `/v1/responses`, and `/v1/chat/completions`; the gateway strips the `dashscope/` prefix before forwarding upstream. `GET /v1/models` does not aggregate provider models; use `GET /dashscope/v1/models` for provider model lists.
+- **providers:** Global upstream provider map. Each provider key (for example `dashscope`) becomes a route prefix (`/dashscope/v1/messages`). Supports `type: "anthropic"`, `type: "openai-compatible"`, and `type: "openai-responses"`. Top-level clients can also use `model: "dashscope/model-id"` with `/v1/messages`, `/v1/messages/count_tokens`, `/v1/responses`, and `/v1/chat/completions`; the gateway strips the `dashscope/` prefix before forwarding upstream. `openai-compatible` providers support both chat and Messages flows: `/v1/chat/completions` is proxied to upstream `/v1/chat/completions`, while `/v1/messages` and `/:provider/v1/messages` are translated to upstream chat completions and translated back to Anthropic Messages responses. `GET /v1/models` does not aggregate provider models; use `GET /dashscope/v1/models` for provider model lists.
   - `enabled` defaults to `true` if omitted.
   - `baseUrl` should be provider API base URL without the final endpoint. For Anthropic providers, omit `/v1/messages`; for OpenAI-compatible providers, omit `/v1/chat/completions`; for OpenAI Responses providers, omit `/v1/responses`.
   - `apiKey` is used as the upstream credential value and is required for regular providers.
@@ -308,7 +321,7 @@ curl http://localhost:4141/admin/config/model-mappings \
 
 ## API Endpoints
 
-The server exposes several endpoints to interact with the Copilot API. It provides OpenAI-compatible endpoints and now also includes support for Anthropic-compatible endpoints, allowing for greater flexibility with different tools and services.
+The server exposes several OpenAI- and Anthropic-compatible endpoints. Requests can target GitHub Copilot, the built-in `codex` provider, or configured providers depending on the selected model and `provider/model` alias.
 
 ### OpenAI Compatible Endpoints
 
@@ -317,7 +330,7 @@ These endpoints mimic the OpenAI API structure.
 | Endpoint                    | Method | Description                                                      |
 | --------------------------- | ------ | ---------------------------------------------------------------- |
 | `POST /v1/responses`        | `POST` | OpenAI Most advanced interface for generating model responses. Supports `provider/model` aliases for `openai-responses` providers. |
-| `POST /v1/chat/completions` | `POST` | Creates a model response for the given chat conversation. Supports `provider/model` aliases for `openai-compatible` providers. |
+| `POST /v1/chat/completions` | `POST` | Creates a model response for the given chat conversation. Supports `provider/model` aliases for `openai-compatible` providers and can be used without Copilot when the target provider is configured. |
 | `GET /v1/models`            | `GET`  | Lists the currently available models.                            |
 | `POST /v1/embeddings`       | `POST` | Creates an embedding vector representing the input text.         |
 
@@ -327,9 +340,9 @@ These endpoints are designed to be compatible with the Anthropic Messages API.
 
 | Endpoint                         | Method | Description                                                  |
 | -------------------------------- | ------ | ------------------------------------------------------------ |
-| `POST /v1/messages`              | `POST` | Creates a model response for a given conversation. Supports `provider/model` aliases for configured providers. |
+| `POST /v1/messages`              | `POST` | Creates a model response for a given conversation. Supports `provider/model` aliases for configured providers, including translation through `openai-compatible` providers. |
 | `POST /v1/messages/count_tokens` | `POST` | Calculates the number of tokens for a given set of messages. Supports `provider/model` aliases for configured providers. |
-| `POST /:provider/v1/messages`       | `POST` | Proxies Anthropic Messages requests to the configured Anthropic, OpenAI-compatible, or OpenAI Responses provider. |
+| `POST /:provider/v1/messages`       | `POST` | Proxies Anthropic Messages requests to the configured Anthropic provider, translates them through an OpenAI-compatible provider, or translates them through an OpenAI Responses provider. |
 | `GET /:provider/v1/models`          | `GET`  | Proxies model listing requests to the configured provider.   |
 | `POST /:provider/v1/messages/count_tokens` | `POST` | Calculates tokens locally for provider route requests. |
 
@@ -365,14 +378,27 @@ npx @jeffreycao/copilot-api@latest start --port 8080 --verbose
 # Run the auth flow
 npx @jeffreycao/copilot-api@latest auth login
 
-# Check Copilot usage without starting the server
-npx @jeffreycao/copilot-api@latest check-usage
+# Configure a third-party provider, then run without GitHub Copilot
+npx @jeffreycao/copilot-api@latest auth login --provider dashscope
+npx @jeffreycao/copilot-api@latest start
 
 # Print debug information as JSON
 npx @jeffreycao/copilot-api@latest debug --json
 
 # Run the published CLI with Bun instead of Node.js
 bunx --bun @jeffreycao/copilot-api@latest start
+```
+
+OpenAI-compatible provider examples after configuring `dashscope`:
+
+```sh
+curl http://localhost:4141/v1/chat/completions \
+  -H "content-type: application/json" \
+  -d '{"model":"dashscope/qwen3.6-plus","messages":[{"role":"user","content":"hello"}]}'
+
+curl http://localhost:4141/dashscope/v1/messages \
+  -H "content-type: application/json" \
+  -d '{"model":"qwen3.6-plus","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}'
 ```
 
 ## Using with Claude Code
@@ -712,7 +738,6 @@ bun run start start
   - `--manual`: Enables manual approval for each request, giving you full control over when requests are sent.
   - `--rate-limit <seconds>`: Enforces a minimum time interval between requests. For example, `copilot-api start --rate-limit 30` will ensure there's at least a 30-second gap between requests.
   - `--wait`: Use this with `--rate-limit`. It makes the server wait for the cooldown period to end instead of rejecting the request with an error. This is useful for clients that don't automatically retry on rate limit errors.
-- If you have a GitHub business or enterprise plan account with Copilot, use the `--account-type` flag (e.g., `--account-type business`). See the [official documentation](https://docs.github.com/en/enterprise-cloud@latest/copilot/managing-copilot/managing-github-copilot-in-your-organization/managing-access-to-github-copilot-in-your-organization/managing-github-copilot-access-to-your-organizations-network#configuring-copilot-subscription-based-network-routing-for-your-enterprise-or-organization) for more details.
 
 ### CLAUDE.md or AGENTS.md Recommended Content
 

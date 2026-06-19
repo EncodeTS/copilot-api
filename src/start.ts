@@ -6,13 +6,15 @@ import consola from "consola"
 import { serve, type ServerHandler } from "srvx"
 import invariant from "tiny-invariant"
 
-import { mergeConfigWithDefaults } from "./lib/config"
+import { runProviderSetup } from "./auth"
+import { listEnabledProviders, mergeConfigWithDefaults } from "./lib/config"
+import { readGitHubToken } from "./lib/credential-store"
 import { initOpencodeVersion } from "./lib/opencode"
 import { ensurePaths } from "./lib/paths"
 import { initProxyFromEnv } from "./lib/proxy"
 import { generateEnvScript } from "./lib/shell"
 import { state } from "./lib/state"
-import { logUser, setupCopilotToken, setupGitHubToken } from "./lib/token"
+import { logUser, setupCopilotToken } from "./lib/token"
 import {
   cacheMacMachineId,
   cacheModels,
@@ -24,7 +26,6 @@ import {
 interface RunServerOptions {
   port: number
   verbose: boolean
-  accountType: string
   manual: boolean
   rateLimit?: number
   rateLimitWait: boolean
@@ -34,14 +35,125 @@ interface RunServerOptions {
   proxyEnv: boolean
 }
 
+async function setupCopilotMode(
+  githubToken: string,
+  fromCli: boolean,
+  serverUrl: string,
+  claudeCode: boolean,
+): Promise<void> {
+  state.githubToken = githubToken
+  consola.info(
+    fromCli ?
+      "Using provided GitHub token"
+    : "Using GitHub token from local file",
+  )
+
+  await logUser()
+
+  await cacheVSCodeVersion()
+  cacheMacMachineId()
+  cacheVsCodeSessionId()
+  await cacheVsCodeDeviceId()
+
+  await setupCopilotToken()
+  await cacheModels()
+
+  consola.info(
+    `Available models: \n${state.models?.data.map((model) => `- ${model.id}`).join("\n")}`,
+  )
+
+  if (claudeCode) {
+    await runClaudeCode(serverUrl)
+  }
+}
+
+async function runClaudeCode(serverUrl: string): Promise<void> {
+  consola.log(
+    "\n💡 Tip: The --claude-code flag simply generates a clipboard command for launching Claude Code. \n"
+      + "All models remain fully accessible without this flag, just configure the model ID directly in your settings.json file.",
+  )
+
+  invariant(state.models, "Models should be loaded by now")
+
+  const selectedModel = await consola.prompt(
+    "Select a model to use with Claude Code",
+    {
+      type: "select",
+      options: state.models.data.map((model) => model.id),
+    },
+  )
+
+  const selectedSmallModel = await consola.prompt(
+    "Select a small model to use with Claude Code",
+    {
+      type: "select",
+      options: state.models.data.map((model) => model.id),
+    },
+  )
+
+  const command = generateEnvScript(
+    {
+      ANTHROPIC_BASE_URL: serverUrl,
+      ANTHROPIC_AUTH_TOKEN: "dummy",
+      ANTHROPIC_MODEL: selectedModel,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: selectedModel,
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: selectedSmallModel,
+      DISABLE_NON_ESSENTIAL_MODEL_CALLS: "1",
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+      CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
+      CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false",
+      CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "true",
+      CLAUDE_CODE_ENABLE_AWAY_SUMMARY: "0",
+      CLAUDE_PLUGIN_ENABLE_QUESTION_RULES: "true",
+    },
+    "claude",
+  )
+
+  try {
+    clipboard.writeSync(command)
+    consola.success("Copied Claude Code command to clipboard!")
+  } catch {
+    consola.warn(
+      "Failed to copy to clipboard. Here is the Claude Code command:",
+    )
+    consola.log(command)
+  }
+}
+
+async function setupProviderMode(
+  serverUrl: string,
+  claudeCode: boolean,
+): Promise<void> {
+  const enabledProviders = listEnabledProviders()
+
+  if (enabledProviders.length > 0) {
+    consola.info(`Using enabled providers: ${enabledProviders.join(", ")}`)
+    return
+  }
+
+  consola.info("No enabled providers found. Setting one up...")
+  await runProviderSetup()
+
+  if (state.githubToken) {
+    await setupCopilotMode(state.githubToken, false, serverUrl, claudeCode)
+    return
+  }
+
+  const providersAfterSetup = listEnabledProviders()
+  if (providersAfterSetup.length === 0) {
+    throw new Error(
+      "Failed to configure any provider. Run `copilot-api auth login` to set one up.",
+    )
+  }
+  consola.info(`Configured providers: ${providersAfterSetup.join(", ")}`)
+}
+
 export async function runServer(options: RunServerOptions): Promise<void> {
   const tlsModule = await import("./lib/tls")
   tlsModule.enableSystemCACompat()
 
-  // Work around unjs/consola#357 until a release includes PR #359.
   consola.options.throttle = 0
 
-  // Ensure config is merged with defaults at startup
   mergeConfigWithDefaults()
 
   await initOpencodeVersion()
@@ -56,90 +168,25 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     consola.info("Verbose logging enabled")
   }
 
-  state.accountType = options.accountType
-  if (options.accountType !== "individual") {
-    consola.info(`Using ${options.accountType} plan GitHub account`)
-  }
-
   state.manualApprove = options.manual
   state.rateLimitSeconds = options.rateLimit
   state.rateLimitWait = options.rateLimitWait
   state.showToken = options.showToken
 
   await ensurePaths()
-  await cacheVSCodeVersion()
-  cacheMacMachineId()
-  cacheVsCodeSessionId()
-  await cacheVsCodeDeviceId()
-
-  if (options.githubToken) {
-    state.githubToken = options.githubToken
-    consola.info("Using provided GitHub token")
-    await logUser()
-  } else {
-    await setupGitHubToken()
-  }
-
-  await setupCopilotToken()
-  await cacheModels()
-
-  consola.info(
-    `Available models: \n${state.models?.data.map((model) => `- ${model.id}`).join("\n")}`,
-  )
 
   const serverUrl = `http://localhost:${options.port}`
 
-  if (options.claudeCode) {
-    consola.log(
-      "\n💡 Tip: The --claude-code flag simply generates a clipboard command for launching Claude Code. \n"
-        + "All models remain fully accessible without this flag, just configure the model ID directly in your settings.json file.",
+  const githubToken = options.githubToken || (await readGitHubToken())
+  if (githubToken) {
+    await setupCopilotMode(
+      githubToken,
+      Boolean(options.githubToken),
+      serverUrl,
+      options.claudeCode,
     )
-
-    invariant(state.models, "Models should be loaded by now")
-
-    const selectedModel = await consola.prompt(
-      "Select a model to use with Claude Code",
-      {
-        type: "select",
-        options: state.models.data.map((model) => model.id),
-      },
-    )
-
-    const selectedSmallModel = await consola.prompt(
-      "Select a small model to use with Claude Code",
-      {
-        type: "select",
-        options: state.models.data.map((model) => model.id),
-      },
-    )
-
-    const command = generateEnvScript(
-      {
-        ANTHROPIC_BASE_URL: serverUrl,
-        ANTHROPIC_AUTH_TOKEN: "dummy",
-        ANTHROPIC_MODEL: selectedModel,
-        ANTHROPIC_DEFAULT_SONNET_MODEL: selectedModel,
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: selectedSmallModel,
-        DISABLE_NON_ESSENTIAL_MODEL_CALLS: "1",
-        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-        CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
-        CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION: "false",
-        CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "true",
-        CLAUDE_CODE_ENABLE_AWAY_SUMMARY: "0",
-        CLAUDE_PLUGIN_ENABLE_QUESTION_RULES: "true",
-      },
-      "claude",
-    )
-
-    try {
-      clipboard.writeSync(command)
-      consola.success("Copied Claude Code command to clipboard!")
-    } catch {
-      consola.warn(
-        "Failed to copy to clipboard. Here is the Claude Code command:",
-      )
-      consola.log(command)
-    }
+  } else {
+    await setupProviderMode(serverUrl, options.claudeCode)
   }
 
   consola.box(
@@ -174,12 +221,6 @@ export const start = defineCommand({
       type: "boolean",
       default: false,
       description: "Enable verbose logging",
-    },
-    "account-type": {
-      alias: "a",
-      type: "string",
-      default: "individual",
-      description: "Account type to use (individual, business, enterprise)",
     },
     manual: {
       type: "boolean",
@@ -231,7 +272,6 @@ export const start = defineCommand({
     return runServer({
       port: Number.parseInt(args.port, 10),
       verbose: args.verbose,
-      accountType: args["account-type"],
       manual: args.manual,
       rateLimit,
       rateLimitWait: args.wait,

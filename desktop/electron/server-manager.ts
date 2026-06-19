@@ -157,7 +157,6 @@ export async function startServer(
   port: number,
   token: string,
   serverOptions?: {
-    accountType?: string
     verbose?: boolean
     showToken?: boolean
     proxy?: DesktopProxySettings
@@ -191,9 +190,6 @@ export async function startServer(
   const serverPath = getServerPath()
   const args = ['start', '--github-token', token, '--port', String(port)]
   if (proxyEnabled) args.push('--proxy-env')
-  if (serverOptions?.accountType && serverOptions.accountType !== 'individual') {
-    args.push('--account-type', serverOptions.accountType)
-  }
   if (serverOptions?.verbose) args.push('--verbose')
   if (serverOptions?.showToken) args.push('--show-token')
 
