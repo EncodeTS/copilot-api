@@ -55,7 +55,10 @@ export async function handleCompletion(c: Context) {
 
   if (state.manualApprove) await awaitApproval()
 
-  if (isNullish(payload.max_tokens)) {
+  if (
+    isNullish(payload.max_tokens)
+    && isNullish(payload.max_completion_tokens)
+  ) {
     payload = {
       ...payload,
       max_tokens: selectedModel?.capabilities.limits.max_output_tokens,
@@ -64,7 +67,9 @@ export async function handleCompletion(c: Context) {
   }
 
   if (payload.model.includes("gpt")) {
-    payload.max_completion_tokens = payload.max_tokens
+    if (isNullish(payload.max_completion_tokens)) {
+      payload.max_completion_tokens = payload.max_tokens
+    }
     delete payload.max_tokens
   }
 
