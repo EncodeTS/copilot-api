@@ -194,6 +194,7 @@ export interface ChatCompletionsPayload {
     include_usage?: boolean | null
   } | null
   thinking_budget?: number
+  reasoning_effort?: string
   top_k?: number | null
   parallel_tool_calls?: boolean | null
 }

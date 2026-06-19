@@ -58,6 +58,8 @@ interface ToolResultMessages {
 interface TranslateToOpenAIOptions {
   supportPdf?: boolean
   toolContentSupportType?: Array<ToolContentSupportType>
+  validateReasoningEffort?: boolean
+  reasoningEffortSupport?: Array<string>
 }
 
 type MappableContentBlock =
@@ -73,6 +75,7 @@ export function translateToOpenAI(
   const modelId = payload.model
   const model = state.models?.data.find((m) => m.id === modelId)
   const thinkingBudget = getThinkingBudget(payload, model)
+  const reasoningEffort = getReasoningEffort(payload, options)
   const capabilities = {
     supportPdf: options.supportPdf ?? false,
     toolContentSupportType:
@@ -94,7 +97,33 @@ export function translateToOpenAI(
     tools: translateAnthropicToolsToOpenAI(payload.tools),
     tool_choice: translateAnthropicToolChoiceToOpenAI(payload.tool_choice),
     thinking_budget: thinkingBudget,
+    ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
   }
+}
+
+function getReasoningEffort(
+  payload: AnthropicMessagesPayload,
+  options: TranslateToOpenAIOptions,
+): string | undefined {
+  const effort = payload.output_config?.effort
+  if (!effort) {
+    return undefined
+  }
+
+  if (!options.validateReasoningEffort) {
+    return effort
+  }
+
+  const supportedEfforts = options.reasoningEffortSupport
+  if (!supportedEfforts || supportedEfforts.length === 0) {
+    return undefined
+  }
+
+  if (supportedEfforts.includes(effort)) {
+    return effort
+  }
+
+  return supportedEfforts.at(-1)
 }
 
 function getThinkingBudget(
