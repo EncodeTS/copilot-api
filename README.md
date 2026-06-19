@@ -9,14 +9,9 @@ English | [简体中文](./README.zh-CN.md)
 >
 > 1. **Claude Code configuration:** When using with Claude Code, please configure the model ID as `claude-opus-4-6` or `claude-opus-4.6`. Example claude `settings.json` see [Manual Configuration with `settings.json`](#manual-configuration-with-settingsjson). 
 >
-> 2. **Recommend for Opencode:** For opencode, prefer the opencode OAuth app. It matches opencode's built-in GitHub Copilot provider and avoids Terms of Service risk:
->    ```sh
->    npx @jeffreycao/copilot-api@latest --oauth-app=opencode start
->    ```
+> 2. **Built-in `copilot`, `codex` and third-party providers:** Run `npx @jeffreycao/copilot-api@latest auth` and choose `copilot`, `codex`, `deepseek`, `custom`, or other providers.
 >
-> 3. **Built-in `codex` provider:** Run `npx @jeffreycao/copilot-api@latest auth login --provider codex` once and the gateway will persist and refresh Codex OAuth credentials automatically.
->
-> 4. **Note:** See [GitHub Copilot Security Notice](./NOTICE.md#github-copilot-security-notice) for the warning removed from the README header.
+> 3. **Note:** See [GitHub Copilot Security Notice](./NOTICE.md#github-copilot-security-notice) for the warning removed from the README header.
 
 ---
 
