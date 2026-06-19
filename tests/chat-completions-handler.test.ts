@@ -103,7 +103,7 @@ afterEach(() => {
 })
 
 describe("chat completions handler", () => {
-  test("rejects gpt-5.4 requests with invalid request error", async () => {
+  test("gpt-5.4 requests with no invalid request error", async () => {
     const app = createApp()
     const response = await app.request("/v1/chat/completions", {
       method: "POST",
@@ -116,7 +116,7 @@ describe("chat completions handler", () => {
       }),
     })
 
-    expect(response.status).toBe(400)
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(response.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalled()
   })
 })
