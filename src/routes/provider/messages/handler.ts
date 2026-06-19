@@ -186,7 +186,6 @@ export async function handleProviderMessagesForProvider(
         c,
         payload,
         provider,
-        providerConfig,
         upstreamResponse,
       })
     }
@@ -196,7 +195,6 @@ export async function handleProviderMessagesForProvider(
       body: jsonBody,
       payload,
       provider,
-      providerConfig,
     })
   } catch (error) {
     logger.error("provider.messages.error", {
@@ -655,13 +653,11 @@ const streamProviderMessages = ({
   c,
   payload,
   provider,
-  providerConfig,
   upstreamResponse,
 }: {
   c: Context
   payload: AnthropicMessagesPayload
   provider: string
-  providerConfig: ResolvedProviderConfig
   upstreamResponse: Response
 }): Response => {
   logger.debug("provider.messages.streaming")
@@ -686,7 +682,7 @@ const streamProviderMessages = ({
         break
       }
 
-      const parsed = parseProviderStreamEvent(data, providerConfig)
+      const parsed = parseProviderStreamEvent(data)
       if (parsed) {
         usage = mergeAnthropicUsage(usage, parsed.usage)
         data = parsed.data
@@ -908,12 +904,10 @@ const parseResponsesProviderStreamChunk = (
 
 const parseProviderStreamEvent = (
   data: string,
-  providerConfig: ResolvedProviderConfig,
 ): { data: string; model?: string; usage: UsageTokens } | null => {
   try {
     const parsed = JSON.parse(data) as AnthropicStreamEventData
     if (parsed.type === "message_start") {
-      adjustInputTokens(providerConfig, parsed.message.usage)
       return {
         data: JSON.stringify(parsed),
         model: parsed.message.model,
@@ -921,7 +915,6 @@ const parseProviderStreamEvent = (
       }
     }
     if (parsed.type === "message_delta") {
-      adjustInputTokens(providerConfig, parsed.usage)
       return {
         data: JSON.stringify(parsed),
         usage: normalizeAnthropicUsage(parsed.usage),
@@ -943,12 +936,10 @@ const respondProviderMessagesJson = (
     body: AnthropicResponse
     payload: AnthropicMessagesPayload
     provider: string
-    providerConfig: ResolvedProviderConfig
   },
 ): Response => {
-  const { body, payload, provider, providerConfig } = options
+  const { body, payload, provider } = options
   const recordUsage = createProviderMessagesUsageRecorder(payload, provider)
-  adjustInputTokens(providerConfig, body.usage)
   recordUsage(normalizeAnthropicUsage(body.usage))
 
   debugJson(logger, "provider.messages.no_stream result:", body)
@@ -1047,24 +1038,3 @@ const createProviderMessagesUsageRecorder = (
     providerName: provider,
     sessionId: parseUserIdMetadata(payload.metadata?.user_id).sessionId,
   })
-
-const adjustInputTokens = (
-  providerConfig: ResolvedProviderConfig,
-  usage?: {
-    input_tokens?: number
-    cache_read_input_tokens?: number
-    cache_creation_input_tokens?: number
-  },
-): void => {
-  if (!providerConfig.adjustInputTokens || !usage) {
-    return
-  }
-  const adjustedInput = Math.max(
-    0,
-    (usage.input_tokens ?? 0)
-      - (usage.cache_read_input_tokens ?? 0)
-      - (usage.cache_creation_input_tokens ?? 0),
-  )
-  usage.input_tokens = adjustedInput
-  debugJson(logger, "provider.messages.adjusted_usage:", usage)
-}

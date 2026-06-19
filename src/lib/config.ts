@@ -45,10 +45,12 @@ export interface ModelConfig {
 }
 
 export type ProviderAuthType = "authorization" | "oauth2" | "x-api-key"
-export type ProviderType =
-  | "anthropic"
-  | "openai-compatible"
-  | "openai-responses"
+export const SUPPORTED_PROVIDER_TYPES = [
+  "anthropic",
+  "openai-compatible",
+  "openai-responses",
+] as const
+export type ProviderType = (typeof SUPPORTED_PROVIDER_TYPES)[number]
 export type ToolContentSupportType = "array" | "image" | "pdf"
 
 export interface ProviderConfig {
@@ -58,7 +60,6 @@ export interface ProviderConfig {
   apiKey?: string
   authType?: ProviderAuthType
   models?: Record<string, ModelConfig>
-  adjustInputTokens?: boolean
 }
 
 export interface ResolvedProviderConfig {
@@ -68,7 +69,6 @@ export interface ResolvedProviderConfig {
   apiKey: string
   authType: ProviderAuthType
   models?: Record<string, ModelConfig>
-  adjustInputTokens?: boolean
 }
 
 const gpt5ExplorationPrompt = `## Exploration and reading files
@@ -454,6 +454,10 @@ export function normalizeProviderBaseUrl(url: string): string {
   return url.trim().replace(/\/+$/u, "")
 }
 
+export function isSupportedProviderType(value: string): value is ProviderType {
+  return SUPPORTED_PROVIDER_TYPES.includes(value as ProviderType)
+}
+
 function getDefaultProviderAuthType(
   providerType: ProviderType,
 ): ProviderAuthType {
@@ -564,11 +568,7 @@ export function getProviderConfig(name: string): ResolvedProviderConfig | null {
   }
 
   const type = provider.type ?? "anthropic"
-  if (
-    type !== "anthropic"
-    && type !== "openai-compatible"
-    && type !== "openai-responses"
-  ) {
+  if (!isSupportedProviderType(type)) {
     consola.warn(
       `Provider ${providerName} is ignored because type '${type}' is not supported`,
     )
@@ -603,7 +603,6 @@ export function getProviderConfig(name: string): ResolvedProviderConfig | null {
     apiKey,
     authType,
     models: provider.models,
-    adjustInputTokens: provider.adjustInputTokens,
   }
 }
 
