@@ -18,6 +18,15 @@ interface ConfigFileShape {
   >
 }
 
+interface PromptCall {
+  message: string
+  options: {
+    default?: string
+    initial?: string
+    type?: string
+  }
+}
+
 const cwd = fileURLToPath(new URL("../", import.meta.url))
 const decoder = new TextDecoder()
 const tempDirs: Array<string> = []
@@ -80,8 +89,281 @@ describe("auth login validation", () => {
     )
 
     expect(output).toBe(
-      "Unknown provider 'unknown'. Expected one of: copilot, codex, custom",
+      "Unknown provider 'unknown'. Expected one of: copilot, codex, deepseek, dashscope, openrouter, custom",
     )
+  })
+
+  test("configures deepseek from the quick provider template with defaults", () => {
+    const tempDir = createTempDir()
+    writeConfigFile(tempDir, {})
+
+    const output = runScript(
+      tempDir,
+      `
+      const consolaModule = await import("consola");
+      const consola = consolaModule.default ?? consolaModule;
+      const answers = ["deepseek-key", "__default__", ""];
+      const promptCalls = [];
+      consola.prompt = async (message, options) => {
+        promptCalls.push({ message, options });
+        return answers.shift();
+      };
+      consola.info = () => {};
+      consola.success = () => {};
+      const { runAuthLogin } = await import("./src/auth");
+      await runAuthLogin({ provider: "deepseek", verbose: false, showToken: false });
+      console.log(JSON.stringify(promptCalls));
+      `,
+    )
+
+    const promptCalls = JSON.parse(output) as Array<PromptCall>
+    expect(promptCalls[2]).toMatchObject({
+      message: "Enter provider baseUrl (default: https://api.deepseek.com)",
+      options: {
+        default: "https://api.deepseek.com",
+        initial: "https://api.deepseek.com",
+        type: "text",
+      },
+    })
+    expect(readConfigFile(tempDir).providers?.deepseek).toEqual({
+      apiKey: "deepseek-key",
+      baseUrl: "https://api.deepseek.com",
+      enabled: true,
+      type: "openai-compatible",
+    })
+  })
+
+  test("masks quick provider apiKey input in an interactive terminal", () => {
+    const tempDir = createTempDir()
+    writeConfigFile(tempDir, {})
+
+    const output = runScript(
+      tempDir,
+      `
+      const consolaModule = await import("consola");
+      const consola = consolaModule.default ?? consolaModule;
+      const answers = ["__default__", ""];
+      const writes = [];
+      const rawModes = [];
+      const originalWrite = process.stdout.write.bind(process.stdout);
+      Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+      Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+      process.stdin.setRawMode = (enabled) => {
+        rawModes.push(enabled);
+        return process.stdin;
+      };
+      process.stdin.resume = () => {
+        queueMicrotask(() => process.stdin.emit("data", Buffer.from("masked-key\\r")));
+        return process.stdin;
+      };
+      process.stdin.pause = () => process.stdin;
+      process.stdout.write = (chunk, encoding, callback) => {
+        writes.push(String(chunk));
+        if (typeof encoding === "function") encoding();
+        if (typeof callback === "function") callback();
+        return true;
+      };
+      consola.prompt = async () => answers.shift();
+      consola.info = () => {};
+      consola.success = () => {};
+      const { runAuthLogin } = await import("./src/auth");
+      await runAuthLogin({ provider: "deepseek", verbose: false, showToken: false });
+      process.stdout.write = originalWrite;
+      console.log(JSON.stringify({ rawModes, writes: writes.join("") }));
+      `,
+    )
+
+    const maskedPromptOutput = JSON.parse(output) as {
+      rawModes: Array<boolean>
+      writes: string
+    }
+
+    expect(maskedPromptOutput.rawModes).toEqual([true, false])
+    expect(maskedPromptOutput.writes).toContain(
+      "Enter deepseek apiKey: **********\n",
+    )
+    expect(maskedPromptOutput.writes).not.toContain("masked-key")
+    expect(readConfigFile(tempDir).providers?.deepseek).toEqual({
+      apiKey: "masked-key",
+      baseUrl: "https://api.deepseek.com",
+      enabled: true,
+      type: "openai-compatible",
+    })
+  })
+
+  test("configures deepseek with custom quick provider type and baseUrl", () => {
+    const tempDir = createTempDir()
+    writeConfigFile(tempDir, {})
+
+    runScript(
+      tempDir,
+      `
+      const consolaModule = await import("consola");
+      const consola = consolaModule.default ?? consolaModule;
+      const answers = ["deepseek-key", "anthropic", "https://deepseek.example///"];
+      consola.prompt = async () => answers.shift();
+      consola.info = () => {};
+      consola.success = () => {};
+      const { runAuthLogin } = await import("./src/auth");
+      await runAuthLogin({ provider: "deepseek", verbose: false, showToken: false });
+      `,
+    )
+
+    expect(readConfigFile(tempDir).providers?.deepseek).toEqual({
+      apiKey: "deepseek-key",
+      baseUrl: "https://deepseek.example",
+      enabled: true,
+      type: "anthropic",
+    })
+  })
+
+  test("configures dashscope from the quick provider template with defaults", () => {
+    const tempDir = createTempDir()
+    writeConfigFile(tempDir, {})
+
+    runScript(
+      tempDir,
+      `
+      const consolaModule = await import("consola");
+      const consola = consolaModule.default ?? consolaModule;
+      const answers = ["dashscope-key", "__default__", ""];
+      consola.prompt = async () => answers.shift();
+      consola.info = () => {};
+      consola.success = () => {};
+      const { runAuthLogin } = await import("./src/auth");
+      await runAuthLogin({ provider: "dashscope", verbose: false, showToken: false });
+      `,
+    )
+
+    expect(readConfigFile(tempDir).providers?.dashscope).toEqual({
+      apiKey: "dashscope-key",
+      baseUrl: "https://dashscope.aliyuncs.com/compatible-mode",
+      enabled: true,
+      type: "openai-compatible",
+    })
+  })
+
+  test("configures dashscope with custom quick provider type and baseUrl", () => {
+    const tempDir = createTempDir()
+    writeConfigFile(tempDir, {})
+
+    runScript(
+      tempDir,
+      `
+      const consolaModule = await import("consola");
+      const consola = consolaModule.default ?? consolaModule;
+      const answers = ["dashscope-key", "openai-responses", "https://dashscope.example/api///"];
+      consola.prompt = async () => answers.shift();
+      consola.info = () => {};
+      consola.success = () => {};
+      const { runAuthLogin } = await import("./src/auth");
+      await runAuthLogin({ provider: "dashscope", verbose: false, showToken: false });
+      `,
+    )
+
+    expect(readConfigFile(tempDir).providers?.dashscope).toEqual({
+      apiKey: "dashscope-key",
+      baseUrl: "https://dashscope.example/api",
+      enabled: true,
+      type: "openai-responses",
+    })
+  })
+
+  test("configures openrouter as an anthropic quick provider", () => {
+    const tempDir = createTempDir()
+    writeConfigFile(tempDir, {})
+
+    runScript(
+      tempDir,
+      `
+      const consolaModule = await import("consola");
+      const consola = consolaModule.default ?? consolaModule;
+      const answers = ["openrouter-key", ""];
+      consola.prompt = async () => answers.shift();
+      consola.info = () => {};
+      consola.success = () => {};
+      const { runAuthLogin } = await import("./src/auth");
+      await runAuthLogin({ provider: "openrouter", verbose: false, showToken: false });
+      `,
+    )
+
+    expect(readConfigFile(tempDir).providers?.openrouter).toEqual({
+      apiKey: "openrouter-key",
+      baseUrl: "https://openrouter.ai/api",
+      enabled: true,
+      type: "anthropic",
+    })
+  })
+
+  test("configures openrouter with a custom baseUrl but fixed anthropic type", () => {
+    const tempDir = createTempDir()
+    writeConfigFile(tempDir, {})
+
+    runScript(
+      tempDir,
+      `
+      const consolaModule = await import("consola");
+      const consola = consolaModule.default ?? consolaModule;
+      const answers = ["openrouter-key", "https://openrouter.example/api///"];
+      consola.prompt = async () => answers.shift();
+      consola.info = () => {};
+      consola.success = () => {};
+      const { runAuthLogin } = await import("./src/auth");
+      await runAuthLogin({ provider: "openrouter", verbose: false, showToken: false });
+      `,
+    )
+
+    expect(readConfigFile(tempDir).providers?.openrouter).toEqual({
+      apiKey: "openrouter-key",
+      baseUrl: "https://openrouter.example/api",
+      enabled: true,
+      type: "anthropic",
+    })
+  })
+
+  test("preserves quick provider model settings when reconfiguring credentials", () => {
+    const tempDir = createTempDir()
+    writeConfigFile(tempDir, {
+      providers: {
+        dashscope: {
+          apiKey: "old-key",
+          baseUrl: "https://old.example",
+          enabled: true,
+          models: {
+            "qwen-plus": {
+              temperature: 0.2,
+            },
+          },
+          type: "openai-compatible",
+        },
+      },
+    })
+
+    runScript(
+      tempDir,
+      `
+      const consolaModule = await import("consola");
+      const consola = consolaModule.default ?? consolaModule;
+      const answers = ["new-key", "__default__", ""];
+      consola.prompt = async () => answers.shift();
+      consola.info = () => {};
+      consola.success = () => {};
+      const { runAuthLogin } = await import("./src/auth");
+      await runAuthLogin({ provider: "dashscope", verbose: false, showToken: false });
+      `,
+    )
+
+    expect(readConfigFile(tempDir).providers?.dashscope).toEqual({
+      apiKey: "new-key",
+      baseUrl: "https://dashscope.aliyuncs.com/compatible-mode",
+      enabled: true,
+      models: {
+        "qwen-plus": {
+          temperature: 0.2,
+        },
+      },
+      type: "openai-compatible",
+    })
   })
 
   test("configures a custom provider with the default auth type", () => {
