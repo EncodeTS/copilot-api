@@ -44,7 +44,6 @@ bindElectronFetch()
 
 // Dynamically import other modules to ensure environment variables are set
 const { auth } = await import("./auth")
-const { checkUsage } = await import("./check-usage")
 const { debug } = await import("./debug")
 const { mcp } = await import("./mcp")
 const { start } = await import("./start")
@@ -55,7 +54,7 @@ const main = defineCommand({
     description:
       "A wrapper around GitHub Copilot API to make it OpenAI compatible, making it usable for other tools.",
   },
-  subCommands: { auth, start, "check-usage": checkUsage, debug, mcp },
+  subCommands: { auth, start, debug, mcp },
   args: cliArgs,
 })
 

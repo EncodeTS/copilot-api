@@ -3,16 +3,11 @@ import { Hono } from "hono"
 import { forwardError } from "~/lib/error"
 import { toClientModelId } from "~/lib/models"
 import { state } from "~/lib/state"
-import { cacheModels } from "~/lib/utils"
 
 export const modelRoutes = new Hono()
 
 modelRoutes.get("/", async (c) => {
   try {
-    if (!state.models) {
-      await cacheModels()
-    }
-
     const models = state.models?.data.map((model) => {
       const capabilities = model.capabilities
       const contextWindow = capabilities?.limits?.max_context_window_tokens ?? 0

@@ -511,6 +511,12 @@ async function loginWithProvider(provider: AuthProviderName): Promise<void> {
   await configureCustomProvider()
 }
 
+export async function runProviderSetup(): Promise<void> {
+  const provider = await resolveProviderSelection(undefined)
+  consola.info(`Logging in with ${AUTH_PROVIDER_LABELS[provider]}`)
+  await loginWithProvider(provider)
+}
+
 export async function runAuthLogin(options: RunAuthOptions): Promise<void> {
   const tlsModule = await import("./lib/tls")
   tlsModule.enableSystemCACompat()
