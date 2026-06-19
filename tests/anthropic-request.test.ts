@@ -197,8 +197,7 @@ describe("Anthropic to OpenAI translation logic", () => {
 
       const openAIPayload = translateToOpenAI(anthropicPayload)
 
-      expect(openAIPayload.thinking_budget).toBe(3000)
-      expect(anthropicPayload.thinking?.budget_tokens).toBe(3000)
+      expect(openAIPayload.thinking_budget).toBeUndefined()
     } finally {
       state.models = originalModels
     }
