@@ -53,18 +53,6 @@ export async function handleCompletion(c: Context) {
     (model) => model.id === payload.model,
   )
 
-  if (selectedModel?.id === "gpt-5.4") {
-    return c.json(
-      {
-        error: {
-          message: "Please use `/v1/responses` or `/v1/messages` API",
-          type: "invalid_request_error",
-        },
-      },
-      400,
-    )
-  }
-
   if (state.manualApprove) await awaitApproval()
 
   if (isNullish(payload.max_tokens)) {
@@ -73,6 +61,11 @@ export async function handleCompletion(c: Context) {
       max_tokens: selectedModel?.capabilities.limits.max_output_tokens,
     }
     debugJson(logger, "Set max_tokens to:", payload.max_tokens)
+  }
+
+  if (payload.model.includes("gpt")) {
+    payload.max_completion_tokens = payload.max_tokens
+    delete payload.max_tokens
   }
 
   // not support subagent marker for now , set sessionId = getUUID(requestId)
