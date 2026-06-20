@@ -45,6 +45,11 @@ export interface Locale {
     tabDashboard: string
     tabTokenUsage: string
     tabLogs: string
+    overviewStatus: string
+    overviewRunning: string
+    overviewPort: string
+    overviewModels: string
+    overviewLastRefresh: string
     premiumUsed: string
     quotaReset: string
     serviceAddress: string

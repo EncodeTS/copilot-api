@@ -3,6 +3,13 @@ import { useState, useEffect, useRef } from 'react'
 import Header from '../components/Header'
 import { TokenUsageCostMetric, TokenUsageMetric, TokenUsageValueLines } from '../components/TokenUsageMetric'
 import { useLanguage } from '../contexts/LanguageContext'
+import {
+  getNonEmptyUsageText,
+  getPremiumUsedText,
+  hasCopilotQuotaValue,
+  shouldShowCopilotQuotaUsage,
+  shouldShowCopilotUsageSummary
+} from '../lib/copilot-usage-display'
 import { formatTokenCost, formatTokenCosts } from '../lib/token-usage-format'
 import AdvancedConfigPage from './AdvancedConfigPage'
 import type {
@@ -108,6 +115,12 @@ function formatEventTime(value: number): string {
   return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()} ${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}:${padDatePart(date.getSeconds())}`
 }
 
+function formatRefreshTime(value: number | null): string {
+  if (!value || !Number.isFinite(value)) return '—'
+  const date = new Date(value)
+  return `${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}:${padDatePart(date.getSeconds())}`
+}
+
 function formatCellText(value: string | null | undefined): string {
   const text = value?.trim()
   return text ? text : '—'
@@ -132,6 +145,7 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
   const [models, setModels] = useState<Model[]>([])
   const [serverAuthInfo, setServerAuthInfo] = useState<ServerAuthInfo>({ enabled: false })
   const [loading, setLoading] = useState(false)
+  const [lastDashboardRefreshAt, setLastDashboardRefreshAt] = useState<number | null>(null)
   const [tokenUsageLoading, setTokenUsageLoading] = useState(false)
   const [tokenUsageEventsLoading, setTokenUsageEventsLoading] = useState(false)
   const [serverError, setServerError] = useState('')
@@ -239,6 +253,7 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
     setTokenUsageLoading(false)
     setTokenUsageEventsLoading(false)
     setModels([])
+    setLastDashboardRefreshAt(null)
     setServerError('')
   }
 
@@ -252,15 +267,27 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
     setLoading(true)
     try {
       // Proxy HTTP requests through IPC so the main process bypasses renderer CORS.
-      const [usageData, modelsData] = await Promise.all([
-        window.electronAPI.fetchUsage(),
-        window.electronAPI.fetchModels()
-      ])
-      if (usageData) setUsage(usageData as UsageInfo)
+      if (authMode === 'copilot') {
+        const [usageData, modelsData] = await Promise.all([
+          window.electronAPI.fetchUsage(),
+          window.electronAPI.fetchModels()
+        ])
+        if (usageData) setUsage(usageData as UsageInfo)
+        if (modelsData) {
+          const d = modelsData as { data: Model[] }
+          setModels(d.data ?? [])
+        }
+        setLastDashboardRefreshAt(Date.now())
+        return
+      }
+
+      setUsage(null)
+      const modelsData = await window.electronAPI.fetchModels()
       if (modelsData) {
         const d = modelsData as { data: Model[] }
         setModels(d.data ?? [])
       }
+      setLastDashboardRefreshAt(Date.now())
     } catch {
       // The server may still be initializing.
     } finally {
@@ -335,6 +362,18 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
     if (started) void fetchTokenUsageEvents(tokenUsagePeriod, nextPage)
   }
 
+  const handleRefreshActiveTab = () => {
+    if (tab === 'dashboard') {
+      void fetchData()
+      return
+    }
+    if (tab === 'tokenUsage') {
+      void fetchTokenUsageData()
+      return
+    }
+    void window.electronAPI.getLogs().then(setLogs).catch(() => {})
+  }
+
   const handleCopy = (text: string, key: string) => {
     navigator.clipboard.writeText(text).then(() => {
       setCopied(key)
@@ -345,7 +384,21 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
   const premiumQ = usage?.quota_snapshots?.premium_interactions
   const chatQ = usage?.quota_snapshots?.chat
   const completionsQ = usage?.quota_snapshots?.completions
+  const isCopilotAuthMode = authMode === 'copilot'
+  const shouldShowUsagePlaceholders = isCopilotAuthMode && loading
+  const copilotPlan = getNonEmptyUsageText(usage?.copilot_plan)
+  const quotaResetDate = getNonEmptyUsageText(usage?.quota_reset_date)
   const shouldShowFailureLogs = !started && Boolean(startError || serverError)
+  const shouldShowUsageSummary =
+    isCopilotAuthMode && (shouldShowUsagePlaceholders || shouldShowCopilotUsageSummary(usage))
+  const shouldShowQuotaUsage =
+    isCopilotAuthMode && (shouldShowUsagePlaceholders || shouldShowCopilotQuotaUsage(usage))
+  const isActiveTabRefreshing =
+    tab === 'dashboard'
+      ? loading
+      : tab === 'tokenUsage'
+        ? tokenUsageLoading || tokenUsageEventsLoading
+        : false
   const serverAuthHeaderName = serverAuthInfo.headerName ?? ''
   const serverAuthHeaderValue = serverAuthInfo.headerValue ?? ''
   const serverAuthHeader = serverAuthHeaderName && serverAuthHeaderValue
@@ -355,11 +408,28 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
     ? `${serverAuthHeaderName}: ${maskSecret(serverAuthHeaderValue)}`
     : ''
 
-  const premiumUsed = premiumQ
-    ? premiumQ.unlimited
-      ? '∞'
-      : `${Math.floor(premiumQ.entitlement - premiumQ.quota_remaining)} / ${Math.floor(premiumQ.entitlement)}`
-    : '—'
+  const premiumUsed = getPremiumUsedText(premiumQ)
+  const dashboardOverviewItems: Array<{
+    label: string
+    loading?: boolean
+    tone: 'blue' | 'green' | 'slate'
+    value: string
+  }> = [
+    { label: t('dashboard.overviewStatus'), tone: 'green', value: t('dashboard.overviewRunning') },
+    { label: t('dashboard.overviewPort'), tone: 'slate', value: String(portNum) },
+    {
+      label: t('dashboard.overviewModels'),
+      loading,
+      tone: 'blue',
+      value: String(models.length)
+    },
+    {
+      label: t('dashboard.overviewLastRefresh'),
+      loading,
+      tone: 'slate',
+      value: formatRefreshTime(lastDashboardRefreshAt)
+    }
+  ]
   const dashboardTabs: Array<{ key: DashboardTab; label: string }> = [
     { key: 'dashboard', label: t('dashboard.tabDashboard') },
     { key: 'tokenUsage', label: t('dashboard.tabTokenUsage') },
@@ -384,20 +454,29 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
 
       {/* Tabs shown only while the server is running */}
       {view === 'main' && started && (
-        <div className="flex px-4 bg-white border-b border-slate-100 shrink-0">
-          {dashboardTabs.map(tabItem => (
-            <button
-              key={tabItem.key}
-              onClick={() => setTab(tabItem.key)}
-              className={`px-3 py-2 text-[13px] border-b-2 transition-colors ${
-                tab === tabItem.key
-                  ? 'font-semibold text-[#0f172a] border-[#0f172a]'
-                  : 'text-slate-400 border-transparent hover:text-slate-600'
-              }`}
-            >
-              {tabItem.label}
-            </button>
-          ))}
+        <div className="flex items-center justify-between gap-3 px-4 bg-white border-b border-slate-100 shrink-0">
+          <div className="flex min-w-0">
+            {dashboardTabs.map(tabItem => (
+              <button
+                key={tabItem.key}
+                onClick={() => setTab(tabItem.key)}
+                className={`px-3 py-2 text-[13px] border-b-2 transition-colors ${
+                  tab === tabItem.key
+                    ? 'font-semibold text-[#0f172a] border-[#0f172a]'
+                    : 'text-slate-400 border-transparent hover:text-slate-600'
+                }`}
+              >
+                {tabItem.label}
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={handleRefreshActiveTab}
+            disabled={isActiveTabRefreshing}
+            className="h-7 shrink-0 rounded-md border border-slate-200 bg-white px-2.5 text-[13px] text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-40"
+          >
+            {isActiveTabRefreshing ? t('dashboard.refreshing') : t('dashboard.refresh')}
+          </button>
         </div>
       )}
 
@@ -467,29 +546,54 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
         {/* Dashboard tab */}
         {view === 'main' && started && tab === 'dashboard' && (
           <div className="p-4">
+            <div className="mb-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
+              {dashboardOverviewItems.map(item => (
+                <div key={item.label} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                  <div className="text-[13px] font-medium text-slate-400">{item.label}</div>
+                  <div className={`mt-1 flex min-w-0 items-center gap-1.5 text-[13px] font-semibold ${
+                    item.tone === 'green'
+                      ? 'text-green-600'
+                      : item.tone === 'blue'
+                        ? 'text-blue-600'
+                        : 'text-[#0f172a]'
+                  } ${item.loading ? 'animate-pulse opacity-50' : ''}`}>
+                    {item.tone === 'green' && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-green-500" />}
+                    <span className="truncate">{item.loading ? '…' : item.value}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
             <div className="grid items-start gap-3 xl:grid-cols-[minmax(0,1fr)_340px]">
               <div className="flex min-w-0 flex-col gap-3">
                 {/* Metric cards */}
-                <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
-                  <div className="bg-white border border-slate-200 rounded-xl p-3">
-                    <div className={`text-[13px] font-bold text-[#0f172a] ${loading ? 'animate-pulse text-slate-200' : ''}`}>
-                      {loading ? '…' : (usage?.copilot_plan ?? '—')}
-                    </div>
-                    <div className="text-[13px] text-slate-400 mt-0.5">Copilot Plan</div>
+                {shouldShowUsageSummary && (
+                  <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+                    {(shouldShowUsagePlaceholders || copilotPlan) && (
+                      <div className="bg-white border border-slate-200 rounded-xl p-3">
+                        <div className={`text-[13px] font-bold text-[#0f172a] ${loading ? 'animate-pulse text-slate-200' : ''}`}>
+                          {loading ? '…' : copilotPlan}
+                        </div>
+                        <div className="text-[13px] text-slate-400 mt-0.5">Copilot Plan</div>
+                      </div>
+                    )}
+                    {(shouldShowUsagePlaceholders || premiumUsed) && (
+                      <div className="bg-green-50 border border-green-200 rounded-xl p-3">
+                        <div className={`text-[13px] font-bold text-green-600 ${loading ? 'animate-pulse' : ''}`}>
+                          {loading ? '…' : premiumUsed}
+                        </div>
+                        <div className="text-[13px] text-green-400 mt-0.5">{t('dashboard.premiumUsed')}</div>
+                      </div>
+                    )}
+                    {(shouldShowUsagePlaceholders || quotaResetDate) && (
+                      <div className="bg-white border border-slate-200 rounded-xl p-3">
+                        <div className={`text-[13px] font-bold text-[#0f172a] ${loading ? 'animate-pulse text-slate-200' : ''}`}>
+                          {loading ? '…' : quotaResetDate}
+                        </div>
+                        <div className="text-[13px] text-slate-400 mt-0.5">{t('dashboard.quotaReset')}</div>
+                      </div>
+                    )}
                   </div>
-                  <div className="bg-green-50 border border-green-200 rounded-xl p-3">
-                    <div className={`text-[13px] font-bold text-green-600 ${loading ? 'animate-pulse' : ''}`}>
-                      {loading ? '…' : premiumUsed}
-                    </div>
-                    <div className="text-[13px] text-green-400 mt-0.5">{t('dashboard.premiumUsed')}</div>
-                  </div>
-                  <div className="bg-white border border-slate-200 rounded-xl p-3">
-                    <div className={`text-[13px] font-bold text-[#0f172a] ${loading ? 'animate-pulse text-slate-200' : ''}`}>
-                      {loading ? '…' : (usage?.quota_reset_date ?? '—')}
-                    </div>
-                    <div className="text-[13px] text-slate-400 mt-0.5">{t('dashboard.quotaReset')}</div>
-                  </div>
-                </div>
+                )}
 
                 {/* Service endpoints */}
                 <div className="bg-white border border-slate-200 rounded-xl p-3">
@@ -532,28 +636,29 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
                 </div>
 
                 {/* Quota usage */}
-                <div className="bg-white border border-slate-200 rounded-xl p-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <h3 className="text-[13px] font-semibold text-slate-400 uppercase tracking-wide">{t('dashboard.quotaUsage')}</h3>
-                    <button
-                      onClick={fetchData}
-                      disabled={loading}
-                      className="text-[13px] text-blue-500 hover:text-blue-600 disabled:opacity-50"
-                    >
-                      {loading ? t('dashboard.refreshing') : t('dashboard.refresh')}
-                    </button>
+                {shouldShowQuotaUsage && (
+                  <div className="bg-white border border-slate-200 rounded-xl p-3">
+                    <div className="mb-2">
+                      <h3 className="text-[13px] font-semibold text-slate-400 uppercase tracking-wide">{t('dashboard.quotaUsage')}</h3>
+                    </div>
+                    <div className="space-y-2.5">
+                      {(shouldShowUsagePlaceholders || hasCopilotQuotaValue(premiumQ)) && (
+                        <QuotaBar label="Premium" quota={premiumQ} loading={loading} mode="used" />
+                      )}
+                      {(shouldShowUsagePlaceholders || hasCopilotQuotaValue(chatQ)) && (
+                        <QuotaBar label="Chat" quota={chatQ} loading={loading} mode="remaining" />
+                      )}
+                      {(shouldShowUsagePlaceholders || hasCopilotQuotaValue(completionsQ)) && (
+                        <QuotaBar label="Completions" quota={completionsQ} loading={loading} mode="remaining" />
+                      )}
+                    </div>
                   </div>
-                  <div className="space-y-2.5">
-                    <QuotaBar label="Premium" quota={premiumQ} loading={loading} mode="used" />
-                    <QuotaBar label="Chat" quota={chatQ} loading={loading} mode="remaining" />
-                    <QuotaBar label="Completions" quota={completionsQ} loading={loading} mode="remaining" />
-                  </div>
-                </div>
+                )}
               </div>
 
               {/* Available models */}
               <div className="min-w-0">
-                <div className="bg-white border border-slate-200 rounded-xl p-3 xl:max-h-[calc(100vh-190px)] xl:min-h-[420px] flex flex-col overflow-hidden">
+                <div className="bg-white border border-slate-200 rounded-xl p-3 xl:max-h-[calc(100vh-250px)] xl:min-h-[340px] flex flex-col overflow-hidden">
                   <div className="flex items-center justify-between gap-2 mb-2 shrink-0">
                     <h3 className="text-[13px] font-semibold text-slate-400 uppercase tracking-wide">{t('dashboard.availableModels')}</h3>
                     {!loading && <span className="text-[13px] text-slate-400 shrink-0">{t('dashboard.modelsCount', { n: models.length })}</span>}
@@ -589,9 +694,6 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
               period={tokenUsagePeriod}
               tokenUsage={tokenUsage}
               onPeriodChange={handleTokenUsagePeriodChange}
-              onRefresh={() => {
-                void fetchTokenUsageData()
-              }}
               t={t}
             />
           </div>
@@ -677,7 +779,6 @@ function TokenUsagePanel({
   loading,
   onEventsPageChange,
   onPeriodChange,
-  onRefresh,
   period,
   t,
   tokenUsage
@@ -688,7 +789,6 @@ function TokenUsagePanel({
   loading: boolean
   onEventsPageChange: (page: number) => void
   onPeriodChange: (period: TokenUsagePeriod) => void
-  onRefresh: () => void
   period: TokenUsagePeriod
   t: TranslateFn
   tokenUsage: TokenUsageSummary | null
@@ -712,13 +812,6 @@ function TokenUsagePanel({
       <div className="flex flex-col gap-2 mb-3 sm:flex-row sm:items-center sm:justify-between">
         <h3 className="text-[13px] font-semibold text-slate-400 uppercase tracking-wide">{t('dashboard.tokenUsage')}</h3>
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={onRefresh}
-            disabled={loading}
-            className="h-8 rounded-md border border-slate-200 bg-white px-2.5 text-[13px] text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-40"
-          >
-            {loading ? t('dashboard.refreshing') : t('dashboard.refresh')}
-          </button>
           <div className="grid grid-cols-3 rounded-lg border border-slate-200 bg-slate-50 p-0.5">
             {periods.map(item => (
               <button
