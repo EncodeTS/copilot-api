@@ -17,6 +17,8 @@ type NodeZlibModule = {
 
 const ZSTD_CONTENT_ENCODING = "zstd"
 const INVALID_BODY_STATUS = 400
+const PAYLOAD_TOO_LARGE_STATUS = 413
+const MAX_LOCAL_REQUEST_BODY_BYTES = 64 * 1024 * 1024
 
 let nodeZlibPromise: Promise<NodeZlibModule | null> | null = null
 
@@ -29,9 +31,39 @@ export const zstdDecompressionMiddleware: MiddlewareHandler = async (
     return next()
   }
 
+  const contentLength = Number(c.req.header("content-length"))
+  if (
+    Number.isFinite(contentLength)
+    && contentLength > MAX_LOCAL_REQUEST_BODY_BYTES
+  ) {
+    return c.json(
+      {
+        error: {
+          code: "local_request_body_too_large",
+          message: "Compressed request body exceeds the local safety limit.",
+          type: "payload_too_large",
+        },
+      },
+      PAYLOAD_TOO_LARGE_STATUS,
+    )
+  }
+
   try {
     const compressedBody = new Uint8Array(await c.req.raw.arrayBuffer())
     const decompressedBody = await decompressZstd(compressedBody)
+    if (decompressedBody.byteLength > MAX_LOCAL_REQUEST_BODY_BYTES) {
+      return c.json(
+        {
+          error: {
+            code: "local_request_body_too_large",
+            message:
+              "Decompressed request body exceeds the local safety limit.",
+            type: "payload_too_large",
+          },
+        },
+        PAYLOAD_TOO_LARGE_STATUS,
+      )
+    }
     const headers = new Headers(c.req.raw.headers)
     headers.delete("content-encoding")
     headers.delete("content-length")
