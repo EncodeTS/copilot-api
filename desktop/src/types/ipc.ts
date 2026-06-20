@@ -187,6 +187,7 @@ declare global {
       logout: () => Promise<void>
       startServer: (port: number, authMode?: DesktopAuthMode) => Promise<ServerStatus>
       stopServer: () => Promise<void>
+      getServerStatus: () => Promise<ServerStatus>
       getSettings: () => Promise<DesktopSettings>
       saveSettings: (settings: DesktopSettings) => Promise<void>
       getModelMappingsConfig: () => Promise<ModelMappingsConfig>

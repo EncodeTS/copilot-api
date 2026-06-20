@@ -4,12 +4,21 @@ import { useLanguage } from '../contexts/LanguageContext'
 
 interface HeaderProps {
   onChangeAuth?: () => void
+  onRestart?: () => void
   onStop?: () => void
   isRunning?: boolean
+  isRestarting?: boolean
   onOpenAdvancedConfig?: () => void
 }
 
-export default function Header({ onChangeAuth, onStop, isRunning, onOpenAdvancedConfig }: HeaderProps) {
+export default function Header({
+  onChangeAuth,
+  onRestart,
+  onStop,
+  isRunning,
+  isRestarting,
+  onOpenAdvancedConfig
+}: HeaderProps) {
   const { t } = useLanguage()
   const [showSettings, setShowSettings] = useState(false)
   const [showSettingsMenu, setShowSettingsMenu] = useState(false)
@@ -53,6 +62,16 @@ export default function Header({ onChangeAuth, onStop, isRunning, onOpenAdvanced
         </div>
 
         <div className="flex items-center gap-2">
+          {isRunning && onRestart && (
+            <button
+              onClick={onRestart}
+              disabled={isRestarting}
+              className="px-2.5 py-1 text-[13px] border border-slate-200 text-slate-600 rounded-md hover:bg-slate-50 disabled:opacity-50 transition-colors"
+            >
+              {isRestarting ? t('header.restarting') : t('header.restart')}
+            </button>
+          )}
+
           {isRunning && onStop && (
             <button
               onClick={onStop}

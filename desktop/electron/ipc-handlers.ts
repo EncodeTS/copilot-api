@@ -235,6 +235,11 @@ export function registerIpcHandlers(
     await stopServer()
   })
 
+  ipcMain.handle('server:get-status', () => ({
+    running: isRunning(),
+    port: getPort(),
+  }))
+
   // Settings
   ipcMain.handle('settings:get', async () => readSettings())
   ipcMain.handle('settings:save', async (_event, settings: DesktopSettings) => {

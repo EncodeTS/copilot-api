@@ -27,6 +27,7 @@ export interface Locale {
     openAuthPage: string
     waitingAuth: string
     back: string
+    backToHome: string
     verifying: string
     confirmAdd: string
     authFailed: string
@@ -105,6 +106,8 @@ export interface Locale {
     appSettings: string
     advancedConfig: string
     changeAuth: string
+    restart: string
+    restarting: string
   }
   tray: {
     showWindow: string

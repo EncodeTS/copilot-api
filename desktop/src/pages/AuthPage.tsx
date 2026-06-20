@@ -11,6 +11,7 @@ import { useLanguage } from '../contexts/LanguageContext'
 import Header from '../components/Header'
 
 interface AuthPageProps {
+  onBack?: () => void
   onSuccess: (result: AuthResult) => void
 }
 
@@ -37,7 +38,7 @@ const QUICK_PROVIDER_DEFAULTS: Record<QuickProviderName, { baseUrl: string; edit
   }
 }
 
-export default function AuthPage({ onSuccess }: AuthPageProps) {
+export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
   const { t } = useLanguage()
   const [view, setView] = useState<AuthView>('default')
   const [deviceCode, setDeviceCode] = useState<DeviceCodeInfo | null>(null)
@@ -202,22 +203,33 @@ export default function AuthPage({ onSuccess }: AuthPageProps) {
   const canEditProviderType = providerChoice === 'custom' || selectedQuickProvider?.editableType
 
   return (
-    <div className="flex flex-col h-screen bg-white">
+    <div className="flex flex-col h-screen bg-slate-50">
       <Header />
 
-      <div className="flex-1 flex flex-col items-center justify-center px-6 gap-5">
+      {onBack && (
+        <div className="px-4 pt-3 shrink-0">
+          <button
+            onClick={onBack}
+            className="inline-flex h-8 items-center rounded-md border border-slate-200 bg-white px-2.5 text-[13px] font-medium text-slate-500 shadow-sm transition-colors hover:bg-slate-50 hover:text-slate-700"
+          >
+            {t('auth.backToHome')}
+          </button>
+        </div>
+      )}
+
+      <div className="flex-1 flex flex-col items-center justify-center px-6 py-6 gap-5">
         {/* Logo and title */}
         <div className="text-center">
-          <div className="w-14 h-14 bg-[#0f172a] rounded-2xl flex items-center justify-center mx-auto mb-3 shadow-[0_4px_14px_rgba(0,0,0,0.15)]">
+          <div className="w-14 h-14 bg-[#0f172a] rounded-2xl flex items-center justify-center mx-auto mb-3 shadow-[0_10px_26px_rgba(15,23,42,0.18)]">
             <span className="text-white text-base font-extrabold">CA</span>
           </div>
           <h1 className="text-lg font-bold text-[#0f172a]">Copilot API</h1>
-          <p className="text-[13px] text-slate-400 mt-1">{t('auth.subtitle')}</p>
+          <p className="text-[13px] text-slate-500 mt-1">{t('auth.subtitle')}</p>
         </div>
 
         {/* Default state: provider choices */}
         {view === 'default' && (
-          <div className="grid w-full max-w-[340px] grid-cols-2 gap-2">
+          <div className="grid w-full max-w-[360px] grid-cols-2 gap-2 rounded-xl border border-slate-100 bg-white p-3 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
             <button
               onClick={handleOAuth}
               disabled={loading}
@@ -261,7 +273,7 @@ export default function AuthPage({ onSuccess }: AuthPageProps) {
 
         {/* OAuth pending state */}
         {view === 'oauth-pending' && deviceCode && (
-          <div className="w-full max-w-[240px] flex flex-col gap-3">
+          <div className="w-full max-w-[320px] flex flex-col gap-3 rounded-xl border border-slate-100 bg-white p-3 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
             <div>
               <p className="text-[13px] text-slate-400 mb-1.5">{t('auth.deviceCode')}</p>
               <div className="flex items-center gap-2 px-3 py-2.5 border border-dashed border-slate-300 rounded-lg bg-slate-50">
@@ -307,7 +319,7 @@ export default function AuthPage({ onSuccess }: AuthPageProps) {
 
         {/* Expanded token input state */}
         {view === 'token-input' && (
-          <div className="w-full max-w-[240px] flex flex-col gap-3">
+          <div className="w-full max-w-[320px] flex flex-col gap-3 rounded-xl border border-slate-100 bg-white p-3 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
             <textarea
               value={tokenInput}
               onChange={e => setTokenInput(e.target.value)}
@@ -332,7 +344,7 @@ export default function AuthPage({ onSuccess }: AuthPageProps) {
         )}
 
         {view === 'provider-input' && (
-          <div className="w-full max-w-[320px] flex flex-col gap-3">
+          <div className="w-full max-w-[360px] flex flex-col gap-3 rounded-xl border border-slate-100 bg-white p-3 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
             <div className="text-center text-[13px] font-semibold text-[#0f172a]">
               {selectedProviderLabel}
             </div>
@@ -419,7 +431,7 @@ export default function AuthPage({ onSuccess }: AuthPageProps) {
         )}
 
         {view === 'codex-pending' && (
-          <div className="w-full max-w-[320px] flex flex-col gap-3">
+          <div className="w-full max-w-[320px] flex flex-col gap-3 rounded-xl border border-slate-100 bg-white p-3 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
             <p className="text-center text-[13px] text-slate-400 animate-pulse">
               {loading ? t('auth.waitingCodexAuth') : t('auth.codexCallbackRequired')}
             </p>
