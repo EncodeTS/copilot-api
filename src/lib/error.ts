@@ -3,6 +3,44 @@ import type { ContentfulStatusCode } from "hono/utils/http-status"
 
 import consola from "consola"
 
+export interface LocalPayloadTooLargeDetails {
+  payloadBytes: number
+  budgetBytes: number
+  sendHardLimitBytes: number
+  bodyBytesOverBudget?: number
+  candidateCount?: number
+  compressionActionLimit?: number
+  compressionActionLimitHit?: boolean
+  compressionAttemptedCount?: number
+  compressionCacheHitCount?: number
+  compressionDiagnosticCounts?: Partial<Record<string, number>>
+  compressionDiagnosticSamples?: Array<object>
+  compressionNegativeCacheHitCount?: number
+  compressionProfiles?: Array<{
+    compressedCount: number
+    attemptedCount: number
+    profile: string
+    statusCounts?: Record<string, number>
+  }>
+  compressionStatusCounts?: Record<string, number>
+  compressedCount?: number
+  imageBytes: number
+  fileDataBytes: number
+  hardLimitMet?: boolean
+  largestImageBytes?: number
+  largestUnoptimizableKind?: string
+  oversizedInputImageCount?: number
+  oversizedResolvedCount?: number
+  preservedLatestCount?: number
+  targetMet?: boolean
+  textAndToolBytes: number
+  imageCount: number
+  replacedCount: number
+  latestImageReplaced: boolean
+  currentVisualWorkingSetReplaced: boolean
+  unresolvedReason?: string
+}
+
 export class HTTPError extends Error {
   response: Response
 
@@ -12,11 +50,36 @@ export class HTTPError extends Error {
   }
 }
 
+export class LocalPayloadTooLargeError extends Error {
+  code = "responses_payload_too_large"
+  details: LocalPayloadTooLargeDetails
+
+  constructor(message: string, details: LocalPayloadTooLargeDetails) {
+    super(message)
+    this.details = details
+  }
+}
+
 export async function forwardError(
   c: Context,
   error: unknown,
 ): Promise<Response> {
   consola.error("Error occurred:", error)
+
+  if (error instanceof LocalPayloadTooLargeError) {
+    consola.error("Payload budget details:", error.details)
+    return c.json(
+      {
+        error: {
+          code: error.code,
+          details: error.details,
+          message: error.message,
+          type: "payload_too_large",
+        },
+      },
+      413,
+    )
+  }
 
   if (error instanceof HTTPError) {
     if (error.response.status === 429) {
