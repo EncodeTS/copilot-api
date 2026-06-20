@@ -20,11 +20,12 @@ type ProviderChoice = QuickProviderName | 'custom'
 
 const PROVIDER_TYPES: ProviderType[] = ['anthropic', 'openai-compatible', 'openai-responses']
 const PROVIDER_AUTH_TYPES: ProviderAuthTypeInput[] = ['__default__', 'x-api-key', 'authorization']
+// Renderer cannot import main-process config. Keep this in sync with src/lib/quick-providers.ts.
 const QUICK_PROVIDER_DEFAULTS: Record<QuickProviderName, { baseUrl: string; editableType: boolean; type: ProviderType }> = {
   deepseek: {
-    baseUrl: 'https://api.deepseek.com',
+    baseUrl: 'https://api.deepseek.com/anthropic',
     editableType: true,
-    type: 'openai-compatible'
+    type: 'anthropic'
   },
   dashscope: {
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode',
@@ -46,7 +47,7 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
   const [tokenInput, setTokenInput] = useState('')
   const [providerChoice, setProviderChoice] = useState<ProviderChoice>('deepseek')
   const [providerName, setProviderName] = useState('')
-  const [providerType, setProviderType] = useState<ProviderType>('openai-compatible')
+  const [providerType, setProviderType] = useState<ProviderType>(QUICK_PROVIDER_DEFAULTS.deepseek.type)
   const [providerBaseUrl, setProviderBaseUrl] = useState('')
   const [providerApiKey, setProviderApiKey] = useState('')
   const [providerAuthType, setProviderAuthType] = useState<ProviderAuthTypeInput>('__default__')

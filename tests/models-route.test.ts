@@ -5,22 +5,21 @@ import type { ResolvedProviderConfig } from "../src/lib/config"
 import type { ModelsResponse } from "../src/services/copilot/get-models"
 
 const actualConfigModule = await import("../src/lib/config")
-const actualProviderResolverModule = await import(
-  "../src/lib/provider-resolver"
-)
+const actualTokenModule = await import("../src/lib/token")
 
 let enabledProviders: Array<string> = []
 let providerConfigs: Record<string, ResolvedProviderConfig | null> = {}
 
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
+  getProviderConfig: (provider: string) => providerConfigs[provider] ?? null,
+  getRawProviderConfig: (provider: string) => providerConfigs[provider] ?? null,
   listEnabledProviders: () => enabledProviders,
 }))
 
-await mock.module("~/lib/provider-resolver", () => ({
-  ...actualProviderResolverModule,
-  resolveProviderConfig: (provider: string) =>
-    Promise.resolve(providerConfigs[provider] ?? null),
+await mock.module("~/lib/token", () => ({
+  ...actualTokenModule,
+  setupCodexToken: async () => {},
 }))
 
 const { state } = await import("../src/lib/state")

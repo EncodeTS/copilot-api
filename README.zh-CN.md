@@ -7,7 +7,7 @@
 > [!IMPORTANT]
 > **使用前请先注意以下几点：**
 >
-> 1. **Claude Code 配置：** 与 Claude Code 搭配使用时，请将模型 ID 配置为 `claude-opus-4-6` 或 `claude-opus-4.6`。示例 claude `settings.json` 见 [通过 `settings.json` 手动配置](#manual-configuration-with-settingsjson)。
+> 1. **Claude Code 配置：** 与 Claude Code 搭配使用时，请将模型 ID 配置为 `claude-opus-4-8`。示例 claude `settings.json` 见 [通过 `settings.json` 手动配置](#manual-configuration-with-settingsjson)。
 >
 > 2. **内置 `copilot`、`codex` 与第三方 provider：** 执行 `npx @jeffreycao/copilot-api@latest auth`，可选择 `copilot`、`codex`、`deepseek`、`custom` 等 provider。
 >
@@ -180,7 +180,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
 
 只有在需要启用 GitHub Copilot provider 时，才需要执行 `copilot-api auth login --provider copilot`。使用 `codex` 或第三方 provider-only 模式不要求配置 Copilot。
 
-使用 `copilot-api auth login --provider deepseek`、`--provider dashscope` 或 `--provider openrouter` 可以通过 CLI 快速新增或更新这些常用第三方 provider。DeepSeek 和 DashScope 会提示输入掩码显示的 `apiKey`、provider `type`（默认 `openai-compatible`）和预填默认值的 `baseUrl`。OpenRouter 只提示输入掩码显示的 `apiKey` 和预填默认值的 `baseUrl`，并固定写入 `type: "anthropic"`。配置并启用 provider 后，`copilot-api start` 可在没有 GitHub token 的情况下启动。
+使用 `copilot-api auth login --provider deepseek`、`--provider dashscope` 或 `--provider openrouter` 可以通过 CLI 快速新增或更新这些常用第三方 provider。DeepSeek 会提示输入掩码显示的 `apiKey`、provider `type`（默认 `anthropic`），以及默认 `https://api.deepseek.com/anthropic` 的 `baseUrl`。DashScope 会提示输入掩码显示的 `apiKey`、provider `type`（默认 `openai-compatible`）和预填默认值的 `baseUrl`。OpenRouter 只提示输入掩码显示的 `apiKey` 和预填默认值的 `baseUrl`，并固定写入 `type: "anthropic"`。配置并启用 provider 后，`copilot-api start` 可在没有 GitHub token 的情况下启动。
 
 使用 `copilot-api auth login --provider custom` 可以通过 CLI 新增或更新其他第三方 provider。命令会依次提示输入 provider name、项目支持的 type（`anthropic`、`openai-compatible` 或 `openai-responses`）、`baseUrl`、掩码显示的 `apiKey` 和 `authType`；`authType` 可保持 type 默认值，也可选择 `x-api-key` / `authorization`。
 
@@ -261,7 +261,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
         "apiKey": "sk-your-dashscope-key",
         "pricingCurrency": "CNY",
         "models": {
-          "qwen3.6-plus": {
+          "qwen3.7-plus": {
             "temperature": 1,
             "topP": 0.95,
             "topK": 20,
@@ -453,9 +453,9 @@ npx @jeffreycao/copilot-api@latest start --claude-code
   "env": {
     "ANTHROPIC_BASE_URL": "http://localhost:4141",
     "ANTHROPIC_AUTH_TOKEN": "dummy",
-    "ANTHROPIC_MODEL": "gpt-5.4",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.4",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5-mini",
+    "ANTHROPIC_MODEL": "deepseek/deepseek-v4-pro",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek/deepseek-v4-pro",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek/deepseek-v4-flash",
     "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
@@ -543,23 +543,10 @@ npx @jeffreycao/copilot-api@latest start
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "local/gpt-5.4",
-  "small_model": "local/gpt-5-mini",
-  "agent": {
-    "build": {
-      "model": "local/gpt-5.4"
-    },
-    "plan": {
-      "model": "local/gpt-5.4"
-    },
-    "explore": {
-      "model": "local/gpt-5-mini"
-    }
-  },
   "provider": {
     "local": {
       "npm": "@ai-sdk/anthropic",
-      "name": "Copilot API Proxy",
+      "name": "My Local",
       "options": {
         "baseURL": "http://localhost:4141/v1",
         "apiKey": "dummy"
@@ -576,13 +563,6 @@ npx @jeffreycao/copilot-api@latest start
             "output": 128000
           }
         },
-        "gpt-5-mini": {
-          "name": "gpt-5-mini",
-          "limit": {
-            "context": 200000,
-            "output": 64000
-          }
-        },
         "claude-sonnet-4.6": {
           "id": "claude-sonnet-4.6",
           "name": "claude-sonnet-4.6",
@@ -596,9 +576,9 @@ npx @jeffreycao/copilot-api@latest start
           },
           "options": {
             "thinking": {
-              "type": "enabled",
-              "budgetTokens": 31999
-            }
+              "type": "adaptive"
+            },
+            "effort": "max"
           }
         }
       }
