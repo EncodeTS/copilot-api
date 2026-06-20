@@ -6,7 +6,7 @@ import { streamSSE } from "hono/streaming"
 import { logCodexRateLimitsEvent } from "~/lib/codex-rate-limit"
 import { type ModelConfig, resolveEffectiveProviderType } from "~/lib/config"
 import { HTTPError } from "~/lib/error"
-import { createHandlerLogger, debugJson } from "~/lib/logger"
+import { createHandlerLogger, debugJson, debugJsonTail } from "~/lib/logger"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
 import { requestContext } from "~/lib/request-context"
 import {
@@ -214,7 +214,10 @@ const streamProviderResponses = async (
     let usage: UsageTokens = {}
 
     const writeChunk = async (chunk: typeof firstChunk) => {
-      debugJson(logger, "Responses stream chunk:", chunk)
+      debugJsonTail(logger, "Responses stream chunk:", {
+        value: chunk,
+        tailLength: 1_000,
+      })
       let responseChunk = chunk
       let event: ResponseStreamEvent | null = null
 
