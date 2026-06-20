@@ -10,6 +10,7 @@ import { getModels as getCopilotModels } from "~/services/copilot/get-models"
 import { getVSCodeVersion } from "~/services/get-vscode-version"
 
 import { getVSCodeDeviceId } from "./deviceid"
+import { redactPayloadForStableId } from "./log-redaction"
 import { state } from "./state"
 
 export const sleep = (ms: number) =>
@@ -171,7 +172,7 @@ export const cacheVsCodeSessionId = () => {
 
 interface PayloadMessage {
   role?: string
-  content?: string | Array<{ type?: string; text?: string }> | null
+  content?: string | Array<unknown> | null
   type?: string
 }
 
@@ -229,10 +230,10 @@ const findLastUserContent = (
         return msg.content
       } else if (Array.isArray(msg.content)) {
         const array = msg.content
-          .filter((n) => n.type !== "tool_result")
-          .map((n) => ({ ...n, cache_control: undefined }))
+          .filter((n) => !isRecord(n) || n.type !== "tool_result")
+          .map((n) => (isRecord(n) ? { ...n, cache_control: undefined } : n))
         if (array.length > 0) {
-          return JSON.stringify(array)
+          return JSON.stringify(redactPayloadForStableId(array))
         }
       }
     }
