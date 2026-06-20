@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "build:server": "bun run --cwd .. build:desktop",
+    "build:server": "bun run --cwd .. build:desktop && node ../scripts/prepare-desktop-server-node-modules.mjs",
     "test": "bun test tests",
     "preview": "electron-vite preview",
     "gen-icons": "rsvg-convert -w 1024 -h 1024 assets/tray-icon-colored.svg -o assets/icon.png",
@@ -15,7 +15,8 @@
     "package": "bun run build:server && electron-vite build && electron-builder",
     "package:mac": "bun run build:server && electron-vite build && electron-builder --mac",
     "package:win": "bun run build:server && electron-vite build && electron-builder --win",
-    "package:linux": "bun run build:server && electron-vite build && electron-builder --linux"
+    "package:linux": "bun run build:server && electron-vite build && electron-builder --linux",
+    "smoke:server-sharp": "node ../scripts/smoke-packaged-sharp.mjs"
   },
   "dependencies": {
     "electron-updater": "^6.3.4"
@@ -31,11 +32,17 @@
       "out/**/*",
       "resources/**/*"
     ],
+    "asarUnpack": [
+      "**/node_modules/sharp/**/*",
+      "**/node_modules/@img/**/*"
+    ],
     "extraResources": [
       {
         "from": "../dist",
         "to": "server",
-        "filter": ["**/*.js"]
+        "filter": [
+          "**/*.js"
+        ]
       },
       {
         "from": "../pages",
@@ -44,6 +51,10 @@
       {
         "from": "build/server-package.json",
         "to": "server/package.json"
+      },
+      {
+        "from": "build/server-node_modules",
+        "to": "server/node_modules"
       },
       {
         "from": "assets/tray-icon.png",
