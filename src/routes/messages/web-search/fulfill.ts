@@ -52,13 +52,14 @@ import {
   getResponsesRequestOptions,
   getResponsesTransportForModel,
 } from "../../responses/utils"
+import { createOptimizedCopilotResponses } from "../../responses/optimized-create"
 import {
   buildResponsesWebSearchTool,
   extractWebSearchResult,
   type WebSearchExtract,
   type WebSearchToolConfig,
 } from "./backend"
-import { debugJson } from "~/lib/logger"
+import { debugJson, debugJsonTail } from "~/lib/logger"
 
 export const webSearchFlowDependencies = {
   createResponses: createCopilotResponses,
@@ -299,7 +300,10 @@ export const collectWebSearchResponsesStreamResult = async ({
   const state = createWebSearchResponsesStreamCollection()
 
   for await (const chunk of upstreamResponse) {
-    debugJson(logger, "Received web search responses stream chunk:", chunk.data)
+    debugJsonTail(logger, "Received web search responses stream chunk:", {
+      value: chunk.data,
+      tailLength: 1_000,
+    })
     if (chunk.event === "ping") {
       continue
     }
@@ -679,16 +683,23 @@ export const handleWebSearchViaResponses = async (
     responsesPayload,
   )
 
-  const upstreamResult = await webSearchFlowDependencies.createResponses(
+  const upstreamResult = await createOptimizedCopilotResponses(
     responsesPayload,
     {
-      vision,
-      initiator,
-      transport,
-      subagentMarker: options.subagentMarker,
-      requestId: options.requestId,
-      sessionId: options.sessionId,
-      compactType: options.compactType,
+      createResponses: webSearchFlowDependencies.createResponses,
+      logger,
+      maxPromptImageSize:
+        selectedModel?.capabilities?.limits.vision?.max_prompt_image_size,
+      requestOptions: {
+        vision,
+        initiator,
+        transport,
+        subagentMarker: options.subagentMarker,
+        requestId: options.requestId,
+        sessionId: options.sessionId,
+        compactType: options.compactType,
+      },
+      selectedModel,
     },
   )
 
