@@ -1,26 +1,11 @@
 import consola from "consola"
 
 import { copilotBaseUrl, copilotModelsHeaders } from "~/lib/api-config"
-import { isCopilotUseLocalModelsEnabled } from "~/lib/config"
+
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
 
-import localModelsData from "./local-models.json" with { type: "json" }
-
 export const getModels = async () => {
-  if (isCopilotUseLocalModelsEnabled()) {
-    // Compatibility mode: load model list from local JSON file,
-    // and enable models with policy.state === "disabled" to be selectable in the picker
-    const models = localModelsData as ModelsResponse
-    for (const model of models.data) {
-      if (model.policy?.state === "disabled") {
-        model.model_picker_enabled = true
-      }
-    }
-    consola.info(`Loaded ${models.data.length} models from local file`)
-    return models
-  }
-
   consola.info(`Fetching models from ${copilotBaseUrl(state)}/models`)
   const response = await fetch(`${copilotBaseUrl(state)}/models`, {
     headers: copilotModelsHeaders(state),
