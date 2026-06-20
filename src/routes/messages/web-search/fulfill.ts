@@ -18,6 +18,7 @@ import {
 } from "~/lib/provider-model"
 import {
   createCopilotTokenUsageRecorder,
+  normalizeOptionalToken,
   normalizeResponsesUsage,
   type UsageTokens,
 } from "~/lib/token-usage"
@@ -29,6 +30,7 @@ import {
 } from "~/lib/utils"
 import {
   createResponses as createCopilotResponses,
+  type CopilotUsage,
   type ResponseStreamEvent,
   type ResponsesPayload,
   type ResponsesResult,
@@ -367,57 +369,54 @@ const collectWebSearchResponsesStreamEvent = (
   event: WebSearchResponsesStreamEvent,
   state: WebSearchResponsesStreamCollection,
 ): void => {
-  if (event.type === "response.created") {
-    state.createdResponse = getResponsesResult(event.response)
-    return
-  }
-
-  if (isResponsesTerminalEvent(event)) {
-    state.terminalResponse = event.response
-    return
-  }
-
-  if (
-    event.type === "response.output_item.added"
-    || event.type === "response.output_item.done"
-  ) {
-    const outputIndex = getNumber(event.output_index)
-    const item = getRecord(event.item)
-    if (outputIndex !== undefined && item) {
-      state.outputItemsByIndex.set(outputIndex, item)
+  switch (event.type) {
+    case "response.created":
+      state.createdResponse = getResponsesResult(event.response)
+      break
+    case "response.completed":
+    case "response.failed":
+    case "response.incomplete":
+      if (isResponsesTerminalEvent(event)) {
+        event.response.copilot_usage ??= event.copilot_usage as CopilotUsage
+        state.terminalResponse = event.response
+      }
+      break
+    case "response.output_item.added":
+    case "response.output_item.done": {
+      const outputIndex = getNumber(event.output_index)
+      const item = getRecord(event.item)
+      if (outputIndex !== undefined && item) {
+        state.outputItemsByIndex.set(outputIndex, item)
+      }
+      break
     }
-    return
-  }
-
-  if (event.type === "response.output_text.delta") {
-    const part = getOrCreateOutputTextPart(event, state)
-    const delta = getString(event.delta)
-    if (part && delta) {
-      part.text += delta
+    case "response.output_text.delta": {
+      const part = getOrCreateOutputTextPart(event, state)
+      const delta = getString(event.delta)
+      if (part && delta) {
+        part.text += delta
+      }
+      break
     }
-    return
-  }
-
-  if (event.type === "response.output_text.done") {
-    const part = getOrCreateOutputTextPart(event, state)
-    const text = getString(event.text)
-    if (part && text !== undefined) {
-      part.text = text
+    case "response.output_text.done": {
+      const part = getOrCreateOutputTextPart(event, state)
+      const text = getString(event.text)
+      if (part && text !== undefined) {
+        part.text = text
+      }
+      break
     }
-    return
-  }
-
-  if (event.type === "response.output_text.annotation.added") {
-    const part = getOrCreateOutputTextPart(event, state)
-    const annotation = event.annotation
-    if (part && annotation !== undefined) {
-      part.annotations.push(annotation)
+    case "response.output_text.annotation.added": {
+      const part = getOrCreateOutputTextPart(event, state)
+      const annotation = event.annotation
+      if (part && annotation !== undefined) {
+        part.annotations.push(annotation)
+      }
+      break
     }
-    return
-  }
-
-  if (event.type === "response.content_part.done") {
-    collectDoneContentPart(event, state)
+    case "response.content_part.done":
+      collectDoneContentPart(event, state)
+      break
   }
 }
 
@@ -717,7 +716,12 @@ export const handleWebSearchViaResponses = async (
     options.sessionId,
     webSearchModel,
   )
-  recordUsage(normalizeResponsesUsage(result.usage))
+  recordUsage({
+    ...normalizeResponsesUsage(result.usage),
+    total_nano_aiu: normalizeOptionalToken(
+      result.copilot_usage?.total_nano_aiu,
+    ),
+  })
 
   if (!wantsStream) {
     return c.json(response)
