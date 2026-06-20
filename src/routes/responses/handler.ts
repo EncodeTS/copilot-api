@@ -31,8 +31,8 @@ import {
   compactInputByLatestCompaction,
   getResponsesTransportForModel,
   getResponsesRequestOptions,
-  sanitizeOversizedInputImages,
 } from "./utils"
+import { createOptimizedCopilotResponses } from "./optimized-create"
 import consola from "consola"
 
 const logger = createHandlerLogger("responses-handler")
@@ -61,7 +61,10 @@ export const handleResponses = async (c: Context) => {
     })
   }
 
-  debugJson(logger, "Responses request payload:", payload)
+  debugJsonTail(logger, "Responses request payload:", {
+    value: payload,
+    tailLength: 2_000,
+  })
 
   const subagentMarker = getCodexResponsesSubagentMarker(c)
   if (subagentMarker) {
@@ -110,33 +113,33 @@ export const handleResponses = async (c: Context) => {
     )
   }
 
-  const sanitizedImageCount = sanitizeOversizedInputImages(
-    payload,
-    selectedModel?.capabilities.limits.vision?.max_prompt_image_size,
-  )
-  if (sanitizedImageCount > 0) {
-    logger.warn(
-      `Omitted ${sanitizedImageCount} oversized input image(s) before forwarding to Copilot Responses`,
-    )
-  }
-
   // Smaller than the client compaction threshold, use server-side compaction to maintain cache hit rate
   const maxPromptTokens = selectedModel?.capabilities.limits.max_prompt_tokens
   applyResponsesApiContextManagement(payload, maxPromptTokens, 0.8)
 
-  debugJson(logger, "Translated Responses payload:", payload)
+  debugJsonTail(logger, "Translated Responses payload:", {
+    value: payload,
+    tailLength: 2_000,
+  })
 
   const { vision, initiator: inferredInitiator } =
     getResponsesRequestOptions(payload)
   const initiator = subagentMarker ? "agent" : inferredInitiator
 
-  const response = await responsesHandlerDependencies.createResponses(payload, {
-    vision,
-    initiator,
-    subagentMarker,
-    requestId,
-    sessionId: fallbackSessionId,
-    transport: responsesTransport,
+  const response = await createOptimizedCopilotResponses(payload, {
+    createResponses: responsesHandlerDependencies.createResponses,
+    logger,
+    maxPromptImageSize:
+      selectedModel?.capabilities.limits.vision?.max_prompt_image_size,
+    requestOptions: {
+      vision,
+      initiator,
+      subagentMarker,
+      requestId,
+      sessionId: fallbackSessionId,
+      transport: responsesTransport,
+    },
+    selectedModel,
   })
 
   if (isStreamingRequested(payload) && isAsyncIterable(response)) {
@@ -146,7 +149,10 @@ export const handleResponses = async (c: Context) => {
       let usage: UsageTokens = {}
 
       for await (const chunk of response) {
-        debugJson(logger, "Responses stream chunk:", chunk)
+        debugJsonTail(logger, "Responses stream chunk:", {
+          value: chunk,
+          tailLength: 1_000,
+        })
         const parsedEvent = parseResponsesStreamEvent(chunk)
         if (
           parsedEvent?.type === "response.completed"

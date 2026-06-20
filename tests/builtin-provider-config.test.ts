@@ -8,6 +8,15 @@ interface ConfigFileShape {
   builtinProviders?: Record<string, unknown>
   modelResponsesApiCompactThresholds?: Record<string, number>
   parityFirst?: boolean
+  responsesImageCompression?: boolean
+  responsesImageCompressionCacheBytes?: number
+  responsesImageCompressionConcurrency?: number
+  responsesImageCompressionMaxActionsPerRequest?: number
+  responsesImageOptimization?: boolean
+  responsesImageRetryRequiresHttp?: boolean
+  responsesPayloadBudgetBytes?: number
+  responsesPayloadRetryBudgetBytes?: number
+  responsesPayloadSendHardLimitBytes?: number
   useResponsesApiContextManagement?: boolean
   providers?: Record<
     string,
@@ -110,6 +119,67 @@ describe("builtin provider config", () => {
 
     expect(JSON.parse(output)).toEqual({ enabled: true })
     expect(readConfigFile(configPath).parityFirst).toBe(true)
+  })
+
+  test("adds Responses image budget defaults", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = path.join(tempDir, "config.json")
+
+    const output = runScript(
+      tempDir,
+      'const config = await import("./src/lib/config"); console.log(JSON.stringify({ enabled: config.isResponsesImageOptimizationEnabled(), budget: config.getResponsesPayloadBudgetBytes(), retryBudget: config.getResponsesPayloadRetryBudgetBytes(), hardLimit: config.getResponsesPayloadSendHardLimitBytes(), compression: config.isResponsesImageCompressionEnabled(), concurrency: config.getResponsesImageCompressionConcurrency(), cacheBytes: config.getResponsesImageCompressionCacheBytes(), maxActions: config.getResponsesImageCompressionMaxActionsPerRequest(), latestHardLimitReplacement: config.isResponsesImageLatestReplacementAllowedOnHardLimit(), retryRequiresHttp: config.shouldResponsesImageRetryRequireHttp() }));',
+    )
+
+    expect(JSON.parse(output)).toEqual({
+      budget: 4_980_736,
+      cacheBytes: 268_435_456,
+      compression: true,
+      concurrency: 8,
+      enabled: true,
+      hardLimit: 5_226_496,
+      latestHardLimitReplacement: true,
+      maxActions: 64,
+      retryBudget: 4_718_592,
+      retryRequiresHttp: true,
+    })
+    expect(readConfigFile(configPath)).toMatchObject({
+      responsesImageCompression: true,
+      responsesImageCompressionCacheBytes: 268_435_456,
+      responsesImageCompressionConcurrency: 8,
+      responsesImageCompressionMaxActionsPerRequest: 64,
+      responsesImageAllowReplacingLatestOnHardLimit: true,
+      responsesImageOptimization: true,
+      responsesImageRetryRequiresHttp: true,
+      responsesPayloadBudgetBytes: 4_980_736,
+      responsesPayloadRetryBudgetBytes: 4_718_592,
+      responsesPayloadSendHardLimitBytes: 5_226_496,
+    })
+  })
+
+  test("normalizes invalid Responses image budget config values", () => {
+    const tempDir = createTempConfigDir()
+    writeConfigFile(tempDir, {
+      responsesImageCompressionCacheBytes: -1,
+      responsesImageCompressionConcurrency: 99,
+      responsesImageCompressionMaxActionsPerRequest: -1,
+      responsesPayloadBudgetBytes: 10,
+      responsesPayloadRetryBudgetBytes: 9_000_000,
+      responsesPayloadSendHardLimitBytes: 20,
+    })
+
+    const output = runScript(
+      tempDir,
+      'const config = await import("./src/lib/config"); console.log(JSON.stringify({ budget: config.getResponsesPayloadBudgetBytes(), retryBudget: config.getResponsesPayloadRetryBudgetBytes(), hardLimit: config.getResponsesPayloadSendHardLimitBytes(), concurrency: config.getResponsesImageCompressionConcurrency(), cacheBytes: config.getResponsesImageCompressionCacheBytes(), maxActions: config.getResponsesImageCompressionMaxActionsPerRequest() }));',
+    )
+
+    expect(JSON.parse(output)).toEqual({
+      budget: 4_980_736,
+      cacheBytes: 268_435_456,
+      concurrency: 8,
+      hardLimit: 5_226_496,
+      maxActions: 64,
+      retryBudget: 4_718_592,
+    })
   })
 
   test("allows disabling Responses API context management", () => {
