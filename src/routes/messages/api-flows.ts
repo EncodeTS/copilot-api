@@ -313,10 +313,7 @@ export const handleWithResponsesApi = async (
     })
   }
 
-  debugJsonTail(logger, "Non-streaming Responses result:", {
-    value: response,
-    tailLength: 400,
-  })
+  debugJson(logger, "Non-streaming Responses result:", response)
   const anthropicResponse = translateResponsesResultToAnthropic(
     response as ResponsesResult,
     {
