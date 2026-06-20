@@ -3,6 +3,7 @@
   "include": [
     "electron.vite.config.*",
     "electron/**/*",
+    "tests/**/*",
     "src/locales/**/*",
     "src/types/**/*",
     "../src/lib/api-config.ts",
