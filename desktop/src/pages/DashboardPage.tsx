@@ -134,6 +134,7 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState('')
   const [stopping, setStopping] = useState(false)
+  const [restarting, setRestarting] = useState(false)
 
   const [tab, setTab] = useState<DashboardTab>('dashboard')
   const [usage, setUsage] = useState<UsageInfo | null>(null)
@@ -160,6 +161,20 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
   const portNum = parseInt(port, 10)
   const openaiUrl = `http://localhost:${portNum}/v1`
   const anthropicUrl = `http://localhost:${portNum}`
+
+  useEffect(() => {
+    let active = true
+
+    window.electronAPI.getServerStatus().then((status) => {
+      if (!active) return
+      if (status.port) setPort(String(status.port))
+      setStarted(status.running)
+    }).catch(() => {})
+
+    return () => {
+      active = false
+    }
+  }, [])
 
   // Watch server status changes and only surface unexpected stops.
   useEffect(() => {
@@ -257,9 +272,47 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
     setServerError('')
   }
 
-  const handleChangeAuth = async () => {
+  const handleRestart = async () => {
+    if (Number.isNaN(portNum) || portNum < 1 || portNum > 65535) {
+      setStartError(t('dashboard.invalidPort'))
+      return
+    }
+
     intentionalStop.current = true
-    if (started) await window.electronAPI.stopServer()
+    setRestarting(true)
+    setStartError('')
+    setServerError('')
+    setLogs([])
+    try {
+      await window.electronAPI.stopServer()
+      const status = await window.electronAPI.startServer(portNum, authMode)
+      if (status.running) {
+        if (status.port) setPort(String(status.port))
+        setStarted(true)
+      } else {
+        setStarted(false)
+        setUsage(null)
+        setTokenUsage(null)
+        setTokenUsageDaily(null)
+        setTokenUsageEvents(null)
+        setTokenUsageEventsPage(1)
+        setTokenUsageLoading(false)
+        setTokenUsageEventsLoading(false)
+        setModels([])
+        setLastDashboardRefreshAt(null)
+        setStartError(status.error ?? t('dashboard.serverUnexpectedStop'))
+        void window.electronAPI.getLogs().then(setLogs).catch(() => {})
+      }
+    } catch (err) {
+      setStarted(false)
+      setStartError((err as Error).message)
+      void window.electronAPI.getLogs().then(setLogs).catch(() => {})
+    } finally {
+      setRestarting(false)
+    }
+  }
+
+  const handleChangeAuth = () => {
     onChangeAuth()
   }
 
@@ -440,8 +493,10 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
     <div className="flex flex-col h-screen bg-white">
       <Header
         onChangeAuth={handleChangeAuth}
+        onRestart={handleRestart}
         onStop={handleStop}
         isRunning={started && !stopping}
+        isRestarting={restarting}
         onOpenAdvancedConfig={() => setView('advancedConfig')}
       />
 

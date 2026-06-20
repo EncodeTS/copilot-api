@@ -26,6 +26,7 @@ const zh: Locale = {
     openAuthPage: '打开授权页面',
     waitingAuth: '等待 GitHub 授权中…',
     back: '← 返回',
+    backToHome: '← 返回主页',
     verifying: '验证中…',
     confirmAdd: '确认添加',
     authFailed: '授权失败，请重试',
@@ -103,7 +104,9 @@ const zh: Locale = {
     settings: '设置',
     appSettings: '应用设置',
     advancedConfig: '高级配置',
-    changeAuth: '更换授权 / Provider',
+    changeAuth: '授权配置',
+    restart: '重启',
+    restarting: '重启中…',
   },
   tray: {
     showWindow: '显示窗口',

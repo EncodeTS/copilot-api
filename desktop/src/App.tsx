@@ -28,6 +28,7 @@ function BootScreen({ loadingText }: { loadingText: string }) {
 export default function App() {
   const [page, setPage] = useState<Page | null>(null)
   const [authMode, setAuthMode] = useState<DesktopAuthMode>('none')
+  const [canReturnFromAuth, setCanReturnFromAuth] = useState(false)
   const [port, setPort] = useState<number>(4141)
   const { setLangPref, t } = useLanguage()
 
@@ -48,13 +49,18 @@ export default function App() {
 
         if (authResult.success && authResult.mode !== 'none') {
           setAuthMode(authResult.mode)
+          setCanReturnFromAuth(false)
           setPage('dashboard')
           return
         }
 
+        setCanReturnFromAuth(false)
         setPage('auth')
       } catch {
-        if (active) setPage('auth')
+        if (active) {
+          setCanReturnFromAuth(false)
+          setPage('auth')
+        }
       }
     }
 
@@ -67,12 +73,18 @@ export default function App() {
 
   const handleAuthSuccess = (result: AuthResult) => {
     setAuthMode(result.mode ?? 'provider')
+    setCanReturnFromAuth(false)
     setPage('dashboard')
   }
 
   const handleChangeAuth = () => {
-    setAuthMode('none')
+    setCanReturnFromAuth(true)
     setPage('auth')
+  }
+
+  const handleBackToDashboard = () => {
+    setCanReturnFromAuth(false)
+    setPage('dashboard')
   }
 
   if (page === null) {
@@ -80,7 +92,12 @@ export default function App() {
   }
 
   if (page === 'auth') {
-    return <AuthPage onSuccess={handleAuthSuccess} />
+    return (
+      <AuthPage
+        onBack={canReturnFromAuth ? handleBackToDashboard : undefined}
+        onSuccess={handleAuthSuccess}
+      />
+    )
   }
 
   return (

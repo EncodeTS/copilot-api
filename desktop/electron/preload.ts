@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   startServer: (port: number, authMode?: string) => ipcRenderer.invoke('server:start', port, authMode),
   stopServer: () => ipcRenderer.invoke('server:stop'),
+  getServerStatus: () => ipcRenderer.invoke('server:get-status'),
 
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveSettings: (settings: unknown) => ipcRenderer.invoke('settings:save', settings),

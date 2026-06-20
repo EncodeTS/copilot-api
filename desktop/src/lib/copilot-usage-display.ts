@@ -27,7 +27,9 @@ export function getNonEmptyUsageText(value: string | null | undefined): string |
   return text ? text : null
 }
 
-export function hasCopilotQuotaValue(quota: CopilotQuotaDetailLike | null | undefined): boolean {
+export function hasCopilotQuotaValue(
+  quota: CopilotQuotaDetailLike | null | undefined
+): quota is CopilotQuotaDetailLike {
   return Boolean(
     quota
       && (quota.unlimited === true

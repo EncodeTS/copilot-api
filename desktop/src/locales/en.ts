@@ -26,6 +26,7 @@ const en: Locale = {
     openAuthPage: 'Open authorization page',
     waitingAuth: 'Waiting for GitHub authorization…',
     back: '← Back',
+    backToHome: '← Home',
     verifying: 'Verifying…',
     confirmAdd: 'Confirm',
     authFailed: 'Authorization failed, please try again',
@@ -103,7 +104,9 @@ const en: Locale = {
     settings: 'Settings',
     appSettings: 'App settings',
     advancedConfig: 'Advanced config',
-    changeAuth: 'Change auth / provider',
+    changeAuth: 'Auth config',
+    restart: 'Restart',
+    restarting: 'Restarting…',
   },
   tray: {
     showWindow: 'Show window',
