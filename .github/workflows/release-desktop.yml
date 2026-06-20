@@ -32,11 +32,11 @@ jobs:
 
       - name: Install desktop dependencies
         working-directory: desktop
-        run: npm ci
+        run: bun install --frozen-lockfile
 
       - name: Build macOS arm64 package
         working-directory: desktop
-        run: npm run package:mac
+        run: bun run package:mac
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
@@ -69,11 +69,11 @@ jobs:
 
       - name: Install desktop dependencies
         working-directory: desktop
-        run: npm ci
+        run: bun install --frozen-lockfile
 
       - name: Build Windows package
         working-directory: desktop
-        run: npm run package:win
+        run: bun run package:win
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
 

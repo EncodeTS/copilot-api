@@ -5,12 +5,12 @@ import {
   applyNoProxyServerOverride,
   hasNoProxyServerSwitch,
   resolveElectronProxyConfigFromSettings,
-} from "../desktop/electron/electron-proxy-config"
+} from "../electron/electron-proxy-config"
 import {
   normalizeProxySettings,
   normalizeSettings,
-} from "../desktop/electron/settings-store"
-import type { DesktopProxySettings } from "../desktop/src/types/ipc"
+} from "../electron/settings-store"
+import type { DesktopProxySettings } from "../src/types/ipc"
 
 function createProxySettings(
   overrides: Partial<DesktopProxySettings> = {},
