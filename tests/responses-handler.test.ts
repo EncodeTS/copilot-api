@@ -702,6 +702,9 @@ describe("responses handler token usage", () => {
         streamChunks([
           {
             data: JSON.stringify({
+              copilot_usage: {
+                total_nano_aiu: 1234,
+              },
               response: {
                 created_at: 0,
                 error: {
@@ -721,9 +724,6 @@ describe("responses handler token usage", () => {
                 tool_choice: "auto",
                 tools: [],
                 top_p: null,
-                copilot_usage: {
-                  total_nano_aiu: 1234,
-                },
                 usage: {
                   input_tokens: 5,
                   input_tokens_details: {

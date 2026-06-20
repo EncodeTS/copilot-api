@@ -92,6 +92,8 @@ export interface ChatCompletionChunk {
     prompt_tokens: number
     completion_tokens: number
     total_tokens: number
+    prompt_cache_hit_tokens?: number
+    prompt_cache_miss_tokens?: number
     prompt_tokens_details?: {
       cache_creation_input_tokens?: number
       cached_tokens?: number
@@ -141,6 +143,8 @@ export interface ChatCompletionResponse {
     prompt_tokens: number
     completion_tokens: number
     total_tokens: number
+    prompt_cache_hit_tokens?: number
+    prompt_cache_miss_tokens?: number
     prompt_tokens_details?: {
       cache_creation_input_tokens?: number
       cached_tokens?: number

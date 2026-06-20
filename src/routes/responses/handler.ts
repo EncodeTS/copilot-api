@@ -164,7 +164,7 @@ export const handleResponses = async (c: Context) => {
           usage = {
             ...normalizeResponsesUsage(parsedEvent.response.usage),
             total_nano_aiu: normalizeOptionalToken(
-              parsedEvent.response.copilot_usage?.total_nano_aiu,
+              parsedEvent.copilot_usage?.total_nano_aiu,
             ),
           }
         }

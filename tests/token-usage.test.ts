@@ -180,6 +180,13 @@ describe("token usage storage", () => {
     expect(summary.totals).toEqual({
       cache_creation_input_tokens: 1,
       cache_read_input_tokens: 6,
+      costs: [
+        {
+          amount: 0.000000035,
+          currency: "USD",
+          total_cost_nanos: 35,
+        },
+      ],
       input_tokens: 30,
       output_tokens: 9,
       request_count: 2,
@@ -313,6 +320,13 @@ describe("token usage storage", () => {
     expect(daily.totals).toEqual({
       cache_creation_input_tokens: 1,
       cache_read_input_tokens: 6,
+      costs: [
+        {
+          amount: 0.000000006,
+          currency: "USD",
+          total_cost_nanos: 6,
+        },
+      ],
       input_tokens: 36,
       output_tokens: 12,
       request_count: 3,
@@ -336,6 +350,13 @@ describe("token usage storage", () => {
     expect(may12?.totals).toEqual({
       cache_creation_input_tokens: 1,
       cache_read_input_tokens: 6,
+      costs: [
+        {
+          amount: 0.000000003,
+          currency: "USD",
+          total_cost_nanos: 3,
+        },
+      ],
       input_tokens: 30,
       output_tokens: 8,
       request_count: 2,

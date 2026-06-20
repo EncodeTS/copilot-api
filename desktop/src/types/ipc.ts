@@ -61,12 +61,23 @@ export interface ModelMappingsConfig {
 
 export type TokenUsagePeriod = 'day' | 'week' | 'month'
 
+export interface TokenUsageCost {
+  amount: number
+  currency: string
+  total_cost_nanos: number
+}
+
+export interface TokenUsageEventCost extends TokenUsageCost {
+  source: string
+}
+
 export interface TokenUsageTotals {
   request_count: number
   input_tokens: number
   output_tokens: number
   cache_read_input_tokens: number
   cache_creation_input_tokens: number
+  costs: TokenUsageCost[]
   total_tokens: number
 }
 
@@ -122,6 +133,7 @@ export interface TokenUsageEventRecord {
   output_tokens: number
   cache_read_input_tokens: number
   cache_creation_input_tokens: number
+  cost: TokenUsageEventCost | null
   total_tokens: number
 }
 

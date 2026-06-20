@@ -345,12 +345,14 @@ export type ResponseStreamEvent =
 
 export interface ResponseCompletedEvent {
   copilot_quota_snapshots?: Record<string, CopilotQuotaSnapshot>
+  copilot_usage?: CopilotUsage | null
   response: ResponsesResult
   sequence_number: number
   type: "response.completed"
 }
 
 export interface ResponseIncompleteEvent {
+  copilot_usage?: CopilotUsage | null
   response: ResponsesResult
   sequence_number: number
   type: "response.incomplete"
@@ -395,6 +397,7 @@ export interface ResponseFunctionCallArgumentsDoneEvent {
 }
 
 export interface ResponseFailedEvent {
+  copilot_usage?: CopilotUsage | null
   response: ResponsesResult
   sequence_number: number
   type: "response.failed"

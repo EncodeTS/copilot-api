@@ -23,16 +23,19 @@ const QUICK_PROVIDER_CONFIGS = {
   deepseek: {
     type: 'openai-compatible',
     baseUrl: 'https://api.deepseek.com',
+    pricingCurrency: 'CNY',
     editableType: true,
   },
   dashscope: {
     type: 'openai-compatible',
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode',
+    pricingCurrency: 'CNY',
     editableType: true,
   },
   openrouter: {
     type: 'anthropic',
     baseUrl: 'https://openrouter.ai/api',
+    pricingCurrency: 'USD',
     editableType: false,
   },
 } satisfies Record<
@@ -40,6 +43,7 @@ const QUICK_PROVIDER_CONFIGS = {
   {
     type: ProviderType
     baseUrl: string
+    pricingCurrency: string
     editableType: boolean
   }
 >
@@ -136,6 +140,7 @@ function buildProviderConfig(
     apiKey: string
     authType?: ProviderAuthType
     baseUrl: string
+    pricingCurrency?: string
     type: ProviderType
   },
 ): ProviderConfig {
@@ -145,6 +150,8 @@ function buildProviderConfig(
     baseUrl: options.baseUrl,
     apiKey: options.apiKey,
     ...(options.authType ? { authType: options.authType } : {}),
+    pricingCurrency:
+      options.pricingCurrency ?? existingProviderConfig.pricingCurrency,
     ...(existingProviderConfig.models ?
       { models: existingProviderConfig.models }
     : {}),
@@ -248,6 +255,7 @@ export function configureDesktopProvider(
     buildProviderConfig(existingProviderConfig, {
       apiKey: normalizeRequiredApiKey(input.apiKey),
       baseUrl,
+      pricingCurrency: quickProviderConfig.pricingCurrency,
       type,
     }),
   )

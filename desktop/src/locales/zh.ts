@@ -57,6 +57,7 @@ const zh: Locale = {
     tokenUsageCache: '缓存',
     tokenUsageCacheRead: '缓存读',
     tokenUsageCacheWrite: '缓存写',
+    tokenUsageCost: '费用',
     tokenUsageEndpoint: '端点',
     tokenUsageEvents: '事件明细',
     tokenUsageInput: '输入',

@@ -13,6 +13,7 @@ interface ConfigFileShape {
       baseUrl?: string
       enabled?: boolean
       models?: Record<string, unknown>
+      pricingCurrency?: string
       type?: string
     }
   >
@@ -129,6 +130,7 @@ describe("auth login validation", () => {
       apiKey: "deepseek-key",
       baseUrl: "https://api.deepseek.com",
       enabled: true,
+      pricingCurrency: "CNY",
       type: "openai-compatible",
     })
   })
@@ -187,6 +189,7 @@ describe("auth login validation", () => {
       apiKey: "masked-key",
       baseUrl: "https://api.deepseek.com",
       enabled: true,
+      pricingCurrency: "CNY",
       type: "openai-compatible",
     })
   })
@@ -213,6 +216,7 @@ describe("auth login validation", () => {
       apiKey: "deepseek-key",
       baseUrl: "https://deepseek.example",
       enabled: true,
+      pricingCurrency: "CNY",
       type: "anthropic",
     })
   })
@@ -239,6 +243,7 @@ describe("auth login validation", () => {
       apiKey: "dashscope-key",
       baseUrl: "https://dashscope.aliyuncs.com/compatible-mode",
       enabled: true,
+      pricingCurrency: "CNY",
       type: "openai-compatible",
     })
   })
@@ -265,6 +270,7 @@ describe("auth login validation", () => {
       apiKey: "dashscope-key",
       baseUrl: "https://dashscope.example/api",
       enabled: true,
+      pricingCurrency: "CNY",
       type: "openai-responses",
     })
   })
@@ -291,6 +297,7 @@ describe("auth login validation", () => {
       apiKey: "openrouter-key",
       baseUrl: "https://openrouter.ai/api",
       enabled: true,
+      pricingCurrency: "USD",
       type: "anthropic",
     })
   })
@@ -317,6 +324,7 @@ describe("auth login validation", () => {
       apiKey: "openrouter-key",
       baseUrl: "https://openrouter.example/api",
       enabled: true,
+      pricingCurrency: "USD",
       type: "anthropic",
     })
   })
@@ -362,6 +370,7 @@ describe("auth login validation", () => {
           temperature: 0.2,
         },
       },
+      pricingCurrency: "CNY",
       type: "openai-compatible",
     })
   })

@@ -48,16 +48,19 @@ const QUICK_PROVIDER_CONFIGS = {
   deepseek: {
     type: "openai-compatible",
     baseUrl: "https://api.deepseek.com",
+    pricingCurrency: "CNY",
     editableType: true,
   },
   dashscope: {
     type: "openai-compatible",
     baseUrl: "https://dashscope.aliyuncs.com/compatible-mode",
+    pricingCurrency: "CNY",
     editableType: true,
   },
   openrouter: {
     type: "anthropic",
     baseUrl: "https://openrouter.ai/api",
+    pricingCurrency: "USD",
     editableType: false,
   },
 } satisfies Record<
@@ -65,6 +68,7 @@ const QUICK_PROVIDER_CONFIGS = {
   {
     type: ProviderType
     baseUrl: string
+    pricingCurrency: string
     editableType: boolean
   }
 >
@@ -391,6 +395,7 @@ function buildCustomProviderConfig(
     apiKey: string
     authType?: ProviderAuthType
     baseUrl: string
+    pricingCurrency?: string
     type: ProviderType
   },
 ): ProviderConfig {
@@ -400,6 +405,8 @@ function buildCustomProviderConfig(
     baseUrl: options.baseUrl,
     apiKey: options.apiKey,
     ...(options.authType ? { authType: options.authType } : {}),
+    pricingCurrency:
+      options.pricingCurrency ?? existingProviderConfig.pricingCurrency,
     ...(existingProviderConfig.models ?
       { models: existingProviderConfig.models }
     : {}),
@@ -457,6 +464,7 @@ async function configureQuickProvider(
     buildCustomProviderConfig(existingProviderConfig, {
       apiKey,
       baseUrl,
+      pricingCurrency: defaultProviderConfig.pricingCurrency,
       type,
     }),
   )

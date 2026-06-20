@@ -4,6 +4,7 @@ import { events } from "fetch-event-stream"
 import { streamSSE } from "hono/streaming"
 
 import { logCodexRateLimitsEvent } from "~/lib/codex-rate-limit"
+import type { ModelConfig } from "~/lib/config"
 import { HTTPError } from "~/lib/error"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
@@ -74,6 +75,7 @@ export async function handleProviderResponsesForProvider(
   })
 
   compactInputByLatestCompaction(payload)
+  const modelConfig = providerConfig.models?.[payload.model]
 
   if (providerConfig.name === "codex") {
     const upstreamResponse = await forwardCodexResponses(
@@ -81,7 +83,12 @@ export async function handleProviderResponsesForProvider(
       c.req.raw.headers,
       providerConfig.baseUrl,
     )
-    const recordUsage = createProviderResponsesUsageRecorder(payload, provider)
+    const recordUsage = createProviderResponsesUsageRecorder(
+      payload,
+      provider,
+      modelConfig,
+      providerConfig.pricingCurrency,
+    )
 
     if (payload.stream && isResponsesStream(upstreamResponse)) {
       return streamProviderResponses(c, upstreamResponse, {
@@ -109,7 +116,12 @@ export async function handleProviderResponsesForProvider(
     )
   }
 
-  const recordUsage = createProviderResponsesUsageRecorder(payload, provider)
+  const recordUsage = createProviderResponsesUsageRecorder(
+    payload,
+    provider,
+    modelConfig,
+    providerConfig.pricingCurrency,
+  )
 
   if (payload.stream) {
     return streamProviderResponses(c, getResponsesEvents(upstreamResponse), {
@@ -130,6 +142,8 @@ export async function handleProviderResponsesForProvider(
 const createProviderResponsesUsageRecorder = (
   payload: ResponsesPayload,
   provider: string,
+  modelConfig: ModelConfig | undefined,
+  pricingCurrency: string | undefined,
 ): ((usage: UsageTokens) => void) => {
   const sessionAffinity =
     requestContext.getStore()?.sessionAffinity?.trim() || null
@@ -137,6 +151,8 @@ const createProviderResponsesUsageRecorder = (
   return createProviderTokenUsageRecorder({
     endpoint: "responses",
     model: payload.model,
+    pricing: modelConfig?.pricing,
+    pricingCurrency,
     providerName: provider,
     sessionId: sessionAffinity ?? "",
   })
