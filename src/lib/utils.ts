@@ -46,7 +46,7 @@ const refreshModels = async (fetcher: ModelsFetcher) => {
   const nextIds = state.models.data.map((m) => m.id)
   const added = nextIds.filter((id) => !prevIds.has(id))
   if (added.length > 0) {
-    consola.info(`Models refresh: ${added.length} new -- ${added.join(", ")}`)
+    consola.info(`Models refresh: ${added.length} new`)
   } else {
     consola.debug(`Models refresh: no changes (${nextIds.length} total)`)
   }

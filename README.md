@@ -237,11 +237,13 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
   - `baseUrl` should be provider API base URL without the final endpoint. For Anthropic providers, omit `/v1/messages`; for OpenAI-compatible providers, omit `/v1/chat/completions`; for OpenAI Responses providers, omit `/v1/responses`.
   - `apiKey` is used as the upstream credential value and is required for regular providers.
   - `authType` (optional): Controls how `apiKey` is sent upstream. Supports `x-api-key` and `authorization` for regular providers. Anthropic providers default to `x-api-key`; OpenAI-compatible and OpenAI Responses providers default to `authorization`. When set to `authorization`, the proxy sends `Authorization: Bearer <apiKey>`. `oauth2` is reserved for the built-in `codex` provider and is written automatically by `auth login --provider codex`.
+  - `pricingCurrency` (optional): Provider-level currency used for token cost calculation, for example `USD` or `CNY`. Quick providers default to `CNY` for DashScope and DeepSeek, and `USD` for Codex/OpenRouter. Costs are grouped by currency and are not exchange-rate converted.
   - `models` (optional): Per-model configuration map. Each key is a model ID (matching the model name in requests), and the value is:
     - `temperature` (optional): Default temperature value used when the request does not specify one.
     - `topP` (optional): Default top_p value used when the request does not specify one.
     - `topK` (optional): Default top_k value used when the request does not specify one.
     - `extraBody` (optional): Dynamic fields merged into the upstream request body for that model. Request body fields with the same name take precedence. OpenAI-compatible providers can use this for fields such as `enable_thinking`, `preserve_thinking`, `reasoning_effort`. `thinking_budget` is a special OpenAI-compatible provider override: when configured in `extraBody`, it is forced after Anthropic `thinking.budget_tokens` translation and overrides the request-derived budget.
+    - `pricing` (optional): Per-model token prices, in the provider `pricingCurrency`, per 1M tokens. Supported fields are `input`, `output`, `cachedInput` (implicit cache read), `explicitCachedInput` (explicit cache read), and `cacheCreationInput`. Use `tiers` with `maxInputTokens` for input-size tiered pricing.
     - `contextCache` (optional): Defaults to `true` for OpenAI-compatible providers. This enables Alibaba Cloud Model Studio/DashScope explicit context cache by injecting `cache_control: { "type": "ephemeral" }` on up to 4 content blocks using the Context Cache format. The cache breakpoint strategy matches opencode's main provider flow: the first 2 system messages plus the last 2 non-system messages. Marked string content is converted to text content part arrays for `system` / `user` / `assistant` / `tool` messages; existing array content is marked on the last part. Set this to `false` when the model already supports implicit caching, or when the upstream does not accept this explicit-cache extension field.
     - `supportPdf` (optional): Controls whether the model supports PDF/document content. Defaults to `false`; unsupported PDFs are converted to a text notice. Set it to `true` to send PDF/document blocks as OpenAI Chat Completions file parts.
     - `toolContentSupportType` (optional): Tool result content capabilities for that model, as an array of `array`, `image`, and `pdf`. Provider routes default to string-only tool content when omitted. If `supportPdf` is `true` but this list does not include `pdf`, file parts in tool results are moved to user role messages. This provider default does not change the Copilot main flow, which continues to support array + image and not PDF.
@@ -255,6 +257,7 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
         "enabled": true,
         "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode",
         "apiKey": "sk-your-dashscope-key",
+        "pricingCurrency": "CNY",
         "models": {
           "qwen3.6-plus": {
             "temperature": 1,
@@ -268,6 +271,26 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
             "temperature": 0.7,
             "topP": 0.95,
             "contextCache": true,
+            "pricing": {
+              "tiers": [
+                {
+                  "maxInputTokens": 32000,
+                  "input": 6,
+                  "cachedInput": 1.2,
+                  "explicitCachedInput": 0.6,
+                  "cacheCreationInput": 7.5,
+                  "output": 24
+                },
+                {
+                  "maxInputTokens": 200000,
+                  "input": 8,
+                  "cachedInput": 1.6,
+                  "explicitCachedInput": 0.8,
+                  "cacheCreationInput": 10,
+                  "output": 28
+                }
+              ]
+            },
             "extraBody": {
               "preserve_thinking": true
             }
@@ -277,6 +300,7 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
     }
   }
   ```
+  Built-in token prices cover Codex GPT models in USD, DashScope `qwen3.7-max`, `qwen3.7-plus`, `glm-5.1`, `glm-5.2` in CNY, and DeepSeek `deepseek-v4-flash`, `deepseek-v4-pro`, `deepseek-chat`, `deepseek-reasoner` in CNY. User `pricing` entries override built-ins. For DashScope, cached tokens are charged as explicit cache reads when the upstream usage includes `cache_creation_input_tokens`; otherwise `cachedInput` is used as the implicit cache read price. For DeepSeek, `prompt_cache_hit_tokens` map to cached input and `prompt_cache_miss_tokens` map to regular input.
 - **smallModel:** Fallback model used for tool-less warmup messages (e.g., Claude Code probe requests); defaults to gpt-5-mini.
 - **useResponsesApiContextManagement:** When `true`, the proxy adds Responses API `context_management` compaction instructions. Defaults to `true`. Set it to `false` to disable this globally. When enabled, the request includes `context_management` in the body and keeps only the latest compaction carrier on follow-up turns. This is especially useful for long-running tasks.
 - **modelResponsesApiCompactThresholds:** Per-model Responses API `compact_threshold` overrides used when the proxy adds `context_management`. These values take precedence over the fallback threshold from `resolveResponsesCompactThreshold` (`max_prompt_tokens * ratio`, or the default fallback). Defaults set `gpt-5.4` and `gpt-5.5` to `217600` (`272000 * 0.8`). Models not listed continue to use the normal fallback logic.

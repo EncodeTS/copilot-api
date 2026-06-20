@@ -239,11 +239,13 @@ Copilot API 现在使用子命令结构，主要命令包括：
   - `baseUrl`：provider API 的基础 URL，不要带结尾的 endpoint。Anthropic provider 不要带 `/v1/messages`；OpenAI 兼容 provider 不要带 `/v1/chat/completions`；OpenAI Responses provider 不要带 `/v1/responses`。
   - `apiKey`：作为上游凭据值使用；普通 provider 必须配置。
   - `authType`：可选，控制 `apiKey` 如何发送到上游。普通 provider 支持 `x-api-key` 和 `authorization`。Anthropic provider 默认 `x-api-key`；OpenAI 兼容和 OpenAI Responses provider 默认 `authorization`。当设置为 `authorization` 时，代理会发送 `Authorization: Bearer <apiKey>`。`oauth2` 仅保留给内置 `codex` provider，并由 `auth login --provider codex` 自动写入。
+  - `pricingCurrency`：可选，provider 维度的 token 费用币种，例如 `USD` 或 `CNY`。快捷 provider 默认 DashScope、DeepSeek 为 `CNY`，Codex/OpenRouter 为 `USD`。费用按币种分别汇总，不做汇率换算。
   - `models`：可选，按模型 ID 配置的映射。每个键为请求中的模型名，值支持：
     - `temperature`：可选，当请求未指定时使用的默认温度。
     - `topP`：可选，当请求未指定时使用的默认 `top_p`。
     - `topK`：可选，当请求未指定时使用的默认 `top_k`。
     - `extraBody`：可选，按模型合入上游请求体的动态字段；请求体显式同名字段优先。OpenAI 兼容 provider 可用它配置 `enable_thinking`、`preserve_thinking`、`reasoning_effort` 等字段。`thinking_budget` 是 OpenAI 兼容 provider 的特殊覆盖项：配置在 `extraBody` 后，会在 Anthropic `thinking.budget_tokens` 翻译之后强制写入，并覆盖请求派生出的预算值。
+    - `pricing`：可选，按模型配置 token 单价，币种使用 provider 的 `pricingCurrency`，单位为每 100 万 tokens。支持 `input`、`output`、`cachedInput`（隐式缓存读）、`explicitCachedInput`（显式缓存读）和 `cacheCreationInput`。如需按输入 token 总量分档，可用带 `maxInputTokens` 的 `tiers`。
     - `contextCache`：可选，OpenAI 兼容 provider 默认 `true`，用于启用阿里云百炼/DashScope 的显式缓存（explicit context cache），会按其 Context Cache 格式在最多 4 个 content block 上注入 `cache_control: { "type": "ephemeral" }`。缓存断点策略与 opencode 主链路保持一致：前 2 条 system 消息 + 最后 2 条非 system 消息。标记字符串 content 时会把 `system` / `user` / `assistant` / `tool` 消息转换为 text content part 数组；已有数组 content 则标记最后一个 part。如果模型本身已经支持隐式缓存，或上游不支持该显式缓存扩展字段，可在模型配置中设为 `false`。
     - `supportPdf`：可选，控制该模型是否支持 PDF/document content。默认 `false`，不支持时会把 PDF 转成提示文本；设为 `true` 时会把 PDF/document 转成 OpenAI Chat Completions 的 file part。
     - `toolContentSupportType`：可选，配置该模型的 tool result content 支持能力，值为 `array`、`image`、`pdf` 的数组。provider 侧未配置时默认只发送 string tool content。若 `supportPdf` 为 `true` 但这里不包含 `pdf`，tool result 里的 file part 会被转成 user role 消息。Copilot 主链路不使用这个 provider 默认，仍按 array + image 且不支持 PDF 的能力处理。
@@ -257,6 +259,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
         "enabled": true,
         "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode",
         "apiKey": "sk-your-dashscope-key",
+        "pricingCurrency": "CNY",
         "models": {
           "qwen3.6-plus": {
             "temperature": 1,
@@ -270,6 +273,26 @@ Copilot API 现在使用子命令结构，主要命令包括：
             "temperature": 0.7,
             "topP": 0.95,
             "contextCache": true,
+            "pricing": {
+              "tiers": [
+                {
+                  "maxInputTokens": 32000,
+                  "input": 6,
+                  "cachedInput": 1.2,
+                  "explicitCachedInput": 0.6,
+                  "cacheCreationInput": 7.5,
+                  "output": 24
+                },
+                {
+                  "maxInputTokens": 200000,
+                  "input": 8,
+                  "cachedInput": 1.6,
+                  "explicitCachedInput": 0.8,
+                  "cacheCreationInput": 10,
+                  "output": 28
+                }
+              ]
+            },
             "extraBody": {
               "preserve_thinking": true
             }
@@ -279,6 +302,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
     }
   }
   ```
+  内置 token 价格覆盖 Codex GPT 模型（USD）、DashScope `qwen3.7-max`、`qwen3.7-plus`、`glm-5.1`、`glm-5.2`（CNY），以及 DeepSeek `deepseek-v4-flash`、`deepseek-v4-pro`、`deepseek-chat`、`deepseek-reasoner`（CNY）。用户配置的 `pricing` 优先于内置价格。DashScope 若上游 usage 中出现 `cache_creation_input_tokens` 字段，cached tokens 按显式缓存读价计费；否则 `cachedInput` 作为隐式缓存读价。DeepSeek 的 `prompt_cache_hit_tokens` 会归入 cached input，`prompt_cache_miss_tokens` 会归入普通 input。
 - **smallModel：** 无工具预热消息的回退模型（例如 Claude Code 的探测请求）；默认是 `gpt-5-mini`。
 - **useResponsesApiContextManagement：** 当为 `true` 时，代理会为 Responses API 附加 `context_management` 压缩指令。默认值为 `true`。如需全局关闭，可设为 `false`。启用后，请求体会带上 `context_management`，并在后续轮次中仅保留最新的压缩承载内容，因此特别适合长任务场景。
 - **modelResponsesApiCompactThresholds：** 按模型覆盖 Responses API 的 `compact_threshold`，仅在代理自动附加 `context_management` 时使用。它的优先级高于 `resolveResponsesCompactThreshold` 基于 `max_prompt_tokens * ratio` 的兜底阈值。默认将 `gpt-5.4` 和 `gpt-5.5` 设为 `217600`（`272000 * 0.8`）。未列出的模型继续使用原有兜底逻辑。

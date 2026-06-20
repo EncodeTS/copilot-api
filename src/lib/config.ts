@@ -40,8 +40,22 @@ export interface ModelConfig {
   topK?: number
   extraBody?: Record<string, unknown>
   contextCache?: boolean
+  pricing?: TokenUsagePricingConfig
   supportPdf?: boolean
   toolContentSupportType?: Array<ToolContentSupportType>
+}
+
+export interface TokenUsagePricingTier {
+  cachedInput?: number
+  cacheCreationInput?: number
+  explicitCachedInput?: number
+  input?: number
+  maxInputTokens?: number
+  output?: number
+}
+
+export interface TokenUsagePricingConfig extends TokenUsagePricingTier {
+  tiers?: Array<TokenUsagePricingTier>
 }
 
 export type ProviderAuthType = "authorization" | "oauth2" | "x-api-key"
@@ -59,6 +73,7 @@ export interface ProviderConfig {
   baseUrl?: string
   apiKey?: string
   authType?: ProviderAuthType
+  pricingCurrency?: string
   models?: Record<string, ModelConfig>
 }
 
@@ -68,6 +83,7 @@ export interface ResolvedProviderConfig {
   baseUrl: string
   apiKey: string
   authType: ProviderAuthType
+  pricingCurrency?: string
   models?: Record<string, ModelConfig>
 }
 
@@ -602,8 +618,16 @@ export function getProviderConfig(name: string): ResolvedProviderConfig | null {
     baseUrl,
     apiKey,
     authType,
+    pricingCurrency: normalizePricingCurrency(provider.pricingCurrency),
     models: provider.models,
   }
+}
+
+function normalizePricingCurrency(
+  value: string | undefined,
+): string | undefined {
+  const currency = value?.trim().toUpperCase()
+  return currency || undefined
 }
 
 export function listEnabledProviders(): Array<string> {

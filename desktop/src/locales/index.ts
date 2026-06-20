@@ -58,6 +58,7 @@ export interface Locale {
     tokenUsageCache: string
     tokenUsageCacheRead: string
     tokenUsageCacheWrite: string
+    tokenUsageCost: string
     tokenUsageEndpoint: string
     tokenUsageEvents: string
     tokenUsageInput: string

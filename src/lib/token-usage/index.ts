@@ -1,7 +1,9 @@
 import { requestContext, generateTraceId } from "~/lib/request-context"
 import { state } from "~/lib/state"
+import type { TokenUsagePricingConfig } from "~/lib/config"
 
 import { EventBus } from "../event-bus"
+import { resolveTokenUsageCost } from "./pricing"
 import {
   enqueueTokenUsageWrite,
   hasAnyToken,
@@ -26,6 +28,8 @@ export {
 export type {
   TokenUsageDailyBucket,
   TokenUsageDailySummary,
+  TokenUsageCost,
+  TokenUsageEventCost,
   TokenUsageEndpoint,
   TokenUsageEventRecord,
   TokenUsageEventsPage,
@@ -41,6 +45,8 @@ export interface TokenUsageEventInput extends UsageTokens {
   endpoint: TokenUsageEndpoint
   fallbackSessionId?: string | null
   model: string
+  pricing?: TokenUsagePricingConfig | null
+  pricingCurrency?: string | null
   providerName?: string | null
   sessionId?: string | null
   source: TokenUsageSource
@@ -51,6 +57,8 @@ interface TokenUsageRecorderOptions {
   endpoint: TokenUsageEndpoint
   fallbackSessionId?: string | null
   model: string
+  pricing?: TokenUsagePricingConfig | null
+  pricingCurrency?: string | null
   providerName?: string | null
   sessionId?: string | null
   source: TokenUsageSource
@@ -106,11 +114,14 @@ function toPersistedEvent(
   }
 
   const now = new Date()
+  const cost = resolveTokenUsageCost(input)
   return {
     cache_creation_input_tokens: normalizeToken(
       input.cache_creation_input_tokens,
     ),
     cache_read_input_tokens: normalizeToken(input.cache_read_input_tokens),
+    cost_currency: cost?.currency ?? null,
+    cost_source: cost?.source ?? null,
     created_at_ms: now.getTime(),
     created_at_utc: now.toISOString(),
     endpoint: input.endpoint,
@@ -127,6 +138,7 @@ function toPersistedEvent(
       input.total_nano_aiu === undefined || input.total_nano_aiu === null ?
         null
       : normalizeToken(input.total_nano_aiu),
+    total_cost_nanos: cost?.total_cost_nanos ?? null,
     total_tokens: resolveTotalTokens(input),
     trace_id: resolveTraceId(input.traceId),
     user_id: resolveUserId(input),
@@ -179,6 +191,8 @@ export function normalizeOpenAIUsage(
         completion_tokens?: number
         prompt_tokens?: number
         total_tokens?: number
+        prompt_cache_hit_tokens?: number
+        prompt_cache_miss_tokens?: number
         prompt_tokens_details?: {
           cache_creation_input_tokens?: number
           cached_tokens?: number
@@ -187,16 +201,39 @@ export function normalizeOpenAIUsage(
     | null
     | undefined,
 ): UsageTokens {
-  const cachedTokens = normalizeToken(
-    usage?.prompt_tokens_details?.cached_tokens,
+  if (
+    usage
+    && (Object.hasOwn(usage, "prompt_cache_hit_tokens")
+      || Object.hasOwn(usage, "prompt_cache_miss_tokens"))
+  ) {
+    return {
+      cache_read_input_tokens: normalizeToken(usage.prompt_cache_hit_tokens),
+      input_tokens: normalizeToken(usage.prompt_cache_miss_tokens),
+      output_tokens: normalizeToken(usage.completion_tokens),
+      total_tokens: normalizeOptionalToken(usage.total_tokens),
+    }
+  }
+
+  const promptDetails = usage?.prompt_tokens_details
+  const hasCacheCreationTokens = Boolean(
+    promptDetails
+      && Object.hasOwn(promptDetails, "cache_creation_input_tokens"),
   )
+  const hasCachedTokens = Boolean(
+    promptDetails && Object.hasOwn(promptDetails, "cached_tokens"),
+  )
+  const cachedTokens = normalizeToken(promptDetails?.cached_tokens)
   const cacheCreationTokens = normalizeToken(
-    usage?.prompt_tokens_details?.cache_creation_input_tokens,
+    promptDetails?.cache_creation_input_tokens,
   )
   const promptTokens = normalizeToken(usage?.prompt_tokens)
   return {
-    cache_creation_input_tokens: cacheCreationTokens,
-    cache_read_input_tokens: cachedTokens,
+    ...(hasCacheCreationTokens && {
+      cache_creation_input_tokens: cacheCreationTokens,
+    }),
+    ...(hasCachedTokens && {
+      cache_read_input_tokens: cachedTokens,
+    }),
     input_tokens: Math.max(
       0,
       promptTokens - cachedTokens - cacheCreationTokens,

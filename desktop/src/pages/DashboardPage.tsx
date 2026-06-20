@@ -61,6 +61,7 @@ const ALL_MODELS_VALUE = '__all__'
 const EMPTY_TOKEN_USAGE_TOTALS: TokenUsageTotals = {
   cache_creation_input_tokens: 0,
   cache_read_input_tokens: 0,
+  costs: [],
   input_tokens: 0,
   output_tokens: 0,
   request_count: 0,
@@ -96,6 +97,30 @@ function maskSecret(value: string): string {
 
 function formatTokenCount(value: number): string {
   return numberFormatter.format(Math.max(0, Math.floor(value)))
+}
+
+function formatCostAmount(currency: string, amount: number): string {
+  const symbol = currency === 'USD' ? '$' : currency === 'CNY' ? '¥' : ''
+  return `${currency} ${symbol}${amount.toFixed(6)}`
+}
+
+function formatTokenCost(cost: { amount?: number; currency?: string; total_cost_nanos?: number } | null | undefined): string {
+  const currency = cost?.currency?.trim().toUpperCase()
+  if (!currency) return '—'
+
+  const amount =
+    typeof cost?.amount === 'number' && Number.isFinite(cost.amount)
+      ? cost.amount
+      : typeof cost?.total_cost_nanos === 'number' && Number.isFinite(cost.total_cost_nanos)
+        ? cost.total_cost_nanos / 1_000_000_000
+        : null
+
+  return amount === null ? '—' : formatCostAmount(currency, amount)
+}
+
+function formatTokenCosts(costs: TokenUsageTotals['costs'] | undefined): string {
+  if (!costs || costs.length === 0) return '—'
+  return costs.map(formatTokenCost).join(' / ')
 }
 
 function calcTokenTotal(tokens: TokenUsageTotals): number {
@@ -736,8 +761,9 @@ function TokenUsagePanel({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-6">
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4 xl:grid-cols-7">
         <TokenUsageMetric label={t('dashboard.tokenUsageTotal')} value={calcTokenTotal(totals)} loading={loading} tone="slate" />
+        <TokenUsageMetric label={t('dashboard.tokenUsageCost')} value={formatTokenCosts(totals.costs)} loading={loading} tone="amber" />
         <TokenUsageMetric label={t('dashboard.tokenUsageInput')} value={totals.input_tokens} loading={loading} tone="blue" />
         <TokenUsageMetric label={t('dashboard.tokenUsageOutput')} value={totals.output_tokens} loading={loading} tone="green" />
         <TokenUsageMetric label={t('dashboard.tokenUsageCacheRead')} value={totals.cache_read_input_tokens} loading={loading} tone="cyan" />
@@ -773,7 +799,7 @@ function TokenUsagePanel({
             </div>
           ) : hasModelRows && tokenUsage ? (
             <div className={`h-56 overflow-auto ${loading ? 'opacity-60' : ''}`}>
-              <table className="w-full min-w-[760px] text-left text-[13px]">
+              <table className="w-full min-w-[860px] text-left text-[13px]">
                 <thead className="sticky top-0 bg-white text-slate-400">
                   <tr className="border-b border-slate-100">
                     <th className="px-2.5 py-1.5 font-semibold">{t('dashboard.tokenUsageModel')}</th>
@@ -783,6 +809,7 @@ function TokenUsagePanel({
                     <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageCacheRead')}</th>
                     <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageCacheWrite')}</th>
                     <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageTotal')}</th>
+                    <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageCost')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -834,7 +861,7 @@ function TokenUsagePanel({
             </div>
           ) : hasEventRows && eventsPage ? (
             <div className={`h-64 overflow-auto ${eventsLoading ? 'opacity-60' : ''}`}>
-              <table className="w-full min-w-[1040px] text-left text-[13px]">
+              <table className="w-full min-w-[1140px] text-left text-[13px]">
                 <thead className="sticky top-0 bg-white text-slate-400">
                   <tr className="border-b border-slate-100">
                     <th className="px-2.5 py-1.5 font-semibold">{t('dashboard.tokenUsageTime')}</th>
@@ -848,6 +875,7 @@ function TokenUsagePanel({
                     <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageCacheRead')}</th>
                     <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageCacheWrite')}</th>
                     <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageTotal')}</th>
+                    <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageCost')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -870,7 +898,7 @@ function TokenUsageMetric({ label, loading, tone, value }: {
   label: string
   loading: boolean
   tone: 'amber' | 'blue' | 'cyan' | 'green' | 'slate' | 'violet'
-  value: number
+  value: number | string
 }) {
   const toneClasses = {
     amber: 'bg-amber-50 border-amber-200 text-amber-700',
@@ -884,7 +912,7 @@ function TokenUsageMetric({ label, loading, tone, value }: {
   return (
     <div className={`rounded-lg border px-2.5 py-2 ${toneClasses}`}>
       <div className={`text-[13px] font-bold ${loading ? 'animate-pulse opacity-40' : ''}`}>
-        {loading ? '…' : formatTokenCount(value)}
+        {loading ? '…' : typeof value === 'number' ? formatTokenCount(value) : value}
       </div>
       <div className="mt-0.5 text-[13px] opacity-70">{label}</div>
     </div>
@@ -1146,6 +1174,7 @@ function TokenUsageModelRow({ model }: { model: TokenUsageModelSummary }) {
       <td className="px-2.5 py-1.5 text-right text-slate-500">{formatTokenCount(model.cache_read_input_tokens)}</td>
       <td className="px-2.5 py-1.5 text-right text-slate-500">{formatTokenCount(model.cache_creation_input_tokens)}</td>
       <td className="px-2.5 py-1.5 text-right font-semibold text-[#0f172a]">{formatTokenCount(calcTokenTotal(model))}</td>
+      <td className="px-2.5 py-1.5 text-right font-semibold text-amber-700">{formatTokenCosts(model.costs)}</td>
     </tr>
   )
 }
@@ -1175,6 +1204,9 @@ function TokenUsageEventRow({ event }: { event: TokenUsageEventRecord }) {
       <td className="px-2.5 py-1.5 text-right text-slate-500">{formatTokenCount(event.cache_creation_input_tokens)}</td>
       <td className="px-2.5 py-1.5 text-right font-semibold text-[#0f172a]">
         {formatTokenCount(event.total_tokens)}
+      </td>
+      <td className="px-2.5 py-1.5 text-right font-semibold text-amber-700">
+        {formatTokenCost(event.cost)}
       </td>
     </tr>
   )

@@ -57,6 +57,7 @@ const en: Locale = {
     tokenUsageCache: 'Cache',
     tokenUsageCacheRead: 'Cache read',
     tokenUsageCacheWrite: 'Cache write',
+    tokenUsageCost: 'Cost',
     tokenUsageEndpoint: 'Endpoint',
     tokenUsageEvents: 'Event details',
     tokenUsageInput: 'Input',

@@ -275,7 +275,7 @@ export const handleWithResponsesApi = async (
           usage = {
             ...normalizeResponsesUsage(responseEvent.response.usage),
             total_nano_aiu: normalizeOptionalToken(
-              responseEvent.response.copilot_usage?.total_nano_aiu,
+              responseEvent.copilot_usage?.total_nano_aiu,
             ),
           }
         }

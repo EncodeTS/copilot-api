@@ -83,6 +83,7 @@ function syncCodexProviderConfig(options?: { enabled?: boolean }): void {
     enabled: options?.enabled ?? existingProviderConfig.enabled,
     baseUrl: CODEX_API_BASE_URL,
     authType: "oauth2",
+    pricingCurrency: "USD",
   })
 }
 
