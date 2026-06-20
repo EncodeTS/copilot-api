@@ -11,7 +11,8 @@ export default defineConfig({
   clean: true,
   removeNodeProtocol: false,
 
-  noExternal: () => true,
+  external: ["sharp", /^@img\//u],
+  noExternal: (id: string) => id !== "sharp" && !id.startsWith("@img/"),
 
   env: {
     NODE_ENV: "production",
