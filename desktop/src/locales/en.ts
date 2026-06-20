@@ -2,12 +2,25 @@ import type { Locale } from './index'
 
 const en: Locale = {
   auth: {
-    subtitle: 'Connect your GitHub Copilot',
+    subtitle: 'Choose a provider to authorize or configure',
     githubAuth: 'Sign in with GitHub',
+    codexAuth: 'Sign in with OpenAI Codex',
+    customProvider: 'Custom provider',
     loading: 'Please wait…',
     manualToken: 'Enter token manually',
+    providerApiKey: 'API key',
+    providerAuthType: 'Auth type',
+    providerAuthTypeDefault: 'Default',
+    providerBaseUrl: 'Base URL',
+    providerDashscope: 'DashScope',
+    providerDeepseek: 'DeepSeek',
+    providerInvalid: 'Invalid provider configuration, please try again',
+    providerName: 'Provider name',
+    providerOpenrouter: 'OpenRouter',
+    providerType: 'Provider type',
     deviceCode: 'Authorization code',
     deviceCodeUrl: 'Authorization URL',
+    codexCallbackRequired: 'Authorization did not finish. Retry or go back to start over',
     copy: 'Copy',
     copied: '✓ Copied',
     openAuthPage: 'Open authorization page',
@@ -17,6 +30,7 @@ const en: Locale = {
     confirmAdd: 'Confirm',
     authFailed: 'Authorization failed, please try again',
     tokenInvalid: 'Invalid token, please try again',
+    waitingCodexAuth: 'Waiting for Codex authorization…',
     loginConsent: 'By signing in you authorize access to Copilot API',
   },
   dashboard: {
@@ -81,6 +95,7 @@ const en: Locale = {
     settings: 'Settings',
     appSettings: 'App settings',
     advancedConfig: 'Advanced config',
+    changeAuth: 'Change auth / provider',
   },
   tray: {
     showWindow: 'Show window',
@@ -88,6 +103,7 @@ const en: Locale = {
   },
   server: {
     tokenNotFound: 'Token not found',
+    authRequired: 'No usable authorization found. Configure a GitHub token or at least one provider first',
     portInUse: 'Port {{port}} is already in use, please choose a different port',
     startFailed: 'Server process failed to start (exit code {{code}}); refer to the log panel below for details',
     startTimeout: 'Server startup timed out, port {{port}} may already be in use',

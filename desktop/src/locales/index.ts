@@ -5,10 +5,23 @@ export interface Locale {
   auth: {
     subtitle: string
     githubAuth: string
+    codexAuth: string
+    customProvider: string
     loading: string
     manualToken: string
+    providerApiKey: string
+    providerAuthType: string
+    providerAuthTypeDefault: string
+    providerBaseUrl: string
+    providerDashscope: string
+    providerDeepseek: string
+    providerInvalid: string
+    providerName: string
+    providerOpenrouter: string
+    providerType: string
     deviceCode: string
     deviceCodeUrl: string
+    codexCallbackRequired: string
     copy: string
     copied: string
     openAuthPage: string
@@ -18,6 +31,7 @@ export interface Locale {
     confirmAdd: string
     authFailed: string
     tokenInvalid: string
+    waitingCodexAuth: string
     loginConsent: string
   }
   dashboard: {
@@ -82,6 +96,7 @@ export interface Locale {
     settings: string
     appSettings: string
     advancedConfig: string
+    changeAuth: string
   }
   tray: {
     showWindow: string
@@ -89,6 +104,7 @@ export interface Locale {
   }
   server: {
     tokenNotFound: string
+    authRequired: string
     portInUse: string
     startFailed: string
     startTimeout: string

@@ -8,11 +8,39 @@ export interface DeviceCodeInfo {
   expires_in: number
 }
 
+export type DesktopAuthMode = 'copilot' | 'provider' | 'none'
+
 export interface AuthResult {
   success: boolean
-  username?: string
+  mode?: DesktopAuthMode
+  providers?: string[]
   error?: string
 }
+
+export interface AuthStatus extends AuthResult {
+  mode: DesktopAuthMode
+}
+
+export type ProviderType = 'anthropic' | 'openai-compatible' | 'openai-responses'
+export type ProviderAuthType = 'authorization' | 'x-api-key'
+export type ProviderAuthTypeInput = ProviderAuthType | '__default__'
+export type QuickProviderName = 'deepseek' | 'dashscope' | 'openrouter'
+
+export type ProviderAuthInput =
+  | {
+      apiKey: string
+      baseUrl?: string
+      provider: QuickProviderName
+      type?: ProviderType
+    }
+  | {
+      apiKey: string
+      authType?: ProviderAuthTypeInput
+      baseUrl: string
+      name: string
+      provider: 'custom'
+      type: ProviderType
+    }
 
 export interface ServerStatus {
   running: boolean
@@ -138,11 +166,14 @@ export interface DesktopSettings {
 declare global {
   interface Window {
     electronAPI: {
+      getAuthStatus: () => Promise<AuthStatus>
       getDeviceCode: () => Promise<DeviceCodeInfo>
       saveToken: (token: string) => Promise<AuthResult>
       checkSavedToken: () => Promise<AuthResult>
+      configureProvider: (input: ProviderAuthInput) => Promise<AuthResult>
+      startCodexLogin: (callbackUrlOrCode?: string) => Promise<AuthResult>
       logout: () => Promise<void>
-      startServer: (port: number) => Promise<ServerStatus>
+      startServer: (port: number, authMode?: DesktopAuthMode) => Promise<ServerStatus>
       stopServer: () => Promise<void>
       getSettings: () => Promise<DesktopSettings>
       saveSettings: (settings: DesktopSettings) => Promise<void>

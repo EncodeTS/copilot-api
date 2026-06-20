@@ -6,12 +6,21 @@ import { normalizeApiKeys } from '../../src/lib/request-auth'
 import { PATHS } from '../../src/lib/paths'
 import { getDeviceCode, pollAccessToken, getGitHubUser, saveToken, readToken, clearToken, getCopilotAccountType } from './auth'
 import { tMain } from './i18n'
+import {
+  configureDesktopProvider,
+  getDesktopAuthStatus,
+  getEnabledDesktopProviders,
+  loginCodexForDesktop,
+  shouldStartInProviderMode,
+} from './provider-auth'
 import { startServer, stopServer, getPort, getLogs, isRunning } from './server-manager'
 import { readSettings, writeSettings } from './settings-store'
 import type {
+  DesktopAuthMode,
   DesktopProxySettings,
   DesktopSettings,
   ModelMappingsConfig,
+  ProviderAuthInput,
   ServerAuthInfo,
 } from '../src/types/ipc'
 
@@ -124,13 +133,15 @@ export function registerIpcHandlers(
   mainWindow: BrowserWindow,
   options: IpcHandlersOptions = {}
 ): void {
+  ipcMain.handle('auth:get-status', async () => getDesktopAuthStatus())
+
   // Auth: Start the OAuth device flow
   ipcMain.handle('auth:get-device-code', async () => {
     const deviceCode = await getDeviceCode()
     // Poll in the background and notify the renderer when the token arrives
     pollAccessToken(deviceCode).then(async (token) => {
       await saveToken(token)
-      const [username, accountType] = await Promise.all([
+      const [, accountType] = await Promise.all([
         getGitHubUser(token),
         getCopilotAccountType(token)
       ])
@@ -138,7 +149,7 @@ export function registerIpcHandlers(
       const settings = await readSettings()
       await writeSettings({ ...settings, accountType })
       if (!mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('auth:success', { success: true, username })
+        mainWindow.webContents.send('auth:success', { success: true, mode: 'copilot' })
       }
     }).catch((err: Error) => {
       if (!mainWindow.isDestroyed()) {
@@ -151,7 +162,7 @@ export function registerIpcHandlers(
   // Auth: Save token directly
   ipcMain.handle('auth:save-token', async (_event, token: string) => {
     try {
-      const [username, accountType] = await Promise.all([
+      const [, accountType] = await Promise.all([
         getGitHubUser(token),
         getCopilotAccountType(token)
       ])
@@ -159,26 +170,31 @@ export function registerIpcHandlers(
       // Detect and persist the account type automatically
       const settings = await readSettings()
       await writeSettings({ ...settings, accountType })
-      return { success: true, username }
+      return { success: true, mode: 'copilot' }
     } catch (err) {
       return { success: false, error: (err as Error).message }
     }
   })
 
   // Auth: Check the saved token
-  ipcMain.handle('auth:check-saved', async () => {
-    const token = await readToken()
-    if (!token) return { success: false }
+  ipcMain.handle('auth:check-saved', async () => getDesktopAuthStatus())
+
+  ipcMain.handle('auth:configure-provider', async (_event, input: ProviderAuthInput) => {
     try {
-      const username = await getGitHubUser(token)
-      // Refresh the persisted account type in the background so startup only waits on one request.
-      void getCopilotAccountType(token).then(async (accountType) => {
-        const settings = await readSettings()
-        await writeSettings({ ...settings, accountType })
-      }).catch(() => {})
-      return { success: true, username }
-    } catch {
-      return { success: false }
+      return configureDesktopProvider(input)
+    } catch (err) {
+      return { success: false, mode: 'none', error: (err as Error).message }
+    }
+  })
+
+  ipcMain.handle('auth:start-codex-login', async (_event, callbackUrlOrCode?: string) => {
+    try {
+      return await loginCodexForDesktop({
+        callbackUrlOrCode,
+        openUrl: (url) => shell.openExternal(url),
+      })
+    } catch (err) {
+      return { success: false, mode: 'none', error: (err as Error).message }
     }
   })
 
@@ -188,12 +204,16 @@ export function registerIpcHandlers(
   })
 
   // Server: Start
-  ipcMain.handle('server:start', async (_event, port: number) => {
+  ipcMain.handle('server:start', async (_event, port: number, authMode?: DesktopAuthMode) => {
     const token = await readToken()
-    if (!token) {
+    const providerMode = shouldStartInProviderMode(authMode)
+    const enabledProviders = getEnabledDesktopProviders()
+    const tokenForStart = providerMode ? null : token
+
+    if (!tokenForStart && enabledProviders.length === 0) {
       return {
         running: false,
-        error: await tMain('server.tokenNotFound')
+        error: await tMain('server.authRequired')
       }
     }
 
@@ -207,7 +227,7 @@ export function registerIpcHandlers(
     // Persist the last used port
     await writeSettings({ ...settings, lastPort: port })
 
-    return startServer(port, token, serverOptions)
+    return startServer(port, tokenForStart, serverOptions)
   })
 
   // Server: Stop

@@ -1,12 +1,16 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  getAuthStatus: () => ipcRenderer.invoke('auth:get-status'),
   getDeviceCode: () => ipcRenderer.invoke('auth:get-device-code'),
   saveToken: (token: string) => ipcRenderer.invoke('auth:save-token', token),
   checkSavedToken: () => ipcRenderer.invoke('auth:check-saved'),
+  configureProvider: (input: unknown) => ipcRenderer.invoke('auth:configure-provider', input),
+  startCodexLogin: (callbackUrlOrCode?: string) =>
+    ipcRenderer.invoke('auth:start-codex-login', callbackUrlOrCode),
   logout: () => ipcRenderer.invoke('auth:logout'),
 
-  startServer: (port: number) => ipcRenderer.invoke('server:start', port),
+  startServer: (port: number, authMode?: string) => ipcRenderer.invoke('server:start', port, authMode),
   stopServer: () => ipcRenderer.invoke('server:stop'),
 
   getSettings: () => ipcRenderer.invoke('settings:get'),
