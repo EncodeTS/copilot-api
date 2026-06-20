@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 
 import Header from '../components/Header'
+import { TokenUsageCostMetric, TokenUsageMetric, TokenUsageValueLines } from '../components/TokenUsageMetric'
 import { useLanguage } from '../contexts/LanguageContext'
+import { formatTokenCost, formatTokenCosts } from '../lib/token-usage-format'
 import AdvancedConfigPage from './AdvancedConfigPage'
 import type {
   DesktopAuthMode,
@@ -48,13 +50,6 @@ type DashboardTab = 'dashboard' | 'tokenUsage' | 'logs'
 type DashboardView = 'main' | 'advancedConfig'
 
 const numberFormatter = new Intl.NumberFormat()
-const eventTimeFormatter = new Intl.DateTimeFormat(undefined, {
-  day: '2-digit',
-  hour: '2-digit',
-  minute: '2-digit',
-  month: '2-digit',
-  second: '2-digit'
-})
 const TOKEN_USAGE_EVENTS_PAGE_SIZE = 10
 const ALL_METRICS_VALUE = '__all__'
 const ALL_MODELS_VALUE = '__all__'
@@ -99,28 +94,8 @@ function formatTokenCount(value: number): string {
   return numberFormatter.format(Math.max(0, Math.floor(value)))
 }
 
-function formatCostAmount(currency: string, amount: number): string {
-  const symbol = currency === 'USD' ? '$' : currency === 'CNY' ? '¥' : ''
-  return `${currency} ${symbol}${amount.toFixed(6)}`
-}
-
-function formatTokenCost(cost: { amount?: number; currency?: string; total_cost_nanos?: number } | null | undefined): string {
-  const currency = cost?.currency?.trim().toUpperCase()
-  if (!currency) return '—'
-
-  const amount =
-    typeof cost?.amount === 'number' && Number.isFinite(cost.amount)
-      ? cost.amount
-      : typeof cost?.total_cost_nanos === 'number' && Number.isFinite(cost.total_cost_nanos)
-        ? cost.total_cost_nanos / 1_000_000_000
-        : null
-
-  return amount === null ? '—' : formatCostAmount(currency, amount)
-}
-
-function formatTokenCosts(costs: TokenUsageTotals['costs'] | undefined): string {
-  if (!costs || costs.length === 0) return '—'
-  return costs.map(formatTokenCost).join(' / ')
+function padDatePart(value: number): string {
+  return String(value).padStart(2, '0')
 }
 
 function calcTokenTotal(tokens: TokenUsageTotals): number {
@@ -129,7 +104,8 @@ function calcTokenTotal(tokens: TokenUsageTotals): number {
 
 function formatEventTime(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return '—'
-  return eventTimeFormatter.format(new Date(value))
+  const date = new Date(value)
+  return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()} ${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}:${padDatePart(date.getSeconds())}`
 }
 
 function formatCellText(value: string | null | undefined): string {
@@ -761,14 +737,14 @@ function TokenUsagePanel({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4 xl:grid-cols-7">
-        <TokenUsageMetric label={t('dashboard.tokenUsageTotal')} value={calcTokenTotal(totals)} loading={loading} tone="slate" />
-        <TokenUsageMetric label={t('dashboard.tokenUsageCost')} value={formatTokenCosts(totals.costs)} loading={loading} tone="amber" />
-        <TokenUsageMetric label={t('dashboard.tokenUsageInput')} value={totals.input_tokens} loading={loading} tone="blue" />
-        <TokenUsageMetric label={t('dashboard.tokenUsageOutput')} value={totals.output_tokens} loading={loading} tone="green" />
-        <TokenUsageMetric label={t('dashboard.tokenUsageCacheRead')} value={totals.cache_read_input_tokens} loading={loading} tone="cyan" />
-        <TokenUsageMetric label={t('dashboard.tokenUsageCacheWrite')} value={totals.cache_creation_input_tokens} loading={loading} tone="amber" />
-        <TokenUsageMetric label={t('dashboard.tokenUsageRequests')} value={totals.request_count} loading={loading} tone="violet" />
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-3 xl:grid-cols-6">
+        <TokenUsageMetric label={t('dashboard.tokenUsageTotal')} value={formatTokenCount(calcTokenTotal(totals))} loading={loading} tone="slate" />
+        <TokenUsageMetric label={t('dashboard.tokenUsageInput')} value={formatTokenCount(totals.input_tokens)} loading={loading} tone="blue" />
+        <TokenUsageMetric label={t('dashboard.tokenUsageOutput')} value={formatTokenCount(totals.output_tokens)} loading={loading} tone="green" />
+        <TokenUsageMetric label={t('dashboard.tokenUsageCacheRead')} value={formatTokenCount(totals.cache_read_input_tokens)} loading={loading} tone="cyan" />
+        <TokenUsageMetric label={t('dashboard.tokenUsageCacheWrite')} value={formatTokenCount(totals.cache_creation_input_tokens)} loading={loading} tone="amber" />
+        <TokenUsageMetric label={t('dashboard.tokenUsageRequests')} value={formatTokenCount(totals.request_count)} loading={loading} tone="violet" />
+        <TokenUsageCostMetric label={t('dashboard.tokenUsageCost')} value={formatTokenCosts(totals.costs)} loading={loading} />
       </div>
 
       {period !== 'day' && (
@@ -808,8 +784,8 @@ function TokenUsagePanel({
                     <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageOutput')}</th>
                     <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageCacheRead')}</th>
                     <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageCacheWrite')}</th>
-                    <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageTotal')}</th>
-                    <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageCost')}</th>
+                    <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageTotalTokens')}</th>
+                    <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageTotalCost')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -861,12 +837,11 @@ function TokenUsagePanel({
             </div>
           ) : hasEventRows && eventsPage ? (
             <div className={`h-64 overflow-auto ${eventsLoading ? 'opacity-60' : ''}`}>
-              <table className="w-full min-w-[1140px] text-left text-[13px]">
+              <table className="w-full min-w-[1060px] text-left text-[13px]">
                 <thead className="sticky top-0 bg-white text-slate-400">
                   <tr className="border-b border-slate-100">
                     <th className="px-2.5 py-1.5 font-semibold">{t('dashboard.tokenUsageTime')}</th>
                     <th className="px-2.5 py-1.5 font-semibold">{t('dashboard.tokenUsageUser')}</th>
-                    <th className="px-2.5 py-1.5 font-semibold">{t('dashboard.tokenUsageEndpoint')}</th>
                     <th className="px-2.5 py-1.5 font-semibold">{t('dashboard.tokenUsageModel')}</th>
                     <th className="px-2.5 py-1.5 font-semibold">{t('dashboard.tokenUsageSession')}</th>
                     <th className="px-2.5 py-1.5 font-semibold">{t('dashboard.tokenUsageTrace')}</th>
@@ -874,8 +849,8 @@ function TokenUsagePanel({
                     <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageOutput')}</th>
                     <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageCacheRead')}</th>
                     <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageCacheWrite')}</th>
-                    <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageTotal')}</th>
-                    <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageCost')}</th>
+                    <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageTotalTokens')}</th>
+                    <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageTotalCost')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -890,31 +865,6 @@ function TokenUsagePanel({
           )}
         </div>
       </div>
-    </div>
-  )
-}
-
-function TokenUsageMetric({ label, loading, tone, value }: {
-  label: string
-  loading: boolean
-  tone: 'amber' | 'blue' | 'cyan' | 'green' | 'slate' | 'violet'
-  value: number | string
-}) {
-  const toneClasses = {
-    amber: 'bg-amber-50 border-amber-200 text-amber-700',
-    blue: 'bg-blue-50 border-blue-200 text-blue-700',
-    cyan: 'bg-cyan-50 border-cyan-200 text-cyan-700',
-    green: 'bg-green-50 border-green-200 text-green-700',
-    slate: 'bg-slate-50 border-slate-200 text-[#0f172a]',
-    violet: 'bg-violet-50 border-violet-200 text-violet-700'
-  }[tone]
-
-  return (
-    <div className={`rounded-lg border px-2.5 py-2 ${toneClasses}`}>
-      <div className={`text-[13px] font-bold ${loading ? 'animate-pulse opacity-40' : ''}`}>
-        {loading ? '…' : typeof value === 'number' ? formatTokenCount(value) : value}
-      </div>
-      <div className="mt-0.5 text-[13px] opacity-70">{label}</div>
     </div>
   )
 }
@@ -1174,7 +1124,11 @@ function TokenUsageModelRow({ model }: { model: TokenUsageModelSummary }) {
       <td className="px-2.5 py-1.5 text-right text-slate-500">{formatTokenCount(model.cache_read_input_tokens)}</td>
       <td className="px-2.5 py-1.5 text-right text-slate-500">{formatTokenCount(model.cache_creation_input_tokens)}</td>
       <td className="px-2.5 py-1.5 text-right font-semibold text-[#0f172a]">{formatTokenCount(calcTokenTotal(model))}</td>
-      <td className="px-2.5 py-1.5 text-right font-semibold text-amber-700">{formatTokenCosts(model.costs)}</td>
+      <td className="px-2.5 py-1.5 text-right font-semibold text-amber-700">
+        <span className="inline-flex flex-col items-end leading-4">
+          <TokenUsageValueLines value={formatTokenCosts(model.costs)} />
+        </span>
+      </td>
     </tr>
   )
 }
@@ -1188,7 +1142,6 @@ function TokenUsageEventRow({ event }: { event: TokenUsageEventRecord }) {
       <td className="max-w-[140px] truncate px-2.5 py-1.5 text-slate-700" title={formatCellText(event.user_id)}>
         {formatCellText(event.user_id)}
       </td>
-      <td className="px-2.5 py-1.5 text-slate-500">{event.endpoint}</td>
       <td className="max-w-[180px] truncate px-2.5 py-1.5 text-slate-700" title={event.model}>
         {event.model}
       </td>
@@ -1206,7 +1159,9 @@ function TokenUsageEventRow({ event }: { event: TokenUsageEventRecord }) {
         {formatTokenCount(event.total_tokens)}
       </td>
       <td className="px-2.5 py-1.5 text-right font-semibold text-amber-700">
-        {formatTokenCost(event.cost)}
+        <span className="inline-flex flex-col items-end leading-4">
+          <TokenUsageValueLines value={formatTokenCost(event.cost)} />
+        </span>
       </td>
     </tr>
   )
