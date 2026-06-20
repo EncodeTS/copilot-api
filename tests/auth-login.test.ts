@@ -119,19 +119,20 @@ describe("auth login validation", () => {
 
     const promptCalls = JSON.parse(output) as Array<PromptCall>
     expect(promptCalls[2]).toMatchObject({
-      message: "Enter provider baseUrl (default: https://api.deepseek.com)",
+      message:
+        "Enter provider baseUrl (default: https://api.deepseek.com/anthropic)",
       options: {
-        default: "https://api.deepseek.com",
-        initial: "https://api.deepseek.com",
+        default: "https://api.deepseek.com/anthropic",
+        initial: "https://api.deepseek.com/anthropic",
         type: "text",
       },
     })
     expect(readConfigFile(tempDir).providers?.deepseek).toEqual({
       apiKey: "deepseek-key",
-      baseUrl: "https://api.deepseek.com",
+      baseUrl: "https://api.deepseek.com/anthropic",
       enabled: true,
       pricingCurrency: "CNY",
-      type: "openai-compatible",
+      type: "anthropic",
     })
   })
 
@@ -187,10 +188,10 @@ describe("auth login validation", () => {
     expect(maskedPromptOutput.writes).not.toContain("masked-key")
     expect(readConfigFile(tempDir).providers?.deepseek).toEqual({
       apiKey: "masked-key",
-      baseUrl: "https://api.deepseek.com",
+      baseUrl: "https://api.deepseek.com/anthropic",
       enabled: true,
       pricingCurrency: "CNY",
-      type: "openai-compatible",
+      type: "anthropic",
     })
   })
 

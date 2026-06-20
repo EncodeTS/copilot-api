@@ -9,44 +9,15 @@ import {
   type ProviderType,
 } from '../../src/lib/config'
 import { loginCodex } from '../../src/lib/oauth/codex'
+import { QUICK_PROVIDER_CONFIGS } from '../../src/lib/quick-providers'
 import { persistCodexCredentials } from '../../src/lib/token'
 import type {
   AuthResult,
   AuthStatus,
   DesktopAuthMode,
   ProviderAuthInput,
-  QuickProviderName,
 } from '../src/types/ipc'
 import { getGitHubUser, readToken } from './auth'
-
-const QUICK_PROVIDER_CONFIGS = {
-  deepseek: {
-    type: 'openai-compatible',
-    baseUrl: 'https://api.deepseek.com',
-    pricingCurrency: 'CNY',
-    editableType: true,
-  },
-  dashscope: {
-    type: 'openai-compatible',
-    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode',
-    pricingCurrency: 'CNY',
-    editableType: true,
-  },
-  openrouter: {
-    type: 'anthropic',
-    baseUrl: 'https://openrouter.ai/api',
-    pricingCurrency: 'USD',
-    editableType: false,
-  },
-} satisfies Record<
-  QuickProviderName,
-  {
-    type: ProviderType
-    baseUrl: string
-    pricingCurrency: string
-    editableType: boolean
-  }
->
 
 const CUSTOM_PROVIDER_AUTH_TYPES = ['x-api-key', 'authorization'] as const
 

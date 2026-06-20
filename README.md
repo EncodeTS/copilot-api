@@ -7,7 +7,7 @@ English | [简体中文](./README.zh-CN.md)
 > [!IMPORTANT]
 > **Before using, please be aware of the following:**
 >
-> 1. **Claude Code configuration:** When using with Claude Code, please configure the model ID as `claude-opus-4-6` or `claude-opus-4.6`. Example claude `settings.json` see [Manual Configuration with `settings.json`](#manual-configuration-with-settingsjson). 
+> 1. **Claude Code configuration:** When using with Claude Code, please configure the model ID as `claude-opus-4-8`. Example claude `settings.json` see [Manual Configuration with `settings.json`](#manual-configuration-with-settingsjson). 
 >
 > 2. **Built-in `copilot`, `codex` and third-party providers:** Run `npx @jeffreycao/copilot-api@latest auth` and choose `copilot`, `codex`, `deepseek`, `custom`, or other providers.
 >
@@ -180,7 +180,7 @@ The following command line options are available for the `start` command:
 
 Use `copilot-api auth login --provider copilot` only when you want to enable the GitHub Copilot provider. Copilot is not required for `codex` or third-party provider-only usage.
 
-Use `copilot-api auth login --provider deepseek`, `--provider dashscope`, or `--provider openrouter` to add or update those common third-party providers from the CLI. DeepSeek and DashScope prompt for masked `apiKey`, provider `type` (default `openai-compatible`), and `baseUrl` with the provider default prefilled. OpenRouter prompts for masked `apiKey` and prefilled `baseUrl` only, and writes `type: "anthropic"`. After a provider is configured and enabled, `copilot-api start` can run without any GitHub token.
+Use `copilot-api auth login --provider deepseek`, `--provider dashscope`, or `--provider openrouter` to add or update those common third-party providers from the CLI. DeepSeek prompts for masked `apiKey`, provider `type` (default `anthropic`), and `baseUrl` defaulting to `https://api.deepseek.com/anthropic`. DashScope prompts for masked `apiKey`, provider `type` (default `openai-compatible`), and prefilled `baseUrl`. OpenRouter prompts for masked `apiKey` and prefilled `baseUrl` only, and writes `type: "anthropic"`. After a provider is configured and enabled, `copilot-api start` can run without any GitHub token.
 
 Use `copilot-api auth login --provider custom` to add or update another third-party provider from the CLI. The command prompts for the provider name, supported type (`anthropic`, `openai-compatible`, or `openai-responses`), `baseUrl`, masked `apiKey`, and `authType`; `authType` may be left as the type default or set to `x-api-key` / `authorization`.
 
@@ -259,7 +259,7 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
         "apiKey": "sk-your-dashscope-key",
         "pricingCurrency": "CNY",
         "models": {
-          "qwen3.6-plus": {
+          "qwen3.7-plus": {
             "temperature": 1,
             "topP": 0.95,
             "topK": 20,
@@ -449,9 +449,9 @@ Here is an example `.claude/settings.json` file:
   "env": {
     "ANTHROPIC_BASE_URL": "http://localhost:4141",
     "ANTHROPIC_AUTH_TOKEN": "dummy",
-    "ANTHROPIC_MODEL": "gpt-5.4",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.4",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5-mini",
+    "ANTHROPIC_MODEL": "deepseek/deepseek-v4-pro",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek/deepseek-v4-pro",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek/deepseek-v4-flash",
     "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
@@ -539,23 +539,10 @@ Example `~/.config/opencode/opencode.json`:
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "local/gpt-5.4",
-  "small_model": "local/gpt-5-mini",
-  "agent": {
-    "build": {
-      "model": "local/gpt-5.4"
-    },
-    "plan": {
-      "model": "local/gpt-5.4"
-    },
-    "explore": {
-      "model": "local/gpt-5-mini"
-    }
-  },
   "provider": {
     "local": {
       "npm": "@ai-sdk/anthropic",
-      "name": "Copilot API Proxy",
+      "name": "My Local",
       "options": {
         "baseURL": "http://localhost:4141/v1",
         "apiKey": "dummy"
@@ -572,13 +559,6 @@ Example `~/.config/opencode/opencode.json`:
             "output": 128000
           }
         },
-        "gpt-5-mini": {
-          "name": "gpt-5-mini",
-          "limit": {
-            "context": 200000,
-            "output": 64000
-          }
-        },
         "claude-sonnet-4.6": {
           "id": "claude-sonnet-4.6",
           "name": "claude-sonnet-4.6",
@@ -592,9 +572,9 @@ Example `~/.config/opencode/opencode.json`:
           },
           "options": {
             "thinking": {
-              "type": "enabled",
-              "budgetTokens": 31999
-            }
+              "type": "adaptive"
+            },
+            "effort": "max"
           }
         }
       }

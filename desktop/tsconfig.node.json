@@ -16,6 +16,7 @@
     "../src/lib/oauth/**/*.ts",
     "../src/lib/opencode.ts",
     "../src/lib/paths.ts",
+    "../src/lib/quick-providers.ts",
     "../src/lib/request-auth.ts",
     "../src/lib/request-context.ts",
     "../src/lib/state.ts",

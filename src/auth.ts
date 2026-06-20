@@ -15,6 +15,10 @@ import {
 } from "./lib/config"
 import { loginCodex } from "./lib/oauth/codex"
 import { PATHS, ensurePaths } from "./lib/paths"
+import {
+  QUICK_PROVIDER_CONFIGS,
+  type QuickProviderName,
+} from "./lib/quick-providers"
 import { state } from "./lib/state"
 import { persistCodexCredentials, setupGitHubToken } from "./lib/token"
 
@@ -44,37 +48,9 @@ const authArgs = {
 } as const
 
 const BUILTIN_PROVIDER_NAMES = ["copilot", "codex"] as const
-const QUICK_PROVIDER_CONFIGS = {
-  deepseek: {
-    type: "openai-compatible",
-    baseUrl: "https://api.deepseek.com",
-    pricingCurrency: "CNY",
-    editableType: true,
-  },
-  dashscope: {
-    type: "openai-compatible",
-    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode",
-    pricingCurrency: "CNY",
-    editableType: true,
-  },
-  openrouter: {
-    type: "anthropic",
-    baseUrl: "https://openrouter.ai/api",
-    pricingCurrency: "USD",
-    editableType: false,
-  },
-} satisfies Record<
-  string,
-  {
-    type: ProviderType
-    baseUrl: string
-    pricingCurrency: string
-    editableType: boolean
-  }
->
-const QUICK_PROVIDER_NAMES = Object.keys(QUICK_PROVIDER_CONFIGS) as Array<
-  keyof typeof QUICK_PROVIDER_CONFIGS
->
+const QUICK_PROVIDER_NAMES = Object.keys(
+  QUICK_PROVIDER_CONFIGS,
+) as Array<QuickProviderName>
 const AUTH_PROVIDER_NAMES = [
   ...BUILTIN_PROVIDER_NAMES,
   ...QUICK_PROVIDER_NAMES,
@@ -85,7 +61,6 @@ const QUICK_PROVIDER_DEFAULT_TYPE_OPTION = "__default__"
 const CUSTOM_PROVIDER_AUTH_TYPES = ["x-api-key", "authorization"] as const
 
 type BuiltinProviderName = (typeof BUILTIN_PROVIDER_NAMES)[number]
-type QuickProviderName = (typeof QUICK_PROVIDER_NAMES)[number]
 type AuthProviderName = (typeof AUTH_PROVIDER_NAMES)[number]
 type CustomProviderAuthType = (typeof CUSTOM_PROVIDER_AUTH_TYPES)[number]
 
