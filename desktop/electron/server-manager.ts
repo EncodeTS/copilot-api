@@ -7,6 +7,7 @@ import { StringDecoder } from 'node:string_decoder'
 import type { DesktopProxySettings, ServerStatus } from '../src/types/ipc'
 import { applyDesktopProxySettingsToEnv } from './electron-proxy-config'
 import { tMain } from './i18n'
+import { buildServerStartArgs } from './server-start-args'
 
 let serverProcess: UtilityProcess | null = null
 let currentPort = 4141
@@ -155,7 +156,7 @@ function getServerPath(): string {
 
 export async function startServer(
   port: number,
-  token: string,
+  token: string | null,
   serverOptions?: {
     verbose?: boolean
     showToken?: boolean
@@ -188,7 +189,7 @@ export async function startServer(
     : false
 
   const serverPath = getServerPath()
-  const args = ['start', '--github-token', token, '--port', String(port)]
+  const args = buildServerStartArgs(port, token)
   if (proxyEnabled) args.push('--proxy-env')
   if (serverOptions?.verbose) args.push('--verbose')
   if (serverOptions?.showToken) args.push('--show-token')

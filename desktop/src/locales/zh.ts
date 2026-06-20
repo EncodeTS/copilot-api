@@ -2,12 +2,25 @@ import type { Locale } from './index'
 
 const zh: Locale = {
   auth: {
-    subtitle: '连接你的 GitHub Copilot',
+    subtitle: '选择 Provider 授权或配置',
     githubAuth: '使用 GitHub 授权',
+    codexAuth: '使用 OpenAI Codex 授权',
+    customProvider: '自定义 Provider',
     loading: '请稍候…',
     manualToken: '手动填写 Token',
+    providerApiKey: 'API Key',
+    providerAuthType: '认证类型',
+    providerAuthTypeDefault: '默认',
+    providerBaseUrl: 'Base URL',
+    providerDashscope: 'DashScope',
+    providerDeepseek: 'DeepSeek',
+    providerInvalid: 'Provider 配置无效，请重试',
+    providerName: 'Provider 名称',
+    providerOpenrouter: 'OpenRouter',
+    providerType: 'Provider 类型',
     deviceCode: '授权码',
     deviceCodeUrl: '授权地址',
+    codexCallbackRequired: '授权未完成，可重试或返回重新开始',
     copy: '复制',
     copied: '✓ 已复制',
     openAuthPage: '打开授权页面',
@@ -17,6 +30,7 @@ const zh: Locale = {
     confirmAdd: '确认添加',
     authFailed: '授权失败，请重试',
     tokenInvalid: 'Token 无效，请重试',
+    waitingCodexAuth: '等待 Codex 授权中…',
     loginConsent: '登录即代表授权访问 Copilot API',
   },
   dashboard: {
@@ -81,6 +95,7 @@ const zh: Locale = {
     settings: '设置',
     appSettings: '应用设置',
     advancedConfig: '高级配置',
+    changeAuth: '更换授权 / Provider',
   },
   tray: {
     showWindow: '显示窗口',
@@ -88,6 +103,7 @@ const zh: Locale = {
   },
   server: {
     tokenNotFound: '未找到 token',
+    authRequired: '未找到可用授权，请先配置 GitHub token 或至少一个 Provider',
     portInUse: '端口 {{port}} 已被占用，请更换其他端口',
     startFailed: '服务进程启动失败（退出码 {{code}}），可参考下方服务日志排查',
     startTimeout: '服务启动超时，端口 {{port}} 可能已被占用',

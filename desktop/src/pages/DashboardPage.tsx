@@ -4,6 +4,7 @@ import Header from '../components/Header'
 import { useLanguage } from '../contexts/LanguageContext'
 import AdvancedConfigPage from './AdvancedConfigPage'
 import type {
+  DesktopAuthMode,
   ServerAuthInfo,
   TokenUsageDailySummary,
   TokenUsageEventRecord,
@@ -15,9 +16,9 @@ import type {
 } from '../types/ipc'
 
 interface DashboardPageProps {
-  username: string
+  authMode: DesktopAuthMode
   defaultPort: number
-  onLogout: () => void
+  onChangeAuth: () => void
 }
 
 interface QuotaDetail {
@@ -111,7 +112,7 @@ function formatCellText(value: string | null | undefined): string {
   return text ? text : '—'
 }
 
-export default function DashboardPage({ username, defaultPort, onLogout }: DashboardPageProps) {
+export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: DashboardPageProps) {
   const { t } = useLanguage()
   const [started, setStarted] = useState(false)
   const [view, setView] = useState<DashboardView>('main')
@@ -208,7 +209,7 @@ export default function DashboardPage({ username, defaultPort, onLogout }: Dashb
     setServerError('')
     setLogs([])
     try {
-      const status = await window.electronAPI.startServer(portNum)
+      const status = await window.electronAPI.startServer(portNum, authMode)
       if (status.running) {
         setStarted(true)
       } else {
@@ -240,10 +241,10 @@ export default function DashboardPage({ username, defaultPort, onLogout }: Dashb
     setServerError('')
   }
 
-  const handleLogout = async () => {
+  const handleChangeAuth = async () => {
     intentionalStop.current = true
     if (started) await window.electronAPI.stopServer()
-    onLogout()
+    onChangeAuth()
   }
 
   const fetchData = async () => {
@@ -367,8 +368,7 @@ export default function DashboardPage({ username, defaultPort, onLogout }: Dashb
   return (
     <div className="flex flex-col h-screen bg-white">
       <Header
-        username={username}
-        onLogout={handleLogout}
+        onChangeAuth={handleChangeAuth}
         onStop={handleStop}
         isRunning={started && !stopping}
         onOpenAdvancedConfig={() => setView('advancedConfig')}

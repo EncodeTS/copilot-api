@@ -3,39 +3,32 @@ import SettingsModal from './SettingsModal'
 import { useLanguage } from '../contexts/LanguageContext'
 
 interface HeaderProps {
-  username?: string
-  onLogout?: () => void
+  onChangeAuth?: () => void
   onStop?: () => void
   isRunning?: boolean
   onOpenAdvancedConfig?: () => void
 }
 
-export default function Header({ username, onLogout, onStop, isRunning, onOpenAdvancedConfig }: HeaderProps) {
+export default function Header({ onChangeAuth, onStop, isRunning, onOpenAdvancedConfig }: HeaderProps) {
   const { t } = useLanguage()
   const [showSettings, setShowSettings] = useState(false)
   const [showSettingsMenu, setShowSettingsMenu] = useState(false)
-  const [showLogout, setShowLogout] = useState(false)
-  const logoutRef = useRef<HTMLDivElement>(null)
   const settingsMenuRef = useRef<HTMLDivElement>(null)
+  const showServerStatus = Boolean(onStop || onOpenAdvancedConfig)
 
   useEffect(() => {
-    if (!showLogout && !showSettingsMenu) return
+    if (!showSettingsMenu) return
     const handleOutside = (e: MouseEvent) => {
-      if (logoutRef.current && !logoutRef.current.contains(e.target as Node)) {
-        setShowLogout(false)
-      }
       if (settingsMenuRef.current && !settingsMenuRef.current.contains(e.target as Node)) {
         setShowSettingsMenu(false)
       }
     }
     document.addEventListener('mousedown', handleOutside)
     return () => document.removeEventListener('mousedown', handleOutside)
-  }, [showLogout, showSettingsMenu])
+  }, [showSettingsMenu])
 
   const handleSettingsAction = () => {
-    setShowLogout(false)
-
-    if (onOpenAdvancedConfig) {
+    if (onOpenAdvancedConfig || onChangeAuth) {
       setShowSettingsMenu(v => !v)
       return
     }
@@ -74,51 +67,12 @@ export default function Header({ username, onLogout, onStop, isRunning, onOpenAd
               <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
               <span className="text-[13px] font-semibold text-green-700">{t('header.running')}</span>
             </div>
-          ) : username ? (
+          ) : showServerStatus ? (
             <div className="flex items-center gap-1.5 bg-yellow-50 border border-yellow-200 rounded-full px-2.5 py-1">
               <div className="w-1.5 h-1.5 rounded-full bg-yellow-500" />
               <span className="text-[13px] font-semibold text-yellow-700">{t('header.notStarted')}</span>
             </div>
           ) : null}
-
-          {username && (
-            <div className="relative" ref={logoutRef}>
-              <button
-                onClick={() => {
-                  setShowSettingsMenu(false)
-                  setShowLogout(v => !v)
-                }}
-                className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors ${
-                  showLogout ? 'bg-blue-600' : 'bg-blue-500 hover:bg-blue-600'
-                }`}
-              >
-                <span className="text-white text-[13px] font-bold">{username[0]?.toUpperCase()}</span>
-              </button>
-              {showLogout && (
-                <div className="absolute right-0 top-full mt-1.5 bg-white border border-gray-200 rounded-xl shadow-lg z-10 min-w-[140px] overflow-hidden">
-                  <div className="px-3 py-2.5 border-b border-gray-100">
-                    <div className="flex items-center gap-2">
-                      <div className="w-7 h-7 bg-blue-500 rounded-full flex items-center justify-center shrink-0">
-                        <span className="text-white text-[13px] font-bold">{username[0]?.toUpperCase()}</span>
-                      </div>
-                      <span className="text-[13px] font-semibold text-[#0f172a] truncate max-w-[90px]">{username}</span>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => { setShowLogout(false); onLogout?.() }}
-                    className="flex items-center gap-2 w-full px-3 py-2.5 text-[13px] text-red-600 hover:bg-red-50 transition-colors text-left"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-                      <polyline points="16 17 21 12 16 7"/>
-                      <line x1="21" y1="12" x2="9" y2="12"/>
-                    </svg>
-                    {t('header.logout')}
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
 
           <div className="relative" ref={settingsMenuRef}>
             <button
@@ -132,7 +86,7 @@ export default function Header({ username, onLogout, onStop, isRunning, onOpenAd
               </svg>
             </button>
 
-            {showSettingsMenu && onOpenAdvancedConfig && (
+            {showSettingsMenu && (onOpenAdvancedConfig || onChangeAuth) && (
               <div className="absolute right-0 top-full mt-1.5 bg-white border border-gray-200 rounded-xl shadow-lg z-10 min-w-[170px] overflow-hidden">
                 <button
                   onClick={() => {
@@ -143,15 +97,28 @@ export default function Header({ username, onLogout, onStop, isRunning, onOpenAd
                 >
                   {t('header.appSettings')}
                 </button>
-                <button
-                  onClick={() => {
-                    setShowSettingsMenu(false)
-                    onOpenAdvancedConfig()
-                  }}
-                  className="flex items-center gap-2 w-full px-3 py-2.5 text-[13px] text-slate-700 hover:bg-slate-50 transition-colors text-left border-t border-slate-100"
-                >
-                  {t('header.advancedConfig')}
-                </button>
+                {onOpenAdvancedConfig && (
+                  <button
+                    onClick={() => {
+                      setShowSettingsMenu(false)
+                      onOpenAdvancedConfig()
+                    }}
+                    className="flex items-center gap-2 w-full px-3 py-2.5 text-[13px] text-slate-700 hover:bg-slate-50 transition-colors text-left border-t border-slate-100"
+                  >
+                    {t('header.advancedConfig')}
+                  </button>
+                )}
+                {onChangeAuth && (
+                  <button
+                    onClick={() => {
+                      setShowSettingsMenu(false)
+                      onChangeAuth()
+                    }}
+                    className="flex items-center gap-2 w-full px-3 py-2.5 text-[13px] text-slate-700 hover:bg-slate-50 transition-colors text-left border-t border-slate-100"
+                  >
+                    {t('header.changeAuth')}
+                  </button>
+                )}
               </div>
             )}
           </div>
