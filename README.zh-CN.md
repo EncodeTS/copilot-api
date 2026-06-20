@@ -234,7 +234,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
 - **auth.adminApiKey：** 仅用于 `/admin/*` 路由的单个 admin key。若未配置，服务会在启动时自动生成一个随机 key，并回写到 `config.json`。它同样使用 `x-api-key` 或 `Authorization: Bearer` 这两种头，但普通 `auth.apiKeys` 不能访问 `/admin/*`。
 - **modelMappings：** 用于顶层 `POST /v1/messages`、`POST /v1/messages/count_tokens`、`POST /v1/responses` 和 `POST /v1/chat/completions` 请求的精确 `sourceModel -> targetModel` 重写映射，这几类接口共用同一份规则。省略该字段或保留为 `{}` 时，不会做模型重写。`source` 和 `target` 都必须是非空字符串。`target` 可以是普通模型 ID，也可以是 `provider/model` 形式的别名，例如 `dashscope/qwen3.6-plus`；重写发生在 provider alias 解析之前。这些映射不再按接口区分。`GET/POST /admin/config/model-mappings` 管理接口读写的也只有这个字段。
 - **extraPrompts：** `model -> prompt` 的映射。把 Anthropic 风格请求翻译给 Copilot 时，会将其附加到第一条 system prompt 后面。你可以借此为不同模型注入护栏或指引。缺失的默认项会自动补齐，但不会覆盖你自定义的 prompt。内置的 `gpt-5.3-codex` 和 `gpt-5.4` prompt 会启用带阶段感知的 commentary，让模型在工具调用或更深层推理前先发出简短的用户可见进度说明。
-- **providers：** 全局上游 provider 映射。每个 provider key（例如 `dashscope`）都会变成一个路由前缀（`/dashscope/v1/messages`）。支持 `type: "anthropic"`、`type: "openai-compatible"` 和 `type: "openai-responses"`。顶层客户端也可以在 `/v1/messages`、`/v1/messages/count_tokens`、`/v1/responses` 和 `/v1/chat/completions` 中使用 `model: "dashscope/model-id"`；AI gateway 会在转发上游前移除 `dashscope/` 前缀。`openai-compatible` provider 同时支持 chat 和 Messages 流程：`/v1/chat/completions` 会直连上游 `/v1/chat/completions`，而 `/v1/messages` 和 `/:provider/v1/messages` 会先翻译为上游 Chat Completions，再把响应翻译回 Anthropic Messages。`GET /v1/models` 不聚合 provider 模型；provider 模型列表请使用 `GET /dashscope/v1/models`。
+- **providers：** 全局上游 provider 映射。每个 provider key（例如 `dashscope`）都会变成一个路由前缀（`/dashscope/v1/messages`）。支持 `type: "anthropic"`、`type: "openai-compatible"` 和 `type: "openai-responses"`。顶层客户端也可以在 `/v1/messages`、`/v1/messages/count_tokens`、`/v1/responses` 和 `/v1/chat/completions` 中使用 `model: "dashscope/model-id"`；AI gateway 会在转发上游前移除 `dashscope/` 前缀。`openai-compatible` provider 同时支持 chat 和 Messages 流程：`/v1/chat/completions` 会直连上游 `/v1/chat/completions`，而 `/v1/messages` 和 `/:provider/v1/messages` 会先翻译为上游 Chat Completions，再把响应翻译回 Anthropic Messages。`GET /v1/models` 会聚合已启用 provider 的模型，并以 `provider/model-id` 形式返回；单个 provider 的原始模型列表仍可使用 `GET /dashscope/v1/models`。
   - `enabled`：可选，若省略则默认为 `true`。
   - `baseUrl`：provider API 的基础 URL，不要带结尾的 endpoint。Anthropic provider 不要带 `/v1/messages`；OpenAI 兼容 provider 不要带 `/v1/chat/completions`；OpenAI Responses provider 不要带 `/v1/responses`。
   - `apiKey`：作为上游凭据值使用；普通 provider 必须配置。
@@ -352,7 +352,7 @@ curl http://localhost:4141/admin/config/model-mappings \
 | --- | --- | --- |
 | `POST /v1/responses` | `POST` | OpenAI 中用于生成模型响应的高级接口。支持 `openai-responses` provider 的 `provider/model` 别名。 |
 | `POST /v1/chat/completions` | `POST` | 为给定聊天对话创建模型响应。支持 `openai-compatible` provider 的 `provider/model` 别名；目标 provider 已配置时可在没有 Copilot 的情况下使用。 |
-| `GET /v1/models` | `GET` | 列出当前可用模型。 |
+| `GET /v1/models` | `GET` | 列出 Copilot 模型以及已启用 provider 的 `provider/model-id` 模型。 |
 | `POST /v1/embeddings` | `POST` | 创建表示输入文本的向量嵌入。 |
 
 ### Anthropic 兼容端点
