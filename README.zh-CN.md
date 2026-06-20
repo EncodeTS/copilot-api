@@ -532,7 +532,8 @@ OpenCode 已经有直接的 GitHub Copilot provider。本节适用于你希望�
 使用 OpenCode OAuth app 启动 AI gateway：
 
 ```sh
-npx @jeffreycao/copilot-api@latest --oauth-app=opencode start
+npx @jeffreycao/copilot-api@latest auth --oauth-app=opencode
+npx @jeffreycao/copilot-api@latest start
 ```
 
 然后让 OpenCode 通过 `@ai-sdk/anthropic` 指向这个 AI gateway。
