@@ -7,6 +7,9 @@ import { PATHS } from "./paths"
 import { registerProcessCleanup } from "./process-cleanup"
 import { requestContext } from "./request-context"
 import { state } from "./state"
+import { redactLogString, redactPayloadForDebug } from "./log-redaction"
+
+export { redactLogString, redactPayloadForDebug } from "./log-redaction"
 
 const LOG_RETENTION_DAYS = 7
 const LOG_RETENTION_MS = LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000
@@ -183,15 +186,22 @@ export const debugLazy = (
     return
   }
 
-  logger.debug(...factory())
+  logger.debug(
+    ...(factory().map(redactDebugArg) as [unknown, ...Array<unknown>]),
+  )
 }
+
+const redactDebugArg = (value: unknown): unknown =>
+  typeof value === "string" ?
+    redactLogString(value)
+  : redactPayloadForDebug(value)
 
 export const debugJson = (
   logger: DebugLogger,
   label: string,
   value: unknown,
 ): void => {
-  debugLazy(logger, () => [label, JSON.stringify(value)])
+  debugLazy(logger, () => [label, JSON.stringify(redactPayloadForDebug(value))])
 }
 
 export const debugJsonAsync = async (
@@ -203,7 +213,7 @@ export const debugJsonAsync = async (
     return
   }
 
-  logger.debug(label, JSON.stringify(await factory()))
+  debugJson(logger, label, await factory())
 }
 
 export const debugJsonTail = (
@@ -211,7 +221,12 @@ export const debugJsonTail = (
   label: string,
   { value, tailLength = 400 }: { value: unknown; tailLength?: number },
 ): void => {
-  debugLazy(logger, () => [label, JSON.stringify(value).slice(-tailLength)])
+  debugLazy(logger, () => [
+    label,
+    redactLogString(JSON.stringify(redactPayloadForDebug(value))).slice(
+      -tailLength,
+    ),
+  ])
 }
 
 export const createHandlerLogger = (name: string): ConsolaInstance => {
