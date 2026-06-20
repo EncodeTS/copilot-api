@@ -75,6 +75,8 @@ export interface Locale {
     tokenUsageSource: string
     tokenUsageTime: string
     tokenUsageTotal: string
+    tokenUsageTotalCost: string
+    tokenUsageTotalTokens: string
     tokenUsageTrend: string
     tokenUsageTrace: string
     tokenUsageUser: string

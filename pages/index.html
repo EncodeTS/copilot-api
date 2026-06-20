@@ -511,7 +511,9 @@
               ? currency.trim().toUpperCase()
               : "";
           const symbol = symbols[normalizedCurrency] || "";
-          return `${normalizedCurrency} ${symbol}${Number(amount).toFixed(6)}`;
+          return symbol
+            ? `${symbol}${Number(amount).toFixed(6)}`
+            : `${normalizedCurrency} ${Number(amount).toFixed(6)}`;
         }
 
         function getCostAmount(cost) {
@@ -533,9 +535,9 @@
 
         function formatTokenUsageCosts(costs) {
           if (!Array.isArray(costs) || costs.length === 0) {
-            return "—";
+            return ["—"];
           }
-          return costs.map((cost) => formatTokenUsageCost(cost)).join(" / ");
+          return costs.map((cost) => formatTokenUsageCost(cost));
         }
 
         function formatDateTime(value) {
@@ -811,18 +813,13 @@
                   : ""
               }
 
-              <div class="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-3 ${
+              <div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 ${
                 state.isTokenUsageLoading ? "opacity-60" : ""
               }">
                 ${renderTokenUsageMetric(
                   "Total",
                   totals.total_tokens,
                   "var(--color-fg-lightest)"
-                )}
-                ${renderTokenUsageMetric(
-                  "Cost",
-                  formatTokenUsageCosts(totals.costs),
-                  "var(--color-yellow-accent)"
                 )}
                 ${renderTokenUsageMetric(
                   "Input",
@@ -848,6 +845,11 @@
                   "Requests",
                   totals.request_count,
                   "var(--color-purple-accent)"
+                )}
+                ${renderTokenUsageCostMetric(
+                  "Cost",
+                  formatTokenUsageCosts(totals.costs),
+                  "var(--color-yellow-accent)"
                 )}
               </div>
 
@@ -1218,14 +1220,34 @@
           `;
         }
 
+        function renderTokenUsageValueLines(value) {
+          const lines = Array.isArray(value) ? value : [value];
+          return lines
+            .map((line) => `<span class="block whitespace-nowrap">${escapeHtml(line)}</span>`)
+            .join("");
+        }
+
         function renderTokenUsageMetric(label, value, accentColor) {
           return `
             <div class="p-4 border" style="background-color: var(--color-bg); border-color: var(--color-bg-light-2);">
-              <div class="text-lg font-bold" style="color: ${accentColor};">${escapeHtml(
+              <div class="text-lg leading-6 font-bold" style="color: ${accentColor};">${renderTokenUsageValueLines(
                 typeof value === "number" ? formatNumber(value) : value
               )}</div>
               <div class="mt-1 text-xs uppercase tracking-wide" style="color: var(--color-gray-accent);">${escapeHtml(
                 label
+              )}</div>
+            </div>
+          `;
+        }
+
+        function renderTokenUsageCostMetric(label, value, accentColor) {
+          return `
+            <div class="p-4 min-h-[90px] border" style="background-color: var(--color-bg); border-color: var(--color-bg-light-2);">
+              <div class="text-xs uppercase tracking-wide" style="color: var(--color-gray-accent);">${escapeHtml(
+                label
+              )}</div>
+              <div class="mt-2 min-h-[3rem] text-lg leading-6 font-bold" style="color: ${accentColor};">${renderTokenUsageValueLines(
+                value
               )}</div>
             </div>
           `;
@@ -1263,9 +1285,11 @@
                   <td class="px-4 py-2 text-right font-semibold" style="color: var(--color-yellow-accent);">${formatNumber(
                     model.total_tokens
                   )}</td>
-                  <td class="px-4 py-2 text-right font-semibold" style="color: var(--color-yellow-accent);">${escapeHtml(
-                    formatTokenUsageCosts(model.costs)
-                  )}</td>
+                  <td class="px-4 py-2 text-right font-semibold" style="color: var(--color-yellow-accent);">
+                    <span class="inline-flex flex-col items-end leading-5">${renderTokenUsageValueLines(
+                      formatTokenUsageCosts(model.costs)
+                    )}</span>
+                  </td>
                 </tr>
               `;
             })
@@ -1340,9 +1364,11 @@
                   <td class="px-4 py-2 text-right font-semibold" style="color: var(--color-yellow-accent);">${formatNumber(
                     event.total_tokens
                   )}</td>
-                  <td class="px-4 py-2 text-right font-semibold" style="color: var(--color-yellow-accent);">${escapeHtml(
-                    formatTokenUsageCost(event.cost)
-                  )}</td>
+                  <td class="px-4 py-2 text-right font-semibold" style="color: var(--color-yellow-accent);">
+                    <span class="inline-flex flex-col items-end leading-5">${renderTokenUsageValueLines(
+                      formatTokenUsageCost(event.cost)
+                    )}</span>
+                  </td>
                 </tr>
               `;
             })

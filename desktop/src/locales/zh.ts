@@ -74,6 +74,8 @@ const zh: Locale = {
     tokenUsageSource: '来源',
     tokenUsageTime: '时间',
     tokenUsageTotal: '总计',
+    tokenUsageTotalCost: 'Total Cost',
+    tokenUsageTotalTokens: 'Total Tokens',
     tokenUsageTrend: '按天趋势',
     tokenUsageTrace: 'Trace',
     tokenUsageUser: '用户',

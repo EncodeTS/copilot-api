@@ -74,6 +74,8 @@ const en: Locale = {
     tokenUsageSource: 'Source',
     tokenUsageTime: 'Time',
     tokenUsageTotal: 'Total',
+    tokenUsageTotalCost: 'Total Cost',
+    tokenUsageTotalTokens: 'Total Tokens',
     tokenUsageTrend: 'Daily trend',
     tokenUsageTrace: 'Trace',
     tokenUsageUser: 'User',
