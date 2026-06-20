@@ -7,7 +7,7 @@ import type {
   ResponsesStream,
 } from "~/services/copilot/create-responses"
 
-import { debugJson } from "~/lib/logger"
+import { debugJsonTail } from "~/lib/logger"
 
 interface ResponsesStreamCollection {
   outputItemsByIndex: Map<number, ResponsesResult["output"][number]>
@@ -55,7 +55,10 @@ const collectResponsesStreamChunk = ({
   parseEvent: (data: string) => ResponseStreamEvent | null
   state: ResponsesStreamCollection
 }): ResponsesResult | undefined => {
-  debugJson(logger, "Received responses stream chunk:", chunk)
+  debugJsonTail(logger, "Received responses stream chunk:", {
+    value: chunk.data,
+    tailLength: 1_000,
+  })
   if (chunk.event === "ping" || !chunk.data || chunk.data === "[DONE]") {
     return
   }

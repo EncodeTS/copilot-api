@@ -52,6 +52,7 @@ import {
   getResponsesRequestOptions,
   getResponsesTransportForModel,
 } from "../../responses/utils"
+import { createOptimizedCopilotResponses } from "../../responses/optimized-create"
 import {
   buildResponsesWebSearchTool,
   extractWebSearchResult,
@@ -378,16 +379,23 @@ export const handleWebSearchViaResponses = async (
     responsesPayload,
   )
 
-  const upstreamResult = await webSearchFlowDependencies.createResponses(
+  const upstreamResult = await createOptimizedCopilotResponses(
     responsesPayload,
     {
-      vision,
-      initiator,
-      transport,
-      subagentMarker: options.subagentMarker,
-      requestId: options.requestId,
-      sessionId: options.sessionId,
-      compactType: options.compactType,
+      createResponses: webSearchFlowDependencies.createResponses,
+      logger,
+      maxPromptImageSize:
+        selectedModel?.capabilities?.limits.vision?.max_prompt_image_size,
+      requestOptions: {
+        vision,
+        initiator,
+        transport,
+        subagentMarker: options.subagentMarker,
+        requestId: options.requestId,
+        sessionId: options.sessionId,
+        compactType: options.compactType,
+      },
+      selectedModel,
     },
   )
 
