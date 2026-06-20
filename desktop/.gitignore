@@ -2,6 +2,8 @@ node_modules/
 out/
 release/
 release-unsigned/
+build/server-node_modules/
+build/server-node_modules.manifest.json
 *.tsbuildinfo
 .DS_Store
 electron.vite.config.*.mjs
