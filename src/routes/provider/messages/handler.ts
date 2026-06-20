@@ -33,7 +33,12 @@ import {
   isDashScopeAliyunProvider,
 } from "~/lib/dashscope"
 import { HTTPError } from "~/lib/error"
-import { createHandlerLogger, debugJson, debugLazy } from "~/lib/logger"
+import {
+  createHandlerLogger,
+  debugJson,
+  debugJsonTail,
+  debugLazy,
+} from "~/lib/logger"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
 import { resolveBridgeToolSearchName } from "~/lib/tool-search"
 import {
@@ -652,7 +657,10 @@ const streamProviderMessages = ({
     let usage: UsageTokens = {}
 
     for await (const chunk of events(upstreamResponse)) {
-      logger.debug("provider.messages.raw_stream_event:", chunk.data)
+      debugJsonTail(logger, "provider.messages.raw_stream_event:", {
+        value: chunk.data,
+        tailLength: 1_000,
+      })
       const eventName = chunk.event
       if (eventName === "ping") {
         await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
@@ -719,9 +727,13 @@ const streamOpenAICompatibleProviderMessages = ({
 
     try {
       for await (const chunk of events(upstreamResponse)) {
-        logger.debug(
+        debugJsonTail(
+          logger,
           "provider.messages.openai_compatible.raw_stream_event:",
-          chunk.data,
+          {
+            value: chunk.data,
+            tailLength: 1_000,
+          },
         )
         const eventName = chunk.event
         if (eventName === "ping") {
@@ -833,10 +845,10 @@ const streamResponsesProviderMessages = ({
 
     try {
       for await (const chunk of upstreamResponse) {
-        logger.debug(
-          "provider.messages.responses.raw_stream_event:",
-          chunk.data,
-        )
+        debugJsonTail(logger, "provider.messages.responses.raw_stream_event:", {
+          value: chunk.data,
+          tailLength: 1_000,
+        })
         const eventName = chunk.event
         if (eventName === "ping") {
           await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
