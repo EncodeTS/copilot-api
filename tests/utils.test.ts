@@ -57,6 +57,82 @@ test("prints randomUUID and deterministic UUID for comparison", () => {
   expect(random).not.toBe(derived)
 })
 
+test("generateRequestIdFromPayload ignores raw media fields when deriving stable IDs", async () => {
+  const { state } = await import("../src/lib/state")
+  const { generateRequestIdFromPayload } = await import("../src/lib/utils")
+  const originalMachineId = state.macMachineId
+
+  state.macMachineId = "machine-1"
+  try {
+    const first = generateRequestIdFromPayload(
+      {
+        messages: [
+          {
+            content: [
+              { text: "compare this screenshot", type: "text" },
+              {
+                source: {
+                  data: "first-secret-base64",
+                  media_type: "image/png",
+                  type: "base64",
+                },
+                type: "image",
+              },
+              {
+                image_url: {
+                  url: "data:image/png;base64,AAAA",
+                },
+                type: "image_url",
+              },
+              {
+                file_id: "file_first_secret",
+                type: "input_file",
+              },
+            ],
+            role: "user",
+          },
+        ],
+      },
+      "session-1",
+    )
+    const second = generateRequestIdFromPayload(
+      {
+        messages: [
+          {
+            content: [
+              { text: "compare this screenshot", type: "text" },
+              {
+                source: {
+                  data: "second-secret-base64",
+                  media_type: "image/png",
+                  type: "base64",
+                },
+                type: "image",
+              },
+              {
+                image_url: {
+                  url: "data:image/png;base64,BBBB",
+                },
+                type: "image_url",
+              },
+              {
+                file_id: "file_second_secret",
+                type: "input_file",
+              },
+            ],
+            role: "user",
+          },
+        ],
+      },
+      "session-1",
+    )
+
+    expect(second).toBe(first)
+  } finally {
+    state.macMachineId = originalMachineId
+  }
+})
+
 test("getRootSessionId supports JSON-like user_id metadata", () => {
   const anthropicPayload = {
     model: "claude-3-5-sonnet",
