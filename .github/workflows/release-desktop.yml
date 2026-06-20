@@ -17,18 +17,23 @@ permissions:
   contents: write
 
 # Everything (macOS arm64 + x64 dmg, Windows x64 exe) is built and published by
-# CI. macOS builds run natively on the Apple Silicon runner; the x64 dmg is
-# cross-packaged from the same runner. All assets use the friendly naming
-# convention Copilot-API-<tag>-<arch>.<ext> with matching .blockmap / .sha256.txt.
+# CI. macOS builds run on architecture-matched runners so native runtime
+# dependencies such as sharp are installed for the same architecture that will
+# ship in the app. All assets use the friendly naming convention
+# Copilot-API-<tag>-<arch>.<ext> with matching .blockmap / .sha256.txt.
 jobs:
   # ─── macOS (arm64 + x64) ─────────────────────────────────────────────────
   build-mac:
     name: Build macOS (${{ matrix.arch }})
-    runs-on: macos-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        arch: [arm64, x64]
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: x64
+            runner: macos-15-intel
     steps:
       - uses: actions/checkout@v4
         with:
