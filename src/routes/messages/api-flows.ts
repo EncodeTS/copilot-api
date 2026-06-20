@@ -35,6 +35,7 @@ import {
   getResponsesTransportForModel,
   getResponsesRequestOptions,
 } from "~/routes/responses/utils"
+import { createOptimizedCopilotResponses } from "~/routes/responses/optimized-create"
 import {
   createChatCompletions as createCopilotChatCompletions,
   type ChatCompletionChunk,
@@ -240,15 +241,19 @@ export const handleWithResponsesApi = async (
     getResponsesTransportForModel(selectedModel, {
       compactType: requestOptions.compactType,
     }) ?? "http"
-  const response = await messagesApiFlowDependencies.createResponses(
-    responsesPayload,
-    {
+  const response = await createOptimizedCopilotResponses(responsesPayload, {
+    createResponses: messagesApiFlowDependencies.createResponses,
+    logger,
+    maxPromptImageSize:
+      selectedModel?.capabilities?.limits.vision?.max_prompt_image_size,
+    requestOptions: {
       vision,
       initiator,
       transport,
       ...requestOptions,
     },
-  )
+    selectedModel,
+  })
 
   if (responsesPayload.stream && isAsyncIterable(response)) {
     logger.debug("Streaming response from Copilot (Responses API)")

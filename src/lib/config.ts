@@ -32,6 +32,27 @@ export interface AppConfig {
   messageApiWebSearchModel?: string
   claudeTokenMultiplier?: number
   parityFirst?: boolean
+  responsesImageOptimization?: boolean
+  responsesPayloadBudgetBytes?: number
+  responsesPayloadRetryBudgetBytes?: number
+  responsesPayloadSendHardLimitBytes?: number
+  responsesImageNearBudgetRatio?: number
+  responsesImagePreserveLatestUserGroup?: boolean
+  responsesImageCompression?: boolean
+  responsesImageCompressionFormat?: "jpeg" | "webp" | "auto"
+  responsesImageCompressionConcurrency?: number
+  responsesImageCompressionCacheEntries?: number
+  responsesImageCompressionCacheBytes?: number
+  responsesImageCompressionTimeoutMs?: number
+  responsesImageCompressionMaxActionsPerRequest?: number
+  responsesImageDecodeMaxPixels?: number
+  responsesImageDecodeMaxLongEdge?: number
+  responsesImageDecodeMaxFrames?: number
+  responsesImageDecodeMaxBytesEstimate?: number
+  responsesImageAllowReplacingLatestOnHardLimit?: boolean
+  responsesImageAllowReplacingLatestOnRetry?: boolean
+  responsesImageAllowNormalReplacement?: boolean
+  responsesImageRetryRequiresHttp?: boolean
 }
 
 export interface ContextManagementConfig {
@@ -167,6 +188,30 @@ const defaultContextManagement = {
   responses: false,
 } satisfies Required<ContextManagementConfig>
 
+const responsesImageConfigDefaults = {
+  responsesImageOptimization: true,
+  responsesPayloadBudgetBytes: 4_980_736,
+  responsesPayloadRetryBudgetBytes: 4_718_592,
+  responsesPayloadSendHardLimitBytes: 5_226_496,
+  responsesImageNearBudgetRatio: 0.92,
+  responsesImagePreserveLatestUserGroup: true,
+  responsesImageCompression: true,
+  responsesImageCompressionFormat: "jpeg" as const,
+  responsesImageCompressionConcurrency: 8,
+  responsesImageCompressionCacheEntries: 128,
+  responsesImageCompressionCacheBytes: 268_435_456,
+  responsesImageCompressionTimeoutMs: 2000,
+  responsesImageCompressionMaxActionsPerRequest: 64,
+  responsesImageDecodeMaxPixels: 67_108_864,
+  responsesImageDecodeMaxLongEdge: 16_384,
+  responsesImageDecodeMaxFrames: 1,
+  responsesImageDecodeMaxBytesEstimate: 268_435_456,
+  responsesImageAllowReplacingLatestOnHardLimit: true,
+  responsesImageAllowReplacingLatestOnRetry: false,
+  responsesImageAllowNormalReplacement: false,
+  responsesImageRetryRequiresHttp: true,
+}
+
 const defaultConfig: AppConfig = {
   auth: {
     apiKeys: [],
@@ -187,9 +232,11 @@ const defaultConfig: AppConfig = {
   useResponsesApiWebSearch: true,
   messageApiWebSearchModel: "gpt-5-mini",
   parityFirst: true,
+  ...responsesImageConfigDefaults,
 }
 
 let cachedConfig: AppConfig | null = null
+const warnedInvalidConfigKeys = new Set<string>()
 
 function normalizeAdminApiKey(adminApiKey: unknown): string | null {
   if (typeof adminApiKey !== "string") {
@@ -321,6 +368,11 @@ function mergeDefaultConfig(config: AppConfig): {
     missingResponsesApiCompactThresholdModels.length > 0
   const hasContextManagementChanges = missingContextManagementKeys.length > 0
   const hasParityFirstChange = config.parityFirst === undefined
+  const missingResponsesImageConfigKeys = Object.keys(
+    responsesImageConfigDefaults,
+  ).filter((key) => !Object.hasOwn(config, key))
+  const hasResponsesImageConfigChanges =
+    missingResponsesImageConfigKeys.length > 0
 
   if (
     !hasExtraPromptChanges
@@ -328,6 +380,7 @@ function mergeDefaultConfig(config: AppConfig): {
     && !hasResponsesApiCompactThresholdChanges
     && !hasContextManagementChanges
     && !hasParityFirstChange
+    && !hasResponsesImageConfigChanges
   ) {
     return { mergedConfig: config, changed: false }
   }
@@ -352,6 +405,12 @@ function mergeDefaultConfig(config: AppConfig): {
         ...modelReasoningEfforts,
       },
       parityFirst: config.parityFirst ?? defaultConfig.parityFirst,
+      ...Object.fromEntries(
+        Object.entries(responsesImageConfigDefaults).map(([key, value]) => [
+          key,
+          (config as Record<string, unknown>)[key] ?? value,
+        ]),
+      ),
     },
     changed: true,
   }
@@ -752,6 +811,265 @@ export function isMessagesApiEnabled(): boolean {
 export function isResponsesApiWebSocketEnabled(): boolean {
   const config = getConfig()
   return config.useResponsesApiWebSocket ?? true
+}
+
+export function isResponsesImageOptimizationEnabled(): boolean {
+  return getBooleanConfig(
+    "responsesImageOptimization",
+    responsesImageConfigDefaults.responsesImageOptimization,
+  )
+}
+
+export function getResponsesPayloadBudgetBytes(): number {
+  const hardLimit = getResponsesPayloadSendHardLimitBytes()
+  const budget = getIntegerConfig(
+    "responsesPayloadBudgetBytes",
+    responsesImageConfigDefaults.responsesPayloadBudgetBytes,
+    { min: 1_048_576 },
+  )
+
+  if (budget > hardLimit) {
+    warnInvalidConfigOnce(
+      "responsesPayloadBudgetBytes:ordering",
+      "Invalid responsesPayloadBudgetBytes config. Expected it to be <= responsesPayloadSendHardLimitBytes, using default.",
+    )
+    return Math.min(
+      responsesImageConfigDefaults.responsesPayloadBudgetBytes,
+      hardLimit,
+    )
+  }
+
+  return budget
+}
+
+export function getResponsesPayloadRetryBudgetBytes(): number {
+  const budget = getResponsesPayloadBudgetBytes()
+  const retryBudget = getIntegerConfig(
+    "responsesPayloadRetryBudgetBytes",
+    responsesImageConfigDefaults.responsesPayloadRetryBudgetBytes,
+    { min: 1_048_576 },
+  )
+
+  if (retryBudget > budget) {
+    warnInvalidConfigOnce(
+      "responsesPayloadRetryBudgetBytes:ordering",
+      "Invalid responsesPayloadRetryBudgetBytes config. Expected it to be <= responsesPayloadBudgetBytes, using default.",
+    )
+    return Math.min(
+      responsesImageConfigDefaults.responsesPayloadRetryBudgetBytes,
+      budget,
+    )
+  }
+
+  return retryBudget
+}
+
+export function getResponsesPayloadSendHardLimitBytes(): number {
+  return getIntegerConfig(
+    "responsesPayloadSendHardLimitBytes",
+    responsesImageConfigDefaults.responsesPayloadSendHardLimitBytes,
+    { min: 1_048_576 },
+  )
+}
+
+export function getResponsesImageNearBudgetRatio(): number {
+  return getNumberConfig(
+    "responsesImageNearBudgetRatio",
+    responsesImageConfigDefaults.responsesImageNearBudgetRatio,
+    { max: 1, min: 0.01 },
+  )
+}
+
+export function shouldPreserveLatestUserImageGroup(): boolean {
+  return getBooleanConfig(
+    "responsesImagePreserveLatestUserGroup",
+    responsesImageConfigDefaults.responsesImagePreserveLatestUserGroup,
+  )
+}
+
+export function isResponsesImageCompressionEnabled(): boolean {
+  return getBooleanConfig(
+    "responsesImageCompression",
+    responsesImageConfigDefaults.responsesImageCompression,
+  )
+}
+
+export function getResponsesImageCompressionFormat(): "jpeg" | "webp" | "auto" {
+  const value = getConfig().responsesImageCompressionFormat
+  if (value === "jpeg" || value === "webp" || value === "auto") {
+    return value
+  }
+
+  if (value !== undefined) {
+    warnInvalidConfigOnce(
+      "responsesImageCompressionFormat",
+      "Invalid responsesImageCompressionFormat config. Expected jpeg, webp, or auto; using default.",
+    )
+  }
+
+  return responsesImageConfigDefaults.responsesImageCompressionFormat
+}
+
+export function getResponsesImageCompressionConcurrency(): number {
+  return getIntegerConfig(
+    "responsesImageCompressionConcurrency",
+    responsesImageConfigDefaults.responsesImageCompressionConcurrency,
+    { max: 8, min: 1 },
+  )
+}
+
+export function getResponsesImageCompressionCacheEntries(): number {
+  return getIntegerConfig(
+    "responsesImageCompressionCacheEntries",
+    responsesImageConfigDefaults.responsesImageCompressionCacheEntries,
+    { min: 0 },
+  )
+}
+
+export function getResponsesImageCompressionCacheBytes(): number {
+  return getIntegerConfig(
+    "responsesImageCompressionCacheBytes",
+    responsesImageConfigDefaults.responsesImageCompressionCacheBytes,
+    { min: 0 },
+  )
+}
+
+export function getResponsesImageCompressionTimeoutMs(): number {
+  return getIntegerConfig(
+    "responsesImageCompressionTimeoutMs",
+    responsesImageConfigDefaults.responsesImageCompressionTimeoutMs,
+    { min: 1 },
+  )
+}
+
+export function getResponsesImageCompressionMaxActionsPerRequest(): number {
+  return getIntegerConfig(
+    "responsesImageCompressionMaxActionsPerRequest",
+    responsesImageConfigDefaults.responsesImageCompressionMaxActionsPerRequest,
+    { min: 1 },
+  )
+}
+
+export function getResponsesImageDecodeSafetyLimits(): {
+  maxBytesEstimate: number
+  maxFrames: number
+  maxLongEdge: number
+  maxPixels: number
+} {
+  return {
+    maxBytesEstimate: getIntegerConfig(
+      "responsesImageDecodeMaxBytesEstimate",
+      responsesImageConfigDefaults.responsesImageDecodeMaxBytesEstimate,
+      { min: 1 },
+    ),
+    maxFrames: getIntegerConfig(
+      "responsesImageDecodeMaxFrames",
+      responsesImageConfigDefaults.responsesImageDecodeMaxFrames,
+      { min: 1 },
+    ),
+    maxLongEdge: getIntegerConfig(
+      "responsesImageDecodeMaxLongEdge",
+      responsesImageConfigDefaults.responsesImageDecodeMaxLongEdge,
+      { min: 1 },
+    ),
+    maxPixels: getIntegerConfig(
+      "responsesImageDecodeMaxPixels",
+      responsesImageConfigDefaults.responsesImageDecodeMaxPixels,
+      { min: 1 },
+    ),
+  }
+}
+
+export function isResponsesImageLatestReplacementAllowedOnRetry(): boolean {
+  return getBooleanConfig(
+    "responsesImageAllowReplacingLatestOnRetry",
+    responsesImageConfigDefaults.responsesImageAllowReplacingLatestOnRetry,
+  )
+}
+
+export function isResponsesImageLatestReplacementAllowedOnHardLimit(): boolean {
+  return getBooleanConfig(
+    "responsesImageAllowReplacingLatestOnHardLimit",
+    responsesImageConfigDefaults.responsesImageAllowReplacingLatestOnHardLimit,
+  )
+}
+
+export function isResponsesImageNormalReplacementAllowed(): boolean {
+  return getBooleanConfig(
+    "responsesImageAllowNormalReplacement",
+    responsesImageConfigDefaults.responsesImageAllowNormalReplacement,
+  )
+}
+
+export function shouldResponsesImageRetryRequireHttp(): boolean {
+  return getBooleanConfig(
+    "responsesImageRetryRequiresHttp",
+    responsesImageConfigDefaults.responsesImageRetryRequiresHttp,
+  )
+}
+
+function getBooleanConfig(key: keyof AppConfig, fallback: boolean): boolean {
+  const value = getConfig()[key]
+  if (value === undefined) {
+    return fallback
+  }
+  if (typeof value === "boolean") {
+    return value
+  }
+
+  warnInvalidConfigOnce(
+    key,
+    `Invalid ${key} config. Expected a boolean, using default.`,
+  )
+  return fallback
+}
+
+function getIntegerConfig(
+  key: keyof AppConfig,
+  fallback: number,
+  options: { max?: number; min?: number } = {},
+): number {
+  const value = getNumberConfig(key, fallback, options)
+  return Math.floor(value)
+}
+
+function getNumberConfig(
+  key: keyof AppConfig,
+  fallback: number,
+  { max, min }: { max?: number; min?: number } = {},
+): number {
+  const value = getConfig()[key]
+  if (value === undefined) {
+    return fallback
+  }
+  if (
+    typeof value === "number"
+    && Number.isFinite(value)
+    && (min === undefined || value >= min)
+    && (max === undefined || value <= max)
+  ) {
+    return value
+  }
+
+  const range =
+    min !== undefined && max !== undefined ? ` between ${min} and ${max}`
+    : min !== undefined ? ` >= ${min}`
+    : max !== undefined ? ` <= ${max}`
+    : ""
+  warnInvalidConfigOnce(
+    key,
+    `Invalid ${key} config. Expected a finite number${range}, using default.`,
+  )
+  return fallback
+}
+
+function warnInvalidConfigOnce(key: string, message: string): void {
+  if (warnedInvalidConfigKeys.has(key)) {
+    return
+  }
+
+  warnedInvalidConfigKeys.add(key)
+  consola.warn(message)
 }
 
 export function getAnthropicApiKey(): string | undefined {

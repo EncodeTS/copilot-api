@@ -41,6 +41,7 @@ const { responsesUtilsDependencies } = await import(
 const { generateRequestIdFromPayload, getUUID } = await import(
   "../src/lib/utils"
 )
+const { HTTPError } = await import("../src/lib/error")
 
 const defaultResponsesHandlerDependencies = {
   ...responsesHandlerDependencies,
@@ -734,7 +735,83 @@ describe("responses handler token usage", () => {
     }
   })
 
-  test("omits oversized input images before forwarding to Copilot Responses", async () => {
+  test("omits oversized older input images before forwarding to Copilot Responses", async () => {
+    state.models = {
+      object: "list",
+      data: [
+        {
+          capabilities: {
+            limits: {
+              max_prompt_tokens: 128000,
+              vision: {
+                max_prompt_image_size: 8,
+              },
+            },
+          },
+          id: "gpt-test",
+          supported_endpoints: ["/responses"],
+        },
+      ],
+    } as typeof state.models
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        input: [
+          {
+            content: [
+              { text: "old", type: "input_text" },
+              {
+                image_url: `data:image/png;base64,${"A".repeat(16)}`,
+                type: "input_image",
+              },
+            ],
+            role: "user",
+          },
+          {
+            content: [
+              { text: "latest", type: "input_text" },
+              {
+                detail: "low",
+                image_url: `data:image/png;base64,${"B".repeat(4)}`,
+                type: "input_image",
+              },
+            ],
+            role: "user",
+          },
+        ],
+        model: "gpt-test",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(1)
+    const content = (
+      createResponses.mock.calls[0][0].input as Array<{
+        content: Array<{
+          detail?: string
+          image_url?: string
+          text?: string
+          type: string
+        }>
+      }>
+    )[0].content
+    const image = content[1]
+    expect(image.type).toBe("input_image")
+    expect(image.detail).toBe("low")
+    expect(image.image_url?.startsWith("data:image/png;base64,")).toBe(true)
+    expect(image.text).toBeUndefined()
+    expect(JSON.stringify(content)).toContain("Local proxy omitted")
+  })
+
+  test("fails closed when only the latest visual input exceeds image limits", async () => {
     state.models = {
       object: "list",
       data: [
@@ -779,22 +856,14 @@ describe("responses handler token usage", () => {
       method: "POST",
     })
 
-    expect(response.status).toBe(200)
-    expect(createResponses).toHaveBeenCalledTimes(1)
-    const image = (
-      createResponses.mock.calls[0][0].input as Array<{
-        content: Array<{
-          detail?: string
-          image_url?: string
-          text?: string
-          type: string
-        }>
-      }>
-    )[0].content[1]
-    expect(image.type).toBe("input_image")
-    expect(image.detail).toBe("low")
-    expect(image.image_url?.startsWith("data:image/png;base64,")).toBe(true)
-    expect(image.text).toBeUndefined()
+    expect(response.status).toBe(413)
+    expect(createResponses).not.toHaveBeenCalled()
+    expect(await response.json()).toMatchObject({
+      error: {
+        code: "responses_payload_too_large",
+        type: "payload_too_large",
+      },
+    })
   })
 
   test("preserves multiple input images before forwarding to Copilot Responses", async () => {
@@ -864,6 +933,82 @@ describe("responses handler token usage", () => {
         role: "user",
       },
     ])
+  })
+
+  test("retries HTTP responses once after upstream payload-too-large", async () => {
+    state.models = {
+      object: "list",
+      data: [
+        {
+          capabilities: {
+            limits: {
+              max_prompt_tokens: 128000,
+              vision: {
+                max_prompt_image_size: 8,
+              },
+            },
+          },
+          id: "gpt-test",
+          supported_endpoints: ["/responses"],
+        },
+      ],
+    } as typeof state.models
+    createResponses
+      .mockImplementationOnce(() =>
+        Promise.reject(
+          new HTTPError(
+            "Failed to create responses",
+            new Response("payload too large", { status: 413 }),
+          ),
+        ),
+      )
+      .mockImplementationOnce((payload) =>
+        Promise.resolve(createResponsesResult(payload.model)),
+      )
+
+    const olderImageUrl = `data:image/png;base64,${"A".repeat(32)}`
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        input: [
+          {
+            content: [
+              { text: "old", type: "input_text" },
+              {
+                detail: "high",
+                image_url: olderImageUrl,
+                type: "input_image",
+              },
+            ],
+            role: "user",
+          },
+          {
+            content: [
+              { text: "latest", type: "input_text" },
+              {
+                detail: "low",
+                image_url: `data:image/png;base64,${"B".repeat(4)}`,
+                type: "input_image",
+              },
+            ],
+            role: "user",
+          },
+        ],
+        model: "gpt-test",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(2)
+    expect(createResponses.mock.calls[0][1]?.transport).toBe("http")
+    expect(createResponses.mock.calls[1][1]?.transport).toBe("http")
+    expect(JSON.stringify(createResponses.mock.calls[1][0])).not.toContain(
+      olderImageUrl,
+    )
   })
 
   test("records usage from failed streaming responses and falls back to interaction id", async () => {
