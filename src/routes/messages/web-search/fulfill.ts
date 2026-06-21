@@ -38,8 +38,10 @@ import {
 } from "~/services/copilot/create-responses"
 
 import type {
+  AnthropicContentBlockStartEvent,
   AnthropicMessagesPayload,
   AnthropicResponse,
+  AnthropicStreamEventData,
   AnthropicTextBlock,
   AnthropicTool,
   AnthropicWebSearchContentBlock,
@@ -160,11 +162,6 @@ export const extractWebSearchConfig = (
   }
 }
 
-export interface ReconstructedWebSearchResponse
-  extends Omit<AnthropicResponse, "content"> {
-  content: Array<AnthropicTextBlock | AnthropicWebSearchContentBlock>
-}
-
 const buildWebSearchResultBlock = (
   toolUseId: string,
   extract: WebSearchExtract,
@@ -241,10 +238,14 @@ export const reconstructWebSearchResponse = (
   options: { requestId: string },
 ): {
   extract: WebSearchExtract
-  response: ReconstructedWebSearchResponse
+  response: AnthropicResponse<
+    AnthropicTextBlock | AnthropicWebSearchContentBlock
+  >
 } => {
   const extract = extractWebSearchResult(result)
-  const response: ReconstructedWebSearchResponse = {
+  const response: AnthropicResponse<
+    AnthropicTextBlock | AnthropicWebSearchContentBlock
+  > = {
     id: result.id || getUUID(options.requestId),
     type: "message",
     role: "assistant",
@@ -258,7 +259,7 @@ export const reconstructWebSearchResponse = (
       server_tool_use: {
         web_search_requests: Math.max(extract.queries.length, 1),
       },
-    } as AnthropicResponse["usage"],
+    },
   }
 
   return { extract, response }
@@ -293,7 +294,7 @@ export const collectWebSearchResponsesStreamResult = async ({
   const state = createWebSearchResponsesStreamCollection()
 
   for await (const chunk of upstreamResponse) {
-    debugJson(logger, "Received web search responses stream chunk:", chunk.data)
+    debugJson(logger, "Received web search responses stream chunk:", chunk)
     if (chunk.event === "ping") {
       continue
     }
@@ -733,21 +734,21 @@ export const handleWebSearchViaResponses = async (
 
 // --- Synthetic SSE replay -------------------------------------------------
 
-interface SyntheticEvent {
-  type: string
-  [key: string]: unknown
-}
-
 const blockToStreamEvents = (
   block: AnthropicTextBlock | AnthropicWebSearchContentBlock,
   index: number,
-): Array<SyntheticEvent> => {
-  const start = (contentBlock: unknown): SyntheticEvent => ({
+): Array<AnthropicStreamEventData> => {
+  const start = (
+    contentBlock: AnthropicContentBlockStartEvent["content_block"],
+  ): AnthropicContentBlockStartEvent => ({
     type: "content_block_start",
     index,
     content_block: contentBlock,
   })
-  const stop: SyntheticEvent = { type: "content_block_stop", index }
+  const stop: AnthropicStreamEventData = {
+    type: "content_block_stop",
+    index,
+  }
 
   switch (block.type) {
     case "text": {
@@ -791,9 +792,11 @@ const blockToStreamEvents = (
 }
 
 export const buildSyntheticStreamEvents = (
-  response: ReconstructedWebSearchResponse,
-): Array<SyntheticEvent> => {
-  const events: Array<SyntheticEvent> = []
+  response: AnthropicResponse<
+    AnthropicTextBlock | AnthropicWebSearchContentBlock
+  >,
+): Array<AnthropicStreamEventData> => {
+  const events: Array<AnthropicStreamEventData> = []
 
   events.push({
     type: "message_start",
