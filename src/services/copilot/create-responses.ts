@@ -791,8 +791,8 @@ const createResponsesWebSocketStreamChunk = (
       parsed.message = parsed.error.message
     }
     return {
-      data: JSON.stringify(parsed),
       event: typeof parsed.type === "string" ? parsed.type : undefined,
+      data: JSON.stringify(parsed),
       id: typeof parsed.id === "string" ? parsed.id : undefined,
     }
   } catch {
@@ -830,8 +830,8 @@ const createResponsesErrorServerSentEventChunk = (
   }
 
   return {
-    data: JSON.stringify(errorEvent),
     event: errorEvent.type,
+    data: JSON.stringify(errorEvent),
   }
 }
 
