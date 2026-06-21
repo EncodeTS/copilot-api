@@ -266,12 +266,7 @@ async function* makeResponsesStream(result: ResponsesResult) {
   yield {
     event: "response.output_item.done",
     data: JSON.stringify({
-      item: {
-        id: "msg-1",
-        role: "assistant",
-        status: "completed",
-        type: "message",
-      },
+      item: result.output[1],
       output_index: 1,
       sequence_number: 16,
       type: "response.output_item.done",

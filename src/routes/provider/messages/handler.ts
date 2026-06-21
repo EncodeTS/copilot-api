@@ -220,18 +220,7 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
   },
 ): Promise<Response> => {
   const { modelConfig, payload, provider, providerConfig } = options
-  const selectedModel =
-    providerConfig.name === "codex" ?
-      getCodexModels().data.find((model) => model.id === payload.model)
-    : undefined
   const responsesPayload = prepareWebSearchResponsesPayload(payload)
-  responsesPayload.stream = true
-
-  applyResponsesApiContextManagement(
-    responsesPayload,
-    selectedModel?.capabilities.limits.max_prompt_tokens,
-  )
-  compactInputByLatestCompaction(responsesPayload)
 
   debugJson(logger, "provider.messages.responses.web_search.request", {
     payload: responsesPayload,
@@ -1098,8 +1087,11 @@ const respondWebSearchProviderMessagesJson = (
   const { extract, response } = reconstructWebSearchResponse(payload, body, {
     requestId: body.id || `${provider}:${payload.model}`,
   })
-  logger.debug(
-    `provider.messages.responses.web_search: ${extract.queries.length} quer(y/ies), ${extract.sources.length} source(s)`,
+
+  debugJson(
+    logger,
+    `Web search via responses: ${extract.queries.length} quer(y/ies), ${extract.sources.length} source(s)`,
+    body,
   )
 
   if (!payload.stream) {
@@ -1108,9 +1100,11 @@ const respondWebSearchProviderMessagesJson = (
 
   return streamSSE(c, async (stream) => {
     for (const event of buildSyntheticStreamEvents(response)) {
+      const data = JSON.stringify(event)
+      logger.debug(`Web search stream event`, data)
       await stream.writeSSE({
         event: event.type,
-        data: JSON.stringify(event),
+        data: data,
       })
     }
   })

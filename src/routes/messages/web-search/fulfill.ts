@@ -47,9 +47,8 @@ import type {
   AnthropicWebSearchContentBlock,
   AnthropicWebSearchResultItem,
 } from "../anthropic-types"
-import { getCompactType, normalizeSystemMessages } from "../preprocess"
+import { normalizeSystemMessages } from "../preprocess"
 import { translateAnthropicMessagesToResponsesPayload } from "../responses-translation"
-import { parseSubagentMarkerFromFirstUser } from "../subagent-marker"
 import {
   getResponsesRequestOptions,
   getResponsesTransportForModel,
@@ -229,6 +228,10 @@ export const prepareWebSearchResponsesPayload = (
   )
   responsesPayload.tools = [buildResponsesWebSearchTool(config)]
   responsesPayload.tool_choice = undefined
+  responsesPayload.reasoning = {
+    effort: "medium",
+    summary: "auto",
+  }
   return responsesPayload
 }
 
@@ -265,19 +268,8 @@ export const reconstructWebSearchResponse = (
   return { extract, response }
 }
 
-interface CollectedOutputTextPart {
-  annotations: Array<unknown>
-  contentIndex: number
-  itemId?: string
-  outputIndex: number
-  text: string
-}
-
 interface WebSearchResponsesStreamCollection {
-  createdResponse?: ResponsesResult
   outputItemsByIndex: Map<number, ResponsesResult["output"][number]>
-  terminalResponse?: ResponsesResult
-  textPartsByKey: Map<string, CollectedOutputTextPart>
 }
 
 export const collectWebSearchResponsesStreamResult = async ({
@@ -308,16 +300,15 @@ export const collectWebSearchResponsesStreamResult = async ({
       continue
     }
 
-    collectResponsesStreamEvent(parsed, state)
-
     if (parsed.type === "error") {
       throw new Error(
         getStreamErrorMessage(parsed) ?? `${errorMessagePrefix} failed`,
       )
     }
 
-    if (isResponsesTerminalEvent(parsed)) {
-      return buildWebSearchResponsesStreamResult(state)
+    const result = collectResponsesStreamEvent(parsed, state)
+    if (result) {
+      return result
     }
   }
 
@@ -343,232 +334,43 @@ const isWebSearchResponsesStream = (
   )
 }
 
-const isResponsesTerminalEvent = (
-  event: ResponseStreamEvent,
-): event is ResponseStreamEvent & {
-  response: ResponsesResult
-  type: "response.completed" | "response.failed" | "response.incomplete"
-} =>
-  event.type === "response.completed"
-  || event.type === "response.failed"
-  || event.type === "response.incomplete"
-
 const createWebSearchResponsesStreamCollection =
   (): WebSearchResponsesStreamCollection => ({
     outputItemsByIndex: new Map(),
-    textPartsByKey: new Map(),
   })
 
 const collectResponsesStreamEvent = (
   event: ResponseStreamEvent,
   state: WebSearchResponsesStreamCollection,
-): void => {
+): ResponsesResult | undefined => {
   switch (event.type) {
-    case "response.created":
-      state.createdResponse = event.response
-      break
     case "response.completed":
     case "response.failed":
-    case "response.incomplete":
-      if (isResponsesTerminalEvent(event)) {
-        event.response.copilot_usage ??= event.copilot_usage as CopilotUsage
-        state.terminalResponse = event.response
+    case "response.incomplete": {
+      event.response.copilot_usage ??= event.copilot_usage as CopilotUsage
+      const response = event.response
+      if (!response) {
+        throw new Error("Web search responses stream ended without a response")
       }
-      break
-    case "response.output_item.added":
+      const output = [...state.outputItemsByIndex.entries()]
+        .sort(([leftIndex], [rightIndex]) => leftIndex - rightIndex)
+        .map(([, item]) => item)
+      return {
+        ...response,
+        output: output.length > 0 ? output : response.output,
+      }
+    }
     case "response.output_item.done":
       state.outputItemsByIndex.set(event.output_index, event.item)
       break
-    case "response.output_text.delta": {
-      const part = getOrCreateOutputTextPart(event, state)
-      if (part && event.delta) {
-        part.text += event.delta
-      }
-      break
-    }
-    case "response.output_text.done": {
-      const part = getOrCreateOutputTextPart(event, state)
-      if (part) {
-        part.text = event.text
-      }
-      break
-    }
-    case "response.output_text.annotation.added": {
-      const part = getOrCreateOutputTextPart(event, state)
-      const annotation = event.annotation
-      if (part && annotation !== undefined) {
-        part.annotations.push(annotation)
-      }
-      break
-    }
-    case "response.content_part.done":
-      collectDoneContentPart(event, state)
-      break
-    case "response.in_progress":
-    case "response.content_part.added":
-    case "response.web_search_call.in_progress":
-    case "response.web_search_call.searching":
-    case "response.web_search_call.completed":
-    case "response.reasoning_summary_part.added":
-    case "response.reasoning_summary_part.done":
-    case "response.reasoning_summary_text.delta":
-    case "response.reasoning_summary_text.done":
-      // Progress/reasoning events are intentionally ignored here; output_item,
-      // output_text/content_part.done, annotations, and terminal response are
-      // enough to rebuild the web_search result.
-      break
   }
 }
-
-const buildWebSearchResponsesStreamResult = (
-  state: WebSearchResponsesStreamCollection,
-): ResponsesResult => {
-  const response = state.terminalResponse ?? state.createdResponse
-  if (!response) {
-    throw new Error("Web search responses stream ended without a response")
-  }
-
-  const output = buildCollectedWebSearchOutput(state)
-  return {
-    ...response,
-    output: output.length > 0 ? output : response.output,
-  }
-}
-
-const buildCollectedWebSearchOutput = (
-  state: WebSearchResponsesStreamCollection,
-): ResponsesResult["output"] =>
-  [...state.outputItemsByIndex.entries()]
-    .sort(([leftIndex], [rightIndex]) => leftIndex - rightIndex)
-    .map(([outputIndex, item]) =>
-      mergeOutputItemWithCollectedText(outputIndex, item, state),
-    )
-
-const mergeOutputItemWithCollectedText = (
-  outputIndex: number,
-  item: ResponsesResult["output"][number],
-  state: WebSearchResponsesStreamCollection,
-): ResponsesResult["output"][number] => {
-  if (item.type !== "message") {
-    return item
-  }
-
-  const collectedParts = getCollectedTextParts(outputIndex, state)
-  if (collectedParts.length === 0) {
-    return item
-  }
-
-  const content = item.content ? [...item.content] : []
-  for (const part of collectedParts) {
-    const existingPart = getRecord(content[part.contentIndex])
-    content[part.contentIndex] = {
-      ...existingPart,
-      type: "output_text",
-      text: part.text,
-      annotations: mergeAnnotations(
-        existingPart?.annotations,
-        part.annotations,
-      ),
-    }
-  }
-
-  return {
-    ...item,
-    content,
-  }
-}
-
-const collectDoneContentPart = (
-  event: Extract<ResponseStreamEvent, { type: "response.content_part.done" }>,
-  state: WebSearchResponsesStreamCollection,
-): void => {
-  const partRecord = getRecord(event.part)
-  if (partRecord?.type !== "output_text") {
-    return
-  }
-
-  const part = getOrCreateOutputTextPart(event, state)
-  if (!part) {
-    return
-  }
-
-  const text = getString(partRecord.text)
-  if (text !== undefined) {
-    part.text = text
-  }
-
-  const annotations = getArray(partRecord.annotations)
-  if (annotations.length > 0) {
-    part.annotations.push(...annotations)
-  }
-}
-
-const getOrCreateOutputTextPart = (
-  event: Extract<
-    ResponseStreamEvent,
-    { content_index: number; output_index: number }
-  >,
-  state: WebSearchResponsesStreamCollection,
-): CollectedOutputTextPart | undefined => {
-  const outputIndex = event.output_index
-  const contentIndex = event.content_index
-  if (outputIndex === undefined || contentIndex === undefined) {
-    return undefined
-  }
-
-  const key = `${outputIndex}:${contentIndex}`
-  let part = state.textPartsByKey.get(key)
-  if (!part) {
-    part = {
-      annotations: [],
-      contentIndex,
-      itemId: getString(event.item_id),
-      outputIndex,
-      text: "",
-    }
-    state.textPartsByKey.set(key, part)
-  }
-
-  return part
-}
-
-const getCollectedTextParts = (
-  outputIndex: number,
-  state: WebSearchResponsesStreamCollection,
-): Array<CollectedOutputTextPart> =>
-  [...state.textPartsByKey.values()]
-    .filter((part) => part.outputIndex === outputIndex)
-    .sort(
-      (left, right) =>
-        left.contentIndex - right.contentIndex
-        || (left.itemId ?? "").localeCompare(right.itemId ?? ""),
-    )
-
-const mergeAnnotations = (
-  existingAnnotations: unknown,
-  collectedAnnotations: Array<unknown>,
-): Array<unknown> => {
-  const annotations = getArray(existingAnnotations)
-  annotations.push(...collectedAnnotations)
-  return annotations
-}
-
-const getRecord = (value: unknown): Record<string, unknown> | undefined =>
-  value && typeof value === "object" ?
-    (value as Record<string, unknown>)
-  : undefined
-
-const getArray = (value: unknown): Array<unknown> =>
-  Array.isArray(value) ? Array.from(value as Array<unknown>) : []
 
 const getStreamErrorMessage = (
   event: Extract<ResponseStreamEvent, { type: "error" }>,
 ): string | undefined => {
   return event.error?.message ?? event.message ?? undefined
 }
-
-const getString = (value: unknown): string | undefined =>
-  typeof value === "string" ? value : undefined
 
 const createUsageRecorder = (
   payload: AnthropicMessagesPayload,
@@ -617,19 +419,17 @@ export const tryHandleWebSearch = async (
   }
 
   if (route.kind === "responses") {
-    const subagentMarker = parseSubagentMarkerFromFirstUser(payload)
     let sessionId = getRootSessionId(payload, c)
     const requestId = generateRequestIdFromPayload(payload, sessionId)
     if (!sessionId) {
       sessionId = getUUID(requestId)
     }
-    const compactType = getCompactType(payload)
     return await handleWebSearchViaResponses(c, payload, {
-      subagentMarker,
+      subagentMarker: null,
       webSearchModel: route.model,
       requestId,
       sessionId,
-      compactType,
+      compactType: 0,
       logger: options.logger,
     })
   }
@@ -724,15 +524,15 @@ export const handleWebSearchViaResponses = async (
 
   return streamSSE(c, async (stream) => {
     for (const event of buildSyntheticStreamEvents(response)) {
+      const data = JSON.stringify(event)
+      logger.debug(`Web search stream event`, data)
       await stream.writeSSE({
         event: event.type,
-        data: JSON.stringify(event),
+        data: data,
       })
     }
   })
 }
-
-// --- Synthetic SSE replay -------------------------------------------------
 
 const blockToStreamEvents = (
   block: AnthropicTextBlock | AnthropicWebSearchContentBlock,
