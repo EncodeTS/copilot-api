@@ -87,10 +87,13 @@ export interface NamespaceTool {
 
 export type ResponseIncludable =
   | "file_search_call.results"
+  | "web_search_call.results"
+  | "web_search_call.action.sources"
   | "message.input_image.image_url"
   | "computer_call_output.output.image_url"
   | "reasoning.encrypted_content"
   | "code_interpreter_call.outputs"
+  | "message.output_text.logprobs"
 
 export interface Reasoning {
   effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | null
@@ -243,6 +246,7 @@ export type ResponseOutputItem =
   | ResponseOutputFunctionCall
   | ResponseOutputToolSearchCall
   | ResponseOutputToolSearchOutput
+  | ResponseOutputWebSearchCall
   | ResponseOutputCompaction
 
 export interface ResponseOutputMessage {
@@ -294,6 +298,20 @@ export interface ResponseOutputToolSearchOutput {
   status?: "in_progress" | "completed" | "incomplete"
 }
 
+export interface ResponseOutputWebSearchCall {
+  id?: string
+  type: "web_search_call"
+  action?: {
+    query?: string
+    queries?: Array<string>
+    sources?: Array<{ type?: "url"; url: string }>
+    type?: string
+    url?: string
+    pattern?: string
+  }
+  status?: "in_progress" | "searching" | "completed" | "failed"
+}
+
 export interface ResponseOutputCompaction {
   id: string
   type: "compaction"
@@ -332,12 +350,21 @@ export type ResponseStreamEvent =
   | ResponseCompletedEvent
   | ResponseIncompleteEvent
   | ResponseCreatedEvent
+  | ResponseInProgressEvent
   | ResponseErrorEvent
   | ResponseFunctionCallArgumentsDeltaEvent
   | ResponseFunctionCallArgumentsDoneEvent
   | ResponseFailedEvent
   | ResponseOutputItemAddedEvent
   | ResponseOutputItemDoneEvent
+  | ResponseContentPartAddedEvent
+  | ResponseOutputTextAnnotationAddedEvent
+  | ResponseContentPartDoneEvent
+  | ResponseWebSearchCallInProgressEvent
+  | ResponseWebSearchCallSearchingEvent
+  | ResponseWebSearchCallCompletedEvent
+  | ResponseReasoningSummaryPartAddedEvent
+  | ResponseReasoningSummaryPartDoneEvent
   | ResponseReasoningSummaryTextDeltaEvent
   | ResponseReasoningSummaryTextDoneEvent
   | ResponseTextDeltaEvent
@@ -362,6 +389,12 @@ export interface ResponseCreatedEvent {
   response: ResponsesResult
   sequence_number: number
   type: "response.created"
+}
+
+export interface ResponseInProgressEvent {
+  response: ResponsesResult
+  sequence_number: number
+  type: "response.in_progress"
 }
 
 export interface ResponseErrorEvent {
@@ -415,6 +448,73 @@ export interface ResponseOutputItemDoneEvent {
   output_index: number
   sequence_number: number
   type: "response.output_item.done"
+}
+
+export interface ResponseContentPartAddedEvent {
+  content_index: number
+  item_id: string
+  output_index: number
+  part: ResponseOutputContentBlock
+  sequence_number: number
+  type: "response.content_part.added"
+}
+
+export interface ResponseOutputTextAnnotationAddedEvent {
+  annotation: unknown
+  annotation_index?: number
+  content_index: number
+  item_id: string
+  output_index: number
+  sequence_number: number
+  type: "response.output_text.annotation.added"
+}
+
+export interface ResponseContentPartDoneEvent {
+  content_index: number
+  item_id: string
+  output_index: number
+  part: ResponseOutputContentBlock
+  sequence_number: number
+  type: "response.content_part.done"
+}
+
+export interface ResponseWebSearchCallInProgressEvent {
+  item_id: string
+  output_index: number
+  sequence_number: number
+  type: "response.web_search_call.in_progress"
+}
+
+export interface ResponseWebSearchCallSearchingEvent {
+  item_id: string
+  output_index: number
+  sequence_number: number
+  type: "response.web_search_call.searching"
+}
+
+export interface ResponseWebSearchCallCompletedEvent {
+  item_id: string
+  output_index: number
+  sequence_number: number
+  type: "response.web_search_call.completed"
+}
+
+export interface ResponseReasoningSummaryPartAddedEvent {
+  item_id: string
+  output_index: number
+  part: ResponseReasoningBlock
+  sequence_number: number
+  summary_index: number
+  type: "response.reasoning_summary_part.added"
+}
+
+export interface ResponseReasoningSummaryPartDoneEvent {
+  item_id: string
+  output_index: number
+  part: ResponseReasoningBlock
+  sequence_number: number
+  summary_index: number
+  type: "response.reasoning_summary_part.done"
 }
 
 export interface ResponseReasoningSummaryTextDeltaEvent {
