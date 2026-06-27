@@ -23,11 +23,18 @@ export interface AnthropicMessagesPayload {
   service_tier?: "auto" | "standard_only"
   output_config?: {
     effort?: "low" | "medium" | "high" | "xhigh" | "max"
+    format?: BetaJSONOutputFormat | null
   }
   metadata?: {
     user_id?: string
   }
   temperature?: number
+}
+
+export interface BetaJSONOutputFormat {
+  schema: { [key: string]: unknown }
+
+  type: "json_schema"
 }
 
 export interface AnthropicCacheControl {
