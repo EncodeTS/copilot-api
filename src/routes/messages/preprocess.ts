@@ -912,7 +912,10 @@ export const prepareMessagesApiPayload = (
   ) {
     const supported = selectedModel?.capabilities.supports.reasoning_effort
     if (!supported || supported.length === 0) {
-      delete payload.output_config
+      delete payload.output_config.effort
+      if (Object.keys(payload.output_config).length === 0) {
+        delete payload.output_config
+      }
     }
   }
 }
