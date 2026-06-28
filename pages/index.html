@@ -778,8 +778,8 @@
             contentArea.innerHTML = renderWelcomeMessage();
           } else if (state.error && !state.data) {
             contentArea.innerHTML = `
-              ${renderError(state.error, "Usage request failed")}
               ${renderTokenUsageSection()}
+              ${renderUsageErrorSection()}
             `;
           } else if (state.data) {
             contentArea.innerHTML = `
@@ -818,6 +818,22 @@
               <div class="metric-grid">
                 ${quotaCards}
               </div>
+            </section>
+          `;
+        }
+
+        function renderUsageErrorSection() {
+          if (!state.error || state.data) {
+            return "";
+          }
+
+          return `
+            <section id="usage-quotas" class="dashboard-section">
+              <h2 class="section-heading">
+                <i data-lucide="gauge" class="h-5 w-5" style="color: var(--color-blue);"></i>
+                <span>Copilot Quotas</span>
+              </h2>
+              ${renderError(state.error, "Usage request failed")}
             </section>
           `;
         }
