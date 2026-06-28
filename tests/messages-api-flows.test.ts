@@ -432,6 +432,122 @@ test("messages Messages flow records Copilot AIU from streaming message delta", 
   })
 })
 
+test("messages Chat Completions flow emits error event when upstream stream throws", async () => {
+  createChatCompletions.mockImplementationOnce(
+    (payload: ChatCompletionsPayload): Promise<ChatCompletionResponse> => {
+      capturedPayload = payload
+      return Promise.resolve(
+        createThrowingStream(
+          [],
+          "chat stream reset",
+        ) as unknown as ChatCompletionResponse,
+      )
+    },
+  )
+
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithChatCompletions(c, payload, {
+      logger,
+      requestId: "request-1",
+    }),
+  )
+
+  const response = await app.request("/", { method: "POST" })
+  expect(response.status).toBe(200)
+  const body = await response.text()
+
+  expect(body).toContain("event: error")
+  expect(body).toContain(
+    "Upstream stream ended unexpectedly: chat stream reset",
+  )
+})
+
+test("messages Responses flow emits error event when upstream stream throws", async () => {
+  createResponses.mockImplementationOnce(
+    (
+      payload: ResponsesPayload,
+      options: { transport?: ResponsesTransport },
+    ): Promise<CreateResponsesReturn> => {
+      capturedResponsesPayload = payload
+      capturedResponsesOptions = options
+      return Promise.resolve(
+        createThrowingStream(
+          [],
+          "responses stream reset",
+        ) as unknown as CreateResponsesReturn,
+      )
+    },
+  )
+
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithResponsesApi(c, payload, {
+      logger,
+      requestId: "request-1",
+      selectedModel: createModel(["/responses"]),
+    }),
+  )
+
+  const response = await app.request("/", { method: "POST" })
+  expect(response.status).toBe(200)
+  const body = await response.text()
+
+  expect(body).toContain("event: error")
+  expect(body).toContain(
+    "Upstream stream ended unexpectedly: responses stream reset",
+  )
+})
+
+test("messages Messages flow emits error event when upstream stream throws", async () => {
+  createMessages.mockImplementationOnce(
+    (payload: AnthropicMessagesPayload): Promise<CreateMessagesReturn> => {
+      capturedMessagesPayload = payload
+      return Promise.resolve(
+        createThrowingStream(
+          [],
+          "messages stream reset",
+        ) as unknown as CreateMessagesReturn,
+      )
+    },
+  )
+
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "claude-sonnet-4.6",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithMessagesApi(c, payload, {
+      logger,
+      requestId: "request-1",
+    }),
+  )
+
+  const response = await app.request("/", { method: "POST" })
+  expect(response.status).toBe(200)
+  const body = await response.text()
+
+  expect(body).toContain("event: error")
+  expect(body).toContain(
+    "Upstream stream ended unexpectedly: messages stream reset",
+  )
+})
+
 test("messages Messages flow records Copilot AIU from non-streaming response", async () => {
   createMessages.mockImplementationOnce(
     (payload: AnthropicMessagesPayload): Promise<CreateMessagesReturn> => {
@@ -712,6 +828,17 @@ async function* createMessagesStream(
     await Promise.resolve()
     yield event
   }
+}
+
+async function* createThrowingStream<T>(
+  events: Array<T>,
+  message: string,
+): AsyncGenerator<T> {
+  for (const event of events) {
+    await Promise.resolve()
+    yield event
+  }
+  throw new Error(message)
 }
 
 const createResponsesResult = (model: string): ResponsesResult => ({
