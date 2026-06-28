@@ -17,6 +17,7 @@ export interface Locale {
     providerDeepseek: string
     providerInvalid: string
     providerName: string
+    providerOpencodeGo: string
     providerOpenrouter: string
     providerType: string
     deviceCode: string

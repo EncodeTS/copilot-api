@@ -22,7 +22,12 @@ import type {
   ResponsesStream,
 } from "~/services/copilot/create-responses"
 
-import { type ModelConfig, type ResolvedProviderConfig } from "~/lib/config"
+import {
+  type ModelConfig,
+  type ResolvedProviderConfig,
+  resolveEffectiveProviderType,
+  resolveProviderAuthType,
+} from "~/lib/config"
 import { logCodexRateLimitsEvent } from "~/lib/codex-rate-limit"
 import { HTTPError } from "~/lib/error"
 import { createHandlerLogger, debugJson, debugLazy } from "~/lib/logger"
@@ -126,13 +131,17 @@ export async function handleProviderMessagesForProvider(
 
   try {
     const modelConfig = providerConfig.models?.[payload.model]
+    const effectiveType = resolveEffectiveProviderType(
+      providerConfig,
+      payload.model,
+    )
     debugJson(logger, "provider.messages.request", { payload, provider })
 
     normalizeSystemMessages(payload)
 
     applyModelDefaults(payload, modelConfig)
 
-    if (providerConfig.type === "openai-responses") {
+    if (effectiveType === "openai-responses") {
       if (hasWebSearchServerTool(payload)) {
         if (isWebSearchOnlyRequest(payload)) {
           return await handleOpenAIResponsesProviderWebSearchMessages(c, {
@@ -154,7 +163,7 @@ export async function handleProviderMessagesForProvider(
       })
     }
 
-    if (providerConfig.type === "openai-compatible") {
+    if (effectiveType === "openai-compatible") {
       stripWebSearchServerTool(payload)
 
       return await handleOpenAICompatibleProviderMessages(c, {
@@ -174,7 +183,17 @@ export async function handleProviderMessagesForProvider(
       provider,
     })
     const upstreamResponse = await forwardProviderMessages(
-      providerConfig,
+      effectiveType === providerConfig.type ?
+        providerConfig
+      : {
+          ...providerConfig,
+          type: effectiveType,
+          authType: resolveProviderAuthType(
+            providerConfig.name,
+            undefined,
+            effectiveType,
+          ),
+        },
       payload,
       c.req.raw.headers,
     )

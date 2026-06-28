@@ -42,6 +42,7 @@ export interface ModelConfig {
   pricing?: TokenUsagePricingConfig
   supportPdf?: boolean
   toolContentSupportType?: Array<ToolContentSupportType>
+  type?: ProviderType
 }
 
 export interface TokenUsagePricingTier {
@@ -619,6 +620,17 @@ export function getProviderConfig(name: string): ResolvedProviderConfig | null {
     pricingCurrency: normalizePricingCurrency(provider.pricingCurrency),
     models: provider.models,
   }
+}
+
+export function resolveEffectiveProviderType(
+  providerConfig: ResolvedProviderConfig,
+  model: string,
+): ProviderType {
+  const modelConfig = providerConfig.models?.[model]
+  if (modelConfig?.type && isSupportedProviderType(modelConfig.type)) {
+    return modelConfig.type
+  }
+  return providerConfig.type
 }
 
 function normalizePricingCurrency(

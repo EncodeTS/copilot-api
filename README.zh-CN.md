@@ -489,13 +489,13 @@ Copilot API 现在使用子命令结构，主要命令包括：
 
 | 选项 | 说明 | 默认值 | 别名 |
 | --- | --- | --- | --- |
-| --provider | 要登录或配置的 provider（`copilot`、`codex`、`deepseek`、`dashscope`、`openrouter` 或 `custom`） | 交互选择 | 无 |
+| --provider | 要登录或配置的 provider（`copilot`、`codex`、`opencode-go`、`deepseek`、`dashscope`、`openrouter` 或 `custom`） | 交互选择 | 无 |
 | --verbose | 启用详细日志 | false | -v |
 | --show-token | 认证时显示 GitHub token | false | 无 |
 
 只有在需要启用 GitHub Copilot provider 时，才需要执行 `copilot-api auth login --provider copilot`。使用 `codex` 或第三方 provider-only 模式不要求配置 Copilot。
 
-使用 `copilot-api auth login --provider deepseek`、`--provider dashscope` 或 `--provider openrouter` 可以通过 CLI 快速新增或更新这些常用第三方 provider。DeepSeek 会提示输入掩码显示的 `apiKey`、provider `type`（默认 `anthropic`），以及默认 `https://api.deepseek.com/anthropic` 的 `baseUrl`。DashScope 会提示输入掩码显示的 `apiKey`、provider `type`（默认 `openai-compatible`）和预填默认值的 `baseUrl`。OpenRouter 只提示输入掩码显示的 `apiKey` 和预填默认值的 `baseUrl`，并固定写入 `type: "anthropic"`。配置并启用 provider 后，`copilot-api start` 可在没有 GitHub token 的情况下启动。
+使用 `copilot-api auth login --provider deepseek`、`--provider dashscope`、`--provider openrouter` 或 `--provider opencode-go` 可以通过 CLI 快速新增或更新这些常用第三方 provider。DeepSeek 会提示输入掩码显示的 `apiKey`、provider `type`（默认 `anthropic`），以及默认 `https://api.deepseek.com/anthropic` 的 `baseUrl`。DashScope 会提示输入掩码显示的 `apiKey`、provider `type`（默认 `openai-compatible`）和预填默认值的 `baseUrl`。OpenRouter 只提示输入掩码显示的 `apiKey` 和预填默认值的 `baseUrl`，并固定写入 `type: "anthropic"`。OpenCode Go 只提示输入掩码显示的 `apiKey` 和预填默认值的 `baseUrl`，并固定写入 `type: "openai-compatible"`（baseUrl `https://opencode.ai/zen/go`）。配置并启用 provider 后，`copilot-api start` 可在没有 GitHub token 的情况下启动。
 
 使用 `copilot-api auth login --provider custom` 可以通过 CLI 新增或更新其他第三方 provider。命令会依次提示输入 provider name、项目支持的 type（`anthropic`、`openai-compatible` 或 `openai-responses`）、`baseUrl`、掩码显示的 `apiKey` 和 `authType`；`authType` 可保持 type 默认值，也可选择 `x-api-key` / `authorization`。
 
@@ -564,6 +564,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
     - `contextCache`：可选，provider name 为 `dashscope` 或 `baseUrl` 包含 `aliyuncs.com` 时默认 `true`，其他 OpenAI 兼容 provider 默认 `false`。用于启用阿里云百炼/DashScope 的显式缓存（explicit context cache），会按其 Context Cache 格式在最多 4 个 content block 上注入 `cache_control: { "type": "ephemeral" }`。缓存断点策略与 opencode 主链路保持一致：前 2 条 system 消息 + 最后 2 条非 system 消息。标记字符串 content 时会把 `system` / `user` / `assistant` / `tool` 消息转换为 text content part 数组；已有数组 content 则标记最后一个 part。如果模型本身已经支持隐式缓存，或上游不支持该显式缓存扩展字段，可在模型配置中设为 `false`。支持相同显式缓存扩展的非 DashScope provider 可设为 `true`。
     - `supportPdf`：可选，控制该模型是否支持 PDF/document content。默认 `false`，不支持时会把 PDF 转成提示文本；设为 `true` 时会把 PDF/document 转成 OpenAI Chat Completions 的 file part。
     - `toolContentSupportType`：可选，配置该模型的 tool result content 支持能力，值为 `array`、`image`、`pdf` 的数组。provider 侧未配置时默认只发送 string tool content。若 `supportPdf` 为 `true` 但这里不包含 `pdf`，tool result 里的 file part 会被转成 user role 消息。Copilot 主链路不使用这个 provider 默认，仍按 array + image 且不支持 PDF 的能力处理。
+    - `type`：可选，按模型覆盖 provider 的协议类型。支持 `anthropic`、`openai-compatible` 和 `openai-responses`。设置后，provider 的 `/v1/messages` 路由会使用该模型的 type 替代 provider 级别的 type 进行请求路由、认证头解析和上游端点选择。适用于 OpenCode Go 等上游对不同模型同时支持 OpenAI 兼容和 Anthropic Messages API 的 provider。覆盖 type 时，认证头按覆盖后 type 的默认值解析（Anthropic 默认 `x-api-key`；OpenAI 兼容/Responses 默认 `authorization`）。
 
   DashScope 模型配置示例：
   ```json
@@ -617,7 +618,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
     }
   }
   ```
-  内置 token 价格覆盖 Codex GPT 模型（USD）、DashScope `qwen3.7-max`、`qwen3.7-plus`、`glm-5.1`、`glm-5.2`（CNY），以及 DeepSeek `deepseek-v4-flash`、`deepseek-v4-pro`、`deepseek-chat`、`deepseek-reasoner`（CNY）。用户配置的 `pricing` 优先于内置价格。DashScope 若上游 usage 中出现 `cache_creation_input_tokens` 字段，cached tokens 按显式缓存读价计费；否则 `cachedInput` 作为隐式缓存读价。DeepSeek 的 `prompt_cache_hit_tokens` 会归入 cached input，`prompt_cache_miss_tokens` 会归入普通 input。
+  内置 token 价格覆盖 Codex GPT 模型（USD）、DashScope `qwen3.7-max`、`qwen3.7-plus`、`glm-5.1`、`glm-5.2`（CNY），DeepSeek `deepseek-v4-flash`、`deepseek-v4-pro`、`deepseek-chat`、`deepseek-reasoner`（CNY），以及 OpenCode Go 模型（`glm-5.2`、`deepseek-v4-flash`、`deepseek-v4-pro`、`kimi-k2.7-code`、`mimo-v2.5`、`mimo-v2.5-pro`、`qwen3.7-plus`、`qwen3.7-max`、`minimax-m2.5`、`minimax-m3`，USD）。用户配置的 `pricing` 优先于内置价格。DashScope 若上游 usage 中出现 `cache_creation_input_tokens` 字段，cached tokens 按显式缓存读价计费；否则 `cachedInput` 作为隐式缓存读价。DeepSeek 的 `prompt_cache_hit_tokens` 会归入 cached input，`prompt_cache_miss_tokens` 会归入普通 input。
 - **smallModel：** 无工具预热消息的回退模型（例如 Claude Code 的探测请求）；默认是 `gpt-5-mini`。
 - **useResponsesApiContextManagement：** 当为 `true` 时，代理会为 Responses API 附加 `context_management` 压缩指令。默认值为 `true`。如需全局关闭，可设为 `false`。启用后，请求体会带上 `context_management`，并在后续轮次中仅保留最新的压缩承载内容，因此特别适合长任务场景。
 - **modelResponsesApiCompactThresholds：** 按模型覆盖 Responses API 的 `compact_threshold`，仅在代理自动附加 `context_management` 时使用。它的优先级高于 `resolveResponsesCompactThreshold` 基于 `max_prompt_tokens * ratio` 的兜底阈值。默认将 `gpt-5.4` 和 `gpt-5.5` 设为 `217600`（`272000 * 0.8`）。未列出的模型继续使用原有兜底逻辑。

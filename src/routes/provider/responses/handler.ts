@@ -4,7 +4,7 @@ import { events } from "fetch-event-stream"
 import { streamSSE } from "hono/streaming"
 
 import { logCodexRateLimitsEvent } from "~/lib/codex-rate-limit"
-import type { ModelConfig } from "~/lib/config"
+import { type ModelConfig, resolveEffectiveProviderType } from "~/lib/config"
 import { HTTPError } from "~/lib/error"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
@@ -47,7 +47,11 @@ export async function handleProviderResponsesForProvider(
     provider,
   })
   const providerConfig = await resolveProviderConfig(provider)
-  if (providerConfig?.type !== "openai-responses") {
+  if (
+    !providerConfig
+    || resolveEffectiveProviderType(providerConfig, payload.model)
+      !== "openai-responses"
+  ) {
     return c.json(
       {
         error: {
