@@ -142,14 +142,14 @@ export default function ModelMappingsPage({ serverRunning }: ModelMappingsPagePr
   }
 
   return (
-    <div className="h-full bg-slate-50 p-4 overflow-hidden flex flex-col">
+    <div className="h-full bg-canvas p-4 overflow-hidden flex flex-col">
       <div className="relative flex flex-col gap-3 flex-1 min-h-0">
-        <div className="shrink-0 flex flex-col gap-3 rounded-lg border border-slate-200 bg-white px-3 py-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="shrink-0 flex flex-col gap-3 rounded-lg border border-line bg-surface px-3 py-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
-            <h2 className="text-[15px] font-semibold text-[#0f172a]">
+            <h2 className="text-[15px] font-semibold text-ink">
               {t('advancedConfig.modelMappingsTitle')}
             </h2>
-            <p className="mt-1 max-w-3xl text-[13px] leading-relaxed text-slate-500">
+            <p className="mt-1 max-w-3xl text-[13px] leading-relaxed text-ink-soft">
               {t('advancedConfig.modelMappingsDesc')}
             </p>
           </div>
@@ -157,14 +157,14 @@ export default function ModelMappingsPage({ serverRunning }: ModelMappingsPagePr
             <button
               onClick={handleAddRow}
               disabled={!serverRunning}
-              className="inline-flex h-8 items-center justify-center rounded-md border border-slate-200 bg-white px-3 text-[13px] font-medium text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex h-8 items-center justify-center rounded-md border border-line bg-surface px-3 text-[13px] font-medium text-ink-soft transition-colors hover:bg-sunken disabled:cursor-not-allowed disabled:opacity-50"
             >
               {t('advancedConfig.addMapping')}
             </button>
             <button
               onClick={handleSave}
               disabled={!serverRunning || loading || saving}
-              className="inline-flex h-8 items-center justify-center rounded-md bg-[#0f172a] px-4 text-[13px] font-semibold text-white transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex h-8 items-center justify-center rounded-md bg-accent-strong px-4 text-[13px] font-semibold text-white transition-colors hover:bg-accent-strong/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {saving ? t('settings.saving') : t('settings.save')}
             </button>
@@ -172,47 +172,47 @@ export default function ModelMappingsPage({ serverRunning }: ModelMappingsPagePr
         </div>
 
         {error && (
-          <div className="shrink-0 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-700">
+          <div className="shrink-0 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-700 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-400">
             {error}
           </div>
         )}
 
         {saveMessage && !error && (
-          <div className="shrink-0 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[13px] text-emerald-700">
+          <div className="shrink-0 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[13px] text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-400">
             {saveMessage}
           </div>
         )}
 
         <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_320px] flex-1 min-h-0">
-          <section className="min-w-0 overflow-hidden rounded-lg border border-slate-200 bg-white flex flex-col">
-            <div className="hidden grid-cols-[minmax(0,1fr)_minmax(0,1fr)_72px] gap-2 border-b border-slate-100 bg-slate-50 px-3 py-2 text-[12px] font-semibold text-slate-400 lg:grid shrink-0">
+          <section className="min-w-0 overflow-hidden rounded-lg border border-line bg-surface flex flex-col">
+            <div className="hidden grid-cols-[minmax(0,1fr)_minmax(0,1fr)_72px] gap-2 border-b border-line-soft bg-sunken px-3 py-2 text-[12px] font-semibold text-ink-faint lg:grid shrink-0">
               <div>{t('advancedConfig.sourceModel')}</div>
               <div>{t('advancedConfig.targetModel')}</div>
               <div />
             </div>
 
             {loading ? (
-              <div className="px-3 py-8 text-center text-[13px] text-slate-400">
+              <div className="px-3 py-8 text-center text-[13px] text-ink-faint">
                 {t('dashboard.loading')}
               </div>
             ) : rows.length === 0 ? (
               <div className="px-3 py-10 text-center">
-                <div className="text-[14px] font-semibold text-[#0f172a]">
+                <div className="text-[14px] font-semibold text-ink">
                   {t('advancedConfig.emptyTitle')}
                 </div>
-                <p className="mx-auto mt-2 max-w-xl text-[13px] leading-relaxed text-slate-500">
+                <p className="mx-auto mt-2 max-w-xl text-[13px] leading-relaxed text-ink-soft">
                   {t('advancedConfig.emptyDescription')}
                 </p>
               </div>
             ) : (
-              <div className="divide-y divide-slate-100 flex-1 overflow-y-auto">
+              <div className="divide-y divide-line-soft flex-1 overflow-y-auto">
                 {rows.map((row) => (
                   <div
                     key={row.id}
                     className="grid gap-2 px-3 py-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_72px] lg:items-center"
                   >
                     <label className="block min-w-0">
-                      <div className="mb-1 text-[12px] font-medium text-slate-500 lg:hidden">
+                      <div className="mb-1 text-[12px] font-medium text-ink-soft lg:hidden">
                         {t('advancedConfig.sourceModel')}
                       </div>
                       <input
@@ -222,12 +222,12 @@ export default function ModelMappingsPage({ serverRunning }: ModelMappingsPagePr
                           handleRowChange(row.id, 'source', event.target.value)
                         }
                         placeholder="gpt-5.5"
-                        className="h-8 w-full rounded-md border border-slate-200 bg-slate-50 px-2.5 text-[13px] text-[#0f172a] placeholder-slate-300 transition-colors focus:bg-white focus:outline-none focus:ring-2 focus:ring-slate-300"
+                        className="h-8 w-full rounded-md border border-line bg-sunken px-2.5 text-[13px] text-ink placeholder-ink-faint transition-colors focus:bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40"
                       />
                     </label>
 
                     <label className="block min-w-0">
-                      <div className="mb-1 text-[12px] font-medium text-slate-500 lg:hidden">
+                      <div className="mb-1 text-[12px] font-medium text-ink-soft lg:hidden">
                         {t('advancedConfig.targetModel')}
                       </div>
                       <input
@@ -237,13 +237,13 @@ export default function ModelMappingsPage({ serverRunning }: ModelMappingsPagePr
                           handleRowChange(row.id, 'target', event.target.value)
                         }
                         placeholder="codex/gpt-5.5"
-                        className="h-8 w-full rounded-md border border-slate-200 bg-slate-50 px-2.5 text-[13px] text-[#0f172a] placeholder-slate-300 transition-colors focus:bg-white focus:outline-none focus:ring-2 focus:ring-slate-300"
+                        className="h-8 w-full rounded-md border border-line bg-sunken px-2.5 text-[13px] text-ink placeholder-ink-faint transition-colors focus:bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40"
                       />
                     </label>
 
                     <button
                       onClick={() => handleRemoveRow(row.id)}
-                      className="inline-flex h-8 items-center justify-center rounded-md border border-red-200 px-2 text-[13px] font-medium text-red-600 transition-colors hover:bg-red-50"
+                      className="inline-flex h-8 items-center justify-center rounded-md border border-red-200 px-2 text-[13px] font-medium text-red-600 transition-colors hover:bg-red-50 dark:border-red-500/30 dark:hover:bg-red-500/15"
                     >
                       {t('advancedConfig.remove')}
                     </button>
@@ -254,31 +254,31 @@ export default function ModelMappingsPage({ serverRunning }: ModelMappingsPagePr
           </section>
 
           <aside className="flex min-w-0 flex-col gap-3">
-            <div className="rounded-lg border border-slate-200 bg-white px-3 py-3">
-              <div className="text-[12px] font-semibold uppercase tracking-wide text-slate-400">
+            <div className="rounded-lg border border-line bg-surface px-3 py-3">
+              <div className="text-[12px] font-semibold uppercase tracking-wide text-ink-faint">
                 {t('advancedConfig.configPath')}
               </div>
               <div
-                className="mt-2 break-all rounded-md bg-slate-50 px-2.5 py-2 font-mono text-[12px] leading-relaxed text-slate-600"
+                className="mt-2 break-all rounded-md bg-sunken px-2.5 py-2 font-mono text-[12px] leading-relaxed text-ink-soft"
                 title={configPath || undefined}
               >
                 {configPath || '—'}
               </div>
             </div>
 
-            <div className="rounded-lg border border-slate-200 bg-white px-3 py-3">
-              <div className="text-[12px] font-semibold uppercase tracking-wide text-slate-400">
+            <div className="rounded-lg border border-line bg-surface px-3 py-3">
+              <div className="text-[12px] font-semibold uppercase tracking-wide text-ink-faint">
                 {t('advancedConfig.scopeLabel')}
               </div>
-              <p className="mt-2 text-[13px] leading-relaxed text-slate-600">
+              <p className="mt-2 text-[13px] leading-relaxed text-ink-soft">
                 {t('advancedConfig.scopeNote')}
               </p>
-              <p className="mt-2 text-[12px] leading-relaxed text-emerald-700">
+              <p className="mt-2 text-[12px] leading-relaxed text-emerald-700 dark:text-emerald-400">
                 {t('advancedConfig.restartNote')}
               </p>
             </div>
 
-            <div className="rounded-lg border border-slate-200 bg-white px-3 py-3 text-[13px] leading-relaxed text-slate-500">
+            <div className="rounded-lg border border-line bg-surface px-3 py-3 text-[13px] leading-relaxed text-ink-soft">
               {t('advancedConfig.saveHelp')}
             </div>
           </aside>

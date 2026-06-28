@@ -8,17 +8,17 @@ export type Page = 'auth' | 'dashboard'
 
 function BootScreen({ loadingText }: { loadingText: string }) {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-50 px-6">
+    <div className="flex min-h-screen items-center justify-center bg-canvas px-6">
       <div className="flex w-full max-w-sm flex-col items-center gap-4 text-center">
-        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[#0f172a] text-base font-extrabold text-white shadow-[0_10px_30px_rgba(15,23,42,0.16)]">
+        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent-strong text-base font-extrabold text-white shadow-[0_10px_30px_rgba(30,41,59,0.20)]">
           CA
         </div>
         <div className="space-y-1">
-          <h1 className="text-lg font-bold text-[#0f172a]">Copilot API</h1>
-          <p className="text-[13px] text-slate-500">{loadingText}</p>
+          <h1 className="text-lg font-bold text-ink">Copilot API</h1>
+          <p className="text-[13px] text-ink-faint">{loadingText}</p>
         </div>
-        <div className="h-1.5 w-28 overflow-hidden rounded-full bg-slate-200">
-          <div className="h-full w-1/2 animate-pulse rounded-full bg-[#0f172a]" />
+        <div className="h-1.5 w-28 overflow-hidden rounded-full bg-sunken">
+          <div className="h-full w-1/2 animate-pulse rounded-full bg-accent" />
         </div>
       </div>
     </div>

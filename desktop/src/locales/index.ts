@@ -154,6 +154,10 @@ export interface Locale {
     langAuto: string
     langEn: string
     langZh: string
+    sectionTheme: string
+    themeLight: string
+    themeDark: string
+    themeAuto: string
     cancel: string
     save: string
     saving: string
