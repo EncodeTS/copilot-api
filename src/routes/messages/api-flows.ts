@@ -53,6 +53,7 @@ import {
   type AnthropicMessagesPayload,
   type AnthropicStreamEventData,
   type AnthropicStreamState,
+  type CopilotUsage,
 } from "./anthropic-types"
 import {
   translateToAnthropic,
@@ -384,15 +385,15 @@ export const handleWithMessagesApi = async (
         debugLazy(logger, () => ["Messages raw stream event:", data])
         const parsedEvent = parseAnthropicStreamEvent(data)
         if (parsedEvent?.type === "message_start") {
-          usage = mergeAnthropicUsage(
-            usage,
-            normalizeAnthropicUsage(parsedEvent.message.usage),
-          )
+          usage = mergeAnthropicUsage(usage, {
+            ...normalizeAnthropicUsage(parsedEvent.message.usage),
+            ...normalizeCopilotUsage(parsedEvent.message.copilot_usage),
+          })
         } else if (parsedEvent?.type === "message_delta") {
-          usage = mergeAnthropicUsage(
-            usage,
-            normalizeAnthropicUsage(parsedEvent.usage),
-          )
+          usage = mergeAnthropicUsage(usage, {
+            ...normalizeAnthropicUsage(parsedEvent.usage),
+            ...normalizeCopilotUsage(parsedEvent.copilot_usage),
+          })
         }
         await stream.writeSSE({
           event: eventName,
@@ -408,7 +409,10 @@ export const handleWithMessagesApi = async (
     value: response,
     tailLength: 400,
   })
-  recordUsage(normalizeAnthropicUsage(response.usage))
+  recordUsage({
+    ...normalizeAnthropicUsage(response.usage),
+    ...normalizeCopilotUsage(response.copilot_usage),
+  })
   return c.json(response)
 }
 
@@ -488,6 +492,12 @@ const createCopilotUsageRecorder = (options: {
 const getMetadataSessionId = (
   payload: AnthropicMessagesPayload,
 ): string | null => parseUserIdMetadata(payload.metadata?.user_id).sessionId
+
+const normalizeCopilotUsage = (
+  copilotUsage: CopilotUsage | null | undefined,
+): UsageTokens => ({
+  total_nano_aiu: normalizeOptionalToken(copilotUsage?.total_nano_aiu),
+})
 
 const parseAnthropicStreamEvent = (
   data: string,
