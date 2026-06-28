@@ -58,6 +58,22 @@ bun install
 bun run start start
 ```
 
+## 从源码运行
+
+本项目可以通过多种方式从源码运行：
+
+### 开发模式
+
+```sh
+bun run dev start
+```
+
+### 生产模式
+
+```sh
+bun run start start
+```
+
 ## 通过 npx 使用
 
 你可以直接用 npx 运行本项目：
@@ -90,27 +106,6 @@ npx @jeffreycao/copilot-api@latest auth login --provider dashscope
 npx @jeffreycao/copilot-api@latest start
 ```
 
-## Electron 桌面应用
-
-如果你更喜欢图形界面，仓库里还提供了位于 `desktop/` 的 Electron 桌面应用。它支持 GitHub Copilot 登录、OpenAI Codex OAuth，以及 DeepSeek、DashScope、OpenRouter 或自定义 provider 的 API Key 配置。授权或配置 provider 后，可以一键启动或停止本地代理，并在界面里直接查看本地端点、鉴权 Header、可用模型、额度和日志。
-
-设置页还可以配置 `OAuth App`、`API Home`、`Enterprise URL`、详细日志以及最小化到托盘。桌面安装包发布在 GitHub Releases：
-
-https://github.com/caozhiyuan/copilot-api/releases
-
-下载对应平台的安装包后，在应用内授权或配置 provider，选择端口并启动服务，再把你的客户端指向应用里显示的本地端点即可。发布版桌面应用使用随包内置的 Electron 运行时，正常使用不需要额外安装 Node.js；token usage 历史记录会在该内置运行时支持 SQLite 时启用。
-
-桌面应用里的高级配置页会通过 `GET/POST /admin/config/model-mappings` 读写这份共享的模型映射。同一份映射会统一作用于 `POST /v1/messages`、`POST /v1/messages/count_tokens`、`POST /v1/responses` 和 `POST /v1/chat/completions`，不再按接口区分。它使用的是 `auth.adminApiKey`，不是普通的 `auth.apiKeys`；应用会在服务启动并自动生成该 key 后，直接从 `config.json` 读取它来发起请求。
-
-### 桌面应用截图
-
-下面展示了桌面应用中的首页、Token 用量统计页面：
-
-<p align="center">
-  <img src="./docs/screenshots/desktop-dashboard.png" alt="Copilot API 桌面应用首页" width="49%" />
-  <img src="./docs/screenshots/desktop-token-usage.png" alt="Copilot API 桌面应用 Token 用量页" width="49%" />
-</p>
-
 ## 配合 Docker 使用
 
 构建镜像：
@@ -133,6 +128,332 @@ docker run -p 4141:4141 -v $(pwd)/copilot-data:/root/.local/share/copilot-api co
 ```sh
 docker run -p 4141:4141 -e GH_TOKEN=your_github_token_here copilot-api
 ```
+
+## Electron 桌面应用
+
+如果你更喜欢图形界面，仓库里还提供了位于 `desktop/` 的 Electron 桌面应用。它支持 GitHub Copilot 登录、OpenAI Codex OAuth，以及 DeepSeek、DashScope、OpenRouter 或自定义 provider 的 API Key 配置。授权或配置 provider 后，可以一键启动或停止本地代理，并在界面里直接查看本地端点、鉴权 Header、可用模型、额度和日志。
+
+设置页还可以配置 `OAuth App`、`API Home`、`Enterprise URL`、详细日志以及最小化到托盘。桌面安装包发布在 GitHub Releases：
+
+https://github.com/caozhiyuan/copilot-api/releases
+
+下载对应平台的安装包后，在应用内授权或配置 provider，选择端口并启动服务，再把你的客户端指向应用里显示的本地端点即可。发布版桌面应用使用随包内置的 Electron 运行时，正常使用不需要额外安装 Node.js；token usage 历史记录会在该内置运行时支持 SQLite 时启用。
+
+桌面应用里的高级配置页会通过 `GET/POST /admin/config/model-mappings` 读写这份共享的模型映射。同一份映射会统一作用于 `POST /v1/messages`、`POST /v1/messages/count_tokens`、`POST /v1/responses` 和 `POST /v1/chat/completions`，不再按接口区分。它使用的是 `auth.adminApiKey`，不是普通的 `auth.apiKeys`；应用会在服务启动并自动生成该 key 后，直接从 `config.json` 读取它来发起请求。
+
+### 桌面应用截图
+
+下面展示了桌面应用中的首页、Token 用量统计页面：
+
+<p align="center">
+  <img src="./docs/screenshots/desktop-dashboard.png" alt="Copilot API 桌面应用首页" width="49%" />
+  <img src="./docs/screenshots/desktop-token-usage.png" alt="Copilot API 桌面应用 Token 用量页" width="49%" />
+</p>
+
+## 与 Claude Code 一起使用
+
+这个 AI gateway 可以为 [Claude Code](https://docs.anthropic.com/en/claude-code) 提供后端能力。Claude Code 是 Anthropic 提供的实验性面向开发者的对话式 AI 助手。
+
+有两种方式可以把 Claude Code 配置为使用这个 AI gateway：
+
+### 通过 `--claude-code` 标志进行交互式配置
+
+执行带 `--claude-code` 的 `start` 命令开始：
+
+```sh
+npx @jeffreycao/copilot-api@latest start --claude-code
+```
+
+你会被提示选择一个主模型，以及一个用于后台任务的 "small, fast" 模型。选择完成后，会有一条命令被复制到剪贴板中。该命令会设置 Claude Code 使用这个 AI gateway 所需的环境变量。
+
+在新的终端中粘贴并执行这条命令，即可启动 Claude Code。
+
+<a id="manual-configuration-with-settingsjson"></a>
+
+### 通过 `settings.json` 手动配置
+
+另一种方式是在项目根目录中创建 `.claude/settings.json` 文件，并写入 Claude Code 所需的环境变量。这样你就不需要每次都运行交互式配置了。
+
+下面是一个 `.claude/settings.json` 示例：
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:4141",
+    "ANTHROPIC_AUTH_TOKEN": "dummy",
+    "ANTHROPIC_MODEL": "deepseek/deepseek-v4-pro",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek/deepseek-v4-pro",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek/deepseek-v4-flash",
+    "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+    "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false",
+    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "true",
+    "CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0"
+  },
+  "permissions": {
+    "deny": [
+      "mcp__ide__executeCode"
+    ]
+  }
+}
+```
+
+- 请根据需要替换 `ANTHROPIC_MODEL`、`ANTHROPIC_DEFAULT_OPUS_MODEL`、`ANTHROPIC_DEFAULT_SONNET_MODEL` 和 `ANTHROPIC_DEFAULT_HAIKU_MODEL`。配置完成后，请安装 claude code 插件，见 [插件集成](#plugin-integrations)。
+- 将 `CLAUDE_CODE_ATTRIBUTION_HEADER` 设为 `0` 可以阻止 Claude Code 在 system prompt 中附加计费和版本信息，从而避免 prompt cache 失效。
+- 关闭 `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION` 和 `CLAUDE_CODE_ENABLE_AWAY_SUMMARY` 可以避免不必要地消耗额度。
+- Claude Code WebSearch 已支持纯搜索请求。Copilot 路径请保持全局 `messageApiWebSearchModel` 指向 Responses-capable GPT 模型或 `provider/model` 别名；provider 路由请使用原生 Anthropic provider 或 `openai-responses` provider。只有在你明确想禁止这类流量时，才需要把 `WebSearch` 加到 `permissions.deny`。
+- 如果使用的不是 Claude 模型，请不要启用 `ENABLE_TOOL_SEARCH`。如果使用的是 Claude 模型，则可以启用 `ENABLE_TOOL_SEARCH`。当前 Claude Code 使用的是客户端 tool search 模式，在该模式下每次加载 defer tools 都需要额外请求一次。
+- `CLAUDE_CODE_AUTO_COMPACT_WINDOW`：设置用于自动压缩计算的上下文容量（以 token 为单位）。默认使用模型自身的上下文窗口：标准模型为 200K，扩展上下文模型为 1M。使用 1M 上下文模型（如 `claude-opus-4-6[1m]`）时，可设置一个较低的值（如 `500000`）将窗口视为 500K 用于压缩计算。该值受限于模型的实际上下文窗口上限。`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` 会基于此值的百分比生效。设置此变量可将压缩阈值与状态栏的 `used_percentage` 解耦（后者始终使用模型的完整上下文窗口）。
+
+更多选项见：[Claude Code settings](https://docs.anthropic.com/en/docs/claude-code/settings#environment-variables)
+
+也可以参考 IDE 集成说明：[Add Claude Code to your IDE](https://docs.anthropic.com/en/docs/claude-code/ide-integrations)
+
+## 与 OpenCode 一起使用
+
+OpenCode 已经有直接的 GitHub Copilot provider。本节适用于你希望让 OpenCode 通过 `@ai-sdk/anthropic` 指向这个 AI gateway，并复用本 README 前面提到的 agent 行为时。
+
+### 最小配置
+
+使用 OpenCode OAuth app 启动 AI gateway：
+
+```sh
+npx @jeffreycao/copilot-api@latest auth --oauth-app=opencode
+npx @jeffreycao/copilot-api@latest start
+```
+
+然后让 OpenCode 通过 `@ai-sdk/anthropic` 指向这个 AI gateway。
+
+示例 `~/.config/opencode/opencode.json`：
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "local": {
+      "npm": "@ai-sdk/anthropic",
+      "name": "My Local",
+      "options": {
+        "baseURL": "http://localhost:4141/v1",
+        "apiKey": "dummy"
+      },
+      "models": {
+        "gpt-5.4": {
+          "name": "gpt-5.4",
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "limit": {
+            "context": 300000,
+            "output": 128000
+          }
+        },
+        "claude-sonnet-4.6": {
+          "id": "claude-sonnet-4.6",
+          "name": "claude-sonnet-4.6",
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          },
+          "options": {
+            "thinking": {
+              "type": "adaptive"
+            },
+            "effort": "max"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+这些字段的重要性：
+
+- `npm: "@ai-sdk/anthropic"` 是关键。OpenCode 会以 Anthropic Messages 语义与这个 AI gateway 通信，而不是把一切扁平化为 OpenAI Chat Completions。
+- `options.baseURL` 应设为 `http://localhost:4141/v1`；Anthropic SDK 会自动补上 `/messages`、`/models` 和 `/messages/count_tokens`。
+- `model`、`small_model` 与 `agent.*.model` 让你可以把 `gpt-5.4` 用于 build/plan，同时把探索和后台工作路由到 `gpt-5-mini`。
+- 如果你在此代理中启用了 `auth.apiKeys`，请把 `dummy` 替换为真实 key；否则任意占位值都可以。
+
+## 与 Codex 一起使用
+
+这个 AI gateway 也可以为 Codex 提供后端能力。
+
+### Codex `config.toml` 参考配置
+
+把以下 `[model_providers.copilot_api]` 段加入你的 Codex `~/.codex/config.toml`：
+
+```toml
+model_provider = "copilot_api"
+model_reasoning_summary = "auto"
+model_verbosity = "medium"
+model_context_window = 272000
+model_auto_compact_token_limit = 244800
+
+[model_providers.copilot_api]
+name = "OpenAI"
+base_url = "http://localhost:4141"
+env_key = "GITHUB_COPILOT_API_KEY"
+requires_openai_auth = true
+supports_websockets = false
+wire_api = "responses"
+request_max_retries = 3
+stream_max_retries = 1
+stream_idle_timeout_ms = 300000
+
+[features]
+remote_compaction_v2 = true
+
+[analytics]
+enabled = false
+```
+
+> [!NOTE]
+> 此配置仅限于 Codex 与 GitHub Copilot provider。`name` 一定要配置为 `"OpenAI"`。它可以缓解 Codex local compact 不命中缓存的问题。如果你已开启 `useResponsesApiContextManagement`（Responses API context management 压缩），通常不会走到 `remote_compaction_v2` 或者 local compact，但如果工具返回 tokens 过大，仍有可能触发。
+
+## GPT Tool Search
+
+对于 `gpt-5.4+` 这类 GPT Responses 模型，这个 AI gateway 可以通过一个很小的 MCP bridge 暴露 Responses `tool_search`。Claude Code 和 opencode 都可以使用同一个 bridge，前提是客户端会加载 MCP server，并且 Anthropic Messages 流量会经过这个 AI gateway。
+
+GPT 模型不要设置 Claude Code 原生的 `ENABLE_TOOL_SEARCH`。这个开关启用的是 Claude Code 自己的客户端 tool search 模式，可能导致 deferred 工具定义不再转发给 AI gateway。这个 AI gateway 需要完整的工具定义，这样才能只保留那一小组常驻加载工具，其余工具统一转换为 Responses deferred namespace。
+
+如果你安装了 `tool-search@copilot-api-marketplace`，Claude Code 会自动带上这个 MCP bridge，可以跳过下面这段 Claude Code MCP 手动配置。
+
+请把 tool search bridge 加到 Claude Code 使用的 MCP 配置中：
+
+```json
+{
+  "mcpServers": {
+    "tool_search": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@jeffreycao/copilot-api@latest", "mcp"]
+    }
+  }
+}
+```
+
+请把 tool search bridge 加到 opencode 使用的 MCP 配置中：
+
+```json
+{
+  "mcp": {
+    "tool_search": {
+      "type": "local",
+      "command": ["npx", "-y", "@jeffreycao/copilot-api@latest", "mcp"]
+    }
+  }
+}
+```
+
+本地开发时可以将命令换成 `bun`，参数换成 `["run", "./src/main.ts", "mcp"]`。
+
+AI gateway 内部现在会把 OpenAI Responses `tool_search` 配置成 client-executed 模式。deferred tools 仍然会作为可搜索 namespace 暴露给模型，但会明确要求模型直接返回下一步要加载的精确工具名列表。
+
+该 bridge 使用直接工具选择，不做 query 搜索。工具入参是 `names`，值为逗号分隔的精确 deferred 工具名，例如 `TaskList,TaskGet,mcp__fetch__fetch`。
+
+<a id="plugin-integrations"></a>
+
+## 插件集成
+
+本项目为 Claude Code 和 opencode 提供了插件集成。
+
+#### Claude Code 插件集成（基于 marketplace）
+
+Claude Code 集成现在拆分为两个插件：
+
+- `agent-inject` 会在 `SubagentStart` 时注入 `__SUBAGENT_MARKER__...`，以便 AI gateway 推导 `x-initiator: agent`。
+- `tool-search` 会注册用于 GPT Responses deferred tool loading 的 `tool_search` MCP bridge。
+
+- 本仓库中的 marketplace catalog：`.claude-plugin/marketplace.json`
+- 本仓库中的插件源码：`plugin/claude/agent-inject`、`plugin/claude/tool-search`
+
+远程添加 marketplace：
+
+```sh
+/plugin marketplace add https://github.com/caozhiyuan/copilot-api.git
+```
+
+从 marketplace 安装插件：
+
+```sh
+/plugin install agent-inject@copilot-api-marketplace
+/plugin install tool-search@copilot-api-marketplace
+```
+
+安装后，`agent-inject` 会在 `SubagentStart` 时注入 `__SUBAGENT_MARKER__...`，AI gateway 会利用它推导 `x-initiator: agent`。
+
+`agent-inject` 还会注册一个 `UserPromptSubmit` hook，并返回 `{"continue": true}`；同时它也可以通过环境变量注入 `SessionStart` reminder 规则：
+
+- `CLAUDE_PLUGIN_ENABLE_QUESTION_RULES=1` 会自动为 Claude Code 启用两条关于使用 `question` 工具的提醒。你也可以把同样的提醒手动写进 `CLAUDE.md`；见 [CLAUDE.md 或 AGENTS.md 推荐内容](#claudemd-or-agentsmd-recommended-content)。
+- `CLAUDE_PLUGIN_ENABLE_NO_BACKGROUND_AGENTS_RULE=1` 会启用关于避免在 agent hooks 中使用 `run_in_background: true` 的提醒。
+
+`tool-search` 插件内置了 [GPT Tool Search](#gpt-tool-search) 一节描述的同一个 MCP bridge，因此安装该插件后，Claude Code 用户无需再手动配置 `tool_search` server。
+
+#### Opencode 插件
+
+subagent 标记生成器被打包为一个 opencode 插件，位于 `plugin/opencode/subagent-marker.js`。
+
+**安装方式：**
+
+将插件文件复制到你的 opencode 插件目录：
+
+```sh
+# 克隆或下载本仓库后复制该插件
+cp plugin/opencode/subagent-marker.js ~/.config/opencode/plugins/
+```
+
+或者手动在 `~/.config/opencode/plugins/subagent-marker.js` 创建该文件，并填入插件内容。
+
+**功能：**
+
+- 跟踪 subagent 创建的子会话
+- 自动在 subagent 聊天消息前添加 marker system reminder（`__SUBAGENT_MARKER__...`）
+- 设置 `x-session-id` 请求头以跟踪会话
+- 让这个 AI gateway 能够把来自 subagent 的请求识别为 `x-initiator: agent`
+
+该插件会挂接到 `session.created`、`session.deleted`、`chat.message` 和 `chat.headers` 事件上，以无缝提供 subagent marker 能力。
+
+## 使用量查看器
+
+服务启动后，控制台会输出一个 Copilot 使用量看板 URL。这个看板是一个用于监控 API 用量的 Web 界面。
+
+1. 启动服务。例如使用 npx：
+   ```sh
+   npx @jeffreycao/copilot-api@latest start
+   ```
+2. 服务会输出一个 usage viewer 的 URL。将它复制到浏览器中打开，形式大致如下：
+   `http://localhost:4141/usage-viewer?endpoint=http://localhost:4141/usage`
+   - 如果你在 Windows 上使用 `start.bat` 脚本，这个页面会自动打开。
+
+看板提供了更易读的 Copilot 用量视图：
+
+> token usage 历史记录需要 Bun 或 Node.js >= 22.13.0。Node.js < 22.13.0 时服务会正常运行，但 token usage 存储会被禁用。
+
+- **API Endpoint URL**：通过 URL 查询参数指定 API endpoints，默认指向本地服务。支持手动切换为其他兼容 endpoints。
+- **x-api-key 认证**：如果启用了 API Key 认证，可填入 `x-api-key` 请求头。密钥会持久化保存在浏览器本地存储中。
+- **Period 选择器**：支持 Day / Week / Month 三种时间范围，切换时 URL 参数会自动同步，方便收藏和分享。
+- **Fetch Data**：点击 "Refresh" 按钮加载或刷新使用数据。页面加载时也会自动拉取数据。
+- **Copilot Quotas 额度**：通过进度条展示 Chat、Completions 等不同服务的额度使用情况，悬停可查看已用/剩余详情。
+- **Token Usage 指标卡片**：汇总当前周期的 Total、Input、Output、Cache Read、Cache Write、Requests 和预估费用。
+- **趋势图（Week / Month）**：提供按模型和指标筛选的折线趋势图，点击数据点可查看单日用量明细。
+- **Model Breakdown 表格**：按模型维度列出周期内的请求数、输入/输出/缓存 token 和预计费用。
+- **Request Events 分页列表**：按时间排序的请求事件记录，支持分页浏览，含时间戳、模型、请求 ID 和 token 用量。
+- **Detailed Information**：展示 API 返回的完整 JSON 响应，便于深入分析所有可用统计数据。
+- **URL-based Configuration**：也可通过 `endpoint` 和 `period` 查询参数直接指定 API 端点与时间范围。例如：
+  `http://localhost:4141/usage-viewer?endpoint=http://your-api-server/usage&period=week`
+
+### Usage Viewer 截图
+
+<p align="center">
+  <img src="./docs/screenshots/usage-viewer.png" alt="Copilot API Usage Viewer 页面" width="900" />
+</p>
 
 ## 命令结构
 
@@ -417,327 +738,6 @@ curl http://localhost:4141/v1/chat/completions \
 curl http://localhost:4141/dashscope/v1/messages \
   -H "content-type: application/json" \
   -d '{"model":"qwen3.6-plus","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}'
-```
-
-## 与 Claude Code 一起使用
-
-这个 AI gateway 可以为 [Claude Code](https://docs.anthropic.com/en/claude-code) 提供后端能力。Claude Code 是 Anthropic 提供的实验性面向开发者的对话式 AI 助手。
-
-有两种方式可以把 Claude Code 配置为使用这个 AI gateway：
-
-### 通过 `--claude-code` 标志进行交互式配置
-
-执行带 `--claude-code` 的 `start` 命令开始：
-
-```sh
-npx @jeffreycao/copilot-api@latest start --claude-code
-```
-
-你会被提示选择一个主模型，以及一个用于后台任务的 “small, fast” 模型。选择完成后，会有一条命令被复制到剪贴板中。该命令会设置 Claude Code 使用这个 AI gateway 所需的环境变量。
-
-在新的终端中粘贴并执行这条命令，即可启动 Claude Code。
-
-<a id="manual-configuration-with-settingsjson"></a>
-
-### 通过 `settings.json` 手动配置
-
-另一种方式是在项目根目录中创建 `.claude/settings.json` 文件，并写入 Claude Code 所需的环境变量。这样你就不需要每次都运行交互式配置了。
-
-下面是一个 `.claude/settings.json` 示例：
-
-```json
-{
-  "env": {
-    "ANTHROPIC_BASE_URL": "http://localhost:4141",
-    "ANTHROPIC_AUTH_TOKEN": "dummy",
-    "ANTHROPIC_MODEL": "deepseek/deepseek-v4-pro",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek/deepseek-v4-pro",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek/deepseek-v4-flash",
-    "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
-    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-    "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false",
-    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "true",
-    "CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0"
-  },
-  "permissions": {
-    "deny": [
-      "mcp__ide__executeCode"
-    ]
-  }
-}
-```
-
-- 请根据需要替换 `ANTHROPIC_MODEL`、`ANTHROPIC_DEFAULT_OPUS_MODEL`、`ANTHROPIC_DEFAULT_SONNET_MODEL` 和 `ANTHROPIC_DEFAULT_HAIKU_MODEL`。配置完成后，请安装 claude code 插件，见 [插件集成](#plugin-integrations)。
-- 将 `CLAUDE_CODE_ATTRIBUTION_HEADER` 设为 `0` 可以阻止 Claude Code 在 system prompt 中附加计费和版本信息，从而避免 prompt cache 失效。
-- 关闭 `CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION` 和 `CLAUDE_CODE_ENABLE_AWAY_SUMMARY` 可以避免不必要地消耗额度。
-- Claude Code WebSearch 已支持纯搜索请求。Copilot 路径请保持全局 `messageApiWebSearchModel` 指向 Responses-capable GPT 模型或 `provider/model` 别名；provider 路由请使用原生 Anthropic provider 或 `openai-responses` provider。只有在你明确想禁止这类流量时，才需要把 `WebSearch` 加到 `permissions.deny`。
-- 如果使用的不是 Claude 模型，请不要启用 `ENABLE_TOOL_SEARCH`。如果使用的是 Claude 模型，则可以启用 `ENABLE_TOOL_SEARCH`。当前 Claude Code 使用的是客户端 tool search 模式，在该模式下每次加载 defer tools 都需要额外请求一次。
-- `CLAUDE_CODE_AUTO_COMPACT_WINDOW`：设置用于自动压缩计算的上下文容量（以 token 为单位）。默认使用模型自身的上下文窗口：标准模型为 200K，扩展上下文模型为 1M。使用 1M 上下文模型（如 `claude-opus-4-6[1m]`）时，可设置一个较低的值（如 `500000`）将窗口视为 500K 用于压缩计算。该值受限于模型的实际上下文窗口上限。`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` 会基于此值的百分比生效。设置此变量可将压缩阈值与状态栏的 `used_percentage` 解耦（后者始终使用模型的完整上下文窗口）。
-
-更多选项见：[Claude Code settings](https://docs.anthropic.com/en/docs/claude-code/settings#environment-variables)
-
-也可以参考 IDE 集成说明：[Add Claude Code to your IDE](https://docs.anthropic.com/en/docs/claude-code/ide-integrations)
-
-## GPT Tool Search
-
-对于 `gpt-5.4+` 这类 GPT Responses 模型，这个 AI gateway 可以通过一个很小的 MCP bridge 暴露 Responses `tool_search`。Claude Code 和 opencode 都可以使用同一个 bridge，前提是客户端会加载 MCP server，并且 Anthropic Messages 流量会经过这个 AI gateway。
-
-GPT 模型不要设置 Claude Code 原生的 `ENABLE_TOOL_SEARCH`。这个开关启用的是 Claude Code 自己的客户端 tool search 模式，可能导致 deferred 工具定义不再转发给 AI gateway。这个 AI gateway 需要完整的工具定义，这样才能只保留那一小组常驻加载工具，其余工具统一转换为 Responses deferred namespace。
-
-如果你安装了 `tool-search@copilot-api-marketplace`，Claude Code 会自动带上这个 MCP bridge，可以跳过下面这段 Claude Code MCP 手动配置。
-
-请把 tool search bridge 加到 Claude Code 使用的 MCP 配置中：
-
-```json
-{
-  "mcpServers": {
-    "tool_search": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "@jeffreycao/copilot-api@latest", "mcp"]
-    }
-  }
-}
-```
-
-请把 tool search bridge 加到 opencode 使用的 MCP 配置中：
-
-```json
-{
-  "mcp": {
-    "tool_search": {
-      "type": "local",
-      "command": ["npx", "-y", "@jeffreycao/copilot-api@latest", "mcp"]
-    }
-  }
-}
-```
-
-本地开发时可以将命令换成 `bun`，参数换成 `["run", "./src/main.ts", "mcp"]`。
-
-AI gateway 内部现在会把 OpenAI Responses `tool_search` 配置成 client-executed 模式。deferred tools 仍然会作为可搜索 namespace 暴露给模型，但会明确要求模型直接返回下一步要加载的精确工具名列表。
-
-该 bridge 使用直接工具选择，不做 query 搜索。工具入参是 `names`，值为逗号分隔的精确 deferred 工具名，例如 `TaskList,TaskGet,mcp__fetch__fetch`。
-
-## 与 OpenCode 一起使用
-
-OpenCode 已经有直接的 GitHub Copilot provider。本节适用于你希望让 OpenCode 通过 `@ai-sdk/anthropic` 指向这个 AI gateway，并复用本 README 前面提到的 agent 行为时。
-
-### 最小配置
-
-使用 OpenCode OAuth app 启动 AI gateway：
-
-```sh
-npx @jeffreycao/copilot-api@latest auth --oauth-app=opencode
-npx @jeffreycao/copilot-api@latest start
-```
-
-然后让 OpenCode 通过 `@ai-sdk/anthropic` 指向这个 AI gateway。
-
-示例 `~/.config/opencode/opencode.json`：
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "local": {
-      "npm": "@ai-sdk/anthropic",
-      "name": "My Local",
-      "options": {
-        "baseURL": "http://localhost:4141/v1",
-        "apiKey": "dummy"
-      },
-      "models": {
-        "gpt-5.4": {
-          "name": "gpt-5.4",
-          "modalities": {
-            "input": ["text", "image"],
-            "output": ["text"]
-          },
-          "limit": {
-            "context": 300000,
-            "output": 128000
-          }
-        },
-        "claude-sonnet-4.6": {
-          "id": "claude-sonnet-4.6",
-          "name": "claude-sonnet-4.6",
-          "modalities": {
-            "input": ["text", "image"],
-            "output": ["text"]
-          },
-          "limit": {
-            "context": 200000,
-            "output": 32000
-          },
-          "options": {
-            "thinking": {
-              "type": "adaptive"
-            },
-            "effort": "max"
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-这些字段的重要性：
-
-- `npm: "@ai-sdk/anthropic"` 是关键。OpenCode 会以 Anthropic Messages 语义与这个 AI gateway 通信，而不是把一切扁平化为 OpenAI Chat Completions。
-- `options.baseURL` 应设为 `http://localhost:4141/v1`；Anthropic SDK 会自动补上 `/messages`、`/models` 和 `/messages/count_tokens`。
-- `model`、`small_model` 与 `agent.*.model` 让你可以把 `gpt-5.4` 用于 build/plan，同时把探索和后台工作路由到 `gpt-5-mini`。
-- 如果你在此代理中启用了 `auth.apiKeys`，请把 `dummy` 替换为真实 key；否则任意占位值都可以。
-
-## 与 Codex 一起使用
-
-这个 AI gateway 也可以为 Codex 提供后端能力。
-
-### Codex `config.toml` 参考配置
-
-把以下 `[model_providers.copilot_api]` 段加入你的 Codex `~/.codex/config.toml`：
-
-```toml
-model_provider = "copilot_api"
-model_reasoning_summary = "auto"
-model_verbosity = "medium"
-model_context_window = 272000
-model_auto_compact_token_limit = 244800
-
-[model_providers.copilot_api]
-name = "OpenAI"
-base_url = "http://localhost:4141"
-env_key = "GITHUB_COPILOT_API_KEY"
-requires_openai_auth = true
-supports_websockets = false
-wire_api = "responses"
-request_max_retries = 3
-stream_max_retries = 1
-stream_idle_timeout_ms = 300000
-
-[features]
-remote_compaction_v2 = true
-
-[analytics]
-enabled = false
-```
-
-> [!NOTE]
-> 此配置仅限于 Codex 与 GitHub Copilot provider。`name` 一定要配置为 `"OpenAI"`。它可以缓解 Codex local compact 不命中缓存的问题。如果你已开启 `useResponsesApiContextManagement`（Responses API context management 压缩），通常不会走到 `remote_compaction_v2` 或者 local compact，但如果工具返回 tokens 过大，仍有可能触发。
-
-<a id="plugin-integrations"></a>
-
-## 插件集成
-
-本项目为 Claude Code 和 opencode 提供了插件集成。
-
-#### Claude Code 插件集成（基于 marketplace）
-
-Claude Code 集成现在拆分为两个插件：
-
-- `agent-inject` 会在 `SubagentStart` 时注入 `__SUBAGENT_MARKER__...`，以便 AI gateway 推导 `x-initiator: agent`。
-- `tool-search` 会注册用于 GPT Responses deferred tool loading 的 `tool_search` MCP bridge。
-
-- 本仓库中的 marketplace catalog：`.claude-plugin/marketplace.json`
-- 本仓库中的插件源码：`plugin/claude/agent-inject`、`plugin/claude/tool-search`
-
-远程添加 marketplace：
-
-```sh
-/plugin marketplace add https://github.com/caozhiyuan/copilot-api.git
-```
-
-从 marketplace 安装插件：
-
-```sh
-/plugin install agent-inject@copilot-api-marketplace
-/plugin install tool-search@copilot-api-marketplace
-```
-
-安装后，`agent-inject` 会在 `SubagentStart` 时注入 `__SUBAGENT_MARKER__...`，AI gateway 会利用它推导 `x-initiator: agent`。
-
-`agent-inject` 还会注册一个 `UserPromptSubmit` hook，并返回 `{"continue": true}`；同时它也可以通过环境变量注入 `SessionStart` reminder 规则：
-
-- `CLAUDE_PLUGIN_ENABLE_QUESTION_RULES=1` 会自动为 Claude Code 启用两条关于使用 `question` 工具的提醒。你也可以把同样的提醒手动写进 `CLAUDE.md`；见 [CLAUDE.md 或 AGENTS.md 推荐内容](#claudemd-or-agentsmd-recommended-content)。
-- `CLAUDE_PLUGIN_ENABLE_NO_BACKGROUND_AGENTS_RULE=1` 会启用关于避免在 agent hooks 中使用 `run_in_background: true` 的提醒。
-
-`tool-search` 插件内置了 [GPT Tool Search](#gpt-tool-search) 一节描述的同一个 MCP bridge，因此安装该插件后，Claude Code 用户无需再手动配置 `tool_search` server。
-
-#### Opencode 插件
-
-subagent 标记生成器被打包为一个 opencode 插件，位于 `plugin/opencode/subagent-marker.js`。
-
-**安装方式：**
-
-将插件文件复制到你的 opencode 插件目录：
-
-```sh
-# 克隆或下载本仓库后复制该插件
-cp plugin/opencode/subagent-marker.js ~/.config/opencode/plugins/
-```
-
-或者手动在 `~/.config/opencode/plugins/subagent-marker.js` 创建该文件，并填入插件内容。
-
-**功能：**
-
-- 跟踪 subagent 创建的子会话
-- 自动在 subagent 聊天消息前添加 marker system reminder（`__SUBAGENT_MARKER__...`）
-- 设置 `x-session-id` 请求头以跟踪会话
-- 让这个 AI gateway 能够把来自 subagent 的请求识别为 `x-initiator: agent`
-
-该插件会挂接到 `session.created`、`session.deleted`、`chat.message` 和 `chat.headers` 事件上，以无缝提供 subagent marker 能力。
-
-## 使用量查看器
-
-服务启动后，控制台会输出一个 Copilot 使用量看板 URL。这个看板是一个用于监控 API 用量的 Web 界面。
-
-1. 启动服务。例如使用 npx：
-   ```sh
-   npx @jeffreycao/copilot-api@latest start
-   ```
-2. 服务会输出一个 usage viewer 的 URL。将它复制到浏览器中打开，形式大致如下：
-   `http://localhost:4141/usage-viewer?endpoint=http://localhost:4141/usage`
-   - 如果你在 Windows 上使用 `start.bat` 脚本，这个页面会自动打开。
-
-看板提供了更易读的 Copilot 用量视图：
-
-> token usage 历史记录需要 Bun 或 Node.js >= 22.13.0。Node.js < 22.13.0 时服务会正常运行，但 token usage 存储会被禁用。
-
-- **API Endpoint URL**：通过 URL 查询参数指定 API endpoints，默认指向本地服务。支持手动切换为其他兼容 endpoints。
-- **x-api-key 认证**：如果启用了 API Key 认证，可填入 `x-api-key` 请求头。密钥会持久化保存在浏览器本地存储中。
-- **Period 选择器**：支持 Day / Week / Month 三种时间范围，切换时 URL 参数会自动同步，方便收藏和分享。
-- **Fetch Data**：点击 "Refresh" 按钮加载或刷新使用数据。页面加载时也会自动拉取数据。
-- **Copilot Quotas 额度**：通过进度条展示 Chat、Completions 等不同服务的额度使用情况，悬停可查看已用/剩余详情。
-- **Token Usage 指标卡片**：汇总当前周期的 Total、Input、Output、Cache Read、Cache Write、Requests 和预估费用。
-- **趋势图（Week / Month）**：提供按模型和指标筛选的折线趋势图，点击数据点可查看单日用量明细。
-- **Model Breakdown 表格**：按模型维度列出周期内的请求数、输入/输出/缓存 token 和预计费用。
-- **Request Events 分页列表**：按时间排序的请求事件记录，支持分页浏览，含时间戳、模型、请求 ID 和 token 用量。
-- **Detailed Information**：展示 API 返回的完整 JSON 响应，便于深入分析所有可用统计数据。
-- **URL-based Configuration**：也可通过 `endpoint` 和 `period` 查询参数直接指定 API 端点与时间范围。例如：
-  `http://localhost:4141/usage-viewer?endpoint=http://your-api-server/usage&period=week`
-
-### Usage Viewer 截图
-
-<p align="center">
-  <img src="./docs/screenshots/usage-viewer.png" alt="Copilot API Usage Viewer 页面" width="900" />
-</p>
-
-## 从源码运行
-
-本项目可以通过多种方式从源码运行：
-
-### 开发模式
-
-```sh
-bun run dev start
-```
-
-### 生产模式
-
-```sh
-bun run start start
 ```
 
 ## 使用建议
