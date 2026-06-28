@@ -1,11 +1,16 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test"
+import { Hono } from "hono"
 
-import type { AnthropicMessagesPayload } from "../src/routes/messages/anthropic-types"
+import type {
+  AnthropicMessagesPayload,
+  AnthropicResponse,
+} from "../src/routes/messages/anthropic-types"
 import type { Model } from "../src/services/copilot/get-models"
 import type {
   ChatCompletionResponse,
   ChatCompletionsPayload,
 } from "../src/services/copilot/create-chat-completions"
+import type { CreateMessagesReturn } from "../src/services/copilot/create-messages"
 import type {
   CreateResponsesReturn,
   ResponsesPayload,
@@ -14,8 +19,15 @@ import type {
 } from "../src/services/copilot/create-responses"
 
 import { COMPACT_REQUEST } from "../src/lib/compact"
+import {
+  closeUsageStore,
+  getTokenUsageEventsPage,
+} from "../src/lib/token-usage"
+
+const DB_PATH_ENV = "COPILOT_API_SQLITE_DB_PATH"
 
 let capturedPayload: ChatCompletionsPayload | null = null
+let capturedMessagesPayload: AnthropicMessagesPayload | null = null
 let capturedResponsesPayload: ResponsesPayload | null = null
 let capturedResponsesOptions: {
   transport?: ResponsesTransport
@@ -44,6 +56,12 @@ const createChatCompletions = mock(
     })
   },
 )
+const createMessages = mock(
+  (payload: AnthropicMessagesPayload): Promise<CreateMessagesReturn> => {
+    capturedMessagesPayload = payload
+    return Promise.resolve(createMessagesResult(payload.model))
+  },
+)
 const createResponses = mock(
   (
     payload: ResponsesPayload,
@@ -59,6 +77,7 @@ const createResponses = mock(
 
 const {
   handleWithChatCompletions,
+  handleWithMessagesApi,
   handleWithResponsesApi,
   messagesApiFlowDependencies,
   prepareCopilotChatCompletionsPayload,
@@ -81,22 +100,29 @@ const createContext = () =>
     json: (body: unknown) => Response.json(body),
   }) as Parameters<typeof handleWithChatCompletions>[0]
 
-beforeEach(() => {
+beforeEach(async () => {
+  process.env[DB_PATH_ENV] = ":memory:"
+  await closeUsageStore()
   capturedPayload = null
+  capturedMessagesPayload = null
   capturedResponsesPayload = null
   capturedResponsesOptions = null
   responsesApiWebSocketEnabled = true
   messagesApiFlowDependencies.createChatCompletions = createChatCompletions
+  messagesApiFlowDependencies.createMessages = createMessages
   messagesApiFlowDependencies.createResponses = createResponses
   responsesUtilsDependencies.isResponsesApiWebSocketEnabled = () =>
     responsesApiWebSocketEnabled
   createChatCompletions.mockClear()
+  createMessages.mockClear()
   createResponses.mockClear()
 })
 
-afterEach(() => {
+afterEach(async () => {
   Object.assign(messagesApiFlowDependencies, defaultMessagesApiFlowDependencies)
   Object.assign(responsesUtilsDependencies, defaultResponsesUtilsDependencies)
+  await closeUsageStore()
+  Reflect.deleteProperty(process.env, DB_PATH_ENV)
 })
 
 test("messages Chat Completions flow adds Copilot cache control to system and latest two non-system messages", async () => {
@@ -317,6 +343,157 @@ test("Copilot Chat Completions payload preparation marks two system and latest t
   ])
 })
 
+test("messages Messages flow records Copilot AIU from streaming message delta", async () => {
+  createMessages.mockImplementationOnce(
+    (payload: AnthropicMessagesPayload): Promise<CreateMessagesReturn> => {
+      capturedMessagesPayload = payload
+      return Promise.resolve(
+        createMessagesStream([
+          {
+            event: "message_start",
+            data: JSON.stringify({
+              message: {
+                content: [],
+                id: "msg-test",
+                model: payload.model,
+                role: "assistant",
+                stop_reason: null,
+                stop_sequence: null,
+                type: "message",
+                usage: {
+                  input_tokens: 3,
+                  output_tokens: 0,
+                },
+              },
+              type: "message_start",
+            }),
+          },
+          {
+            event: "message_delta",
+            data: JSON.stringify({
+              copilot_usage: {
+                total_nano_aiu: 4_119_900_000,
+              },
+              delta: {
+                stop_reason: "end_turn",
+                stop_sequence: null,
+              },
+              type: "message_delta",
+              usage: {
+                cache_creation_input_tokens: 10_612,
+                cache_read_input_tokens: 0,
+                input_tokens: 3,
+                output_tokens: 93,
+              },
+            }),
+          },
+          {
+            event: "message_stop",
+            data: JSON.stringify({ type: "message_stop" }),
+          },
+        ]) as unknown as CreateMessagesReturn,
+      )
+    },
+  )
+
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "claude-sonnet-4.6",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithMessagesApi(c, payload, {
+      logger,
+      requestId: "request-1",
+    }),
+  )
+
+  const response = await app.request("/", { method: "POST" })
+  expect(response.status).toBe(200)
+  await response.text()
+
+  const usageEvents = await getTokenUsageEventsPage({
+    page: 1,
+    pageSize: 10,
+    period: "day",
+  })
+
+  expect(capturedMessagesPayload?.model).toBe("claude-sonnet-4.6")
+  expect(usageEvents.items).toHaveLength(1)
+  expect(usageEvents.items[0]).toMatchObject({
+    cache_creation_input_tokens: 10_612,
+    cache_read_input_tokens: 0,
+    cost: {
+      amount: 0.041199,
+      currency: "USD",
+      source: "copilot_aiu",
+      total_cost_nanos: 41_199_000,
+    },
+    input_tokens: 3,
+    model: "claude-sonnet-4.6",
+    output_tokens: 93,
+    total_nano_aiu: 4_119_900_000,
+  })
+})
+
+test("messages Messages flow records Copilot AIU from non-streaming response", async () => {
+  createMessages.mockImplementationOnce(
+    (payload: AnthropicMessagesPayload): Promise<CreateMessagesReturn> => {
+      capturedMessagesPayload = payload
+      return Promise.resolve({
+        ...createMessagesResult(payload.model),
+        copilot_usage: {
+          total_nano_aiu: 1_000_000_000,
+        },
+        usage: {
+          cache_creation_input_tokens: 200,
+          cache_read_input_tokens: 30,
+          input_tokens: 12,
+          output_tokens: 8,
+        },
+      })
+    },
+  )
+
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "claude-sonnet-4.6",
+  }
+
+  const response = await handleWithMessagesApi(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+  })
+  expect(response.status).toBe(200)
+  await response.json()
+
+  const usageEvents = await getTokenUsageEventsPage({
+    page: 1,
+    pageSize: 10,
+    period: "day",
+  })
+
+  expect(capturedMessagesPayload?.model).toBe("claude-sonnet-4.6")
+  expect(usageEvents.items).toHaveLength(1)
+  expect(usageEvents.items[0]).toMatchObject({
+    cache_creation_input_tokens: 200,
+    cache_read_input_tokens: 30,
+    cost: {
+      amount: 0.01,
+      currency: "USD",
+      source: "copilot_aiu",
+      total_cost_nanos: 10_000_000,
+    },
+    input_tokens: 12,
+    model: "claude-sonnet-4.6",
+    output_tokens: 8,
+    total_nano_aiu: 1_000_000_000,
+  })
+})
+
 test("messages Responses flow uses websocket transport by default for dual-endpoint models", async () => {
   const payload: AnthropicMessagesPayload = {
     max_tokens: 128,
@@ -519,6 +696,29 @@ const createModel = (
   vendor: "openai",
   version: "1",
 })
+
+const createMessagesResult = (model: string): AnthropicResponse => ({
+  content: [],
+  id: "msg-test",
+  model,
+  role: "assistant",
+  stop_reason: "end_turn",
+  stop_sequence: null,
+  type: "message",
+  usage: {
+    input_tokens: 0,
+    output_tokens: 0,
+  },
+})
+
+async function* createMessagesStream(
+  events: Array<{ data: string; event: string }>,
+): AsyncGenerator<{ data: string; event: string }> {
+  for (const event of events) {
+    await Promise.resolve()
+    yield event
+  }
+}
 
 const createResponsesResult = (model: string): ResponsesResult => ({
   created_at: 0,
