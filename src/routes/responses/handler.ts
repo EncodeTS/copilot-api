@@ -2,14 +2,12 @@ import type { Context } from "hono"
 
 import { streamSSE } from "hono/streaming"
 
-import { awaitApproval } from "~/lib/approval"
 import {
   isResponsesApiWebSearchEnabled as isConfiguredResponsesApiWebSearchEnabled,
   resolveMappedModel,
 } from "~/lib/config"
 import { createHandlerLogger, debugJson, debugJsonTail } from "~/lib/logger"
 import { parseProviderModelAlias } from "~/lib/provider-model"
-import { checkRateLimit as checkConfiguredRateLimit } from "~/lib/rate-limit"
 import { handleProviderResponsesForProvider } from "~/routes/provider/responses/handler"
 import { state } from "~/lib/state"
 import {
@@ -40,7 +38,6 @@ import consola from "consola"
 const logger = createHandlerLogger("responses-handler")
 
 export const responsesHandlerDependencies = {
-  checkRateLimit: checkConfiguredRateLimit,
   createResponses: createCopilotResponses,
   isResponsesApiWebSearchEnabled: isConfiguredResponsesApiWebSearchEnabled,
 }
@@ -65,7 +62,6 @@ export const handleResponses = async (c: Context) => {
   }
 
   debugJson(logger, "Responses request payload:", payload)
-  await responsesHandlerDependencies.checkRateLimit(state)
 
   const subagentMarker = getCodexResponsesSubagentMarker(c)
   if (subagentMarker) {
@@ -133,10 +129,6 @@ export const handleResponses = async (c: Context) => {
   const { vision, initiator: inferredInitiator } =
     getResponsesRequestOptions(payload)
   const initiator = subagentMarker ? "agent" : inferredInitiator
-
-  if (state.manualApprove) {
-    await awaitApproval()
-  }
 
   const response = await responsesHandlerDependencies.createResponses(payload, {
     vision,

@@ -2,7 +2,6 @@ import type { Context } from "hono"
 
 import type { Model } from "~/services/copilot/get-models"
 
-import { awaitApproval } from "~/lib/approval"
 import { COMPACT_REQUEST } from "~/lib/compact"
 import {
   getSmallModel,
@@ -12,7 +11,6 @@ import {
 import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { findEndpointModel } from "~/lib/models"
 import { parseProviderModelAlias } from "~/lib/provider-model"
-import { checkRateLimit } from "~/lib/rate-limit"
 import { state } from "~/lib/state"
 import {
   generateRequestIdFromPayload,
@@ -80,8 +78,6 @@ export async function handleCompletion(c: Context) {
 
   normalizeSystemMessages(anthropicPayload)
 
-  await checkRateLimit(state)
-
   sanitizeIdeTools(anthropicPayload)
 
   const subagentMarker = parseSubagentMarkerFromFirstUser(anthropicPayload)
@@ -133,10 +129,6 @@ export async function handleCompletion(c: Context) {
     sessionId = getUUID(requestId)
   }
   logger.debug("Extracted session ID:", sessionId)
-
-  if (state.manualApprove) {
-    await awaitApproval()
-  }
 
   const selectedModel = findEndpointModel(anthropicPayload.model)
   anthropicPayload.model = selectedModel?.id ?? anthropicPayload.model

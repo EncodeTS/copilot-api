@@ -26,9 +26,6 @@ import {
 interface RunServerOptions {
   port: number
   verbose: boolean
-  manual: boolean
-  rateLimit?: number
-  rateLimitWait: boolean
   githubToken?: string
   claudeCode: boolean
   showToken: boolean
@@ -167,9 +164,6 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     consola.info("Verbose logging enabled")
   }
 
-  state.manualApprove = options.manual
-  state.rateLimitSeconds = options.rateLimit
-  state.rateLimitWait = options.rateLimitWait
   state.showToken = options.showToken
 
   await ensurePaths()
@@ -221,23 +215,6 @@ export const start = defineCommand({
       default: false,
       description: "Enable verbose logging",
     },
-    manual: {
-      type: "boolean",
-      default: false,
-      description: "Enable manual request approval",
-    },
-    "rate-limit": {
-      alias: "r",
-      type: "string",
-      description: "Rate limit in seconds between requests",
-    },
-    wait: {
-      alias: "w",
-      type: "boolean",
-      default: false,
-      description:
-        "Wait instead of error when rate limit is hit. Has no effect if rate limit is not set",
-    },
     "github-token": {
       alias: "g",
       type: "string",
@@ -263,17 +240,9 @@ export const start = defineCommand({
     },
   },
   run({ args }) {
-    const rateLimitRaw = args["rate-limit"]
-    const rateLimit =
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-      rateLimitRaw === undefined ? undefined : Number.parseInt(rateLimitRaw, 10)
-
     return runServer({
       port: Number.parseInt(args.port, 10),
       verbose: args.verbose,
-      manual: args.manual,
-      rateLimit,
-      rateLimitWait: args.wait,
       githubToken: args["github-token"],
       claudeCode: args["claude-code"],
       showToken: args["show-token"],
