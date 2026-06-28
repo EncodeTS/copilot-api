@@ -1,6 +1,13 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, type CSSProperties } from 'react'
 import SettingsModal from './SettingsModal'
 import { useLanguage } from '../contexts/LanguageContext'
+
+type ElectronAppRegionStyle = CSSProperties & {
+  WebkitAppRegion?: 'drag' | 'no-drag'
+}
+
+const dragRegionStyle: ElectronAppRegionStyle = { WebkitAppRegion: 'drag' }
+const noDragRegionStyle: ElectronAppRegionStyle = { WebkitAppRegion: 'no-drag' }
 
 interface HeaderProps {
   onChangeAuth?: () => void
@@ -47,13 +54,10 @@ export default function Header({
 
   return (
     <>
-      {/* Placeholder for the macOS traffic lights that keeps the window draggable */}
       <div
-        className="h-9 bg-white shrink-0"
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        style={{ WebkitAppRegion: 'drag' } as any}
-      />
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-100 bg-white">
+        className="flex shrink-0 items-center justify-between border-b border-gray-100 bg-white px-4 pb-2.5 pt-4"
+        style={dragRegionStyle}
+      >
         <div className="flex items-center gap-2">
           <div className="w-6 h-6 bg-[#0f172a] rounded-md flex items-center justify-center">
             <span className="text-white text-[9px] font-bold">CA</span>
@@ -61,7 +65,7 @@ export default function Header({
           <span className="text-sm font-bold text-[#0f172a]">Copilot API</span>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2" style={noDragRegionStyle}>
           {isRunning && onRestart && (
             <button
               onClick={onRestart}
