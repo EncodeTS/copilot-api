@@ -75,6 +75,14 @@ async function* streamChunks(items: Array<Record<string, unknown>>) {
   }
 }
 
+async function* streamChunksThenThrow(
+  items: Array<Record<string, unknown>>,
+  message: string,
+) {
+  yield* streamChunks(items)
+  throw new Error(message)
+}
+
 beforeEach(async () => {
   process.env[DB_PATH_ENV] = ":memory:"
   await closeUsageStore()
@@ -1026,5 +1034,35 @@ describe("responses handler token usage", () => {
     expect(page.items[0]?.output_tokens).toBe(2)
     expect(page.items[0]?.total_nano_aiu).toBe(1234)
     expect(page.items[0]?.total_tokens).toBe(7)
+  })
+
+  test("emits native Responses error event when upstream stream throws", async () => {
+    createResponses.mockImplementation(() =>
+      Promise.resolve(
+        streamChunksThenThrow([], "native responses stream reset") as never,
+      ),
+    )
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        input: "hello",
+        model: "gpt-test",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+
+    expect(body).toContain("event: error")
+    expect(body).toContain('"type":"error"')
+    expect(body).toContain(
+      "Upstream stream ended unexpectedly: native responses stream reset",
+    )
   })
 })
