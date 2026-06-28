@@ -65,6 +65,7 @@ import {
   flushPendingAnthropicStreamEvents,
   translateChunkToAnthropicEvents,
 } from "./stream-translation"
+import { emitAnthropicStreamError } from "./stream-error"
 
 const COPILOT_CONTEXT_CACHE_SYSTEM_MARKER_LIMIT = 2
 const COPILOT_CONTEXT_CACHE_NON_SYSTEM_MARKER_LIMIT = 1
@@ -160,28 +161,39 @@ export const handleWithChatCompletions = async (
       thinkingBlockOpen: false,
     }
 
-    for await (const rawEvent of response) {
-      debugJson(logger, "Copilot raw stream event:", rawEvent)
-      if (rawEvent.data === "[DONE]") {
-        break
-      }
+    try {
+      for await (const rawEvent of response) {
+        debugJson(logger, "Copilot raw stream event:", rawEvent)
+        if (rawEvent.data === "[DONE]") {
+          break
+        }
 
-      if (!rawEvent.data) {
-        continue
-      }
+        if (!rawEvent.data) {
+          continue
+        }
 
-      const chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
-      if (chunk.usage || chunk.copilot_usage) {
-        usage = {
-          ...normalizeOpenAIUsage(chunk.usage),
-          total_nano_aiu: normalizeOptionalToken(
-            chunk.copilot_usage?.total_nano_aiu,
-          ),
+        const chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
+        if (chunk.usage || chunk.copilot_usage) {
+          usage = {
+            ...normalizeOpenAIUsage(chunk.usage),
+            total_nano_aiu: normalizeOptionalToken(
+              chunk.copilot_usage?.total_nano_aiu,
+            ),
+          }
+        }
+        const events = translateChunkToAnthropicEvents(chunk, streamState)
+
+        for (const event of events) {
+          const eventData = JSON.stringify(event)
+          debugLazy(logger, () => ["Translated Anthropic event:", eventData])
+          await stream.writeSSE({
+            event: event.type,
+            data: eventData,
+          })
         }
       }
-      const events = translateChunkToAnthropicEvents(chunk, streamState)
 
-      for (const event of events) {
+      for (const event of flushPendingAnthropicStreamEvents(streamState)) {
         const eventData = JSON.stringify(event)
         debugLazy(logger, () => ["Translated Anthropic event:", eventData])
         await stream.writeSSE({
@@ -189,14 +201,10 @@ export const handleWithChatCompletions = async (
           data: eventData,
         })
       }
-    }
-
-    for (const event of flushPendingAnthropicStreamEvents(streamState)) {
-      const eventData = JSON.stringify(event)
-      debugLazy(logger, () => ["Translated Anthropic event:", eventData])
-      await stream.writeSSE({
-        event: event.type,
-        data: eventData,
+    } catch (error) {
+      await emitAnthropicStreamError(stream, logger, {
+        error,
+        flow: "chat_completions",
       })
     }
 
@@ -258,48 +266,60 @@ export const handleWithResponsesApi = async (
       })
       let usage: UsageTokens = {}
 
-      for await (const chunk of response) {
-        const eventName = chunk.event
-        if (eventName === "ping") {
-          await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
-          continue
-        }
+      try {
+        for await (const chunk of response) {
+          const eventName = chunk.event
+          if (eventName === "ping") {
+            await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
+            continue
+          }
 
-        const data = chunk.data
-        if (!data) {
-          continue
-        }
+          const data = chunk.data
+          if (!data) {
+            continue
+          }
 
-        debugLazy(logger, () => ["Responses raw stream event:", data])
+          debugLazy(logger, () => ["Responses raw stream event:", data])
 
-        const responseEvent = JSON.parse(data) as ResponseStreamEvent
-        if (
-          responseEvent.type === "response.completed"
-          || responseEvent.type === "response.failed"
-          || responseEvent.type === "response.incomplete"
-        ) {
-          usage = {
-            ...normalizeResponsesUsage(responseEvent.response.usage),
-            total_nano_aiu: normalizeOptionalToken(
-              responseEvent.copilot_usage?.total_nano_aiu,
-            ),
+          const responseEvent = JSON.parse(data) as ResponseStreamEvent
+          if (
+            responseEvent.type === "response.completed"
+            || responseEvent.type === "response.failed"
+            || responseEvent.type === "response.incomplete"
+          ) {
+            usage = {
+              ...normalizeResponsesUsage(responseEvent.response.usage),
+              total_nano_aiu: normalizeOptionalToken(
+                responseEvent.copilot_usage?.total_nano_aiu,
+              ),
+            }
+          }
+
+          const events = translateResponsesStreamEvent(
+            responseEvent,
+            streamState,
+          )
+          for (const event of events) {
+            const eventData = JSON.stringify(event)
+            debugLazy(logger, () => ["Translated Anthropic event:", eventData])
+            await stream.writeSSE({
+              event: event.type,
+              data: eventData,
+            })
+          }
+
+          if (streamState.messageCompleted) {
+            logger.debug("Message completed, ending stream")
+            break
           }
         }
-
-        const events = translateResponsesStreamEvent(responseEvent, streamState)
-        for (const event of events) {
-          const eventData = JSON.stringify(event)
-          debugLazy(logger, () => ["Translated Anthropic event:", eventData])
-          await stream.writeSSE({
-            event: event.type,
-            data: eventData,
-          })
-        }
-
-        if (streamState.messageCompleted) {
-          logger.debug("Message completed, ending stream")
-          break
-        }
+      } catch (error) {
+        await emitAnthropicStreamError(stream, logger, {
+          error,
+          flow: "responses",
+        })
+        recordUsage(usage)
+        return
       }
 
       if (!streamState.messageCompleted) {
@@ -378,31 +398,38 @@ export const handleWithMessagesApi = async (
     return streamSSE(c, async (stream) => {
       let usage: UsageTokens = {}
 
-      for await (const event of response) {
-        const eventName = event.event
-        const data = event.data ?? ""
-        if (data === "[DONE]") {
-          break
-        }
-        if (!data) {
-          continue
-        }
-        debugLazy(logger, () => ["Messages raw stream event:", data])
-        const parsedEvent = parseAnthropicStreamEvent(data)
-        if (parsedEvent?.type === "message_start") {
-          usage = mergeAnthropicUsage(usage, {
-            ...normalizeAnthropicUsage(parsedEvent.message.usage),
-            ...normalizeCopilotUsage(parsedEvent.message.copilot_usage),
+      try {
+        for await (const event of response) {
+          const eventName = event.event
+          const data = event.data ?? ""
+          if (data === "[DONE]") {
+            break
+          }
+          if (!data) {
+            continue
+          }
+          debugLazy(logger, () => ["Messages raw stream event:", data])
+          const parsedEvent = parseAnthropicStreamEvent(data)
+          if (parsedEvent?.type === "message_start") {
+            usage = mergeAnthropicUsage(usage, {
+              ...normalizeAnthropicUsage(parsedEvent.message.usage),
+              ...normalizeCopilotUsage(parsedEvent.message.copilot_usage),
+            })
+          } else if (parsedEvent?.type === "message_delta") {
+            usage = mergeAnthropicUsage(usage, {
+              ...normalizeAnthropicUsage(parsedEvent.usage),
+              ...normalizeCopilotUsage(parsedEvent.copilot_usage),
+            })
+          }
+          await stream.writeSSE({
+            event: eventName,
+            data,
           })
-        } else if (parsedEvent?.type === "message_delta") {
-          usage = mergeAnthropicUsage(usage, {
-            ...normalizeAnthropicUsage(parsedEvent.usage),
-            ...normalizeCopilotUsage(parsedEvent.copilot_usage),
-          })
         }
-        await stream.writeSSE({
-          event: eventName,
-          data,
+      } catch (error) {
+        await emitAnthropicStreamError(stream, logger, {
+          error,
+          flow: "messages",
         })
       }
 
