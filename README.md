@@ -33,9 +33,7 @@ On the GitHub Copilot path, the gateway prefers Copilot's native Anthropic-style
 - **Agent-friendly Claude handling on Copilot**: Prefer native `/v1/messages` when available, preserve Claude-style tool flows, support Anthropic beta features, Claude WebSearch through Responses-capable models, and keep subagent/session markers intact.
 - **Claude Code and OpenCode integration**: Works with Claude Code and OpenCode, including direct Anthropic-compatible usage through `@ai-sdk/anthropic`.
 - **Flexible auth and deployment options**: Supports interactive login or direct tokens, individual/business/enterprise plans, GitHub Enterprise, opencode OAuth, and custom data directories.
-- **Local control and visibility**: Includes a usage dashboard, rate limiting, manual approval, and optional token visibility for debugging.
 - **Multi-provider routing**: Expose provider-specific `/:provider/...` routes or use `model: "provider/model"` on the top-level API.
-- **Better token and context management**: Supports exact Claude token counting and configurable GPT context compaction for long-running conversations.
 
 ## Prerequisites
 
