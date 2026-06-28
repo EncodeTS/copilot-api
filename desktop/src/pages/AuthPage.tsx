@@ -20,6 +20,11 @@ type ProviderChoice = QuickProviderName | 'custom'
 
 const PROVIDER_TYPES: ProviderType[] = ['anthropic', 'openai-compatible', 'openai-responses']
 const PROVIDER_AUTH_TYPES: ProviderAuthTypeInput[] = ['__default__', 'x-api-key', 'authorization']
+const PROVIDER_COLORS: Record<QuickProviderName, string> = {
+  deepseek: 'bg-emerald-500',
+  dashscope: 'bg-orange-500',
+  openrouter: 'bg-violet-500',
+}
 // Renderer cannot import main-process config. Keep this in sync with src/lib/quick-providers.ts.
 const QUICK_PROVIDER_DEFAULTS: Record<QuickProviderName, { baseUrl: string; editableType: boolean; type: ProviderType }> = {
   deepseek: {
@@ -230,13 +235,15 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
 
         {/* Default state: provider choices */}
         {view === 'default' && (
-          <div className="grid w-full max-w-[360px] grid-cols-2 gap-2 rounded-xl border border-slate-100 bg-white p-3 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
+          <div className="w-full max-w-[360px] rounded-xl border border-slate-100 bg-white p-4 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
+            {/* OAuth Section */}
+            <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2.5">OAuth</p>
             <button
               onClick={handleOAuth}
               disabled={loading}
-              className="col-span-2 w-full py-2.5 bg-[#0f172a] text-white text-[13px] font-semibold rounded-lg flex items-center justify-center gap-2 hover:bg-slate-800 disabled:opacity-50 transition-colors"
+              className="w-full py-2.5 bg-[#0f172a] text-white text-[13px] font-semibold rounded-lg flex items-center justify-center gap-2 hover:bg-slate-800 disabled:opacity-50 transition-all mb-2"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/>
               </svg>
               {loading ? t('auth.loading') : t('auth.githubAuth')}
@@ -244,28 +251,43 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
             <button
               onClick={handleCodexOAuth}
               disabled={loading}
-              className="col-span-2 w-full py-2.5 bg-white border border-slate-200 text-slate-700 text-[13px] font-semibold rounded-lg hover:bg-slate-50 disabled:opacity-50 transition-colors"
+              className="w-full py-2.5 bg-white border border-slate-200 text-slate-700 text-[13px] font-semibold rounded-lg hover:bg-slate-50 hover:border-slate-300 disabled:opacity-50 transition-all mb-4"
             >
               {t('auth.codexAuth')}
             </button>
-            {(['deepseek', 'dashscope', 'openrouter'] as QuickProviderName[]).map(provider => (
+
+            {/* Divider */}
+            <div className="flex items-center gap-3 mb-3">
+              <div className="flex-1 border-t border-slate-100" />
+              <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">API Key</span>
+              <div className="flex-1 border-t border-slate-100" />
+            </div>
+
+            {/* Provider grid: 2x2 */}
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              {(['deepseek', 'dashscope', 'openrouter'] as QuickProviderName[]).map(provider => (
+                <button
+                  key={provider}
+                  onClick={() => handleProviderSelect(provider)}
+                  className="w-full py-2.5 bg-white border border-slate-200 text-slate-600 text-[13px] rounded-lg hover:bg-slate-50 hover:border-slate-300 transition-all flex items-center justify-center gap-1.5"
+                >
+                  <span className={`w-1.5 h-1.5 rounded-full ${PROVIDER_COLORS[provider]}`} />
+                  {getQuickProviderLabel(provider)}
+                </button>
+              ))}
               <button
-                key={provider}
-                onClick={() => handleProviderSelect(provider)}
-                className="w-full py-2.5 bg-white border border-slate-200 text-slate-600 text-[13px] rounded-lg hover:bg-slate-50 transition-colors"
+                onClick={() => handleProviderSelect('custom')}
+                className="w-full py-2.5 bg-white border border-slate-200 text-slate-600 text-[13px] rounded-lg hover:bg-slate-50 hover:border-slate-300 transition-all flex items-center justify-center gap-1.5"
               >
-                {getQuickProviderLabel(provider)}
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                {t('auth.customProvider')}
               </button>
-            ))}
-            <button
-              onClick={() => handleProviderSelect('custom')}
-              className="w-full py-2.5 bg-white border border-slate-200 text-slate-600 text-[13px] rounded-lg hover:bg-slate-50 transition-colors"
-            >
-              {t('auth.customProvider')}
-            </button>
+            </div>
+
+            {/* Manual token link */}
             <button
               onClick={() => setView('token-input')}
-              className="col-span-2 w-full py-2 text-[13px] text-slate-400 hover:text-slate-600 transition-colors"
+              className="w-full py-2 text-[13px] text-slate-400 hover:text-slate-600 transition-colors"
             >
               {t('auth.manualToken')}
             </button>
@@ -274,7 +296,7 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
 
         {/* OAuth pending state */}
         {view === 'oauth-pending' && deviceCode && (
-          <div className="w-full max-w-[320px] flex flex-col gap-3 rounded-xl border border-slate-100 bg-white p-3 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
+          <div className="w-full max-w-[320px] flex flex-col gap-3 rounded-xl border border-slate-100 bg-white p-4 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
             <div>
               <p className="text-[13px] text-slate-400 mb-1.5">{t('auth.deviceCode')}</p>
               <div className="flex items-center gap-2 px-3 py-2.5 border border-dashed border-slate-300 rounded-lg bg-slate-50">
@@ -320,7 +342,7 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
 
         {/* Expanded token input state */}
         {view === 'token-input' && (
-          <div className="w-full max-w-[320px] flex flex-col gap-3 rounded-xl border border-slate-100 bg-white p-3 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
+          <div className="w-full max-w-[320px] flex flex-col gap-3 rounded-xl border border-slate-100 bg-white p-4 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
             <textarea
               value={tokenInput}
               onChange={e => setTokenInput(e.target.value)}
@@ -345,8 +367,11 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
         )}
 
         {view === 'provider-input' && (
-          <div className="w-full max-w-[360px] flex flex-col gap-3 rounded-xl border border-slate-100 bg-white p-3 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
-            <div className="text-center text-[13px] font-semibold text-[#0f172a]">
+          <div className="w-full max-w-[360px] flex flex-col gap-3 rounded-xl border border-slate-100 bg-white p-4 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
+            <div className="flex items-center justify-center gap-1.5 text-[13px] font-semibold text-[#0f172a]">
+              {providerChoice !== 'custom' && selectedQuickProvider && (
+                <span className={`w-1.5 h-1.5 rounded-full ${PROVIDER_COLORS[providerChoice]}`} />
+              )}
               {selectedProviderLabel}
             </div>
 
@@ -432,7 +457,7 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
         )}
 
         {view === 'codex-pending' && (
-          <div className="w-full max-w-[320px] flex flex-col gap-3 rounded-xl border border-slate-100 bg-white p-3 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
+          <div className="w-full max-w-[320px] flex flex-col gap-3 rounded-xl border border-slate-100 bg-white p-4 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
             <p className="text-center text-[13px] text-slate-400 animate-pulse">
               {loading ? t('auth.waitingCodexAuth') : t('auth.codexCallbackRequired')}
             </p>
