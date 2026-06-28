@@ -125,6 +125,35 @@ describe("desktop provider auth", () => {
     })
   })
 
+  test("configures opencode-go with a fixed openai-compatible provider type", () => {
+    let writtenProviderConfig: ProviderConfig | undefined
+
+    configureDesktopProvider(
+      {
+        apiKey: "opencode-key",
+        baseUrl: "https://opencode.example/zen/go///",
+        provider: "opencode-go",
+        type: "anthropic",
+      },
+      {
+        getEnabledProviders: () => ["opencode-go"],
+        getRawProviderConfig: () => null,
+        setProviderConfig(_name, provider) {
+          writtenProviderConfig = provider
+          return provider
+        },
+      },
+    )
+
+    expect(writtenProviderConfig).toEqual({
+      apiKey: "opencode-key",
+      baseUrl: "https://opencode.example/zen/go",
+      enabled: true,
+      pricingCurrency: "USD",
+      type: "openai-compatible",
+    })
+  })
+
   test("rejects invalid provider input before writing config", () => {
     let writes = 0
     const dependencies = {

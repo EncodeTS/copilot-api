@@ -24,7 +24,7 @@ export interface AuthStatus extends AuthResult {
 export type ProviderType = 'anthropic' | 'openai-compatible' | 'openai-responses'
 export type ProviderAuthType = 'authorization' | 'x-api-key'
 export type ProviderAuthTypeInput = ProviderAuthType | '__default__'
-export type QuickProviderName = 'deepseek' | 'dashscope' | 'openrouter'
+export type QuickProviderName = 'opencode-go' | 'deepseek' | 'dashscope' | 'openrouter'
 
 export type ProviderAuthInput =
   | {

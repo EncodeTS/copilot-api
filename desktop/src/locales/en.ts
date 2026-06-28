@@ -16,6 +16,7 @@ const en: Locale = {
     providerDeepseek: 'DeepSeek',
     providerInvalid: 'Invalid provider configuration, please try again',
     providerName: 'Provider name',
+    providerOpencodeGo: 'OpenCode Go',
     providerOpenrouter: 'OpenRouter',
     providerType: 'Provider type',
     deviceCode: 'Authorization code',

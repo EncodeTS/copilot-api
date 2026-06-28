@@ -21,12 +21,18 @@ type ProviderChoice = QuickProviderName | 'custom'
 const PROVIDER_TYPES: ProviderType[] = ['anthropic', 'openai-compatible', 'openai-responses']
 const PROVIDER_AUTH_TYPES: ProviderAuthTypeInput[] = ['__default__', 'x-api-key', 'authorization']
 const PROVIDER_COLORS: Record<QuickProviderName, string> = {
+  'opencode-go': 'bg-sky-500',
   deepseek: 'bg-emerald-500',
   dashscope: 'bg-orange-500',
   openrouter: 'bg-violet-500',
 }
 // Renderer cannot import main-process config. Keep this in sync with src/lib/quick-providers.ts.
 const QUICK_PROVIDER_DEFAULTS: Record<QuickProviderName, { baseUrl: string; editableType: boolean; type: ProviderType }> = {
+  'opencode-go': {
+    baseUrl: 'https://opencode.ai/zen/go',
+    editableType: false,
+    type: 'openai-compatible'
+  },
   deepseek: {
     baseUrl: 'https://api.deepseek.com/anthropic',
     editableType: true,
@@ -193,6 +199,8 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
 
   const getQuickProviderLabel = (provider: QuickProviderName): string => {
     switch (provider) {
+      case 'opencode-go':
+        return t('auth.providerOpencodeGo')
       case 'deepseek':
         return t('auth.providerDeepseek')
       case 'dashscope':
@@ -265,7 +273,7 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
 
             {/* Provider grid: 2x2 */}
             <div className="grid grid-cols-2 gap-2 mb-3">
-              {(['deepseek', 'dashscope', 'openrouter'] as QuickProviderName[]).map(provider => (
+              {(['opencode-go', 'deepseek', 'dashscope', 'openrouter'] as QuickProviderName[]).map(provider => (
                 <button
                   key={provider}
                   onClick={() => handleProviderSelect(provider)}
