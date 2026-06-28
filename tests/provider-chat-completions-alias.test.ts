@@ -4,26 +4,17 @@ import { Hono } from "hono"
 import type { ResolvedProviderConfig } from "../src/lib/config"
 
 const actualConfigModule = await import("../src/lib/config")
-const actualRateLimitModule = await import("../src/lib/rate-limit")
 const actualTokenUsageModule = await import("../src/lib/token-usage")
 
 let providerConfig: ResolvedProviderConfig | null = null
 let modelMappings: Record<string, string> = {}
 
-const checkRateLimit = mock(() => {
-  throw new Error("Copilot rate limit should not run for provider aliases")
-})
 const noopTokenUsageRecorder = () => {}
 
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
   getProviderConfig: () => providerConfig,
   resolveMappedModel: (model: string) => modelMappings[model] ?? model,
-}))
-
-await mock.module("~/lib/rate-limit", () => ({
-  ...actualRateLimitModule,
-  checkRateLimit,
 }))
 
 await mock.module("~/lib/token-usage", () => ({
@@ -98,7 +89,6 @@ beforeEach(() => {
   }
 
   modelMappings = {}
-  checkRateLimit.mockClear()
   fetchMock.mockClear()
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
     fetchMock as unknown as typeof fetch
@@ -128,7 +118,6 @@ describe("provider/model aliases on top-level chat completions route", () => {
     })
 
     expect(response.status).toBe(200)
-    expect(checkRateLimit).not.toHaveBeenCalled()
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
     const [url, init] = fetchMock.mock.calls[0]
@@ -161,7 +150,6 @@ describe("provider/model aliases on top-level chat completions route", () => {
     })
 
     expect(response.status).toBe(200)
-    expect(checkRateLimit).not.toHaveBeenCalled()
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
     const init = fetchMock.mock.calls[0][1] as RequestInit

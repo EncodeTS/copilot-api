@@ -162,9 +162,6 @@ Copilot API 现在使用子命令结构，主要命令包括：
 | --- | --- | --- | --- |
 | --port | 监听端口 | 4141 | -p |
 | --verbose | 启用详细日志 | false | -v |
-| --manual | 启用手动请求审批 | false | 无 |
-| --rate-limit | 请求之间的速率限制秒数 | 无 | -r |
-| --wait | 达到速率限制时等待，而不是直接报错 | false | -w |
 | --github-token | 直接提供 GitHub token（必须通过 `auth` 子命令生成） | 无 | -g |
 | --claude-code | 生成一个使用 Copilot API 配置启动 Claude Code 的命令 | false | -c |
 | --show-token | 在获取和刷新时显示 GitHub 与 Copilot token | false | 无 |
@@ -744,11 +741,6 @@ bun run start start
 ```
 
 ## 使用建议
-
-- 为避免触发 GitHub Copilot 速率限制，可以使用以下参数：
-  - `--manual`：为每个请求启用手动审批，让你完全控制何时发送请求。
-  - `--rate-limit <seconds>`：强制请求之间至少保持一定秒数的间隔。例如 `copilot-api start --rate-limit 30` 会确保两次请求之间至少间隔 30 秒。
-  - `--wait`：与 `--rate-limit` 配合使用。在命中速率限制时，服务会等待冷却结束，而不是直接返回错误。对于不会自动重试的客户端，这会很有帮助。
 
 <a id="claudemd-or-agentsmd-recommended-content"></a>
 

@@ -7,7 +7,6 @@ import type { ResponsesResult } from "../src/services/copilot/create-responses"
 
 const actualConfigModule = await import("../src/lib/config")
 const actualModelsModule = await import("../src/lib/models")
-const actualRateLimitModule = await import("../src/lib/rate-limit")
 const actualStateModule = await import("../src/lib/state")
 const actualTokenModule = await import("../src/lib/token")
 const actualTokenUsageModule = await import("../src/lib/token-usage")
@@ -16,7 +15,6 @@ let providerConfigs: Record<string, ResolvedProviderConfig> = {}
 let messageApiWebSearchModel: string | undefined
 
 const noopTokenUsageRecorder = () => {}
-const checkRateLimit = mock(async () => {})
 const findEndpointModel = mock((model: string) => ({
   id: model,
   supported_endpoints: ["/v1/messages"],
@@ -36,16 +34,10 @@ await mock.module("~/lib/models", () => ({
   findEndpointModel,
 }))
 
-await mock.module("~/lib/rate-limit", () => ({
-  ...actualRateLimitModule,
-  checkRateLimit,
-}))
-
 await mock.module("~/lib/state", () => ({
   ...actualStateModule,
   state: {
     ...actualStateModule.state,
-    manualApprove: false,
     tokenBasedBilling: true,
     verbose: false,
   },
@@ -308,7 +300,6 @@ beforeEach(() => {
   state.codexAccessToken = "codex-token"
   state.codexAccountId = "codex-account"
   messageApiWebSearchModel = undefined
-  checkRateLimit.mockClear()
   findEndpointModel.mockClear()
   fetchMock.mockClear()
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
@@ -342,7 +333,6 @@ describe("provider messages web_search", () => {
     })
 
     expect(response.status).toBe(200)
-    expect(checkRateLimit).toHaveBeenCalledTimes(0)
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
     const [url, init] = fetchMock.mock.calls[0]

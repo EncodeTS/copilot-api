@@ -52,12 +52,8 @@ const DB_PATH_ENV = "COPILOT_API_SQLITE_DB_PATH"
 const originalState = {
   accountType: state.accountType,
   copilotToken: state.copilotToken,
-  lastRequestTimestamp: state.lastRequestTimestamp,
   macMachineId: state.macMachineId,
-  manualApprove: state.manualApprove,
   models: state.models,
-  rateLimitSeconds: state.rateLimitSeconds,
-  rateLimitWait: state.rateLimitWait,
   verbose: state.verbose,
   vsCodeDeviceId: state.vsCodeDeviceId,
   vsCodeSessionId: state.vsCodeSessionId,
@@ -85,11 +81,7 @@ beforeEach(async () => {
   state.copilotToken = "test-token"
   state.accountType = "individual"
   state.macMachineId = "machine-1"
-  state.manualApprove = false
   state.verbose = false
-  state.rateLimitSeconds = undefined
-  state.rateLimitWait = false
-  state.lastRequestTimestamp = undefined
   state.vsCodeDeviceId = "device-1"
   state.vsCodeSessionId = "session-1"
   state.vsCodeVersion = "1.120.0"
@@ -109,7 +101,6 @@ beforeEach(async () => {
   } as typeof state.models
 
   responsesApiWebSocketEnabled = true
-  responsesHandlerDependencies.checkRateLimit = async () => {}
   responsesHandlerDependencies.createResponses = createResponses
   responsesHandlerDependencies.isResponsesApiWebSearchEnabled = () => true
   responsesUtilsDependencies.getModelResponsesApiCompactThreshold = () =>
@@ -127,11 +118,7 @@ afterEach(async () => {
   state.copilotToken = originalState.copilotToken
   state.accountType = originalState.accountType
   state.macMachineId = originalState.macMachineId
-  state.manualApprove = originalState.manualApprove
   state.verbose = originalState.verbose
-  state.rateLimitSeconds = originalState.rateLimitSeconds
-  state.rateLimitWait = originalState.rateLimitWait
-  state.lastRequestTimestamp = originalState.lastRequestTimestamp
   state.vsCodeDeviceId = originalState.vsCodeDeviceId
   state.vsCodeSessionId = originalState.vsCodeSessionId
   state.vsCodeVersion = originalState.vsCodeVersion

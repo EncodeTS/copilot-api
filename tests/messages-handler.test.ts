@@ -11,7 +11,6 @@ import {
 const actualStateModule = await import("../src/lib/state")
 const actualConfigModule = await import("../src/lib/config")
 const actualModelsModule = await import("../src/lib/models")
-const actualRateLimitModule = await import("../src/lib/rate-limit")
 const actualUtilsModule = await import("../src/lib/utils")
 const { responsesUtilsDependencies } = await import(
   "../src/routes/responses/utils"
@@ -19,7 +18,6 @@ const { responsesUtilsDependencies } = await import(
 
 const state = {
   ...actualStateModule.state,
-  manualApprove: false,
   tokenBasedBilling: false,
   verbose: false,
 }
@@ -43,7 +41,6 @@ type FlowCallOptions = {
 let selectedModel: SelectedModel | undefined
 
 const findEndpointModel = mock((_: string) => selectedModel)
-const checkRateLimit = mock(async () => {})
 const handleWithMessagesApi = mock(
   (
     _c: unknown,
@@ -69,10 +66,6 @@ const handleWithChatCompletions = mock(
 await mock.module("~/lib/state", () => ({
   ...actualStateModule,
   state,
-}))
-await mock.module("~/lib/rate-limit", () => ({
-  ...actualRateLimitModule,
-  checkRateLimit,
 }))
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
@@ -111,7 +104,6 @@ const createPayload = (
 })
 
 beforeEach(() => {
-  state.manualApprove = false
   state.verbose = false
   messagesApiEnabled = true
   responsesApiWebSocketEnabled = true
@@ -125,7 +117,6 @@ beforeEach(() => {
   messagesFlowHandlers.handleWithResponsesApi = handleWithResponsesApi
   messagesFlowHandlers.handleWithChatCompletions = handleWithChatCompletions
 
-  checkRateLimit.mockClear()
   findEndpointModel.mockClear()
   handleWithMessagesApi.mockClear()
   handleWithResponsesApi.mockClear()
