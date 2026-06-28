@@ -33,6 +33,7 @@ import {
   getResponsesRequestOptions,
 } from "./utils"
 import { createOptimizedCopilotResponses } from "./optimized-create"
+import { emitResponsesStreamError } from "./stream-error"
 import consola from "consola"
 
 const logger = createHandlerLogger("responses-handler")
@@ -156,36 +157,40 @@ export const handleResponses = async (c: Context) => {
       const idTracker = createStreamIdTracker()
       let usage: UsageTokens = {}
 
-      for await (const chunk of response) {
-        debugJsonTail(logger, "Responses stream chunk:", {
-          value: chunk,
-          tailLength: 1_000,
-        })
-        const parsedEvent = parseResponsesStreamEvent(chunk)
-        if (
-          parsedEvent?.type === "response.completed"
-          || parsedEvent?.type === "response.failed"
-          || parsedEvent?.type === "response.incomplete"
-        ) {
-          usage = {
-            ...normalizeResponsesUsage(parsedEvent.response.usage),
-            total_nano_aiu: normalizeOptionalToken(
-              parsedEvent.copilot_usage?.total_nano_aiu,
-            ),
+      try {
+        for await (const chunk of response) {
+          debugJsonTail(logger, "Responses stream chunk:", {
+            value: chunk,
+            tailLength: 1_000,
+          })
+          const parsedEvent = parseResponsesStreamEvent(chunk)
+          if (
+            parsedEvent?.type === "response.completed"
+            || parsedEvent?.type === "response.failed"
+            || parsedEvent?.type === "response.incomplete"
+          ) {
+            usage = {
+              ...normalizeResponsesUsage(parsedEvent.response.usage),
+              total_nano_aiu: normalizeOptionalToken(
+                parsedEvent.copilot_usage?.total_nano_aiu,
+              ),
+            }
           }
+
+          const processedData = fixStreamIds(
+            (chunk as { data?: string }).data ?? "",
+            (chunk as { event?: string }).event,
+            idTracker,
+          )
+
+          await stream.writeSSE({
+            id: (chunk as { id?: string }).id,
+            event: (chunk as { event?: string }).event,
+            data: processedData,
+          })
         }
-
-        const processedData = fixStreamIds(
-          (chunk as { data?: string }).data ?? "",
-          (chunk as { event?: string }).event,
-          idTracker,
-        )
-
-        await stream.writeSSE({
-          id: (chunk as { id?: string }).id,
-          event: (chunk as { event?: string }).event,
-          data: processedData,
-        })
+      } catch (error) {
+        await emitResponsesStreamError(stream, logger, error)
       }
 
       recordUsage(usage)
