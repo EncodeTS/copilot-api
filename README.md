@@ -58,6 +58,22 @@ To start the server directly from source:
 bun run start start
 ```
 
+## Running from Source
+
+The project can be run from source in several ways:
+
+### Development Mode
+
+```sh
+bun run dev start
+```
+
+### Production Mode
+
+```sh
+bun run start start
+```
+
 ## Using with npx
 
 You can run the project directly using npx:
@@ -90,27 +106,6 @@ npx @jeffreycao/copilot-api@latest auth login --provider dashscope
 npx @jeffreycao/copilot-api@latest start
 ```
 
-## Electron Desktop App
-
-If you prefer a GUI, this repository also includes an Electron desktop app in `desktop/`. It supports GitHub Copilot sign-in, OpenAI Codex OAuth, and API-key configuration for DeepSeek, DashScope, OpenRouter, or a custom provider. After authorization or provider configuration, it can start and stop the local proxy with one click and shows the local endpoint, auth header, available models, usage, and logs in the app.
-
-The settings screen also exposes `OAuth App`, `API Home`, `Enterprise URL`, verbose logging, and minimize-to-tray. Desktop packages are published in GitHub Releases:
-
-https://github.com/caozhiyuan/copilot-api/releases
-
-Download the installer for your platform, authorize or configure a provider inside the app, choose a port, start the server, then point your client at the local endpoint shown in the app. Packaged desktop builds use the bundled Electron runtime, so normal desktop usage does not require installing Node.js separately. Token usage history is enabled when that bundled runtime supports SQLite.
-
-The desktop app's Advanced Config page reads and writes the shared model mappings through `GET/POST /admin/config/model-mappings`. The same mappings apply across `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/responses`, and `POST /v1/chat/completions` instead of being split per interface. It uses `auth.adminApiKey` instead of the regular `auth.apiKeys`, and the app reads that key directly from `config.json` after the server has generated it on startup.
-
-### Desktop App Screenshots
-
-Main dashboard, token usage breakdown in the bundled Electron app:
-
-<p align="center">
-  <img src="./docs/screenshots/desktop-dashboard.png" alt="Copilot API desktop app dashboard" width="49%" />
-  <img src="./docs/screenshots/desktop-token-usage.png" alt="Copilot API desktop app token usage view" width="49%" />
-</p>
-
 ## Using with Docker
 
 Build the image:
@@ -133,6 +128,328 @@ Or pass a GitHub token directly:
 ```sh
 docker run -p 4141:4141 -e GH_TOKEN=your_github_token_here copilot-api
 ```
+
+## Electron Desktop App
+
+If you prefer a GUI, this repository also includes an Electron desktop app in `desktop/`. It supports GitHub Copilot sign-in, OpenAI Codex OAuth, and API-key configuration for DeepSeek, DashScope, OpenRouter, or a custom provider. After authorization or provider configuration, it can start and stop the local proxy with one click and shows the local endpoint, auth header, available models, usage, and logs in the app.
+
+The settings screen also exposes `OAuth App`, `API Home`, `Enterprise URL`, verbose logging, and minimize-to-tray. Desktop packages are published in GitHub Releases:
+
+https://github.com/caozhiyuan/copilot-api/releases
+
+Download the installer for your platform, authorize or configure a provider inside the app, choose a port, start the server, then point your client at the local endpoint shown in the app. Packaged desktop builds use the bundled Electron runtime, so normal desktop usage does not require installing Node.js separately. Token usage history is enabled when that bundled runtime supports SQLite.
+
+The desktop app's Advanced Config page reads and writes the shared model mappings through `GET/POST /admin/config/model-mappings`. The same mappings apply across `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/responses`, and `POST /v1/chat/completions` instead of being split per interface. It uses `auth.adminApiKey` instead of the regular `auth.apiKeys`, and the app reads that key directly from `config.json` after the server has generated it on startup.
+
+### Desktop App Screenshots
+
+Main dashboard, token usage breakdown in the bundled Electron app:
+
+<p align="center">
+  <img src="./docs/screenshots/desktop-dashboard.png" alt="Copilot API desktop app dashboard" width="49%" />
+  <img src="./docs/screenshots/desktop-token-usage.png" alt="Copilot API desktop app token usage view" width="49%" />
+</p>
+
+## Using with Claude Code
+
+This AI gateway can be used to power [Claude Code](https://docs.anthropic.com/en/claude-code), an experimental conversational AI assistant for developers from Anthropic.
+
+There are two ways to configure Claude Code to use this AI gateway:
+
+### Interactive Setup with `--claude-code` flag
+
+To get started, run the `start` command with the `--claude-code` flag:
+
+```sh
+npx @jeffreycao/copilot-api@latest start --claude-code
+```
+
+You will be prompted to select a primary model and a "small, fast" model for background tasks. After selecting the models, a command will be copied to your clipboard. This command sets the necessary environment variables for Claude Code to use the gateway.
+
+Paste and run this command in a new terminal to launch Claude Code.
+
+### Manual Configuration with `settings.json`
+
+Alternatively, you can configure Claude Code by creating a `.claude/settings.json` file in your project's root directory. This file should contain the environment variables needed by Claude Code. This way you don't need to run the interactive setup every time.
+
+Here is an example `.claude/settings.json` file:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:4141",
+    "ANTHROPIC_AUTH_TOKEN": "dummy",
+    "ANTHROPIC_MODEL": "deepseek/deepseek-v4-pro",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek/deepseek-v4-pro",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek/deepseek-v4-flash",
+    "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+    "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false",
+    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "true",
+    "CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0"
+  },
+  "permissions": {
+    "deny": [
+      "mcp__ide__executeCode"
+    ]
+  }
+}
+```
+
+- Replace `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL` according to your needs. After configuration, please install the claude code plugin [Plugin Integrations](#plugin-integrations).  
+- Setting CLAUDE_CODE_ATTRIBUTION_HEADER to 0 can prevent Claude code from adding billing and version information in system prompts, thereby avoiding prompt cache invalidation.
+- Turning off CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION and CLAUDE_CODE_ENABLE_AWAY_SUMMARY can prevent quota from being consumed unnecessarily.
+- Claude Code WebSearch is supported for pure search requests. For Copilot, keep the global `messageApiWebSearchModel` set to a Responses-capable GPT model or a `provider/model` alias. For provider routes, use a native Anthropic provider or an `openai-responses` provider. Add `WebSearch` to `permissions.deny` only if you want to forbid this traffic.
+- If using a non-Claude model, do not enable ENABLE_TOOL_SEARCH. If using the Claude model, can enable ENABLE_TOOL_SEARCH. The current Claude Code uses the client tool search mode. In this mode, loading defer tools requires an additional request each time.
+- `CLAUDE_CODE_AUTO_COMPACT_WINDOW`: Set the context capacity in tokens used for auto-compaction calculations. Defaults to the model's context window: 200K for standard models or 1M for extended context models. Use a lower value like `500000` on a 1M model (e.g., `claude-opus-4-6[1m]`) to treat the window as 500K for compaction purposes. The value is capped at the model's actual context window. `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is applied as a percentage of this value. Setting this variable decouples the compaction threshold from the status line's `used_percentage`, which always uses the model's full context window.
+
+You can find more options here: [Claude Code settings](https://docs.anthropic.com/en/docs/claude-code/settings#environment-variables)
+
+You can also read more about IDE integration here: [Add Claude Code to your IDE](https://docs.anthropic.com/en/docs/claude-code/ide-integrations)
+
+## Using with OpenCode
+
+OpenCode already has a direct GitHub Copilot provider. Use this section when you want OpenCode to point at this AI gateway through `@ai-sdk/anthropic` and reuse the agent behaviors described earlier in this README.
+
+### Minimal setup
+
+Start the AI gateway with the OpenCode OAuth app:
+
+```sh
+npx @jeffreycao/copilot-api@latest auth --oauth-app=opencode
+npx @jeffreycao/copilot-api@latest start
+```
+
+Then point OpenCode at the gateway with `@ai-sdk/anthropic`.
+
+Example `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "local": {
+      "npm": "@ai-sdk/anthropic",
+      "name": "My Local",
+      "options": {
+        "baseURL": "http://localhost:4141/v1",
+        "apiKey": "dummy"
+      },
+      "models": {
+        "gpt-5.4": {
+          "name": "gpt-5.4",
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "limit": {
+            "context": 300000,
+            "output": 128000
+          }
+        },
+        "claude-sonnet-4.6": {
+          "id": "claude-sonnet-4.6",
+          "name": "claude-sonnet-4.6",
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          },          
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          },
+          "options": {
+            "thinking": {
+              "type": "adaptive"
+            },
+            "effort": "max"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Why these fields matter:
+
+- `npm: "@ai-sdk/anthropic"` is the important part. OpenCode will speak Anthropic Messages semantics to this AI gateway instead of flattening everything into OpenAI Chat Completions.
+- `options.baseURL` should be `http://localhost:4141/v1`; the Anthropic SDK will append `/messages`, `/models`, and `/messages/count_tokens` automatically.
+- `model`, `small_model`, and `agent.*.model` let you keep `gpt-5.4` for build/plan work while routing exploration and background work to `gpt-5-mini`.
+- If you enable `auth.apiKeys` in this AI gateway, replace `dummy` with a real key. Otherwise any placeholder value is fine.
+
+## Using with Codex
+
+This AI gateway can also power Codex.
+
+### Codex `config.toml` Reference
+
+Add the following `[model_providers.copilot_api]` section to your Codex `~/.codex/config.toml`:
+
+```toml
+model_provider = "copilot_api"
+model_reasoning_summary = "auto"
+model_verbosity = "medium"
+model_context_window = 272000
+model_auto_compact_token_limit = 244800
+
+[model_providers.copilot_api]
+name = "OpenAI"
+base_url = "http://localhost:4141"
+env_key = "GITHUB_COPILOT_API_KEY"
+requires_openai_auth = true
+supports_websockets = false
+wire_api = "responses"
+request_max_retries = 3
+stream_max_retries = 1
+stream_idle_timeout_ms = 300000
+
+[features]
+remote_compaction_v2 = true
+
+[analytics]
+enabled = false
+```
+
+> [!NOTE]
+> This configuration is specific to Codex and the GitHub Copilot provider. `name` must be set to `"OpenAI"`. It can help mitigate Codex local compact cache miss issues. If you have enabled `useResponsesApiContextManagement` (Responses API context management compaction), `remote_compaction_v2` or local compact is generally not triggered, but it may still occur when tool results return a large number of tokens.
+
+## GPT Tool Search
+
+For GPT Responses models such as `gpt-5.4+`, this AI gateway can expose Responses `tool_search` through a small MCP bridge. The same bridge can be used by Claude Code and opencode, as long as the client loads MCP servers and sends Anthropic Messages traffic through this gateway.
+
+Do not set Claude Code's native `ENABLE_TOOL_SEARCH` for GPT models. That flag enables Claude Code's own client-side tool search mode, and it may stop forwarding deferred tool definitions. This gateway needs the full tool definitions so it can keep the small always-loaded tool set eager and translate every other tool into Responses deferred namespaces.
+
+If you install `tool-search@copilot-api-marketplace`, Claude Code receives this MCP bridge automatically and you can skip the manual Claude Code MCP setup below.
+
+Add the tool search bridge to the MCP config used by Claude Code:
+
+```json
+{
+  "mcpServers": {
+    "tool_search": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@jeffreycao/copilot-api@latest", "mcp"]
+    }
+  }
+}
+```
+
+Add the tool search bridge to the MCP config used by opencode:
+
+```json
+{
+  "mcp": {
+    "tool_search": {
+      "type": "local",
+      "command": ["npx", "-y", "@jeffreycao/copilot-api@latest", "mcp"]
+    }
+  }
+}
+```
+
+For local development, use `bun` as the command and `["run", "./src/main.ts", "mcp"]` as the args.
+
+Internally, the gateway now configures OpenAI Responses `tool_search` in client-executed mode. Deferred tools are still exposed as searchable namespaces, but the model is explicitly asked to return the exact deferred tool names it wants to load next.
+
+The bridge uses direct tool selection, not query search. Its tool input is `names`, a comma-separated list of exact deferred tool names, for example `TaskList,TaskGet,mcp__fetch__fetch`.
+
+## Plugin Integrations
+
+Plugin integrations are available for Claude Code and opencode.
+
+#### Claude Code plugin integration (marketplace-based)
+
+The Claude Code integration is packaged as two plugins:
+
+- `agent-inject` injects `__SUBAGENT_MARKER__...` on `SubagentStart`, so the gateway can infer `x-initiator: agent`.
+- `tool-search` registers the `tool_search` MCP bridge used for GPT Responses deferred tool loading.
+
+- Marketplace catalog in this repository: `.claude-plugin/marketplace.json`
+- Plugin sources in this repository: `plugin/claude/agent-inject`, `plugin/claude/tool-search`
+
+Add the marketplace remotely:
+
+```sh
+/plugin marketplace add https://github.com/caozhiyuan/copilot-api.git
+```
+
+Install the plugins from the marketplace:
+
+```sh
+/plugin install agent-inject@copilot-api-marketplace
+/plugin install tool-search@copilot-api-marketplace
+```
+
+After installation, `agent-inject` injects `__SUBAGENT_MARKER__...` on `SubagentStart`, and the gateway uses it to infer `x-initiator: agent`.
+
+The `agent-inject` plugin also registers a `UserPromptSubmit` hook that returns `{"continue": true}`, and it can inject `SessionStart` reminder rules through environment variables:
+
+- `CLAUDE_PLUGIN_ENABLE_QUESTION_RULES=1` enables the two reminders about using the `question` tool automatically for Claude Code. Alternatively, you can add the same reminders manually in `CLAUDE.md`; see [CLAUDE.md or AGENTS.md Recommended Content](#claudemd-or-agentsmd-recommended-content).
+- `CLAUDE_PLUGIN_ENABLE_NO_BACKGROUND_AGENTS_RULE=1` enables the `run_in_background: true` avoidance reminder for agent hooks.
+
+The `tool-search` plugin bundles the same MCP bridge described in [GPT Tool Search](#gpt-tool-search), so Claude Code users do not need to add the `tool_search` server manually when they install that plugin.
+
+#### Opencode plugin
+
+The subagent marker producer is packaged as an opencode plugin located at `plugin/opencode/subagent-marker.js`.
+
+**Installation:**
+
+Copy the plugin file to your opencode plugins directory:
+
+```sh
+# Clone or download this repository, then copy the plugin
+cp plugin/opencode/subagent-marker.js ~/.config/opencode/plugins/
+```
+
+Or manually create the file at `~/.config/opencode/plugins/subagent-marker.js` with the plugin content.
+
+**Features:**
+
+- Tracks sub-sessions created by subagents
+- Automatically prepends a marker system reminder (`__SUBAGENT_MARKER__...`) to subagent chat messages
+- Sets `x-session-id` header for session tracking
+- Enables the gateway to infer `x-initiator: agent` for subagent-originated requests
+
+The plugin hooks into `session.created`, `session.deleted`, `chat.message`, and `chat.headers` events to provide seamless subagent marker functionality.
+
+## Using the Usage Viewer
+
+After starting the server, a URL to the Copilot Usage Dashboard will be displayed in your console. This dashboard is a web interface for monitoring your API usage.
+
+1.  Start the server. For example, using npx:
+    ```sh
+    npx @jeffreycao/copilot-api@latest start
+    ```
+2.  The server will output a URL to the usage viewer. Copy and paste this URL into your browser. It will look something like this:
+    `http://localhost:4141/usage-viewer?endpoint=http://localhost:4141/usage`
+    - If you use the `start.bat` script on Windows, this page will open automatically.
+
+The dashboard provides a user-friendly interface to view your Copilot usage data:
+
+> Token usage history requires Bun or Node.js >= 22.13.0. On Node.js < 22.13.0, the server runs normally but token usage storage is disabled.
+
+- **API Endpoint URL**: The dashboard is pre-configured to fetch data from your local server endpoint via a URL query parameter. You can manually switch this to any other compatible API endpoint.
+- **x-api-key Authentication**: If API Key authentication is enabled, you can provide the `x-api-key` request header. The key is persisted in the browser's local storage.
+- **Period Selector**: Choose from Day, Week, or Month time ranges. The URL query parameter updates automatically when you switch, making it easy to bookmark and share.
+- **Fetch Data**: Click the "Refresh" button to load or refresh the usage data. The dashboard also fetches data automatically on page load.
+- **Copilot Quotas**: View quota usage for services such as Chat and Completions via progress bars. Hover over a card to see used/remaining details.
+- **Token Usage Metric Cards**: See a summary of Total, Input, Output, Cache Read, Cache Write, Requests, and estimated cost for the current period.
+- **Trend Chart (Week / Month)**: An interactive line chart with model and metric filters. Click a data point to inspect the usage breakdown for a specific day.
+- **Model Breakdown Table**: A per-model summary of requests, input/output/cache tokens, and estimated cost for the selected period.
+- **Request Events (Paginated)**: A time-sorted list of request event records with pagination support, showing timestamps, models, request IDs, and token counts.
+- **Detailed Information**: See the full JSON response from the API for a detailed breakdown of all available usage statistics.
+- **URL-based Configuration**: You can also specify the API endpoint and period directly via `endpoint` and `period` query parameters. For example:
+  `http://localhost:4141/usage-viewer?endpoint=http://your-api-server/usage&period=week`
+
+### Usage Viewer Screenshot
+
+<p align="center">
+  <img src="./docs/screenshots/usage-viewer.png" alt="Copilot API usage viewer" width="900" />
+</p>
 
 ## Command Structure
 
@@ -301,7 +618,7 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
 - **smallModel:** Fallback model used for tool-less warmup messages (e.g., Claude Code probe requests); defaults to gpt-5-mini.
 - **useResponsesApiContextManagement:** When `true`, the proxy adds Responses API `context_management` compaction instructions. Defaults to `true`. Set it to `false` to disable this globally. When enabled, the request includes `context_management` in the body and keeps only the latest compaction carrier on follow-up turns. This is especially useful for long-running tasks.
 - **modelResponsesApiCompactThresholds:** Per-model Responses API `compact_threshold` overrides used when the proxy adds `context_management`. These values take precedence over the fallback threshold from `resolveResponsesCompactThreshold` (`max_prompt_tokens * ratio`, or the default fallback). Defaults set `gpt-5.4` and `gpt-5.5` to `217600` (`272000 * 0.8`). Models not listed continue to use the normal fallback logic.
-- **modelReasoningEfforts:** Per-model `reasoning.effort` sent to the Copilot Responses API. Allowed values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`. If a model isn’t listed, `high` is used by default.
+- **modelReasoningEfforts:** Per-model `reasoning.effort` sent to the Copilot Responses API. Allowed values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`. If a model isn't listed, `high` is used by default.
 - **useMessagesApi:** When `true`, Claude-family models that support Copilot's native `/v1/messages` endpoint will use the Messages API; otherwise they fall back to `/chat/completions`. Set to `false` to disable Messages API routing and always use `/chat/completions`. Defaults to `true`.
 - **useResponsesApiWebSocket:** When `true`, Responses API requests use Copilot's websocket transport for models that advertise `ws:/responses`; models that only advertise `/responses` continue to use HTTP. Set to `false` to disable websocket routing and use HTTP `/responses` whenever the selected model supports it. Defaults to `true`.
 - **useResponsesApiWebSearch:** When `true`, the server keeps Responses API tools with `type: "web_search"` and forwards them upstream. Set to `false` to strip those tools from `/responses` payloads. Defaults to `true`.
@@ -415,323 +732,6 @@ curl http://localhost:4141/v1/chat/completions \
 curl http://localhost:4141/dashscope/v1/messages \
   -H "content-type: application/json" \
   -d '{"model":"qwen3.6-plus","max_tokens":1024,"messages":[{"role":"user","content":"hello"}]}'
-```
-
-## Using with Claude Code
-
-This AI gateway can be used to power [Claude Code](https://docs.anthropic.com/en/claude-code), an experimental conversational AI assistant for developers from Anthropic.
-
-There are two ways to configure Claude Code to use this AI gateway:
-
-### Interactive Setup with `--claude-code` flag
-
-To get started, run the `start` command with the `--claude-code` flag:
-
-```sh
-npx @jeffreycao/copilot-api@latest start --claude-code
-```
-
-You will be prompted to select a primary model and a "small, fast" model for background tasks. After selecting the models, a command will be copied to your clipboard. This command sets the necessary environment variables for Claude Code to use the gateway.
-
-Paste and run this command in a new terminal to launch Claude Code.
-
-### Manual Configuration with `settings.json`
-
-Alternatively, you can configure Claude Code by creating a `.claude/settings.json` file in your project's root directory. This file should contain the environment variables needed by Claude Code. This way you don't need to run the interactive setup every time.
-
-Here is an example `.claude/settings.json` file:
-
-```json
-{
-  "env": {
-    "ANTHROPIC_BASE_URL": "http://localhost:4141",
-    "ANTHROPIC_AUTH_TOKEN": "dummy",
-    "ANTHROPIC_MODEL": "deepseek/deepseek-v4-pro",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek/deepseek-v4-pro",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek/deepseek-v4-flash",
-    "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
-    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-    "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false",
-    "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "true",
-    "CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0"
-  },
-  "permissions": {
-    "deny": [
-      "mcp__ide__executeCode"
-    ]
-  }
-}
-```
-
-- Replace `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL` according to your needs. After configuration, please install the claude code plugin [Plugin Integrations](#plugin-integrations).  
-- Setting CLAUDE_CODE_ATTRIBUTION_HEADER to 0 can prevent Claude code from adding billing and version information in system prompts, thereby avoiding prompt cache invalidation.
-- Turning off CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION and CLAUDE_CODE_ENABLE_AWAY_SUMMARY can prevent quota from being consumed unnecessarily.
-- Claude Code WebSearch is supported for pure search requests. For Copilot, keep the global `messageApiWebSearchModel` set to a Responses-capable GPT model or a `provider/model` alias. For provider routes, use a native Anthropic provider or an `openai-responses` provider. Add `WebSearch` to `permissions.deny` only if you want to forbid this traffic.
-- If using a non-Claude model, do not enable ENABLE_TOOL_SEARCH. If using the Claude model, can enable ENABLE_TOOL_SEARCH. The current Claude Code uses the client tool search mode. In this mode, loading defer tools requires an additional request each time.
-- `CLAUDE_CODE_AUTO_COMPACT_WINDOW`: Set the context capacity in tokens used for auto-compaction calculations. Defaults to the model's context window: 200K for standard models or 1M for extended context models. Use a lower value like `500000` on a 1M model (e.g., `claude-opus-4-6[1m]`) to treat the window as 500K for compaction purposes. The value is capped at the model's actual context window. `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is applied as a percentage of this value. Setting this variable decouples the compaction threshold from the status line's `used_percentage`, which always uses the model's full context window.
-
-You can find more options here: [Claude Code settings](https://docs.anthropic.com/en/docs/claude-code/settings#environment-variables)
-
-You can also read more about IDE integration here: [Add Claude Code to your IDE](https://docs.anthropic.com/en/docs/claude-code/ide-integrations)
-
-## GPT Tool Search
-
-For GPT Responses models such as `gpt-5.4+`, this AI gateway can expose Responses `tool_search` through a small MCP bridge. The same bridge can be used by Claude Code and opencode, as long as the client loads MCP servers and sends Anthropic Messages traffic through this gateway.
-
-Do not set Claude Code's native `ENABLE_TOOL_SEARCH` for GPT models. That flag enables Claude Code's own client-side tool search mode, and it may stop forwarding deferred tool definitions. This gateway needs the full tool definitions so it can keep the small always-loaded tool set eager and translate every other tool into Responses deferred namespaces.
-
-If you install `tool-search@copilot-api-marketplace`, Claude Code receives this MCP bridge automatically and you can skip the manual Claude Code MCP setup below.
-
-Add the tool search bridge to the MCP config used by Claude Code:
-
-```json
-{
-  "mcpServers": {
-    "tool_search": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "@jeffreycao/copilot-api@latest", "mcp"]
-    }
-  }
-}
-```
-
-Add the tool search bridge to the MCP config used by opencode:
-
-```json
-{
-  "mcp": {
-    "tool_search": {
-      "type": "local",
-      "command": ["npx", "-y", "@jeffreycao/copilot-api@latest", "mcp"]
-    }
-  }
-}
-```
-
-For local development, use `bun` as the command and `["run", "./src/main.ts", "mcp"]` as the args.
-
-Internally, the gateway now configures OpenAI Responses `tool_search` in client-executed mode. Deferred tools are still exposed as searchable namespaces, but the model is explicitly asked to return the exact deferred tool names it wants to load next.
-
-The bridge uses direct tool selection, not query search. Its tool input is `names`, a comma-separated list of exact deferred tool names, for example `TaskList,TaskGet,mcp__fetch__fetch`.
-
-## Using with OpenCode
-
-OpenCode already has a direct GitHub Copilot provider. Use this section when you want OpenCode to point at this AI gateway through `@ai-sdk/anthropic` and reuse the agent behaviors described earlier in this README.
-
-### Minimal setup
-
-Start the AI gateway with the OpenCode OAuth app:
-
-```sh
-npx @jeffreycao/copilot-api@latest auth --oauth-app=opencode
-npx @jeffreycao/copilot-api@latest start
-```
-
-Then point OpenCode at the gateway with `@ai-sdk/anthropic`.
-
-Example `~/.config/opencode/opencode.json`:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "local": {
-      "npm": "@ai-sdk/anthropic",
-      "name": "My Local",
-      "options": {
-        "baseURL": "http://localhost:4141/v1",
-        "apiKey": "dummy"
-      },
-      "models": {
-        "gpt-5.4": {
-          "name": "gpt-5.4",
-          "modalities": {
-            "input": ["text", "image"],
-            "output": ["text"]
-          },
-          "limit": {
-            "context": 300000,
-            "output": 128000
-          }
-        },
-        "claude-sonnet-4.6": {
-          "id": "claude-sonnet-4.6",
-          "name": "claude-sonnet-4.6",
-          "modalities": {
-            "input": ["text", "image"],
-            "output": ["text"]
-          },          
-          "limit": {
-            "context": 200000,
-            "output": 32000
-          },
-          "options": {
-            "thinking": {
-              "type": "adaptive"
-            },
-            "effort": "max"
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-Why these fields matter:
-
-- `npm: "@ai-sdk/anthropic"` is the important part. OpenCode will speak Anthropic Messages semantics to this AI gateway instead of flattening everything into OpenAI Chat Completions.
-- `options.baseURL` should be `http://localhost:4141/v1`; the Anthropic SDK will append `/messages`, `/models`, and `/messages/count_tokens` automatically.
-- `model`, `small_model`, and `agent.*.model` let you keep `gpt-5.4` for build/plan work while routing exploration and background work to `gpt-5-mini`.
-- If you enable `auth.apiKeys` in this AI gateway, replace `dummy` with a real key. Otherwise any placeholder value is fine.
-
-## Using with Codex
-
-This AI gateway can also power Codex.
-
-### Codex `config.toml` Reference
-
-Add the following `[model_providers.copilot_api]` section to your Codex `~/.codex/config.toml`:
-
-```toml
-model_provider = "copilot_api"
-model_reasoning_summary = "auto"
-model_verbosity = "medium"
-model_context_window = 272000
-model_auto_compact_token_limit = 244800
-
-[model_providers.copilot_api]
-name = "OpenAI"
-base_url = "http://localhost:4141"
-env_key = "GITHUB_COPILOT_API_KEY"
-requires_openai_auth = true
-supports_websockets = false
-wire_api = "responses"
-request_max_retries = 3
-stream_max_retries = 1
-stream_idle_timeout_ms = 300000
-
-[features]
-remote_compaction_v2 = true
-
-[analytics]
-enabled = false
-```
-
-> [!NOTE]
-> This configuration is specific to Codex and the GitHub Copilot provider. `name` must be set to `"OpenAI"`. It can help mitigate Codex local compact cache miss issues. If you have enabled `useResponsesApiContextManagement` (Responses API context management compaction), `remote_compaction_v2` or local compact is generally not triggered, but it may still occur when tool results return a large number of tokens.
-
-## Plugin Integrations
-
-Plugin integrations are available for Claude Code and opencode.
-
-#### Claude Code plugin integration (marketplace-based)
-
-The Claude Code integration is packaged as two plugins:
-
-- `agent-inject` injects `__SUBAGENT_MARKER__...` on `SubagentStart`, so the gateway can infer `x-initiator: agent`.
-- `tool-search` registers the `tool_search` MCP bridge used for GPT Responses deferred tool loading.
-
-- Marketplace catalog in this repository: `.claude-plugin/marketplace.json`
-- Plugin sources in this repository: `plugin/claude/agent-inject`, `plugin/claude/tool-search`
-
-Add the marketplace remotely:
-
-```sh
-/plugin marketplace add https://github.com/caozhiyuan/copilot-api.git
-```
-
-Install the plugins from the marketplace:
-
-```sh
-/plugin install agent-inject@copilot-api-marketplace
-/plugin install tool-search@copilot-api-marketplace
-```
-
-After installation, `agent-inject` injects `__SUBAGENT_MARKER__...` on `SubagentStart`, and the gateway uses it to infer `x-initiator: agent`.
-
-The `agent-inject` plugin also registers a `UserPromptSubmit` hook that returns `{"continue": true}`, and it can inject `SessionStart` reminder rules through environment variables:
-
-- `CLAUDE_PLUGIN_ENABLE_QUESTION_RULES=1` enables the two reminders about using the `question` tool automatically for Claude Code. Alternatively, you can add the same reminders manually in `CLAUDE.md`; see [CLAUDE.md or AGENTS.md Recommended Content](#claudemd-or-agentsmd-recommended-content).
-- `CLAUDE_PLUGIN_ENABLE_NO_BACKGROUND_AGENTS_RULE=1` enables the `run_in_background: true` avoidance reminder for agent hooks.
-
-The `tool-search` plugin bundles the same MCP bridge described in [GPT Tool Search](#gpt-tool-search), so Claude Code users do not need to add the `tool_search` server manually when they install that plugin.
-
-#### Opencode plugin
-
-The subagent marker producer is packaged as an opencode plugin located at `plugin/opencode/subagent-marker.js`.
-
-**Installation:**
-
-Copy the plugin file to your opencode plugins directory:
-
-```sh
-# Clone or download this repository, then copy the plugin
-cp plugin/opencode/subagent-marker.js ~/.config/opencode/plugins/
-```
-
-Or manually create the file at `~/.config/opencode/plugins/subagent-marker.js` with the plugin content.
-
-**Features:**
-
-- Tracks sub-sessions created by subagents
-- Automatically prepends a marker system reminder (`__SUBAGENT_MARKER__...`) to subagent chat messages
-- Sets `x-session-id` header for session tracking
-- Enables the gateway to infer `x-initiator: agent` for subagent-originated requests
-
-The plugin hooks into `session.created`, `session.deleted`, `chat.message`, and `chat.headers` events to provide seamless subagent marker functionality.
-
-## Using the Usage Viewer
-
-After starting the server, a URL to the Copilot Usage Dashboard will be displayed in your console. This dashboard is a web interface for monitoring your API usage.
-
-1.  Start the server. For example, using npx:
-    ```sh
-    npx @jeffreycao/copilot-api@latest start
-    ```
-2.  The server will output a URL to the usage viewer. Copy and paste this URL into your browser. It will look something like this:
-    `http://localhost:4141/usage-viewer?endpoint=http://localhost:4141/usage`
-    - If you use the `start.bat` script on Windows, this page will open automatically.
-
-The dashboard provides a user-friendly interface to view your Copilot usage data:
-
-> Token usage history requires Bun or Node.js >= 22.13.0. On Node.js < 22.13.0, the server runs normally but token usage storage is disabled.
-
-- **API Endpoint URL**: The dashboard is pre-configured to fetch data from your local server endpoint via a URL query parameter. You can manually switch this to any other compatible API endpoint.
-- **x-api-key Authentication**: If API Key authentication is enabled, you can provide the `x-api-key` request header. The key is persisted in the browser's local storage.
-- **Period Selector**: Choose from Day, Week, or Month time ranges. The URL query parameter updates automatically when you switch, making it easy to bookmark and share.
-- **Fetch Data**: Click the "Refresh" button to load or refresh the usage data. The dashboard also fetches data automatically on page load.
-- **Copilot Quotas**: View quota usage for services such as Chat and Completions via progress bars. Hover over a card to see used/remaining details.
-- **Token Usage Metric Cards**: See a summary of Total, Input, Output, Cache Read, Cache Write, Requests, and estimated cost for the current period.
-- **Trend Chart (Week / Month)**: An interactive line chart with model and metric filters. Click a data point to inspect the usage breakdown for a specific day.
-- **Model Breakdown Table**: A per-model summary of requests, input/output/cache tokens, and estimated cost for the selected period.
-- **Request Events (Paginated)**: A time-sorted list of request event records with pagination support, showing timestamps, models, request IDs, and token counts.
-- **Detailed Information**: See the full JSON response from the API for a detailed breakdown of all available usage statistics.
-- **URL-based Configuration**: You can also specify the API endpoint and period directly via `endpoint` and `period` query parameters. For example:
-  `http://localhost:4141/usage-viewer?endpoint=http://your-api-server/usage&period=week`
-
-### Usage Viewer Screenshot
-
-<p align="center">
-  <img src="./docs/screenshots/usage-viewer.png" alt="Copilot API usage viewer" width="900" />
-</p>
-
-## Running from Source
-
-The project can be run from source in several ways:
-
-### Development Mode
-
-```sh
-bun run dev start
-```
-
-### Production Mode
-
-```sh
-bun run start start
 ```
 
 ## Usage Tips
