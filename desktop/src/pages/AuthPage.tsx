@@ -209,14 +209,14 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
   const canEditProviderType = providerChoice === 'custom' || selectedQuickProvider?.editableType
 
   return (
-    <div className="flex flex-col h-screen bg-slate-50">
+    <div className="flex flex-col h-screen bg-canvas">
       <Header />
 
       {onBack && (
         <div className="px-4 pt-3 shrink-0">
           <button
             onClick={onBack}
-            className="inline-flex h-8 items-center rounded-md border border-slate-200 bg-white px-2.5 text-[13px] font-medium text-slate-500 shadow-sm transition-colors hover:bg-slate-50 hover:text-slate-700"
+            className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-2.5 text-[13px] font-medium text-ink-soft shadow-sm transition-colors hover:bg-sunken hover:text-ink"
           >
             {t('auth.backToHome')}
           </button>
@@ -226,22 +226,22 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
       <div className="flex-1 flex flex-col items-center justify-center px-6 py-6 gap-5">
         {/* Logo and title */}
         <div className="text-center">
-          <div className="w-14 h-14 bg-[#0f172a] rounded-2xl flex items-center justify-center mx-auto mb-3 shadow-[0_10px_26px_rgba(15,23,42,0.18)]">
+          <div className="w-14 h-14 bg-accent-strong rounded-2xl flex items-center justify-center mx-auto mb-3 shadow-[0_10px_26px_rgba(30,41,59,0.20)]">
             <span className="text-white text-base font-extrabold">CA</span>
           </div>
-          <h1 className="text-lg font-bold text-[#0f172a]">Copilot API</h1>
-          <p className="text-[13px] text-slate-500 mt-1">{t('auth.subtitle')}</p>
+          <h1 className="text-lg font-bold text-ink">Copilot API</h1>
+          <p className="text-[13px] text-ink-faint mt-1">{t('auth.subtitle')}</p>
         </div>
 
         {/* Default state: provider choices */}
         {view === 'default' && (
-          <div className="w-full max-w-[360px] rounded-xl border border-slate-100 bg-white p-4 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
+          <div className="w-full max-w-[360px] rounded-xl border border-line-soft bg-surface p-4 shadow-[0_12px_32px_rgba(0,0,0,0.08)]">
             {/* OAuth Section */}
-            <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2.5">OAuth</p>
+            <p className="text-[11px] font-semibold text-ink-faint uppercase tracking-wider mb-2.5">OAuth</p>
             <button
               onClick={handleOAuth}
               disabled={loading}
-              className="w-full py-2.5 bg-[#0f172a] text-white text-[13px] font-semibold rounded-lg flex items-center justify-center gap-2 hover:bg-slate-800 disabled:opacity-50 transition-all mb-2"
+              className="w-full py-2.5 bg-accent-strong text-white text-[13px] font-semibold rounded-lg flex items-center justify-center gap-2 hover:bg-accent-strong/90 disabled:opacity-50 transition-all mb-2"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/>
@@ -251,16 +251,16 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
             <button
               onClick={handleCodexOAuth}
               disabled={loading}
-              className="w-full py-2.5 bg-white border border-slate-200 text-slate-700 text-[13px] font-semibold rounded-lg hover:bg-slate-50 hover:border-slate-300 disabled:opacity-50 transition-all mb-4"
+              className="w-full py-2.5 bg-surface border border-line text-ink-soft text-[13px] font-semibold rounded-lg hover:bg-sunken hover:border-line disabled:opacity-50 transition-all mb-4"
             >
               {t('auth.codexAuth')}
             </button>
 
             {/* Divider */}
             <div className="flex items-center gap-3 mb-3">
-              <div className="flex-1 border-t border-slate-100" />
-              <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">API Key</span>
-              <div className="flex-1 border-t border-slate-100" />
+              <div className="flex-1 border-t border-line-soft" />
+              <span className="text-[11px] font-semibold text-ink-faint uppercase tracking-wider">API Key</span>
+              <div className="flex-1 border-t border-line-soft" />
             </div>
 
             {/* Provider grid: 2x2 */}
@@ -269,7 +269,7 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
                 <button
                   key={provider}
                   onClick={() => handleProviderSelect(provider)}
-                  className="w-full py-2.5 bg-white border border-slate-200 text-slate-600 text-[13px] rounded-lg hover:bg-slate-50 hover:border-slate-300 transition-all flex items-center justify-center gap-1.5"
+                  className="w-full py-2.5 bg-surface border border-line text-ink-soft text-[13px] rounded-lg hover:bg-sunken hover:border-line transition-all flex items-center justify-center gap-1.5"
                 >
                   <span className={`w-1.5 h-1.5 rounded-full ${PROVIDER_COLORS[provider]}`} />
                   {getQuickProviderLabel(provider)}
@@ -277,7 +277,7 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
               ))}
               <button
                 onClick={() => handleProviderSelect('custom')}
-                className="w-full py-2.5 bg-white border border-slate-200 text-slate-600 text-[13px] rounded-lg hover:bg-slate-50 hover:border-slate-300 transition-all flex items-center justify-center gap-1.5"
+                className="w-full py-2.5 bg-surface border border-line text-ink-soft text-[13px] rounded-lg hover:bg-sunken hover:border-line transition-all flex items-center justify-center gap-1.5"
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
                 {t('auth.customProvider')}
@@ -287,7 +287,7 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
             {/* Manual token link */}
             <button
               onClick={() => setView('token-input')}
-              className="w-full py-2 text-[13px] text-slate-400 hover:text-slate-600 transition-colors"
+              className="w-full py-2 text-[13px] text-ink-faint hover:text-ink-soft transition-colors"
             >
               {t('auth.manualToken')}
             </button>
@@ -296,44 +296,44 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
 
         {/* OAuth pending state */}
         {view === 'oauth-pending' && deviceCode && (
-          <div className="w-full max-w-[320px] flex flex-col gap-3 rounded-xl border border-slate-100 bg-white p-4 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
+          <div className="w-full max-w-[320px] flex flex-col gap-3 rounded-xl border border-line-soft bg-surface p-4 shadow-[0_12px_32px_rgba(0,0,0,0.08)]">
             <div>
-              <p className="text-[13px] text-slate-400 mb-1.5">{t('auth.deviceCode')}</p>
-              <div className="flex items-center gap-2 px-3 py-2.5 border border-dashed border-slate-300 rounded-lg bg-slate-50">
-                <span className="font-mono text-[13px] font-bold text-[#0f172a] tracking-widest flex-1">
+              <p className="text-[13px] text-ink-faint mb-1.5">{t('auth.deviceCode')}</p>
+              <div className="flex items-center gap-2 px-3 py-2.5 border border-dashed border-line rounded-lg bg-sunken">
+                <span className="font-mono text-[13px] font-bold text-ink tracking-widest flex-1">
                   {deviceCode.user_code}
                 </span>
                 <button
                   onClick={handleCopyCode}
-                  className="text-[13px] text-blue-500 hover:text-blue-600 shrink-0"
+                  className="text-[13px] text-accent hover:text-accent/80 shrink-0"
                 >
                   {copied ? t('auth.copied') : t('auth.copy')}
                 </button>
               </div>
             </div>
             <div>
-              <p className="text-[13px] text-slate-400 mb-1.5">{t('auth.deviceCodeUrl')}</p>
+              <p className="text-[13px] text-ink-faint mb-1.5">{t('auth.deviceCodeUrl')}</p>
               <button
                 onClick={handleOpenDeviceUrl}
-                className="w-full px-3 py-2.5 border border-slate-200 rounded-lg bg-white text-left text-[13px] text-blue-500 hover:text-blue-600 hover:bg-slate-50 transition-colors break-all"
+                className="w-full px-3 py-2.5 border border-line rounded-lg bg-surface text-left text-[13px] text-accent hover:text-accent/80 hover:bg-sunken transition-colors break-all"
               >
                 {deviceCode.verification_uri}
               </button>
             </div>
             <button
               onClick={handleOpenDeviceUrl}
-              className="w-full py-2.5 bg-[#0f172a] text-white text-[13px] font-semibold rounded-lg hover:bg-slate-800 transition-colors"
+              className="w-full py-2.5 bg-accent-strong text-white text-[13px] font-semibold rounded-lg hover:bg-accent-strong/90 transition-colors"
             >
               {t('auth.openAuthPage')}
             </button>
             {polling && (
-              <p className="text-center text-[13px] text-slate-400 animate-pulse">
+              <p className="text-center text-[13px] text-ink-faint animate-pulse">
                 {t('auth.waitingAuth')}
               </p>
             )}
             <button
               onClick={handleBack}
-              className="text-[13px] text-slate-400 hover:text-slate-600 text-center"
+              className="text-[13px] text-ink-faint hover:text-ink-soft text-center"
             >
               {t('auth.back')}
             </button>
@@ -342,24 +342,24 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
 
         {/* Expanded token input state */}
         {view === 'token-input' && (
-          <div className="w-full max-w-[320px] flex flex-col gap-3 rounded-xl border border-slate-100 bg-white p-4 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
+          <div className="w-full max-w-[320px] flex flex-col gap-3 rounded-xl border border-line-soft bg-surface p-4 shadow-[0_12px_32px_rgba(0,0,0,0.08)]">
             <textarea
               value={tokenInput}
               onChange={e => setTokenInput(e.target.value)}
               placeholder="gho_xxxxxxxxxxxxxxxx"
               rows={3}
-              className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-[13px] resize-none focus:outline-none focus:ring-2 focus:ring-slate-300 font-mono"
+              className="w-full px-3 py-2.5 border border-line rounded-lg text-[13px] resize-none focus:outline-none focus:ring-2 focus:ring-accent/40 font-mono bg-surface text-ink placeholder-ink-faint"
             />
             <button
               onClick={handleSaveToken}
               disabled={loading || !tokenInput.trim()}
-              className="w-full py-2.5 bg-[#0f172a] text-white text-[13px] font-semibold rounded-lg hover:bg-slate-800 disabled:opacity-50 transition-colors"
+              className="w-full py-2.5 bg-accent-strong text-white text-[13px] font-semibold rounded-lg hover:bg-accent-strong/90 disabled:opacity-50 transition-colors"
             >
               {loading ? t('auth.verifying') : t('auth.confirmAdd')}
             </button>
             <button
               onClick={handleBack}
-              className="text-[13px] text-slate-400 hover:text-slate-600 text-center"
+              className="text-[13px] text-ink-faint hover:text-ink-soft text-center"
             >
               {t('auth.back')}
             </button>
@@ -367,8 +367,8 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
         )}
 
         {view === 'provider-input' && (
-          <div className="w-full max-w-[360px] flex flex-col gap-3 rounded-xl border border-slate-100 bg-white p-4 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
-            <div className="flex items-center justify-center gap-1.5 text-[13px] font-semibold text-[#0f172a]">
+          <div className="w-full max-w-[360px] flex flex-col gap-3 rounded-xl border border-line-soft bg-surface p-4 shadow-[0_12px_32px_rgba(0,0,0,0.08)]">
+            <div className="flex items-center justify-center gap-1.5 text-[13px] font-semibold text-ink">
               {providerChoice !== 'custom' && selectedQuickProvider && (
                 <span className={`w-1.5 h-1.5 rounded-full ${PROVIDER_COLORS[providerChoice]}`} />
               )}
@@ -377,23 +377,23 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
 
             {providerChoice === 'custom' && (
               <label className="flex flex-col gap-1.5">
-                <span className="text-[13px] text-slate-400">{t('auth.providerName')}</span>
+                <span className="text-[13px] text-ink-faint">{t('auth.providerName')}</span>
                 <input
                   value={providerName}
                   onChange={e => setProviderName(e.target.value)}
                   placeholder="dashscope"
-                  className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-slate-300"
+                  className="w-full px-3 py-2.5 border border-line rounded-lg text-[13px] bg-surface text-ink placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
                 />
               </label>
             )}
 
             {canEditProviderType && (
               <label className="flex flex-col gap-1.5">
-                <span className="text-[13px] text-slate-400">{t('auth.providerType')}</span>
+                <span className="text-[13px] text-ink-faint">{t('auth.providerType')}</span>
                 <select
                   value={providerType}
                   onChange={e => setProviderType(e.target.value as ProviderType)}
-                  className="w-full px-3 py-2.5 border border-slate-200 rounded-lg bg-white text-[13px] focus:outline-none focus:ring-2 focus:ring-slate-300"
+                  className="w-full px-3 py-2.5 border border-line rounded-lg bg-surface text-ink text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40"
                 >
                   {PROVIDER_TYPES.map(type => (
                     <option key={type} value={type}>{type}</option>
@@ -403,33 +403,33 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
             )}
 
             <label className="flex flex-col gap-1.5">
-              <span className="text-[13px] text-slate-400">{t('auth.providerBaseUrl')}</span>
+              <span className="text-[13px] text-ink-faint">{t('auth.providerBaseUrl')}</span>
               <input
                 value={providerBaseUrl}
                 onChange={e => setProviderBaseUrl(e.target.value)}
                 placeholder="https://api.example.com"
-                className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-slate-300"
+                className="w-full px-3 py-2.5 border border-line rounded-lg text-[13px] bg-surface text-ink placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
               />
             </label>
 
             <label className="flex flex-col gap-1.5">
-              <span className="text-[13px] text-slate-400">{t('auth.providerApiKey')}</span>
+              <span className="text-[13px] text-ink-faint">{t('auth.providerApiKey')}</span>
               <textarea
                 value={providerApiKey}
                 onChange={e => setProviderApiKey(e.target.value)}
                 placeholder="sk-..."
                 rows={3}
-                className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-[13px] resize-none focus:outline-none focus:ring-2 focus:ring-slate-300 font-mono"
+                className="w-full px-3 py-2.5 border border-line rounded-lg text-[13px] resize-none focus:outline-none focus:ring-2 focus:ring-accent/40 font-mono bg-surface text-ink placeholder-ink-faint"
               />
             </label>
 
             {providerChoice === 'custom' && (
               <label className="flex flex-col gap-1.5">
-                <span className="text-[13px] text-slate-400">{t('auth.providerAuthType')}</span>
+                <span className="text-[13px] text-ink-faint">{t('auth.providerAuthType')}</span>
                 <select
                   value={providerAuthType}
                   onChange={e => setProviderAuthType(e.target.value as ProviderAuthTypeInput)}
-                  className="w-full px-3 py-2.5 border border-slate-200 rounded-lg bg-white text-[13px] focus:outline-none focus:ring-2 focus:ring-slate-300"
+                  className="w-full px-3 py-2.5 border border-line rounded-lg bg-surface text-ink text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40"
                 >
                   {PROVIDER_AUTH_TYPES.map(authType => (
                     <option key={authType} value={authType}>
@@ -443,13 +443,13 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
             <button
               onClick={handleSaveProvider}
               disabled={loading || !providerApiKey.trim()}
-              className="w-full py-2.5 bg-[#0f172a] text-white text-[13px] font-semibold rounded-lg hover:bg-slate-800 disabled:opacity-50 transition-colors"
+              className="w-full py-2.5 bg-accent-strong text-white text-[13px] font-semibold rounded-lg hover:bg-accent-strong/90 disabled:opacity-50 transition-colors"
             >
               {loading ? t('auth.verifying') : t('auth.confirmAdd')}
             </button>
             <button
               onClick={handleBack}
-              className="text-[13px] text-slate-400 hover:text-slate-600 text-center"
+              className="text-[13px] text-ink-faint hover:text-ink-soft text-center"
             >
               {t('auth.back')}
             </button>
@@ -457,20 +457,20 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
         )}
 
         {view === 'codex-pending' && (
-          <div className="w-full max-w-[320px] flex flex-col gap-3 rounded-xl border border-slate-100 bg-white p-4 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
-            <p className="text-center text-[13px] text-slate-400 animate-pulse">
+          <div className="w-full max-w-[320px] flex flex-col gap-3 rounded-xl border border-line-soft bg-surface p-4 shadow-[0_12px_32px_rgba(0,0,0,0.08)]">
+            <p className="text-center text-[13px] text-ink-faint animate-pulse">
               {loading ? t('auth.waitingCodexAuth') : t('auth.codexCallbackRequired')}
             </p>
             <button
               onClick={handleCodexOAuth}
               disabled={loading}
-              className="w-full py-2.5 bg-[#0f172a] text-white text-[13px] font-semibold rounded-lg hover:bg-slate-800 disabled:opacity-50 transition-colors"
+              className="w-full py-2.5 bg-accent-strong text-white text-[13px] font-semibold rounded-lg hover:bg-accent-strong/90 disabled:opacity-50 transition-colors"
             >
               {loading ? t('auth.verifying') : t('auth.confirmAdd')}
             </button>
             <button
               onClick={handleBack}
-              className="text-[13px] text-slate-400 hover:text-slate-600 text-center"
+              className="text-[13px] text-ink-faint hover:text-ink-soft text-center"
             >
               {t('auth.back')}
             </button>
@@ -479,12 +479,12 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
 
         {/* Error message */}
         {error && (
-          <div className="w-full max-w-[240px] px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-[13px] text-red-600 flex items-center gap-1.5">
+          <div className="w-full max-w-[240px] px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-[13px] text-red-600 flex items-center gap-1.5 dark:bg-red-500/15 dark:border-red-500/30 dark:text-red-400">
             <span>⚠️</span><span>{error}</span>
           </div>
         )}
 
-        <p className="text-[13px] text-slate-200">{t('auth.loginConsent')}</p>
+        <p className="text-[13px] text-ink-faint">{t('auth.loginConsent')}</p>
       </div>
     </div>
   )

@@ -84,7 +84,7 @@ function getQuotaBarColor(pct: number, isUsed: boolean): string {
   if (isUsed) {
     if (pct >= 80) return 'bg-red-500'
     if (pct >= 50) return 'bg-orange-400'
-    return 'bg-[#0f172a]'
+    return 'bg-accent-strong'
   }
   if (pct >= 50) return 'bg-blue-500'
   if (pct >= 20) return 'bg-orange-400'
@@ -490,7 +490,7 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
   const showRefreshButton = started && tab !== 'advancedConfig' && tab !== 'logs'
 
   return (
-    <div className="flex flex-col h-screen bg-white">
+    <div className="flex flex-col h-screen bg-canvas">
       <Header
         onChangeAuth={handleChangeAuth}
         onRestart={handleRestart}
@@ -501,14 +501,14 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
 
       {/* Unexpected server stop banner */}
       {serverError && (
-        <div className="mx-4 mt-2 px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-[13px] text-red-600 flex items-center gap-1.5 shrink-0">
+        <div className="mx-4 mt-2 px-3 py-2 bg-red-50 dark:bg-red-500/15 border border-red-200 dark:border-red-500/30 rounded-lg text-[13px] text-red-600 dark:text-red-400 flex items-center gap-1.5 shrink-0">
           <span>⚠️</span><span>{serverError}</span>
         </div>
       )}
 
       {/* Tabs shown only while the server is running */}
       {started && (
-        <div className="flex items-center justify-between gap-3 px-4 bg-white border-b border-slate-100 shrink-0">
+        <div className="flex items-center justify-between gap-3 px-4 bg-surface border-b border-line-soft shrink-0">
           <div className="flex min-w-0">
             {dashboardTabs.map(tabItem => (
               <button
@@ -516,8 +516,8 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
                 onClick={() => setTab(tabItem.key)}
                 className={`px-3 py-2 text-[13px] border-b-2 transition-colors ${
                   tab === tabItem.key
-                    ? 'font-semibold text-[#0f172a] border-[#0f172a]'
-                    : 'text-slate-400 border-transparent hover:text-slate-600'
+                    ? 'font-semibold text-ink border-accent'
+                    : 'text-ink-faint border-transparent hover:text-ink-soft'
                 }`}
               >
                 {tabItem.label}
@@ -528,7 +528,7 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
             <button
               onClick={handleRefreshActiveTab}
               disabled={isActiveTabRefreshing}
-              className="h-7 shrink-0 rounded-md border border-slate-200 bg-white px-2.5 text-[13px] text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-40"
+              className="h-7 shrink-0 rounded-md border border-line bg-surface px-2.5 text-[13px] text-ink-soft transition-colors hover:bg-sunken disabled:opacity-40"
             >
               {isActiveTabRefreshing ? t('dashboard.refreshing') : t('dashboard.refresh')}
             </button>
@@ -542,44 +542,44 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
         {/* Empty state: start form */}
         {!started && (
           <div className="h-full flex flex-col items-center justify-center gap-4 px-6">
-            <div className="w-11 h-11 bg-slate-100 rounded-xl flex items-center justify-center text-[13px]">🚀</div>
+            <div className="w-11 h-11 bg-sunken rounded-xl flex items-center justify-center text-[13px]">🚀</div>
             <div className="text-center">
-              <p className="text-[13px] font-semibold text-[#0f172a]">{t('dashboard.serverStopped')}</p>
-              <p className="text-[13px] text-slate-400 mt-1">{t('dashboard.configPort')}</p>
+              <p className="text-[13px] font-semibold text-ink">{t('dashboard.serverStopped')}</p>
+              <p className="text-[13px] text-ink-faint mt-1">{t('dashboard.configPort')}</p>
             </div>
-            <div className="w-full max-w-[190px] bg-slate-50 border border-slate-200 rounded-xl p-3.5 flex flex-col gap-2.5">
+            <div className="w-full max-w-[190px] bg-sunken border border-line rounded-xl p-3.5 flex flex-col gap-2.5">
               <div className="flex items-center gap-2">
-                <span className="text-[13px] text-slate-500">{t('dashboard.port')}</span>
+                <span className="text-[13px] text-ink-soft">{t('dashboard.port')}</span>
                 <input
                   type="number"
                   value={port}
                   onChange={e => { setPort(e.target.value); setStartError('') }}
                   min={1}
                   max={65535}
-                  className="flex-1 bg-white border border-slate-200 rounded-md py-1 px-2 text-[13px] font-semibold text-[#0f172a] text-center focus:outline-none focus:ring-2 focus:ring-slate-300"
+                  className="flex-1 bg-surface border border-line rounded-md py-1 px-2 text-[13px] font-semibold text-ink text-center focus:outline-none focus:ring-2 focus:ring-accent/40"
                 />
               </div>
               {startError && (
-                <p className="text-[13px] px-2 py-1.5 rounded-md bg-red-50 text-red-600 border border-red-200">
+                <p className="text-[13px] px-2 py-1.5 rounded-md bg-red-50 dark:bg-red-500/15 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-500/30">
                   ⚠️ {startError}
                 </p>
               )}
               <button
                 onClick={handleStart}
                 disabled={starting}
-                className="w-full py-2 bg-[#0f172a] text-white text-[13px] font-semibold rounded-lg hover:bg-slate-800 disabled:opacity-50 transition-colors"
+                className="w-full py-2 bg-accent-strong text-white text-[13px] font-semibold rounded-lg hover:bg-accent-strong/90 disabled:opacity-50 transition-colors"
               >
                 {starting ? t('dashboard.starting') : t('dashboard.startServer')}
               </button>
             </div>
             {shouldShowFailureLogs && (
-              <div className="w-full max-w-2xl bg-[#0f172a] rounded-xl p-4 flex flex-col overflow-hidden min-h-0">
+              <div className="w-full max-w-2xl bg-black rounded-xl p-4 flex flex-col overflow-hidden min-h-0">
                 <div className="flex items-center justify-between mb-3 shrink-0">
-                  <span className="text-[13px] font-semibold text-slate-400 uppercase tracking-wide">{t('dashboard.serverLog')}</span>
+                  <span className="text-[13px] font-semibold text-ink-faint uppercase tracking-wide">{t('dashboard.serverLog')}</span>
                 </div>
                 <div className="max-h-60 overflow-y-auto font-mono text-[13px] text-green-400 space-y-0.5 leading-relaxed">
                   {logs.length === 0 ? (
-                    <span className="text-slate-600">{t('dashboard.noLogs')}</span>
+                    <span className="text-ink-soft">{t('dashboard.noLogs')}</span>
                   ) : (
                     logs.map((line, i) => (
                       <div key={i} className="whitespace-pre-wrap break-all">{line.trimEnd()}</div>
@@ -597,14 +597,14 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
           <div className="p-4">
             <div className="mb-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
               {dashboardOverviewItems.map(item => (
-                <div key={item.label} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
-                  <div className="text-[13px] font-medium text-slate-400">{item.label}</div>
+                <div key={item.label} className="rounded-lg border border-line bg-sunken px-3 py-2">
+                  <div className="text-[13px] font-medium text-ink-faint">{item.label}</div>
                   <div className={`mt-1 flex min-w-0 items-center gap-1.5 text-[13px] font-semibold ${
                     item.tone === 'green'
-                      ? 'text-green-600'
+                      ? 'text-green-600 dark:text-green-400'
                       : item.tone === 'blue'
-                        ? 'text-blue-600'
-                        : 'text-[#0f172a]'
+                        ? 'text-accent'
+                        : 'text-ink'
                   } ${item.loading ? 'animate-pulse opacity-50' : ''}`}>
                     {item.tone === 'green' && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-green-500" />}
                     <span className="truncate">{item.loading ? '…' : item.value}</span>
@@ -618,46 +618,46 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
                 {shouldShowUsageSummary && (
                   <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
                     {(shouldShowUsagePlaceholders || copilotPlan) && (
-                      <div className="bg-white border border-slate-200 rounded-xl p-3">
-                        <div className={`text-[13px] font-bold text-[#0f172a] ${loading ? 'animate-pulse text-slate-200' : ''}`}>
+                      <div className="bg-surface border border-line rounded-xl p-3">
+                        <div className={`text-[13px] font-bold text-ink ${loading ? 'animate-pulse text-ink-faint' : ''}`}>
                           {loading ? '…' : copilotPlan}
                         </div>
-                        <div className="text-[13px] text-slate-400 mt-0.5">Copilot Plan</div>
+                        <div className="text-[13px] text-ink-faint mt-0.5">Copilot Plan</div>
                       </div>
                     )}
                     {(shouldShowUsagePlaceholders || premiumUsed) && (
-                      <div className="bg-green-50 border border-green-200 rounded-xl p-3">
-                        <div className={`text-[13px] font-bold text-green-600 ${loading ? 'animate-pulse' : ''}`}>
+                      <div className="bg-green-50 dark:bg-green-500/15 border border-green-200 dark:border-green-500/30 rounded-xl p-3">
+                        <div className={`text-[13px] font-bold text-green-600 dark:text-green-400 ${loading ? 'animate-pulse' : ''}`}>
                           {loading ? '…' : premiumUsed}
                         </div>
                         <div className="text-[13px] text-green-400 mt-0.5">{t('dashboard.premiumUsed')}</div>
                       </div>
                     )}
                     {(shouldShowUsagePlaceholders || quotaResetDate) && (
-                      <div className="bg-white border border-slate-200 rounded-xl p-3">
-                        <div className={`text-[13px] font-bold text-[#0f172a] ${loading ? 'animate-pulse text-slate-200' : ''}`}>
+                      <div className="bg-surface border border-line rounded-xl p-3">
+                        <div className={`text-[13px] font-bold text-ink ${loading ? 'animate-pulse text-ink-faint' : ''}`}>
                           {loading ? '…' : quotaResetDate}
                         </div>
-                        <div className="text-[13px] text-slate-400 mt-0.5">{t('dashboard.quotaReset')}</div>
+                        <div className="text-[13px] text-ink-faint mt-0.5">{t('dashboard.quotaReset')}</div>
                       </div>
                     )}
                   </div>
                 )}
 
                 {/* Service endpoints */}
-                <div className="bg-white border border-slate-200 rounded-xl p-3">
-                  <h3 className="text-[13px] font-semibold text-slate-400 uppercase tracking-wide mb-2">{t('dashboard.serviceAddress')}</h3>
+                <div className="bg-surface border border-line rounded-xl p-3">
+                  <h3 className="text-[13px] font-semibold text-ink-faint uppercase tracking-wide mb-2">{t('dashboard.serviceAddress')}</h3>
                   <div className="space-y-1.5">
                     {[
                       { label: 'OpenAI', url: openaiUrl, key: 'openai', color: 'bg-slate-500' },
                       { label: 'Anthropic', url: anthropicUrl, key: 'anthropic', color: 'bg-violet-600' },
                     ].map(({ label, url, key, color }) => (
-                      <div key={key} className="flex items-center gap-2 px-2.5 py-1.5 bg-slate-50 rounded-lg">
+                      <div key={key} className="flex items-center gap-2 px-2.5 py-1.5 bg-sunken rounded-lg">
                         <span className={`text-[13px] font-semibold text-white ${color} rounded px-1.5 py-0.5 shrink-0`}>{label}</span>
-                        <span className="text-[13px] font-mono text-slate-600 truncate flex-1">{url}</span>
+                        <span className="text-[13px] font-mono text-ink-soft truncate flex-1">{url}</span>
                         <button
                           onClick={() => handleCopy(url, key)}
-                          className="shrink-0 text-[13px] text-blue-500 hover:text-blue-600"
+                          className="shrink-0 text-[13px] text-accent hover:text-accent"
                         >
                           {copied === key ? '✓' : t('dashboard.copy')}
                         </button>
@@ -665,17 +665,17 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
                     ))}
                   </div>
                   {serverAuthInfo.enabled && serverAuthInfo.headerName && serverAuthInfo.headerValue && (
-                    <div className="mt-3 pt-3 border-t border-slate-100">
-                      <h4 className="text-[13px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">
+                    <div className="mt-3 pt-3 border-t border-line-soft">
+                      <h4 className="text-[13px] font-semibold text-ink-faint uppercase tracking-wide mb-1.5">
                         {t('dashboard.authHeader')}
                       </h4>
-                      <div className="flex items-start gap-2 px-2.5 py-1.5 bg-amber-50 border border-amber-200 rounded-lg">
-                        <span className="text-[13px] font-mono text-amber-900 break-all flex-1">
+                      <div className="flex items-start gap-2 px-2.5 py-1.5 bg-amber-50 dark:bg-amber-500/15 border border-amber-200 dark:border-amber-500/30 rounded-lg">
+                        <span className="text-[13px] font-mono text-amber-900 dark:text-amber-400 break-all flex-1">
                           {maskedServerAuthHeader}
                         </span>
                         <button
                           onClick={() => handleCopy(serverAuthHeader, 'auth-header')}
-                          className="shrink-0 text-[13px] text-blue-500 hover:text-blue-600"
+                          className="shrink-0 text-[13px] text-accent hover:text-accent"
                         >
                           {copied === 'auth-header' ? '✓' : t('dashboard.copy')}
                         </button>
@@ -686,9 +686,9 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
 
                 {/* Quota usage */}
                 {shouldShowQuotaUsage && (
-                  <div className="bg-white border border-slate-200 rounded-xl p-3">
+                  <div className="bg-surface border border-line rounded-xl p-3">
                     <div className="mb-2">
-                      <h3 className="text-[13px] font-semibold text-slate-400 uppercase tracking-wide">{t('dashboard.quotaUsage')}</h3>
+                      <h3 className="text-[13px] font-semibold text-ink-faint uppercase tracking-wide">{t('dashboard.quotaUsage')}</h3>
                     </div>
                     <div className="space-y-2.5">
                       {(shouldShowUsagePlaceholders || hasCopilotQuotaValue(premiumQ)) && (
@@ -707,23 +707,23 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
 
               {/* Available models */}
               <div className="min-w-0">
-                <div className="bg-white border border-slate-200 rounded-xl p-3 xl:max-h-[calc(100vh-250px)] xl:min-h-[340px] flex flex-col overflow-hidden">
+                <div className="bg-surface border border-line rounded-xl p-3 xl:max-h-[calc(100vh-250px)] xl:min-h-[340px] flex flex-col overflow-hidden">
                   <div className="flex items-center justify-between gap-2 mb-2 shrink-0">
-                    <h3 className="text-[13px] font-semibold text-slate-400 uppercase tracking-wide">{t('dashboard.availableModels')}</h3>
-                    {!loading && <span className="text-[13px] text-slate-400 shrink-0">{t('dashboard.modelsCount', { n: models.length })}</span>}
+                    <h3 className="text-[13px] font-semibold text-ink-faint uppercase tracking-wide">{t('dashboard.availableModels')}</h3>
+                    {!loading && <span className="text-[13px] text-ink-faint shrink-0">{t('dashboard.modelsCount', { n: models.length })}</span>}
                   </div>
                   {loading ? (
-                    <p className="text-[13px] text-slate-400 animate-pulse">{t('dashboard.loading')}</p>
+                    <p className="text-[13px] text-ink-faint animate-pulse">{t('dashboard.loading')}</p>
                   ) : models.length > 0 ? (
                     <div className="flex-1 space-y-1 overflow-y-auto pr-1 min-h-0">
                       {models.map(m => (
-                        <div key={m.id} className="px-2.5 py-1 bg-slate-50 rounded-md text-[13px] text-slate-600 truncate" title={m.id}>
+                        <div key={m.id} className="px-2.5 py-1 bg-sunken rounded-md text-[13px] text-ink-soft truncate" title={m.id}>
                           {m.id}
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <p className="text-[13px] text-slate-400">{t('dashboard.noModels')}</p>
+                    <p className="text-[13px] text-ink-faint">{t('dashboard.noModels')}</p>
                   )}
                 </div>
               </div>
@@ -756,19 +756,19 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
         {/* Logs tab */}
         {started && tab === 'logs' && (
           <div className="p-4 h-full flex flex-col">
-            <div className="flex-1 bg-[#0f172a] rounded-xl p-4 flex flex-col overflow-hidden min-h-0">
+            <div className="flex-1 bg-black rounded-xl p-4 flex flex-col overflow-hidden min-h-0">
               <div className="flex items-center justify-between mb-3 shrink-0">
-                <span className="text-[13px] font-semibold text-slate-400 uppercase tracking-wide">{t('dashboard.serverLog')}</span>
+                <span className="text-[13px] font-semibold text-ink-faint uppercase tracking-wide">{t('dashboard.serverLog')}</span>
                 <button
                   onClick={() => setLogs([])}
-                  className="text-[13px] text-slate-500 hover:text-slate-300 transition-colors"
+                  className="text-[13px] text-ink-soft hover:text-ink-faint transition-colors"
                 >
                   {t('dashboard.clear')}
                 </button>
               </div>
               <div className="flex-1 overflow-y-auto font-mono text-[13px] text-green-400 space-y-0.5 leading-relaxed">
                 {logs.length === 0 ? (
-                  <span className="text-slate-600">{t('dashboard.noLogs')}</span>
+                  <span className="text-ink-soft">{t('dashboard.noLogs')}</span>
                 ) : (
                   logs.map((line, i) => (
                     <div key={i} className="whitespace-pre-wrap break-all">{line.trimEnd()}</div>
@@ -811,14 +811,14 @@ function QuotaBar({ label, quota, loading, mode }: {
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
-        <span className="text-[13px] text-slate-500">{label}</span>
-        <span className={`text-[13px] font-medium ${loading ? 'text-slate-200' : 'text-slate-600'}`}>
+        <span className="text-[13px] text-ink-soft">{label}</span>
+        <span className={`text-[13px] font-medium ${loading ? 'text-ink-faint' : 'text-ink-soft'}`}>
           {loading ? '…' : displayText}
         </span>
       </div>
-      <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+      <div className="h-1.5 bg-sunken rounded-full overflow-hidden">
         {loading
-          ? <div className="h-full bg-slate-200 animate-pulse rounded-full" />
+          ? <div className="h-full bg-line animate-pulse rounded-full" />
           : quota && <div className={`h-full rounded-full transition-all ${colorClass}`} style={{ width: `${pct}%` }} />
         }
       </div>
@@ -862,19 +862,19 @@ function TokenUsagePanel({
   const hasEventRows = Boolean(eventsPage && eventsPage.items.length > 0)
 
   return (
-    <div className="bg-white border border-slate-200 rounded-xl p-3">
+    <div className="bg-surface border border-line rounded-xl p-3">
       <div className="flex flex-col gap-2 mb-3 sm:flex-row sm:items-center sm:justify-between">
-        <h3 className="text-[13px] font-semibold text-slate-400 uppercase tracking-wide">{t('dashboard.tokenUsage')}</h3>
+        <h3 className="text-[13px] font-semibold text-ink-faint uppercase tracking-wide">{t('dashboard.tokenUsage')}</h3>
         <div className="flex flex-wrap items-center gap-2">
-          <div className="grid grid-cols-3 rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+          <div className="grid grid-cols-3 rounded-lg border border-line bg-sunken p-0.5">
             {periods.map(item => (
               <button
                 key={item.key}
                 onClick={() => onPeriodChange(item.key)}
                 className={`px-2.5 py-1 text-[13px] rounded-md transition-colors ${
                   period === item.key
-                    ? 'bg-white text-[#0f172a] shadow-sm font-semibold'
-                    : 'text-slate-500 hover:text-slate-700'
+                    ? 'bg-surface text-ink shadow-sm font-semibold'
+                    : 'text-ink-soft hover:text-ink'
                 }`}
               >
                 {item.label}
@@ -905,26 +905,26 @@ function TokenUsagePanel({
         />
       )}
 
-      <div className="mt-3 overflow-hidden rounded-lg border border-slate-100">
-        <div className="flex items-center justify-between bg-slate-50 px-2.5 py-1.5">
-          <span className="text-[13px] font-semibold text-slate-500">{t('dashboard.tokenUsageModelBreakdown')}</span>
+      <div className="mt-3 overflow-hidden rounded-lg border border-line-soft">
+        <div className="flex items-center justify-between bg-sunken px-2.5 py-1.5">
+          <span className="text-[13px] font-semibold text-ink-soft">{t('dashboard.tokenUsageModelBreakdown')}</span>
           {tokenUsage && (
-            <div className="flex items-center gap-2 text-[13px] text-slate-400">
+            <div className="flex items-center gap-2 text-[13px] text-ink-faint">
               <span>{t('dashboard.modelsCount', { n: tokenUsage.byModel.length })}</span>
-              {loading && <span className="text-slate-300">{t('dashboard.loading')}</span>}
+              {loading && <span className="text-ink-faint">{t('dashboard.loading')}</span>}
             </div>
           )}
         </div>
         <div className="min-h-56">
           {loading && !tokenUsage ? (
-            <div className="flex h-56 items-start px-2.5 py-2 text-[13px] text-slate-400 animate-pulse">
+            <div className="flex h-56 items-start px-2.5 py-2 text-[13px] text-ink-faint animate-pulse">
               {t('dashboard.loading')}
             </div>
           ) : hasModelRows && tokenUsage ? (
             <div className={`h-56 overflow-auto ${loading ? 'opacity-60' : ''}`}>
               <table className="w-full min-w-[860px] text-left text-[13px]">
-                <thead className="sticky top-0 bg-white text-slate-400">
-                  <tr className="border-b border-slate-100">
+                <thead className="sticky top-0 bg-surface text-ink-faint">
+                  <tr className="border-b border-line-soft">
                     <th className="px-2.5 py-1.5 font-semibold">{t('dashboard.tokenUsageModel')}</th>
                     <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageRequests')}</th>
                     <th className="px-2.5 py-1.5 text-right font-semibold">{t('dashboard.tokenUsageInput')}</th>
@@ -943,34 +943,34 @@ function TokenUsagePanel({
               </table>
             </div>
           ) : (
-            <div className="px-2.5 py-2 text-[13px] text-slate-400">{t('dashboard.noTokenUsage')}</div>
+            <div className="px-2.5 py-2 text-[13px] text-ink-faint">{t('dashboard.noTokenUsage')}</div>
           )}
         </div>
       </div>
 
-      <div className="mt-3 overflow-hidden rounded-lg border border-slate-100">
-        <div className="flex flex-col gap-1.5 bg-slate-50 px-2.5 py-1.5 sm:flex-row sm:items-center sm:justify-between">
-          <span className="text-[13px] font-semibold text-slate-500">{t('dashboard.tokenUsageEvents')}</span>
+      <div className="mt-3 overflow-hidden rounded-lg border border-line-soft">
+        <div className="flex flex-col gap-1.5 bg-sunken px-2.5 py-1.5 sm:flex-row sm:items-center sm:justify-between">
+          <span className="text-[13px] font-semibold text-ink-soft">{t('dashboard.tokenUsageEvents')}</span>
           {eventsPage && (
-            <div className="flex items-center gap-2 text-[13px] text-slate-400">
+            <div className="flex items-center gap-2 text-[13px] text-ink-faint">
               <span>
                 {t('dashboard.tokenUsagePage', {
                   page: eventsPage.page,
                   total: eventsPage.total_pages
                 })}
               </span>
-              {eventsLoading && <span className="text-slate-300">{t('dashboard.loading')}</span>}
+              {eventsLoading && <span className="text-ink-faint">{t('dashboard.loading')}</span>}
               <button
                 onClick={() => onEventsPageChange(Math.max(1, eventsPage.page - 1))}
                 disabled={eventsLoading || eventsPage.page <= 1}
-                className="h-7 rounded-md border border-slate-200 bg-white px-2 text-[13px] text-slate-600 disabled:opacity-40"
+                className="h-7 rounded-md border border-line bg-surface px-2 text-[13px] text-ink-soft disabled:opacity-40"
               >
                 {t('dashboard.previous')}
               </button>
               <button
                 onClick={() => onEventsPageChange(Math.min(eventsPage.total_pages, eventsPage.page + 1))}
                 disabled={eventsLoading || eventsPage.page >= eventsPage.total_pages}
-                className="h-7 rounded-md border border-slate-200 bg-white px-2 text-[13px] text-slate-600 disabled:opacity-40"
+                className="h-7 rounded-md border border-line bg-surface px-2 text-[13px] text-ink-soft disabled:opacity-40"
               >
                 {t('dashboard.next')}
               </button>
@@ -979,14 +979,14 @@ function TokenUsagePanel({
         </div>
         <div className="min-h-64">
           {eventsLoading && !eventsPage ? (
-            <div className="flex h-64 items-start px-2.5 py-2 text-[13px] text-slate-400 animate-pulse">
+            <div className="flex h-64 items-start px-2.5 py-2 text-[13px] text-ink-faint animate-pulse">
               {t('dashboard.loading')}
             </div>
           ) : hasEventRows && eventsPage ? (
             <div className={`h-64 overflow-auto ${eventsLoading ? 'opacity-60' : ''}`}>
               <table className="w-full min-w-[1060px] text-left text-[13px]">
-                <thead className="sticky top-0 bg-white text-slate-400">
-                  <tr className="border-b border-slate-100">
+                <thead className="sticky top-0 bg-surface text-ink-faint">
+                  <tr className="border-b border-line-soft">
                     <th className="px-2.5 py-1.5 font-semibold">{t('dashboard.tokenUsageTime')}</th>
                     <th className="px-2.5 py-1.5 font-semibold">{t('dashboard.tokenUsageUser')}</th>
                     <th className="px-2.5 py-1.5 font-semibold">{t('dashboard.tokenUsageModel')}</th>
@@ -1008,7 +1008,7 @@ function TokenUsagePanel({
               </table>
             </div>
           ) : (
-            <div className="px-2.5 py-2 text-[13px] text-slate-400">{t('dashboard.noTokenUsage')}</div>
+            <div className="px-2.5 py-2 text-[13px] text-ink-faint">{t('dashboard.noTokenUsage')}</div>
           )}
         </div>
       </div>
@@ -1055,7 +1055,7 @@ function TokenUsageTrendChart({
     key: TokenUsageTrendMetricKey
     label: string
   }> = [
-    { color: '#0f172a', key: 'total_tokens', label: t('dashboard.tokenUsageTotal') },
+    { color: 'var(--color-accent)', key: 'total_tokens', label: t('dashboard.tokenUsageTotal') },
     { color: '#2563eb', key: 'input_tokens', label: t('dashboard.tokenUsageInput') },
     { color: '#16a34a', key: 'output_tokens', label: t('dashboard.tokenUsageOutput') },
     { color: '#0891b2', key: 'cache_read_input_tokens', label: t('dashboard.tokenUsageCacheRead') },
@@ -1102,13 +1102,13 @@ function TokenUsageTrendChart({
   const yTicks = [0, 0.25, 0.5, 0.75, 1].map(ratio => Math.round(maxValue * ratio))
 
   return (
-    <div className="mt-3 overflow-hidden rounded-lg border border-slate-100">
-      <div className="flex flex-col gap-1.5 bg-slate-50 px-2.5 py-1.5 sm:flex-row sm:items-center sm:justify-between">
-        <span className="text-[13px] font-semibold text-slate-500">{t('dashboard.tokenUsageTrend')}</span>
+    <div className="mt-3 overflow-hidden rounded-lg border border-line-soft">
+      <div className="flex flex-col gap-1.5 bg-sunken px-2.5 py-1.5 sm:flex-row sm:items-center sm:justify-between">
+        <span className="text-[13px] font-semibold text-ink-soft">{t('dashboard.tokenUsageTrend')}</span>
         <select
           value={selectedModel}
           onChange={event => onModelChange(event.target.value)}
-          className="h-7 rounded-md border border-slate-200 bg-white px-2 text-[13px] text-slate-600 focus:outline-none focus:ring-2 focus:ring-slate-200"
+          className="h-7 rounded-md border border-line bg-surface px-2 text-[13px] text-ink-soft focus:outline-none focus:ring-2 focus:ring-accent/30"
         >
           <option value={ALL_MODELS_VALUE}>{t('dashboard.tokenUsageAllModels')}</option>
           {models.map(model => (
@@ -1118,11 +1118,11 @@ function TokenUsageTrendChart({
       </div>
       <div className="min-h-64 px-2.5 py-2">
         {loading && !dailyUsage ? (
-          <div className="flex h-56 items-start text-[13px] text-slate-400 animate-pulse">
+          <div className="flex h-56 items-start text-[13px] text-ink-faint animate-pulse">
             {t('dashboard.loading')}
           </div>
         ) : !dailyUsage || days.length === 0 || !hasUsage ? (
-          <div className="text-[13px] text-slate-400">{t('dashboard.noTokenUsage')}</div>
+          <div className="text-[13px] text-ink-faint">{t('dashboard.noTokenUsage')}</div>
         ) : (
           <div className={`${loading ? 'opacity-60' : ''}`}>
             <svg className="h-56 w-full" viewBox={`0 0 ${width} ${height}`} role="img">
@@ -1130,8 +1130,8 @@ function TokenUsageTrendChart({
                 const y = yForValue(tick)
                 return (
                   <g key={`${tick}-${index}`}>
-                    <line x1={padding.left} x2={width - padding.right} y1={y} y2={y} stroke="#e2e8f0" strokeWidth="1" />
-                    <text x={padding.left - 8} y={y + 4} textAnchor="end" fontSize="11" fill="#94a3b8">
+                    <line x1={padding.left} x2={width - padding.right} y1={y} y2={y} stroke="var(--color-line)" strokeWidth="1" />
+                    <text x={padding.left - 8} y={y + 4} textAnchor="end" fontSize="11" fill="var(--color-ink-faint)">
                       {formatTokenCount(tick)}
                     </text>
                   </g>
@@ -1141,7 +1141,7 @@ function TokenUsageTrendChart({
                 if (index % labelEvery !== 0 && index !== days.length - 1) return null
                 const x = xForIndex(index)
                 return (
-                  <text key={day.date} x={x} y={height - 10} textAnchor="middle" fontSize="11" fill="#94a3b8">
+                  <text key={day.date} x={x} y={height - 10} textAnchor="middle" fontSize="11" fill="var(--color-ink-faint)">
                     {formatChartDate(day.date)}
                   </text>
                 )
@@ -1152,7 +1152,7 @@ function TokenUsageTrendChart({
                   x2={xForIndex(selectedDayIndex)}
                   y1={padding.top}
                   y2={padding.top + plotHeight}
-                  stroke="#cbd5e1"
+                  stroke="var(--color-line)"
                   strokeDasharray="4 4"
                   strokeWidth="1"
                 />
@@ -1222,8 +1222,8 @@ function TokenUsageTrendChart({
                 onClick={() => setSelectedMetric(ALL_METRICS_VALUE)}
                 className={`inline-flex items-center rounded-md border px-2 py-1 text-[13px] ${
                   selectedMetric === ALL_METRICS_VALUE
-                    ? 'border-slate-300 bg-slate-100 font-semibold text-[#0f172a]'
-                    : 'border-slate-200 bg-white text-slate-500'
+                    ? 'border-line bg-sunken font-semibold text-ink'
+                    : 'border-line bg-surface text-ink-soft'
                 }`}
               >
                 All
@@ -1235,8 +1235,8 @@ function TokenUsageTrendChart({
                   onClick={() => setSelectedMetric(metric.key)}
                   className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[13px] ${
                     selectedMetric === metric.key
-                      ? 'border-slate-300 bg-slate-100 font-semibold text-[#0f172a]'
-                      : 'border-slate-200 bg-white text-slate-500'
+                      ? 'border-line bg-sunken font-semibold text-ink'
+                      : 'border-line bg-surface text-ink-soft'
                   }`}
                 >
                   <span className="h-2 w-2 rounded-full" style={{ backgroundColor: metric.color }} />
@@ -1245,8 +1245,8 @@ function TokenUsageTrendChart({
               ))}
             </div>
             {selectedDay && (
-              <div className="mt-2 flex flex-wrap gap-2 rounded-md bg-slate-50 px-2.5 py-2 text-[13px] text-slate-600">
-                <span className="font-semibold text-[#0f172a]">{formatChartDate(selectedDay.date)}</span>
+              <div className="mt-2 flex flex-wrap gap-2 rounded-md bg-sunken px-2.5 py-2 text-[13px] text-ink-soft">
+                <span className="font-semibold text-ink">{formatChartDate(selectedDay.date)}</span>
                 {visibleMetrics.map(metric => (
                   <span key={metric.key}>
                     {metric.label}: {formatTokenCount(selectedDayTotals[metric.key])}
@@ -1263,15 +1263,15 @@ function TokenUsageTrendChart({
 
 function TokenUsageModelRow({ model }: { model: TokenUsageModelSummary }) {
   return (
-    <tr className="border-b border-slate-50 last:border-b-0">
-      <td className="max-w-[260px] truncate px-2.5 py-1.5 text-slate-700" title={model.model}>{model.model}</td>
-      <td className="px-2.5 py-1.5 text-right text-slate-500">{formatTokenCount(model.request_count)}</td>
-      <td className="px-2.5 py-1.5 text-right text-slate-500">{formatTokenCount(model.input_tokens)}</td>
-      <td className="px-2.5 py-1.5 text-right text-slate-500">{formatTokenCount(model.output_tokens)}</td>
-      <td className="px-2.5 py-1.5 text-right text-slate-500">{formatTokenCount(model.cache_read_input_tokens)}</td>
-      <td className="px-2.5 py-1.5 text-right text-slate-500">{formatTokenCount(model.cache_creation_input_tokens)}</td>
-      <td className="px-2.5 py-1.5 text-right font-semibold text-[#0f172a]">{formatTokenCount(calcTokenTotal(model))}</td>
-      <td className="px-2.5 py-1.5 text-right font-semibold text-amber-700">
+    <tr className="border-b border-line-soft last:border-b-0">
+      <td className="max-w-[260px] truncate px-2.5 py-1.5 text-ink" title={model.model}>{model.model}</td>
+      <td className="px-2.5 py-1.5 text-right text-ink-soft">{formatTokenCount(model.request_count)}</td>
+      <td className="px-2.5 py-1.5 text-right text-ink-soft">{formatTokenCount(model.input_tokens)}</td>
+      <td className="px-2.5 py-1.5 text-right text-ink-soft">{formatTokenCount(model.output_tokens)}</td>
+      <td className="px-2.5 py-1.5 text-right text-ink-soft">{formatTokenCount(model.cache_read_input_tokens)}</td>
+      <td className="px-2.5 py-1.5 text-right text-ink-soft">{formatTokenCount(model.cache_creation_input_tokens)}</td>
+      <td className="px-2.5 py-1.5 text-right font-semibold text-ink">{formatTokenCount(calcTokenTotal(model))}</td>
+      <td className="px-2.5 py-1.5 text-right font-semibold text-amber-700 dark:text-amber-400">
         <span className="inline-flex flex-col items-end leading-4">
           <TokenUsageValueLines value={formatTokenCosts(model.costs)} />
         </span>
@@ -1282,30 +1282,30 @@ function TokenUsageModelRow({ model }: { model: TokenUsageModelSummary }) {
 
 function TokenUsageEventRow({ event }: { event: TokenUsageEventRecord }) {
   return (
-    <tr className="border-b border-slate-50 last:border-b-0">
-      <td className="whitespace-nowrap px-2.5 py-1.5 text-slate-500" title={event.created_at_utc}>
+    <tr className="border-b border-line-soft last:border-b-0">
+      <td className="whitespace-nowrap px-2.5 py-1.5 text-ink-soft" title={event.created_at_utc}>
         {formatEventTime(event.created_at_ms)}
       </td>
-      <td className="max-w-[140px] truncate px-2.5 py-1.5 text-slate-700" title={formatCellText(event.user_id)}>
+      <td className="max-w-[140px] truncate px-2.5 py-1.5 text-ink" title={formatCellText(event.user_id)}>
         {formatCellText(event.user_id)}
       </td>
-      <td className="max-w-[180px] truncate px-2.5 py-1.5 text-slate-700" title={event.model}>
+      <td className="max-w-[180px] truncate px-2.5 py-1.5 text-ink" title={event.model}>
         {event.model}
       </td>
-      <td className="max-w-[160px] truncate px-2.5 py-1.5 font-mono text-slate-500" title={formatCellText(event.session_id)}>
+      <td className="max-w-[160px] truncate px-2.5 py-1.5 font-mono text-ink-soft" title={formatCellText(event.session_id)}>
         {formatCellText(event.session_id)}
       </td>
-      <td className="max-w-[160px] truncate px-2.5 py-1.5 font-mono text-slate-500" title={event.trace_id}>
+      <td className="max-w-[160px] truncate px-2.5 py-1.5 font-mono text-ink-soft" title={event.trace_id}>
         {event.trace_id}
       </td>
-      <td className="px-2.5 py-1.5 text-right text-slate-500">{formatTokenCount(event.input_tokens)}</td>
-      <td className="px-2.5 py-1.5 text-right text-slate-500">{formatTokenCount(event.output_tokens)}</td>
-      <td className="px-2.5 py-1.5 text-right text-slate-500">{formatTokenCount(event.cache_read_input_tokens)}</td>
-      <td className="px-2.5 py-1.5 text-right text-slate-500">{formatTokenCount(event.cache_creation_input_tokens)}</td>
-      <td className="px-2.5 py-1.5 text-right font-semibold text-[#0f172a]">
+      <td className="px-2.5 py-1.5 text-right text-ink-soft">{formatTokenCount(event.input_tokens)}</td>
+      <td className="px-2.5 py-1.5 text-right text-ink-soft">{formatTokenCount(event.output_tokens)}</td>
+      <td className="px-2.5 py-1.5 text-right text-ink-soft">{formatTokenCount(event.cache_read_input_tokens)}</td>
+      <td className="px-2.5 py-1.5 text-right text-ink-soft">{formatTokenCount(event.cache_creation_input_tokens)}</td>
+      <td className="px-2.5 py-1.5 text-right font-semibold text-ink">
         {formatTokenCount(event.total_tokens)}
       </td>
-      <td className="px-2.5 py-1.5 text-right font-semibold text-amber-700">
+      <td className="px-2.5 py-1.5 text-right font-semibold text-amber-700 dark:text-amber-400">
         <span className="inline-flex flex-col items-end leading-4">
           <TokenUsageValueLines value={formatTokenCost(event.cost)} />
         </span>

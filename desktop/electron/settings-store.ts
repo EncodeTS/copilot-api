@@ -23,6 +23,7 @@ const DEFAULT_SETTINGS: DesktopSettings = {
   verbose: false,
   showToken: false,
   language: 'auto',
+  theme: 'auto',
   proxy: {
     mode: 'system',
     http_proxy: 'http://127.0.0.1:8888',
@@ -63,6 +64,9 @@ export function normalizeSettings(settings: Partial<DesktopSettings> | null | un
     language: settings?.language === 'en' || settings?.language === 'zh' || settings?.language === 'auto'
       ? settings.language
       : DEFAULT_SETTINGS.language,
+    theme: settings?.theme === 'light' || settings?.theme === 'dark' || settings?.theme === 'auto'
+      ? settings.theme
+      : DEFAULT_SETTINGS.theme,
     proxy: normalizeProxySettings(settings?.proxy)
   }
 }

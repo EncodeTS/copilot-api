@@ -152,6 +152,8 @@ export interface TokenUsageEventsPage {
   total_pages: number
 }
 
+export type ThemePreference = 'light' | 'dark' | 'auto'
+
 export type DesktopProxyMode = 'system' | 'custom' | 'direct'
 
 export interface DesktopProxySettings {
@@ -171,6 +173,7 @@ export interface DesktopSettings {
   verbose: boolean
   showToken: boolean
   language: LangPreference
+  theme: ThemePreference
   proxy: DesktopProxySettings
 }
 

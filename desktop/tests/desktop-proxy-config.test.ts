@@ -174,6 +174,7 @@ describe("desktop proxy config", () => {
       verbose: false,
       showToken: false,
       language: "auto",
+      theme: "auto",
       proxy: {
         mode: "system",
         http_proxy: "http://127.0.0.1:8888",
@@ -205,7 +206,18 @@ describe("desktop proxy config", () => {
       verbose: true,
       showToken: true,
       language: "zh",
+      theme: "auto",
       proxy: createProxySettings({ mode: "direct" }),
     })
+  })
+
+  test("normalizes theme preference with fallback to auto", () => {
+    type PartialSettings = Partial<import("../src/types/ipc").DesktopSettings>
+    expect(normalizeSettings({ theme: "dark" } as PartialSettings).theme).toBe("dark")
+    expect(normalizeSettings({ theme: "light" } as PartialSettings).theme).toBe("light")
+    expect(normalizeSettings({ theme: "auto" } as PartialSettings).theme).toBe("auto")
+    expect(normalizeSettings({ theme: "unknown" } as unknown as PartialSettings).theme).toBe("auto")
+    expect(normalizeSettings({} as PartialSettings).theme).toBe("auto")
+    expect(normalizeSettings(null).theme).toBe("auto")
   })
 })

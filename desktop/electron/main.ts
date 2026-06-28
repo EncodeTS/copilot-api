@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage } from 'electron'
+import { app, BrowserWindow, Tray, Menu, nativeImage, nativeTheme } from 'electron'
 import path from 'node:path'
 
 import { bindElectronFetch } from '../../src/lib/electron-fetch'
@@ -13,6 +13,7 @@ import {
 } from './electron-proxy-config'
 import { tMain } from './i18n'
 import { readSettings, readSettingsSync } from './settings-store'
+import type { ThemePreference } from '../src/types/ipc'
 
 const CLI_ENV_FLAGS = {
   '--api-home': 'COPILOT_API_HOME',
@@ -49,6 +50,12 @@ const initialSettings = readSettingsSync()
 applySettingsEnvOverrides(initialSettings)
 applyElectronProxyCommandLine(getEffectiveProxySettings(initialSettings))
 bindElectronFetch()
+
+function resolveNativeBackgroundColor(theme: ThemePreference): string {
+  if (theme === 'dark') return '#0a0a0c'
+  if (theme === 'light') return '#fafafa'
+  return nativeTheme.shouldUseDarkColors ? '#0a0a0c' : '#fafafa'
+}
 
 interface RuntimeDependencies {
   registerIpcHandlers: typeof import('./ipc-handlers').registerIpcHandlers
@@ -214,7 +221,7 @@ function createWindow(): BrowserWindow {
     },
     titleBarStyle: 'hiddenInset',
     icon: process.platform === 'darwin' ? undefined : getWindowIconPath(),
-    backgroundColor: '#f8fafc',
+    backgroundColor: resolveNativeBackgroundColor(initialSettings.theme),
     show: false
   })
 
@@ -273,6 +280,10 @@ app.whenReady().then(async () => {
     getEffectiveProxySettings,
     onSettingsChange: async (settings, prevSettings) => {
       await applyElectronProxy(getEffectiveProxySettings(settings))
+
+      if (settings.theme !== prevSettings.theme && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.setBackgroundColor(resolveNativeBackgroundColor(settings.theme))
+      }
 
       if (settings.minimizeToTray) {
         await createTray(win)
