@@ -33,9 +33,7 @@ AI gateway 会从同一个本地端点暴露 OpenAI / Anthropic 兼容 API，让
 - **面向 Claude 的更原生 Copilot 路由**：优先使用原生 `/v1/messages`，保留 Claude 风格工具流，支持 Anthropic beta 能力、通过 Responses-capable 模型支持 Claude WebSearch，并保留 subagent / session 标记。
 - **Claude Code 与 OpenCode 集成**：兼容 Claude Code 与 OpenCode，也支持通过 `@ai-sdk/anthropic` 直接作为 Anthropic provider 使用。
 - **灵活的认证与部署选项**：支持交互式登录、直接 token、个人 / Business / Enterprise、GitHub Enterprise、opencode OAuth 和自定义数据目录。
-- **本地控制与可观测性**：提供使用量看板、速率限制、手动审批，以及调试时显示 token 的能力。
 - **多 provider 路由**：可暴露 `/:provider/...` 路由，也可在顶层 API 上使用 `model: "provider/model"`。
-- **更好的 token 与上下文管理**：支持精确 Claude token 计数，以及面向长对话的 GPT 上下文压缩。
 
 ## 前置要求
 
