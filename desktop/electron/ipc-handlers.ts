@@ -7,7 +7,7 @@ import { PATHS } from '../../src/lib/paths'
 import { getDeviceCode, pollAccessToken, getGitHubUser, saveToken, readToken, clearToken, getCopilotAccountType } from './auth'
 import { tMain } from './i18n'
 import {
-  configureDesktopProvider,
+  configureProviderWithAuthStatus,
   getDesktopAuthStatus,
   getEnabledDesktopProviders,
   loginCodexForDesktop,
@@ -181,7 +181,7 @@ export function registerIpcHandlers(
 
   ipcMain.handle('auth:configure-provider', async (_event, input: ProviderAuthInput) => {
     try {
-      return configureDesktopProvider(input)
+      return await configureProviderWithAuthStatus(input)
     } catch (err) {
       return { success: false, mode: 'none', error: (err as Error).message }
     }
