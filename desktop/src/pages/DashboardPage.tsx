@@ -11,7 +11,7 @@ import {
   shouldShowCopilotUsageSummary
 } from '../lib/copilot-usage-display'
 import { formatTokenCost, formatTokenCosts } from '../lib/token-usage-format'
-import AdvancedConfigPage from './AdvancedConfigPage'
+import ModelMappingsPage from './ModelMappingsPage'
 import type {
   DesktopAuthMode,
   ServerAuthInfo,
@@ -53,8 +53,7 @@ interface Model {
 }
 
 type TranslateFn = ReturnType<typeof useLanguage>['t']
-type DashboardTab = 'dashboard' | 'tokenUsage' | 'logs'
-type DashboardView = 'main' | 'advancedConfig'
+type DashboardTab = 'dashboard' | 'tokenUsage' | 'advancedConfig' | 'logs'
 
 const numberFormatter = new Intl.NumberFormat()
 const TOKEN_USAGE_EVENTS_PAGE_SIZE = 10
@@ -129,7 +128,6 @@ function formatCellText(value: string | null | undefined): string {
 export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: DashboardPageProps) {
   const { t } = useLanguage()
   const [started, setStarted] = useState(false)
-  const [view, setView] = useState<DashboardView>('main')
   const [port, setPort] = useState<string>(String(defaultPort))
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState('')
@@ -486,8 +484,10 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
   const dashboardTabs: Array<{ key: DashboardTab; label: string }> = [
     { key: 'dashboard', label: t('dashboard.tabDashboard') },
     { key: 'tokenUsage', label: t('dashboard.tabTokenUsage') },
+    { key: 'advancedConfig', label: t('header.advancedConfig') },
     { key: 'logs', label: t('dashboard.tabLogs') }
   ]
+  const showRefreshButton = started && tab !== 'advancedConfig'
 
   return (
     <div className="flex flex-col h-screen bg-white">
@@ -497,7 +497,6 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
         onStop={handleStop}
         isRunning={started && !stopping}
         isRestarting={restarting}
-        onOpenAdvancedConfig={() => setView('advancedConfig')}
       />
 
       {/* Unexpected server stop banner */}
@@ -508,7 +507,7 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
       )}
 
       {/* Tabs shown only while the server is running */}
-      {view === 'main' && started && (
+      {started && (
         <div className="flex items-center justify-between gap-3 px-4 bg-white border-b border-slate-100 shrink-0">
           <div className="flex min-w-0">
             {dashboardTabs.map(tabItem => (
@@ -525,28 +524,23 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
               </button>
             ))}
           </div>
-          <button
-            onClick={handleRefreshActiveTab}
-            disabled={isActiveTabRefreshing}
-            className="h-7 shrink-0 rounded-md border border-slate-200 bg-white px-2.5 text-[13px] text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-40"
-          >
-            {isActiveTabRefreshing ? t('dashboard.refreshing') : t('dashboard.refresh')}
-          </button>
+          {showRefreshButton && (
+            <button
+              onClick={handleRefreshActiveTab}
+              disabled={isActiveTabRefreshing}
+              className="h-7 shrink-0 rounded-md border border-slate-200 bg-white px-2.5 text-[13px] text-slate-600 transition-colors hover:bg-slate-50 disabled:opacity-40"
+            >
+              {isActiveTabRefreshing ? t('dashboard.refreshing') : t('dashboard.refresh')}
+            </button>
+          )}
         </div>
       )}
 
       {/* Content area */}
       <div className="flex-1 overflow-auto">
 
-        {view === 'advancedConfig' && (
-          <AdvancedConfigPage
-            onBack={() => setView('main')}
-            serverRunning={started && !stopping}
-          />
-        )}
-
         {/* Empty state: start form */}
-        {view === 'main' && !started && (
+        {!started && (
           <div className="h-full flex flex-col items-center justify-center gap-4 px-6">
             <div className="w-11 h-11 bg-slate-100 rounded-xl flex items-center justify-center text-[13px]">🚀</div>
             <div className="text-center">
@@ -599,7 +593,7 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
         )}
 
         {/* Dashboard tab */}
-        {view === 'main' && started && tab === 'dashboard' && (
+        {started && tab === 'dashboard' && (
           <div className="p-4">
             <div className="mb-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
               {dashboardOverviewItems.map(item => (
@@ -738,7 +732,7 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
         )}
 
         {/* Token usage tab */}
-        {view === 'main' && started && tab === 'tokenUsage' && (
+        {started && tab === 'tokenUsage' && (
           <div className="p-4">
             <TokenUsagePanel
               dailyUsage={tokenUsageDaily}
@@ -754,8 +748,13 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
           </div>
         )}
 
+        {/* Model mappings tab */}
+        {started && tab === 'advancedConfig' && (
+          <ModelMappingsPage serverRunning={started && !stopping} />
+        )}
+
         {/* Logs tab */}
-        {view === 'main' && started && tab === 'logs' && (
+        {started && tab === 'logs' && (
           <div className="p-4 h-full flex flex-col">
             <div className="flex-1 bg-[#0f172a] rounded-xl p-4 flex flex-col overflow-hidden min-h-0">
               <div className="flex items-center justify-between mb-3 shrink-0">

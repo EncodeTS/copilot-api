@@ -15,7 +15,6 @@ interface HeaderProps {
   onStop?: () => void
   isRunning?: boolean
   isRestarting?: boolean
-  onOpenAdvancedConfig?: () => void
 }
 
 export default function Header({
@@ -23,14 +22,13 @@ export default function Header({
   onRestart,
   onStop,
   isRunning,
-  isRestarting,
-  onOpenAdvancedConfig
+  isRestarting
 }: HeaderProps) {
   const { t } = useLanguage()
   const [showSettings, setShowSettings] = useState(false)
   const [showSettingsMenu, setShowSettingsMenu] = useState(false)
   const settingsMenuRef = useRef<HTMLDivElement>(null)
-  const showServerStatus = Boolean(onStop || onOpenAdvancedConfig)
+  const showServerStatus = Boolean(onStop)
 
   useEffect(() => {
     if (!showSettingsMenu) return
@@ -44,7 +42,7 @@ export default function Header({
   }, [showSettingsMenu])
 
   const handleSettingsAction = () => {
-    if (onOpenAdvancedConfig || onChangeAuth) {
+    if (onChangeAuth) {
       setShowSettingsMenu(v => !v)
       return
     }
@@ -109,7 +107,7 @@ export default function Header({
               </svg>
             </button>
 
-            {showSettingsMenu && (onOpenAdvancedConfig || onChangeAuth) && (
+            {showSettingsMenu && onChangeAuth && (
               <div className="absolute right-0 top-full mt-1.5 bg-white border border-gray-200 rounded-xl shadow-lg z-10 min-w-[170px] overflow-hidden">
                 <button
                   onClick={() => {
@@ -120,17 +118,6 @@ export default function Header({
                 >
                   {t('header.appSettings')}
                 </button>
-                {onOpenAdvancedConfig && (
-                  <button
-                    onClick={() => {
-                      setShowSettingsMenu(false)
-                      onOpenAdvancedConfig()
-                    }}
-                    className="flex items-center gap-2 w-full px-3 py-2.5 text-[13px] text-slate-700 hover:bg-slate-50 transition-colors text-left border-t border-slate-100"
-                  >
-                    {t('header.advancedConfig')}
-                  </button>
-                )}
                 {onChangeAuth && (
                   <button
                     onClick={() => {
