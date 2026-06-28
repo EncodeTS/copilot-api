@@ -238,6 +238,17 @@ export function configureDesktopProvider(
   }
 }
 
+export interface ConfigureProviderStatusDependencies
+  extends ProviderConfigDependencies, AuthStatusDependencies {}
+
+export async function configureProviderWithAuthStatus(
+  input: ProviderAuthInput,
+  dependencies: ConfigureProviderStatusDependencies = {},
+): Promise<AuthStatus> {
+  configureDesktopProvider(input, dependencies)
+  return getDesktopAuthStatus(dependencies)
+}
+
 export async function loginCodexForDesktop(
   options: CodexDesktopLoginOptions,
   dependencies: CodexDesktopLoginDependencies = {},
