@@ -7,7 +7,7 @@ const en: Locale = {
     codexAuth: 'Sign in with OpenAI Codex',
     customProvider: 'Custom provider',
     loading: 'Please wait…',
-    manualToken: 'Enter token manually',
+    manualToken: 'Enter Copilot token manually',
     providerApiKey: 'API key',
     providerAuthType: 'Auth type',
     providerAuthTypeDefault: 'Default',

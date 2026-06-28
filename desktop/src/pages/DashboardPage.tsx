@@ -436,7 +436,7 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
   const chatQ = usage?.quota_snapshots?.chat
   const completionsQ = usage?.quota_snapshots?.completions
   const isCopilotAuthMode = authMode === 'copilot'
-  const shouldShowUsagePlaceholders = isCopilotAuthMode && loading
+  const shouldShowUsagePlaceholders = isCopilotAuthMode && loading && usage === null
   const copilotPlan = getNonEmptyUsageText(usage?.copilot_plan)
   const quotaResetDate = getNonEmptyUsageText(usage?.quota_reset_date)
   const shouldShowFailureLogs = !started && Boolean(startError || serverError)
@@ -487,7 +487,7 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
     { key: 'advancedConfig', label: t('header.advancedConfig') },
     { key: 'logs', label: t('dashboard.tabLogs') }
   ]
-  const showRefreshButton = started && tab !== 'advancedConfig'
+  const showRefreshButton = started && tab !== 'advancedConfig' && tab !== 'logs'
 
   return (
     <div className="flex flex-col h-screen bg-white">

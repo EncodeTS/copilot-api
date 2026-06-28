@@ -7,7 +7,7 @@ const zh: Locale = {
     codexAuth: '使用 OpenAI Codex 授权',
     customProvider: '自定义 Provider',
     loading: '请稍候…',
-    manualToken: '手动填写 Token',
+    manualToken: '手动填写 Copilot Token',
     providerApiKey: 'API Key',
     providerAuthType: '认证类型',
     providerAuthTypeDefault: '默认',
