@@ -89,6 +89,12 @@ const OPENAI_COMPATIBLE_CONTEXT_CACHE_ROLES = new Set<Message["role"]>([
   "tool",
 ])
 
+const isDashScopeAliyunProvider = (
+  providerConfig: ResolvedProviderConfig,
+): boolean =>
+  providerConfig.name === "dashscope"
+  || providerConfig.baseUrl.includes("aliyuncs.com")
+
 export async function handleProviderMessages(
   c: Context<Env, "/:provider">,
 ): Promise<Response> {
@@ -463,7 +469,11 @@ const handleOpenAICompatibleProviderMessages = async (
   },
 ): Promise<Response> => {
   const { modelConfig, payload, provider, providerConfig } = options
-  const openAIPayload = createOpenAICompatiblePayload(payload, modelConfig)
+  const openAIPayload = createOpenAICompatiblePayload(
+    payload,
+    modelConfig,
+    providerConfig,
+  )
   debugJson(logger, "provider.messages.openai_compatible.request", {
     payload: openAIPayload,
     provider,
@@ -514,12 +524,20 @@ const handleOpenAICompatibleProviderMessages = async (
 const createOpenAICompatiblePayload = (
   payload: AnthropicMessagesPayload,
   modelConfig: ModelConfig | undefined,
+  providerConfig: ResolvedProviderConfig,
 ): ChatCompletionsPayload => {
   const openAIPayload = translateToOpenAI(payload, {
     supportPdf: modelConfig?.supportPdf,
     toolContentSupportType: modelConfig?.toolContentSupportType ?? [],
   })
-  applyOpenAICompatibleThinkingBudget(openAIPayload, payload)
+
+  const isDashScopeProvider = isDashScopeAliyunProvider(providerConfig)
+
+  if (isDashScopeProvider) {
+    applyOpenAICompatibleThinkingBudget(openAIPayload, payload)
+  } else {
+    delete openAIPayload.thinking_budget
+  }
 
   if (payload.top_k !== undefined) {
     openAIPayload.top_k = payload.top_k
@@ -550,7 +568,8 @@ const createOpenAICompatiblePayload = (
     openAIPayload.parallel_tool_calls = true
   }
 
-  if (modelConfig?.contextCache !== false) {
+  const contextCacheEnabled = modelConfig?.contextCache ?? isDashScopeProvider
+  if (contextCacheEnabled) {
     applyOpenAICompatibleContextCache(openAIPayload)
   }
 
