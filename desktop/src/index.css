@@ -20,13 +20,13 @@
   --color-canvas: #0a0a0c;
   --color-surface: #161618;
   --color-sunken: #232326;
-  --color-line: #303033;
-  --color-line-soft: #232326;
+  --color-line: #323236;
+  --color-line-soft: #2a2a2e;
   --color-ink: #f4f4f5;
   --color-ink-soft: #a1a1aa;
-  --color-ink-faint: #6b6b70;
+  --color-ink-faint: #787882;
   --color-accent: #d4d4d8;
-  --color-accent-strong: #4a4a50;
+  --color-accent-strong: #5c5c66;
   --color-accent-soft: #232326;
 }
 
@@ -39,4 +39,27 @@ body {
   background: var(--color-canvas);
   color: var(--color-ink);
   font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+/* Global scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-ink-faint);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
 }

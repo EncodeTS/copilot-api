@@ -915,13 +915,13 @@ function TokenUsagePanel({
             </div>
           )}
         </div>
-        <div className="min-h-56">
+        <div className="min-h-44">
           {loading && !tokenUsage ? (
-            <div className="flex h-56 items-start px-2.5 py-2 text-[13px] text-ink-faint animate-pulse">
+            <div className="flex h-44 items-start px-2.5 py-2 text-[13px] text-ink-faint animate-pulse">
               {t('dashboard.loading')}
             </div>
           ) : hasModelRows && tokenUsage ? (
-            <div className={`h-56 overflow-auto ${loading ? 'opacity-60' : ''}`}>
+            <div className={`h-44 overflow-auto ${loading ? 'opacity-60' : ''}`}>
               <table className="w-full min-w-[860px] text-left text-[13px]">
                 <thead className="sticky top-0 bg-surface text-ink-faint">
                   <tr className="border-b border-line-soft">
