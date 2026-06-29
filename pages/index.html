@@ -68,11 +68,11 @@
 
       .main-shell {
         min-width: 0;
-        padding: 28px 32px 40px;
+        padding: 16px 24px 24px;
       }
 
       .topbar {
-        margin: 0 auto 18px;
+        margin: 0 auto 10px;
         max-width: 1720px;
       }
 
@@ -80,8 +80,8 @@
         display: flex;
         align-items: flex-start;
         justify-content: space-between;
-        gap: 20px;
-        margin-bottom: 16px;
+        gap: 14px;
+        margin-bottom: 10px;
       }
 
       .page-title {
@@ -92,7 +92,7 @@
       }
 
       .page-subtitle {
-        margin-top: 8px;
+        margin-top: 4px;
         color: var(--color-gray);
         font-size: 14px;
       }
@@ -171,22 +171,22 @@
       }
 
       .dashboard-section {
-        margin-bottom: 16px;
+        margin-bottom: 10px;
       }
 
       .section-heading {
         display: flex;
         align-items: center;
-        gap: 9px;
-        margin-bottom: 12px;
+        gap: 6px;
+        margin-bottom: 8px;
         color: var(--color-fg-lightest);
         font-size: 16px;
         font-weight: 750;
       }
 
       .section-subtitle {
-        margin-top: -6px;
-        margin-bottom: 12px;
+        margin-top: -4px;
+        margin-bottom: 8px;
         color: var(--color-gray);
         font-size: 12px;
       }
@@ -203,8 +203,8 @@
         align-items: center;
         justify-content: space-between;
         gap: 12px;
-        min-height: 54px;
-        padding: 14px 16px;
+        min-height: 44px;
+        padding: 10px 14px;
         border-bottom: 1px solid var(--color-bg-light-2);
       }
 
@@ -215,20 +215,24 @@
       }
 
       .panel-meta {
-        margin-top: 3px;
+        margin-top: 2px;
         color: var(--color-gray);
         font-size: 12px;
       }
 
       .metric-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(185px, 1fr));
-        gap: 14px;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 10px;
+      }
+
+      .metric-grid-tight {
+        grid-template-columns: repeat(7, minmax(0, 1fr));
       }
 
       .metric-card {
-        min-height: 112px;
-        padding: 16px;
+        min-height: 88px;
+        padding: 12px;
         border: 1px solid var(--color-bg-light-2);
         border-radius: 8px;
         background: rgba(255, 255, 255, 0.96);
@@ -251,7 +255,7 @@
       }
 
       .metric-value {
-        margin-top: 16px;
+        margin-top: 10px;
         color: var(--color-fg-lightest);
         font-size: clamp(20px, 2vw, 28px);
         font-weight: 800;
@@ -259,7 +263,7 @@
       }
 
       .metric-note {
-        margin-top: 8px;
+        margin-top: 4px;
         color: var(--color-gray);
         font-size: 12px;
       }
@@ -339,7 +343,13 @@
       .quick-state-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 12px;
+        gap: 10px;
+      }
+
+      @media (max-width: 1280px) {
+        .metric-grid-tight {
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
       }
 
       @media (max-width: 1100px) {
@@ -354,7 +364,7 @@
 
       @media (max-width: 640px) {
         .main-shell {
-          padding: 20px 14px 28px;
+          padding: 12px 14px 18px;
         }
 
         .topbar-row {
@@ -367,6 +377,10 @@
 
         .endpoint-field {
           grid-column: auto;
+        }
+
+        .metric-grid-tight {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
         }
       }
     </style>
@@ -876,7 +890,7 @@
                   <div class="progress-bar-fg h-2" style="width: ${unlimited ? 100 : percentUsed}%; background-color: ${progressBarColor};"></div>
                 </div>
               </div>
-              <div class="mt-4 flex items-center justify-between gap-4 text-xs font-medium" style="color: var(--color-gray);">
+              <div class="mt-2 flex items-center justify-between gap-4 text-xs font-medium" style="color: var(--color-gray);">
                 <span>${used} / ${unlimited ? "∞" : entitlement.toLocaleString()}</span>
                 <span>${unlimited ? "∞" : remaining.toLocaleString()} remaining</span>
               </div>
@@ -979,7 +993,7 @@
 
           return `
             <section id="token-usage" class="dashboard-section">
-              <div class="mb-3 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+              <div class="mb-2 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                 <div>
                   <h2 class="section-heading mb-1">
                     <i data-lucide="database" class="h-5 w-5" style="color: var(--color-blue);"></i>
@@ -1012,7 +1026,7 @@
                   : ""
               }
 
-              <div class="metric-grid ${
+              <div class="metric-grid metric-grid-tight ${
                 state.isTokenUsageLoading ? "opacity-60" : ""
               }">
                 ${renderTokenUsageMetric(
@@ -1057,7 +1071,7 @@
                 state.tokenUsageDailyError
               )}
 
-              <div class="mt-4 grid grid-cols-1 2xl:grid-cols-[minmax(0,1fr)_minmax(0,1.18fr)] gap-4">
+              <div class="mt-3 grid grid-cols-1 gap-3">
                 <div class="panel">
                   <div class="panel-header">
                     <div>
@@ -1172,7 +1186,7 @@
           ].join("");
 
           return `
-            <div class="mt-4 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_304px] gap-4">
+            <div class="mt-3 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_304px] gap-3">
               <div class="panel">
                 <div class="panel-header">
                   <div>
