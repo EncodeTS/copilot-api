@@ -3,7 +3,16 @@ import type { Context } from "hono"
 
 import { streamSSE } from "hono/streaming"
 
-import { type ModelConfig, resolveEffectiveProviderType } from "~/lib/config"
+import {
+  type ModelConfig,
+  type ResolvedProviderConfig,
+  resolveEffectiveProviderType,
+} from "~/lib/config"
+import {
+  applyDashScopePreserveThinkingDefault,
+  applyOpenAICompatibleContextCache,
+  isDashScopeAliyunProvider,
+} from "~/lib/dashscope"
 import { HTTPError } from "~/lib/error"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
@@ -55,6 +64,11 @@ export async function handleProviderChatCompletionsForProvider(
     extraBody: modelConfig?.extraBody,
   })
   applyProviderStreamOptions(payload)
+  applyDashScopePreserveThinkingDefault(
+    payload as unknown as Record<string, unknown>,
+    providerConfig,
+  )
+  applyProviderContextCache(payload, modelConfig, providerConfig)
 
   debugJson(logger, "provider.chat_completions.request", {
     payload,
@@ -132,6 +146,18 @@ const applyProviderStreamOptions = (payload: ChatCompletionsPayload): void => {
   payload.stream_options = {
     ...(payload.stream_options ?? {}),
     include_usage: true,
+  }
+}
+
+const applyProviderContextCache = (
+  payload: ChatCompletionsPayload,
+  modelConfig: ModelConfig | undefined,
+  providerConfig: ResolvedProviderConfig,
+): void => {
+  const isDashScopeProvider = isDashScopeAliyunProvider(providerConfig)
+  const contextCacheEnabled = modelConfig?.contextCache ?? isDashScopeProvider
+  if (contextCacheEnabled) {
+    applyOpenAICompatibleContextCache(payload)
   }
 }
 
