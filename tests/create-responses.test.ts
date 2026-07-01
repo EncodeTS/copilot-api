@@ -18,6 +18,7 @@ import {
   buildResponsesWebSocketPayload,
   buildResponsesWebSocketUrl,
   createResponses,
+  ensureEncryptedReasoningIncluded,
   prepareResponsesWebSocketRequest,
 } from "../src/services/copilot/create-responses"
 
@@ -121,6 +122,23 @@ describe("createResponses", () => {
     >
     expect(body.initiator).toBeUndefined()
     expect(body.type).toBeUndefined()
+    expect(body.include).toEqual(["reasoning.encrypted_content"])
+  })
+
+  test("preserves existing responses include values when adding encrypted reasoning", () => {
+    const payload: ResponsesPayload = {
+      include: ["web_search_call.results"],
+      input: "hello",
+      model: "gpt-test",
+    }
+
+    ensureEncryptedReasoningIncluded(payload)
+    ensureEncryptedReasoningIncluded(payload)
+
+    expect(payload.include).toEqual([
+      "web_search_call.results",
+      "reasoning.encrypted_content",
+    ])
   })
 
   test("sets subagent interaction headers for HTTP responses requests", async () => {
