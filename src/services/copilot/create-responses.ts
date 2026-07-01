@@ -25,6 +25,9 @@ import {
   createWebSocketUrl,
 } from "~/services/responses-websocket"
 
+const ENCRYPTED_REASONING_INCLUDE: ResponseIncludable =
+  "reasoning.encrypted_content"
+
 export interface ResponsesPayload {
   model: string
   instructions?: string | null
@@ -616,6 +619,7 @@ export const createResponses = async (
 
   // service_tier is not supported by github copilot
   payload.service_tier = undefined
+  ensureEncryptedReasoningIncluded(payload)
 
   consola.log(`<-- model: ${payload.model}`)
 
@@ -636,6 +640,17 @@ export const createResponses = async (
   }
 
   return await createHttpResponses(payload, headers)
+}
+
+export const ensureEncryptedReasoningIncluded = (
+  payload: ResponsesPayload,
+): void => {
+  const include = Array.isArray(payload.include) ? payload.include : []
+  if (include.includes(ENCRYPTED_REASONING_INCLUDE)) {
+    return
+  }
+
+  payload.include = [...include, ENCRYPTED_REASONING_INCLUDE]
 }
 
 const createHttpResponses = async (
