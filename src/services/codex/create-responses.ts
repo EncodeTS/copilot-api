@@ -457,6 +457,7 @@ const createCodexResponsesWebSocketStreamChunk = (
     }
 
     if (parsed.type === "error" && parsed.error) {
+      consola.warn("Codex responses websocket stream error:", parsed.error)
       parsed.message = parsed.error.message
     }
 

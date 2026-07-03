@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url"
 
 interface ConfigFileShape {
   builtinProviders?: Record<string, unknown>
+  extraPrompts?: Record<string, string>
+  modelReasoningEfforts?: Record<string, string>
   modelResponsesApiCompactThresholds?: Record<string, number>
   useResponsesApiContextManagement?: boolean
   providers?: Record<
@@ -257,5 +259,111 @@ describe("builtin provider config", () => {
     )
 
     expect(JSON.parse(output)).toBeNull()
+  })
+
+  test("returns commentary prompt for gpt-5.3+ models by default", () => {
+    const tempDir = createTempConfigDir()
+    writeConfigFile(tempDir, {})
+
+    const output = runScript(
+      tempDir,
+      'const { getExtraPromptForModel } = await import("./src/lib/config"); console.log(JSON.stringify({ codex: getExtraPromptForModel("gpt-5.3-codex").length > 0, gpt54: getExtraPromptForModel("gpt-5.4").length > 0, gpt55: getExtraPromptForModel("gpt-5.5").length > 0, gpt6: getExtraPromptForModel("gpt-6").length > 0, gpt52: getExtraPromptForModel("gpt-5.2").length > 0, unknown: getExtraPromptForModel("gpt-test") }));',
+    )
+
+    expect(JSON.parse(output)).toEqual({
+      codex: true,
+      gpt54: true,
+      gpt55: true,
+      gpt6: true,
+      gpt52: false,
+      unknown: "",
+    })
+  })
+
+  test("returns xhigh reasoning effort for gpt-5.3+ models by default", () => {
+    const tempDir = createTempConfigDir()
+    writeConfigFile(tempDir, {})
+
+    const output = runScript(
+      tempDir,
+      'const { getReasoningEffortForModel } = await import("./src/lib/config"); console.log(JSON.stringify({ codex: getReasoningEffortForModel("gpt-5.3-codex"), gpt54: getReasoningEffortForModel("gpt-5.4"), gpt55: getReasoningEffortForModel("gpt-5.5"), gpt6: getReasoningEffortForModel("gpt-6"), gpt52: getReasoningEffortForModel("gpt-5.2"), unknown: getReasoningEffortForModel("gpt-test") }));',
+    )
+
+    expect(JSON.parse(output)).toEqual({
+      codex: "xhigh",
+      gpt54: "xhigh",
+      gpt55: "xhigh",
+      gpt6: "xhigh",
+      gpt52: "high",
+      unknown: "high",
+    })
+  })
+
+  test("user extraPrompts override takes priority over fallback", () => {
+    const tempDir = createTempConfigDir()
+    writeConfigFile(tempDir, {
+      extraPrompts: {
+        "gpt-5.4": "custom prompt",
+      },
+    })
+
+    const output = runScript(
+      tempDir,
+      'const { getExtraPromptForModel } = await import("./src/lib/config"); console.log(JSON.stringify({ gpt54: getExtraPromptForModel("gpt-5.4"), gpt55HasPrompt: getExtraPromptForModel("gpt-5.5").length > 0 }));',
+    )
+
+    expect(JSON.parse(output)).toEqual({
+      gpt54: "custom prompt",
+      gpt55HasPrompt: true,
+    })
+  })
+
+  test("user modelReasoningEfforts override takes priority over fallback", () => {
+    const tempDir = createTempConfigDir()
+    writeConfigFile(tempDir, {
+      modelReasoningEfforts: {
+        "gpt-5.4": "medium",
+      },
+    })
+
+    const output = runScript(
+      tempDir,
+      'const { getReasoningEffortForModel } = await import("./src/lib/config"); console.log(JSON.stringify({ gpt54: getReasoningEffortForModel("gpt-5.4"), gpt55: getReasoningEffortForModel("gpt-5.5") }));',
+    )
+
+    expect(JSON.parse(output)).toEqual({
+      gpt54: "medium",
+      gpt55: "xhigh",
+    })
+  })
+
+  test("does not persist gpt-5.3+ extraPrompts in config file", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {})
+
+    runScript(
+      tempDir,
+      'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
+    )
+
+    const writtenConfig = readConfigFile(configPath)
+    expect(writtenConfig.extraPrompts).toBeDefined()
+    expect(Object.keys(writtenConfig.extraPrompts ?? {})).toEqual([
+      "gpt-5-mini",
+    ])
+  })
+
+  test("does not persist gpt-5.3+ modelReasoningEfforts in config file", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {})
+
+    runScript(
+      tempDir,
+      'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
+    )
+
+    expect(readConfigFile(configPath).modelReasoningEfforts).toEqual({
+      "gpt-5-mini": "low",
+    })
   })
 })
