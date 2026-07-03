@@ -514,11 +514,7 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
     "providers": {},
     "modelMappings": {},
     "extraPrompts": {
-      "gpt-5-mini": "<built-in exploration prompt>",
-      "gpt-5.3-codex": "<built-in commentary prompt>",
-      "gpt-5.4-mini": "<built-in commentary prompt>",
-      "gpt-5.4": "<built-in commentary prompt>",
-      "gpt-5.5": "<built-in commentary prompt>"
+      "gpt-5-mini": "<built-in exploration prompt>"
     },
     "smallModel": "gpt-5-mini",
     "useResponsesApiContextManagement": true,
@@ -527,11 +523,7 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
       "gpt-5.5": 217600
     },
     "modelReasoningEfforts": {
-      "gpt-5-mini": "low",
-      "gpt-5.3-codex": "xhigh",
-      "gpt-5.4-mini": "xhigh",
-      "gpt-5.4": "xhigh",
-      "gpt-5.5": "xhigh"
+      "gpt-5-mini": "low"
     },
     "useMessagesApi": true,
     "useResponsesApiWebSocket": true,
@@ -542,7 +534,7 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
 - **auth.apiKeys:** API keys used for request authentication on non-admin routes. Supports multiple keys for rotation. Requests can authenticate with either `x-api-key: <key>` or `Authorization: Bearer <key>`. If empty or omitted, authentication for non-admin routes is disabled.
 - **auth.adminApiKey:** Single admin key used only for `/admin/*` routes. If missing, the server generates a random key at startup and writes it back to `config.json`. Requests use the same `x-api-key` or `Authorization: Bearer` headers, but regular `auth.apiKeys` never grant access to `/admin/*`.
 - **modelMappings:** Exact `sourceModel -> targetModel` rewrites shared by top-level `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/responses`, and `POST /v1/chat/completions` requests. Omit it or leave it as `{}` to disable rewrites. Both the source and target must be non-empty strings. Targets can be regular model IDs or `provider/model` aliases such as `dashscope/qwen3.6-plus`, and the rewrite happens before provider alias parsing. These mappings are not split per interface. The admin endpoints `GET/POST /admin/config/model-mappings` read and update only this field.
-- **extraPrompts:** Map of `model -> prompt` appended to the first system prompt when translating Anthropic-style requests to Copilot. Use this to inject guardrails or guidance per model. Missing default entries are auto-added without overwriting your custom prompts. The built-in prompts for `gpt-5.3-codex` and `gpt-5.4` enable phase-aware commentary, which lets the model emit a short user-facing progress update before tools or deeper reasoning.
+- **extraPrompts:** Map of `model -> prompt` appended to the first system prompt when translating Anthropic-style requests to Responses API. Use this to inject guardrails or guidance per model. Missing default entries are auto-added without overwriting your custom prompts. For GPT-5.3+ models (e.g. `gpt-5.3-codex`, `gpt-5.4`, `gpt-5.5`), a built-in commentary prompt is used as fallback when not explicitly configured. The built-in prompts enable phase-aware commentary, which lets the model emit a short user-facing progress update before tools or deeper reasoning.
 - **providers:** Global upstream provider map. Each provider key (for example `dashscope`) becomes a route prefix (`/dashscope/v1/messages`). Supports `type: "anthropic"`, `type: "openai-compatible"`, and `type: "openai-responses"`. Top-level clients can also use `model: "dashscope/model-id"` with `/v1/messages`, `/v1/messages/count_tokens`, `/v1/responses`, and `/v1/chat/completions`; the gateway strips the `dashscope/` prefix before forwarding upstream. `openai-compatible` providers support both chat and Messages flows: `/v1/chat/completions` is proxied to upstream `/v1/chat/completions`, while `/v1/messages` and `/:provider/v1/messages` are translated to upstream chat completions and translated back to Anthropic Messages responses. `GET /v1/models` aggregates enabled provider models with `provider/model-id` IDs; use `GET /dashscope/v1/models` for a single provider's raw model list.
   - `enabled` defaults to `true` if omitted.
   - `baseUrl` should be provider API base URL without the final endpoint. For Anthropic providers, omit `/v1/messages`; for OpenAI-compatible providers, omit `/v1/chat/completions`; for OpenAI Responses providers, omit `/v1/responses`.
@@ -616,7 +608,7 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
 - **smallModel:** Fallback model used for tool-less warmup messages (e.g., Claude Code probe requests); defaults to gpt-5-mini.
 - **useResponsesApiContextManagement:** When `true`, the proxy adds Responses API `context_management` compaction instructions. Defaults to `true`. Set it to `false` to disable this globally. When enabled, the request includes `context_management` in the body and keeps only the latest compaction carrier on follow-up turns. This is especially useful for long-running tasks.
 - **modelResponsesApiCompactThresholds:** Per-model Responses API `compact_threshold` overrides used when the proxy adds `context_management`. These values take precedence over the fallback threshold from `resolveResponsesCompactThreshold` (`max_prompt_tokens * ratio`, or the default fallback). Defaults set `gpt-5.4` and `gpt-5.5` to `217600` (`272000 * 0.8`). Models not listed continue to use the normal fallback logic.
-- **modelReasoningEfforts:** Per-model `reasoning.effort` sent to the Copilot Responses API. Allowed values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`. If a model isn't listed, `high` is used by default.
+- **modelReasoningEfforts:** Per-model `reasoning.effort` sent to the Responses API. Allowed values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. If a model isn't listed, `high` is used by default; GPT-5.3+ models fall back to `xhigh` when not explicitly configured.
 - **useMessagesApi:** When `true`, Claude-family models that support Copilot's native `/v1/messages` endpoint will use the Messages API; otherwise they fall back to `/chat/completions`. Set to `false` to disable Messages API routing and always use `/chat/completions`. Defaults to `true`.
 - **useResponsesApiWebSocket:** When `true`, Responses API requests use Copilot's websocket transport for models that advertise `ws:/responses`; models that only advertise `/responses` continue to use HTTP. Set to `false` to disable websocket routing and use HTTP `/responses` whenever the selected model supports it. Defaults to `true`.
 - **useResponsesApiWebSearch:** When `true`, the server keeps Responses API tools with `type: "web_search"` and forwards them upstream. Set to `false` to strip those tools from `/responses` payloads. Defaults to `true`.

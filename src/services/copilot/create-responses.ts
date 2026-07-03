@@ -96,7 +96,15 @@ export type ResponseIncludable =
   | "message.output_text.logprobs"
 
 export interface Reasoning {
-  effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | null
+  effort?:
+    | "none"
+    | "minimal"
+    | "low"
+    | "medium"
+    | "high"
+    | "xhigh"
+    | "max"
+    | null
   summary?: "auto" | "concise" | "detailed" | null
 }
 
@@ -787,6 +795,7 @@ const createResponsesWebSocketStreamChunk = (
       logCopilotQuotaSnapshots(parsed.copilot_quota_snapshots)
     }
     if (parsed.type === "error" && parsed.error) {
+      consola.warn("Copilot responses websocket stream error:", parsed.error)
       parsed.code = parsed.error.code
       parsed.message = parsed.error.message
     }

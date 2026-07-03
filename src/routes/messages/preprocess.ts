@@ -894,7 +894,12 @@ export const prepareMessagesApiPayload = (
     }
     const reasoningEffort = selectedModel.capabilities.supports.reasoning_effort
     if (reasoningEffort && !reasoningEffort.includes(effort)) {
-      effort = reasoningEffort.at(-1) as "low" | "medium" | "high"
+      effort = reasoningEffort.at(-1) as
+        | "low"
+        | "medium"
+        | "high"
+        | "xhigh"
+        | "max"
     }
     payload.output_config = {
       effort: effort,

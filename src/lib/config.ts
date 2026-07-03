@@ -17,7 +17,7 @@ export interface AppConfig {
   modelResponsesApiCompactThresholds?: Record<string, number>
   modelReasoningEfforts?: Record<
     string,
-    "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
+    "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
   >
   useMessagesApi?: boolean
   useResponsesApiWebSocket?: boolean
@@ -87,6 +87,24 @@ export interface ResolvedProviderConfig {
   models?: Record<string, ModelConfig>
 }
 
+const GPT_MODEL_PATTERN = /^gpt-(\d+)(?:\.(\d+))?/
+
+function isGpt53OrAbove(model: string): boolean {
+  const match = GPT_MODEL_PATTERN.exec(model)
+  if (!match) {
+    return false
+  }
+  const majorVersion = Number.parseInt(match[1], 10)
+  if (majorVersion > 5) {
+    return true
+  }
+  if (majorVersion !== 5) {
+    return false
+  }
+  const minorVersion = match[2] ? Number.parseInt(match[2], 10) : 0
+  return minorVersion >= 3
+}
+
 const gpt5ExplorationPrompt = `## Exploration and reading files
 - **Think first.** Before any tool call, decide ALL files/resources you will need.
 - **Batch everything.** If you need multiple files (even from different places), read them together.
@@ -127,20 +145,12 @@ const defaultConfig: AppConfig = {
   modelMappings: {},
   extraPrompts: {
     "gpt-5-mini": gpt5ExplorationPrompt,
-    "gpt-5.3-codex": gpt5CommentaryPrompt,
-    "gpt-5.4-mini": gpt5CommentaryPrompt,
-    "gpt-5.4": gpt5CommentaryPrompt,
-    "gpt-5.5": gpt5CommentaryPrompt,
   },
   smallModel: "gpt-5-mini",
   useResponsesApiContextManagement: true,
   modelResponsesApiCompactThresholds,
   modelReasoningEfforts: {
     "gpt-5-mini": "low",
-    "gpt-5.3-codex": "xhigh",
-    "gpt-5.4-mini": "xhigh",
-    "gpt-5.4": "xhigh",
-    "gpt-5.5": "xhigh",
   },
   useMessagesApi: true,
   useResponsesApiWebSocket: true,
@@ -373,7 +383,11 @@ export function reloadConfig(): AppConfig {
 
 export function getExtraPromptForModel(model: string): string {
   const config = getConfig()
-  return config.extraPrompts?.[model] ?? ""
+  const userPrompt = config.extraPrompts?.[model]
+  if (userPrompt !== undefined) {
+    return userPrompt
+  }
+  return isGpt53OrAbove(model) ? gpt5CommentaryPrompt : ""
 }
 
 export function getModelMappings(): Record<string, string> {
@@ -460,9 +474,13 @@ export function getModelResponsesApiCompactThreshold(
 
 export function getReasoningEffortForModel(
   model: string,
-): "none" | "minimal" | "low" | "medium" | "high" | "xhigh" {
+): "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" {
   const config = getConfig()
-  return config.modelReasoningEfforts?.[model] ?? "high"
+  const userEffort = config.modelReasoningEfforts?.[model]
+  if (userEffort !== undefined) {
+    return userEffort
+  }
+  return isGpt53OrAbove(model) ? "xhigh" : "high"
 }
 
 export function normalizeProviderBaseUrl(url: string): string {
