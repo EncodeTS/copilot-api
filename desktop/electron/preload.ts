@@ -47,5 +47,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_event: Electron.IpcRendererEvent, log: string) => callback(log)
     ipcRenderer.on('server:log', handler)
     return () => ipcRenderer.off('server:log', handler)
+  },
+
+  platform: process.platform,
+  windowReload: () => ipcRenderer.send('window:reload'),
+  windowMinimize: () => ipcRenderer.send('window:minimize'),
+  windowMaximizeToggle: () => ipcRenderer.send('window:maximize-toggle'),
+  windowClose: () => ipcRenderer.send('window:close'),
+  windowQuit: () => ipcRenderer.send('window:quit'),
+  windowZoomIn: () => ipcRenderer.send('window:zoom-in'),
+  windowZoomOut: () => ipcRenderer.send('window:zoom-out'),
+  windowZoomReset: () => ipcRenderer.send('window:zoom-reset'),
+  windowIsMaximized: () => ipcRenderer.invoke('window:is-maximized'),
+  onWindowMaximizeChange: (callback: (maximized: boolean) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, maximized: boolean) => callback(maximized)
+    ipcRenderer.on('window:maximize-changed', handler)
+    return () => ipcRenderer.off('window:maximize-changed', handler)
   }
 })

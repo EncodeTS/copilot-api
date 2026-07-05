@@ -35,6 +35,7 @@ type ServerAuthScope = 'default' | 'admin'
 interface IpcHandlersOptions {
   getEffectiveProxySettings?: (settings: DesktopSettings) => DesktopProxySettings
   onSettingsChange?: (settings: DesktopSettings, prevSettings: DesktopSettings) => void | Promise<void>
+  onQuit?: () => void | Promise<void>
 }
 
 function normalizeApiKey(apiKey: unknown): string | null {
@@ -350,4 +351,30 @@ export function registerIpcHandlers(
 
   // Server: Return the in-memory log buffer
   ipcMain.handle('server:get-logs', () => getLogs())
+
+  // Window controls (used by the custom title bar menu)
+  ipcMain.on('window:reload', () => mainWindow.reload())
+  ipcMain.on('window:minimize', () => mainWindow.minimize())
+  ipcMain.on('window:maximize-toggle', () => {
+    if (mainWindow.isMaximized()) {
+      mainWindow.unmaximize()
+    } else {
+      mainWindow.maximize()
+    }
+  })
+  ipcMain.on('window:close', () => mainWindow.close())
+  ipcMain.on('window:quit', () => {
+    void options.onQuit?.()
+  })
+  ipcMain.on('window:zoom-in', () => {
+    const level = mainWindow.webContents.getZoomLevel()
+    mainWindow.webContents.setZoomLevel(level + 0.5)
+  })
+  ipcMain.on('window:zoom-out', () => {
+    const level = mainWindow.webContents.getZoomLevel()
+    mainWindow.webContents.setZoomLevel(level - 0.5)
+  })
+  ipcMain.on('window:zoom-reset', () => mainWindow.webContents.setZoomLevel(0))
+
+  ipcMain.handle('window:is-maximized', () => mainWindow.isMaximized())
 }

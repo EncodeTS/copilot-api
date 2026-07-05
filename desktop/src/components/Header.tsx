@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, type CSSProperties } from 'react'
 import SettingsModal from './SettingsModal'
+import TitleBarMenu from './TitleBarMenu'
+import WindowControls from './WindowControls'
 import { useLanguage } from '../contexts/LanguageContext'
 
 type ElectronAppRegionStyle = CSSProperties & {
@@ -8,6 +10,23 @@ type ElectronAppRegionStyle = CSSProperties & {
 
 const dragRegionStyle: ElectronAppRegionStyle = { WebkitAppRegion: 'drag' }
 const noDragRegionStyle: ElectronAppRegionStyle = { WebkitAppRegion: 'no-drag' }
+
+const isMac = typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin'
+const titleBarPaddingClass = isMac ? 'pl-20 pr-4' : 'px-4'
+
+const IconRestart = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 12a9 9 0 0 1-15.3 6.36" />
+    <path d="M3 12A9 9 0 0 1 18.3 5.64" />
+    <path d="M18 2v4h-4" />
+  </svg>
+)
+
+const IconStop = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <rect x="6" y="6" width="12" height="12" rx="2" />
+  </svg>
+)
 
 interface HeaderProps {
   onChangeAuth?: () => void
@@ -53,23 +72,28 @@ export default function Header({
   return (
     <>
       <div
-        className="flex shrink-0 items-center justify-between border-b border-line-soft bg-surface px-4 pb-2.5 pt-4"
+        className={`flex shrink-0 items-center border-b border-line-soft bg-surface h-11 ${titleBarPaddingClass}`}
         style={dragRegionStyle}
       >
-        <div className="flex items-center gap-2">
-          <div className="w-6 h-6 bg-accent-strong rounded-md flex items-center justify-center">
-            <span className="text-white text-[9px] font-bold">CA</span>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 bg-accent-strong rounded-md flex items-center justify-center dark:bg-[#4f94f8]">
+              <span className="text-white text-[9px] font-bold">CA</span>
+            </div>
+            <span className="text-sm font-bold text-ink">Copilot API</span>
           </div>
-          <span className="text-sm font-bold text-ink">Copilot API</span>
+          <div className="w-px h-4 bg-line" />
+          <TitleBarMenu onOpenSettings={() => setShowSettings(true)} />
         </div>
 
-        <div className="flex items-center gap-2" style={noDragRegionStyle}>
+        <div className="ml-auto flex items-center gap-2" style={noDragRegionStyle}>
           {isRunning && onRestart && (
             <button
               onClick={onRestart}
               disabled={isRestarting}
-              className="px-2.5 py-1 text-[13px] border border-line text-ink-soft rounded-md hover:bg-sunken disabled:opacity-50 transition-colors"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[13px] border border-line text-ink-soft rounded-md hover:bg-sunken disabled:opacity-50 transition-colors"
             >
+              <IconRestart />
               {isRestarting ? t('header.restarting') : t('header.restart')}
             </button>
           )}
@@ -77,8 +101,9 @@ export default function Header({
           {isRunning && onStop && (
             <button
               onClick={onStop}
-              className="px-2.5 py-1 text-[13px] border border-red-200 text-red-500 rounded-md hover:bg-red-50 dark:border-red-500/30 dark:hover:bg-red-500/15 transition-colors"
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[13px] border border-red-200 text-red-500 rounded-md hover:bg-red-50 dark:border-red-500/30 dark:hover:bg-red-500/15 transition-colors"
             >
+              <IconStop />
               {t('header.stop')}
             </button>
           )}
@@ -133,6 +158,8 @@ export default function Header({
             )}
           </div>
         </div>
+
+        {isMac ? null : <WindowControls />}
       </div>
 
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}

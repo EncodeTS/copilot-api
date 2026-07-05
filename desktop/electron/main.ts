@@ -57,6 +57,13 @@ function resolveNativeBackgroundColor(theme: ThemePreference): string {
   return nativeTheme.shouldUseDarkColors ? '#0a0a0c' : '#fafafa'
 }
 
+function resolveTitleBarOptions(): Electron.BaseWindowConstructorOptions {
+  if (process.platform === 'darwin') {
+    return { titleBarStyle: 'hiddenInset' as const }
+  }
+  return { frame: false }
+}
+
 interface RuntimeDependencies {
   registerIpcHandlers: typeof import('./ipc-handlers').registerIpcHandlers
   stopServer: typeof import('./server-manager').stopServer
@@ -155,6 +162,14 @@ function showWindow(win: BrowserWindow): void {
   win.focus()
 }
 
+async function quitApplication(): Promise<void> {
+  isQuitting = true
+  const { clearCallbacks, stopServer } = await getRuntimeDependencies()
+  clearCallbacks()
+  await stopServer()
+  app.quit()
+}
+
 async function refreshTrayContextMenu(win: BrowserWindow): Promise<void> {
   if (!tray) return
 
@@ -171,11 +186,8 @@ async function refreshTrayContextMenu(win: BrowserWindow): Promise<void> {
     { type: 'separator' },
     {
       label: quitLabel,
-      click: async () => {
-        isQuitting = true
-        const { stopServer } = await getRuntimeDependencies()
-        await stopServer()
-        app.quit()
+      click: () => {
+        void quitApplication()
       }
     }
   ])
@@ -219,7 +231,7 @@ function createWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false
     },
-    titleBarStyle: 'hiddenInset',
+    ...resolveTitleBarOptions(),
     icon: process.platform === 'darwin' ? undefined : getWindowIconPath(),
     backgroundColor: resolveNativeBackgroundColor(initialSettings.theme),
     show: false
@@ -235,6 +247,18 @@ function createWindow(): BrowserWindow {
   win.on('closed', () => {
     if (mainWindow === win) {
       mainWindow = null
+    }
+  })
+
+  win.on('maximize', () => {
+    if (!win.isDestroyed()) {
+      win.webContents.send('window:maximize-changed', true)
+    }
+  })
+
+  win.on('unmaximize', () => {
+    if (!win.isDestroyed()) {
+      win.webContents.send('window:maximize-changed', false)
     }
   })
 
@@ -278,6 +302,7 @@ app.whenReady().then(async () => {
 
   registerIpcHandlers(win, {
     getEffectiveProxySettings,
+    onQuit: quitApplication,
     onSettingsChange: async (settings, prevSettings) => {
       await applyElectronProxy(getEffectiveProxySettings(settings))
 

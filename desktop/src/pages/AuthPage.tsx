@@ -214,32 +214,37 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
   const selectedProviderLabel = providerChoice === 'custom'
     ? t('auth.customProvider')
     : getQuickProviderLabel(providerChoice)
+  const isProviderInput = view === 'provider-input'
+  const isCustomProvider = providerChoice === 'custom'
   const canEditProviderType = providerChoice === 'custom' || selectedQuickProvider?.editableType
 
   return (
     <div className="flex flex-col h-screen bg-canvas">
       <Header />
 
-      {onBack && (
-        <div className="px-4 pt-3 shrink-0">
-          <button
-            onClick={onBack}
-            className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-2.5 text-[13px] font-medium text-ink-soft shadow-sm transition-colors hover:bg-sunken hover:text-ink"
-          >
-            {t('auth.backToHome')}
-          </button>
-        </div>
-      )}
-
-      <div className="flex-1 flex flex-col items-center justify-center px-6 py-6 gap-5">
-        {/* Logo and title */}
-        <div className="text-center">
-          <div className="w-14 h-14 bg-accent-strong rounded-2xl flex items-center justify-center mx-auto mb-3 shadow-[0_10px_26px_rgba(30,41,59,0.20)]">
-            <span className="text-white text-base font-extrabold">CA</span>
+      <div className="flex-1 overflow-y-auto min-h-0 flex flex-col">
+        {onBack && (
+          <div className="px-4 pt-3 shrink-0">
+            <button
+              onClick={onBack}
+              className="inline-flex h-8 items-center rounded-md border border-line bg-surface px-2.5 text-[13px] font-medium text-ink-soft shadow-sm transition-colors hover:bg-sunken hover:text-ink"
+            >
+              {t('auth.backToHome')}
+            </button>
           </div>
-          <h1 className="text-lg font-bold text-ink">Copilot API</h1>
-          <p className="text-[13px] text-ink-faint mt-1">{t('auth.subtitle')}</p>
-        </div>
+        )}
+
+        <div className={`flex flex-col items-center justify-center flex-1 px-6 ${isProviderInput ? 'py-4 gap-3' : 'py-6 gap-5'}`}>
+        {/* Logo and title */}
+        {!isProviderInput && (
+          <div className="text-center">
+            <div className="w-14 h-14 bg-accent-strong rounded-2xl flex items-center justify-center mx-auto mb-3 shadow-[0_10px_26px_rgba(30,41,59,0.20)] dark:bg-[#4f94f8]">
+              <span className="text-white text-base font-extrabold">CA</span>
+            </div>
+            <h1 className="text-lg font-bold text-ink">Copilot API</h1>
+            <p className="text-[13px] text-ink-faint mt-1">{t('auth.subtitle')}</p>
+          </div>
+        )}
 
         {/* Default state: provider choices */}
         {view === 'default' && (
@@ -375,78 +380,80 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
         )}
 
         {view === 'provider-input' && (
-          <div className="w-full max-w-[360px] flex flex-col gap-3 rounded-xl border border-line-soft bg-surface p-4 shadow-[0_12px_32px_rgba(0,0,0,0.08)]">
+          <div className={`w-full ${isCustomProvider ? 'max-w-[560px]' : 'max-w-[360px]'} flex flex-col gap-2.5 rounded-xl border border-line-soft bg-surface p-4 shadow-[0_12px_32px_rgba(0,0,0,0.08)]`}>
             <div className="flex items-center justify-center gap-1.5 text-[13px] font-semibold text-ink">
-              {providerChoice !== 'custom' && selectedQuickProvider && (
+              {!isCustomProvider && selectedQuickProvider && (
                 <span className={`w-1.5 h-1.5 rounded-full ${PROVIDER_COLORS[providerChoice]}`} />
               )}
               {selectedProviderLabel}
             </div>
 
-            {providerChoice === 'custom' && (
-              <label className="flex flex-col gap-1.5">
-                <span className="text-[13px] text-ink-faint">{t('auth.providerName')}</span>
+            <div className={isCustomProvider ? 'grid gap-2.5 sm:grid-cols-2' : 'flex flex-col gap-3'}>
+              {isCustomProvider && (
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-[13px] text-ink-faint">{t('auth.providerName')}</span>
+                  <input
+                    value={providerName}
+                    onChange={e => setProviderName(e.target.value)}
+                    placeholder="dashscope"
+                    className="w-full px-3 py-2.5 border border-line rounded-lg text-[13px] bg-surface text-ink placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
+                  />
+                </label>
+              )}
+
+              {canEditProviderType && (
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-[13px] text-ink-faint">{t('auth.providerType')}</span>
+                  <select
+                    value={providerType}
+                    onChange={e => setProviderType(e.target.value as ProviderType)}
+                    className="w-full px-3 py-2.5 border border-line rounded-lg bg-surface text-ink text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40"
+                  >
+                    {PROVIDER_TYPES.map(type => (
+                      <option key={type} value={type}>{type}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
+              <label className={`flex flex-col gap-1.5 ${isCustomProvider ? 'sm:col-span-2' : ''}`}>
+                <span className="text-[13px] text-ink-faint">{t('auth.providerBaseUrl')}</span>
                 <input
-                  value={providerName}
-                  onChange={e => setProviderName(e.target.value)}
-                  placeholder="dashscope"
+                  value={providerBaseUrl}
+                  onChange={e => setProviderBaseUrl(e.target.value)}
+                  placeholder="https://api.example.com"
                   className="w-full px-3 py-2.5 border border-line rounded-lg text-[13px] bg-surface text-ink placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
                 />
               </label>
-            )}
 
-            {canEditProviderType && (
-              <label className="flex flex-col gap-1.5">
-                <span className="text-[13px] text-ink-faint">{t('auth.providerType')}</span>
-                <select
-                  value={providerType}
-                  onChange={e => setProviderType(e.target.value as ProviderType)}
-                  className="w-full px-3 py-2.5 border border-line rounded-lg bg-surface text-ink text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40"
-                >
-                  {PROVIDER_TYPES.map(type => (
-                    <option key={type} value={type}>{type}</option>
-                  ))}
-                </select>
+              <label className={`flex flex-col gap-1.5 ${isCustomProvider ? 'sm:col-span-2' : ''}`}>
+                <span className="text-[13px] text-ink-faint">{t('auth.providerApiKey')}</span>
+                <textarea
+                  value={providerApiKey}
+                  onChange={e => setProviderApiKey(e.target.value)}
+                  placeholder="sk-..."
+                  rows={isCustomProvider ? 2 : 3}
+                  className="w-full px-3 py-2.5 border border-line rounded-lg text-[13px] resize-none focus:outline-none focus:ring-2 focus:ring-accent/40 font-mono bg-surface text-ink placeholder-ink-faint"
+                />
               </label>
-            )}
 
-            <label className="flex flex-col gap-1.5">
-              <span className="text-[13px] text-ink-faint">{t('auth.providerBaseUrl')}</span>
-              <input
-                value={providerBaseUrl}
-                onChange={e => setProviderBaseUrl(e.target.value)}
-                placeholder="https://api.example.com"
-                className="w-full px-3 py-2.5 border border-line rounded-lg text-[13px] bg-surface text-ink placeholder-ink-faint focus:outline-none focus:ring-2 focus:ring-accent/40"
-              />
-            </label>
-
-            <label className="flex flex-col gap-1.5">
-              <span className="text-[13px] text-ink-faint">{t('auth.providerApiKey')}</span>
-              <textarea
-                value={providerApiKey}
-                onChange={e => setProviderApiKey(e.target.value)}
-                placeholder="sk-..."
-                rows={3}
-                className="w-full px-3 py-2.5 border border-line rounded-lg text-[13px] resize-none focus:outline-none focus:ring-2 focus:ring-accent/40 font-mono bg-surface text-ink placeholder-ink-faint"
-              />
-            </label>
-
-            {providerChoice === 'custom' && (
-              <label className="flex flex-col gap-1.5">
-                <span className="text-[13px] text-ink-faint">{t('auth.providerAuthType')}</span>
-                <select
-                  value={providerAuthType}
-                  onChange={e => setProviderAuthType(e.target.value as ProviderAuthTypeInput)}
-                  className="w-full px-3 py-2.5 border border-line rounded-lg bg-surface text-ink text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40"
-                >
-                  {PROVIDER_AUTH_TYPES.map(authType => (
-                    <option key={authType} value={authType}>
-                      {authType === '__default__' ? t('auth.providerAuthTypeDefault') : authType}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
+              {isCustomProvider && (
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-[13px] text-ink-faint">{t('auth.providerAuthType')}</span>
+                  <select
+                    value={providerAuthType}
+                    onChange={e => setProviderAuthType(e.target.value as ProviderAuthTypeInput)}
+                    className="w-full px-3 py-2.5 border border-line rounded-lg bg-surface text-ink text-[13px] focus:outline-none focus:ring-2 focus:ring-accent/40"
+                  >
+                    {PROVIDER_AUTH_TYPES.map(authType => (
+                      <option key={authType} value={authType}>
+                        {authType === '__default__' ? t('auth.providerAuthTypeDefault') : authType}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+            </div>
 
             <button
               onClick={handleSaveProvider}
@@ -493,6 +500,7 @@ export default function AuthPage({ onBack, onSuccess }: AuthPageProps) {
         )}
 
         <p className="text-[13px] text-ink-faint">{t('auth.loginConsent')}</p>
+        </div>
       </div>
     </div>
   )
