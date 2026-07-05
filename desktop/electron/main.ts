@@ -9,7 +9,11 @@ import {
 import path from 'node:path'
 
 import { bindElectronFetch } from '../../src/lib/electron-fetch'
-import type { DesktopProxySettings, DesktopSettings } from '../src/types/ipc'
+import type {
+  DesktopProxySettings,
+  DesktopSettings,
+  ThemePreference,
+} from '../src/types/ipc'
 import {
   applyElectronProxy,
   applyElectronProxyCommandLine,
@@ -20,7 +24,6 @@ import {
 } from './electron-proxy-config'
 import { tMain } from './i18n'
 import { readSettings, readSettingsSync } from './settings-store'
-import type { ThemePreference } from '../src/types/ipc'
 
 const CLI_ENV_FLAGS = {
   '--api-home': 'COPILOT_API_HOME',
