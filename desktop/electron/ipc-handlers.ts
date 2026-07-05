@@ -4,7 +4,15 @@ import { ipcMain, shell, BrowserWindow } from 'electron'
 
 import { normalizeApiKeys } from '../../src/lib/request-auth'
 import { PATHS } from '../../src/lib/paths'
-import { getDeviceCode, pollAccessToken, getGitHubUser, saveToken, readToken, clearToken, getCopilotAccountType } from './auth'
+import {
+  getDeviceCode,
+  pollAccessToken,
+  getGitHubUser,
+  saveToken,
+  readToken,
+  clearToken,
+  getCopilotAccountType,
+} from './auth'
 import { tMain } from './i18n'
 import {
   configureProviderWithAuthStatus,
@@ -13,7 +21,13 @@ import {
   loginCodexForDesktop,
   shouldStartInProviderMode,
 } from './provider-auth'
-import { startServer, stopServer, getPort, getLogs, isRunning } from './server-manager'
+import {
+  startServer,
+  stopServer,
+  getPort,
+  getLogs,
+  isRunning,
+} from './server-manager'
 import { readSettings, writeSettings } from './settings-store'
 import type {
   DesktopAuthMode,
@@ -33,8 +47,13 @@ interface ConfigApiErrorResponse {
 type ServerAuthScope = 'default' | 'admin'
 
 interface IpcHandlersOptions {
-  getEffectiveProxySettings?: (settings: DesktopSettings) => DesktopProxySettings
-  onSettingsChange?: (settings: DesktopSettings, prevSettings: DesktopSettings) => void | Promise<void>
+  getEffectiveProxySettings?: (
+    settings: DesktopSettings,
+  ) => DesktopProxySettings
+  onSettingsChange?: (
+    settings: DesktopSettings,
+    prevSettings: DesktopSettings,
+  ) => void | Promise<void>
   onQuit?: () => void | Promise<void>
 }
 
@@ -47,15 +66,21 @@ function normalizeApiKey(apiKey: unknown): string | null {
   return normalizedApiKey || null
 }
 
-async function getServerAuthInfo(scope: ServerAuthScope = 'default'): Promise<ServerAuthInfo> {
+async function getServerAuthInfo(
+  scope: ServerAuthScope = 'default',
+): Promise<ServerAuthInfo> {
   try {
     const raw = await fs.readFile(PATHS.CONFIG_PATH, 'utf8')
-    const parsed = raw.trim()
-      ? JSON.parse(raw) as { auth?: { apiKeys?: unknown, adminApiKey?: unknown } }
+    const parsed =
+      raw.trim() ?
+        (JSON.parse(raw) as {
+          auth?: { apiKeys?: unknown; adminApiKey?: unknown }
+        })
       : {}
-    const apiKey = scope === 'admin'
-      ? normalizeApiKey(parsed.auth?.adminApiKey)
-      : normalizeApiKeys(parsed.auth?.apiKeys)[0] ?? null
+    const apiKey =
+      scope === 'admin' ?
+        normalizeApiKey(parsed.auth?.adminApiKey)
+      : (normalizeApiKeys(parsed.auth?.apiKeys)[0] ?? null)
 
     if (!apiKey) {
       return { enabled: false }
@@ -71,7 +96,9 @@ async function getServerAuthInfo(scope: ServerAuthScope = 'default'): Promise<Se
   }
 }
 
-async function getServerRequestHeaders(scope: ServerAuthScope = 'default'): Promise<Record<string, string> | undefined> {
+async function getServerRequestHeaders(
+  scope: ServerAuthScope = 'default',
+): Promise<Record<string, string> | undefined> {
   const authInfo = await getServerAuthInfo(scope)
   if (!authInfo.enabled || !authInfo.headerName || !authInfo.headerValue) {
     return undefined
@@ -84,7 +111,9 @@ async function getServerRequestHeaders(scope: ServerAuthScope = 'default'): Prom
 
 function getConfigApiBaseUrl(): string {
   if (!isRunning()) {
-    throw new Error('Server is not running. Start the service before editing advanced config.')
+    throw new Error(
+      'Server is not running. Start the service before editing advanced config.',
+    )
   }
 
   return `http://localhost:${getPort()}/admin/config/model-mappings`
@@ -92,7 +121,7 @@ function getConfigApiBaseUrl(): string {
 
 async function readConfigApiError(response: Response): Promise<string> {
   try {
-    const payload = await response.json() as ConfigApiErrorResponse
+    const payload = (await response.json()) as ConfigApiErrorResponse
     return payload.error?.message ?? response.statusText
   } catch {
     return response.statusText
@@ -109,7 +138,7 @@ async function fetchModelMappingsConfig(): Promise<ModelMappingsConfig> {
     throw new Error(await readConfigApiError(response))
   }
 
-  return response.json()
+  return (await response.json()) as ModelMappingsConfig
 }
 
 async function saveModelMappingsViaApi(
@@ -132,7 +161,7 @@ async function saveModelMappingsViaApi(
 
 export function registerIpcHandlers(
   mainWindow: BrowserWindow,
-  options: IpcHandlersOptions = {}
+  options: IpcHandlersOptions = {},
 ): void {
   ipcMain.handle('auth:get-status', async () => getDesktopAuthStatus())
 
@@ -140,23 +169,31 @@ export function registerIpcHandlers(
   ipcMain.handle('auth:get-device-code', async () => {
     const deviceCode = await getDeviceCode()
     // Poll in the background and notify the renderer when the token arrives
-    pollAccessToken(deviceCode).then(async (token) => {
-      await saveToken(token)
-      const [, accountType] = await Promise.all([
-        getGitHubUser(token),
-        getCopilotAccountType(token)
-      ])
-      // Detect and persist the account type automatically after sign-in
-      const settings = await readSettings()
-      await writeSettings({ ...settings, accountType })
-      if (!mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('auth:success', { success: true, mode: 'copilot' })
-      }
-    }).catch((err: Error) => {
-      if (!mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('auth:success', { success: false, error: err.message })
-      }
-    })
+    pollAccessToken(deviceCode)
+      .then(async (token) => {
+        await saveToken(token)
+        const [, accountType] = await Promise.all([
+          getGitHubUser(token),
+          getCopilotAccountType(token),
+        ])
+        // Detect and persist the account type automatically after sign-in
+        const settings = await readSettings()
+        await writeSettings({ ...settings, accountType })
+        if (!mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('auth:success', {
+            success: true,
+            mode: 'copilot',
+          })
+        }
+      })
+      .catch((err: Error) => {
+        if (!mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('auth:success', {
+            success: false,
+            error: err.message,
+          })
+        }
+      })
     return deviceCode
   })
 
@@ -165,7 +202,7 @@ export function registerIpcHandlers(
     try {
       const [, accountType] = await Promise.all([
         getGitHubUser(token),
-        getCopilotAccountType(token)
+        getCopilotAccountType(token),
       ])
       await saveToken(token)
       // Detect and persist the account type automatically
@@ -180,24 +217,30 @@ export function registerIpcHandlers(
   // Auth: Check the saved token
   ipcMain.handle('auth:check-saved', async () => getDesktopAuthStatus())
 
-  ipcMain.handle('auth:configure-provider', async (_event, input: ProviderAuthInput) => {
-    try {
-      return await configureProviderWithAuthStatus(input)
-    } catch (err) {
-      return { success: false, mode: 'none', error: (err as Error).message }
-    }
-  })
+  ipcMain.handle(
+    'auth:configure-provider',
+    async (_event, input: ProviderAuthInput) => {
+      try {
+        return await configureProviderWithAuthStatus(input)
+      } catch (err) {
+        return { success: false, mode: 'none', error: (err as Error).message }
+      }
+    },
+  )
 
-  ipcMain.handle('auth:start-codex-login', async (_event, callbackUrlOrCode?: string) => {
-    try {
-      return await loginCodexForDesktop({
-        callbackUrlOrCode,
-        openUrl: (url) => shell.openExternal(url),
-      })
-    } catch (err) {
-      return { success: false, mode: 'none', error: (err as Error).message }
-    }
-  })
+  ipcMain.handle(
+    'auth:start-codex-login',
+    async (_event, callbackUrlOrCode?: string) => {
+      try {
+        return await loginCodexForDesktop({
+          callbackUrlOrCode,
+          openUrl: (url) => shell.openExternal(url),
+        })
+      } catch (err) {
+        return { success: false, mode: 'none', error: (err as Error).message }
+      }
+    },
+  )
 
   // Auth: Log out
   ipcMain.handle('auth:logout', async () => {
@@ -205,31 +248,34 @@ export function registerIpcHandlers(
   })
 
   // Server: Start
-  ipcMain.handle('server:start', async (_event, port: number, authMode?: DesktopAuthMode) => {
-    const token = await readToken()
-    const providerMode = shouldStartInProviderMode(authMode)
-    const enabledProviders = getEnabledDesktopProviders()
-    const tokenForStart = providerMode ? null : token
+  ipcMain.handle(
+    'server:start',
+    async (_event, port: number, authMode?: DesktopAuthMode) => {
+      const token = await readToken()
+      const providerMode = shouldStartInProviderMode(authMode)
+      const enabledProviders = getEnabledDesktopProviders()
+      const tokenForStart = providerMode ? null : token
 
-    if (!tokenForStart && enabledProviders.length === 0) {
-      return {
-        running: false,
-        error: await tMain('server.authRequired')
+      if (!tokenForStart && enabledProviders.length === 0) {
+        return {
+          running: false,
+          error: await tMain('server.authRequired'),
+        }
       }
-    }
 
-    const settings = await readSettings()
-    const serverOptions = {
-      verbose: settings.verbose,
-      showToken: settings.showToken,
-      proxy: options.getEffectiveProxySettings?.(settings) ?? settings.proxy
-    }
+      const settings = await readSettings()
+      const serverOptions = {
+        verbose: settings.verbose,
+        showToken: settings.showToken,
+        proxy: options.getEffectiveProxySettings?.(settings) ?? settings.proxy,
+      }
 
-    // Persist the last used port
-    await writeSettings({ ...settings, lastPort: port })
+      // Persist the last used port
+      await writeSettings({ ...settings, lastPort: port })
 
-    return startServer(port, tokenForStart, serverOptions)
-  })
+      return startServer(port, tokenForStart, serverOptions)
+    },
+  )
 
   // Server: Stop
   ipcMain.handle('server:stop', async () => {
@@ -251,10 +297,15 @@ export function registerIpcHandlers(
       await options.onSettingsChange(settings, prev)
     }
   })
-  ipcMain.handle('config:get-model-mappings', async () => fetchModelMappingsConfig())
-  ipcMain.handle('config:save-model-mappings', async (_event, modelMappings: Record<string, string>) => {
-    await saveModelMappingsViaApi(modelMappings)
-  })
+  ipcMain.handle('config:get-model-mappings', async () =>
+    fetchModelMappingsConfig(),
+  )
+  ipcMain.handle(
+    'config:save-model-mappings',
+    async (_event, modelMappings: Record<string, string>) => {
+      await saveModelMappingsViaApi(modelMappings)
+    },
+  )
 
   // Shell: Open the system browser
   ipcMain.handle('shell:open-url', async (_event, url: string) => {
@@ -268,10 +319,10 @@ export function registerIpcHandlers(
       const headers = await getServerRequestHeaders()
       const res = await fetch(`http://localhost:${port}/usage`, {
         headers,
-        signal: AbortSignal.timeout(5000)
+        signal: AbortSignal.timeout(5000),
       })
       if (!res.ok) return null
-      return res.json()
+      return (await res.json()) as unknown
     } catch {
       return null
     }
@@ -283,10 +334,10 @@ export function registerIpcHandlers(
       const headers = await getServerRequestHeaders()
       const res = await fetch(`http://localhost:${port}/models`, {
         headers,
-        signal: AbortSignal.timeout(5000)
+        signal: AbortSignal.timeout(5000),
       })
       if (!res.ok) return null
-      return res.json()
+      return (await res.json()) as unknown
     } catch {
       return null
     }
@@ -294,58 +345,78 @@ export function registerIpcHandlers(
 
   ipcMain.handle('server:fetch-token-usage', async (_event, period: string) => {
     const port = getPort()
-    const normalizedPeriod = period === 'week' || period === 'month' ? period : 'day'
+    const normalizedPeriod =
+      period === 'week' || period === 'month' ? period : 'day'
     try {
       const headers = await getServerRequestHeaders()
-      const res = await fetch(`http://localhost:${port}/token-usage?period=${normalizedPeriod}`, {
-        headers,
-        signal: AbortSignal.timeout(5000)
-      })
+      const res = await fetch(
+        `http://localhost:${port}/token-usage?period=${normalizedPeriod}`,
+        {
+          headers,
+          signal: AbortSignal.timeout(5000),
+        },
+      )
       if (!res.ok) return null
-      return res.json()
+      return (await res.json()) as unknown
     } catch {
       return null
     }
   })
 
-  ipcMain.handle('server:fetch-token-usage-daily', async (_event, period: string) => {
-    const port = getPort()
-    const normalizedPeriod = period === 'week' || period === 'month' ? period : 'day'
-    try {
-      const headers = await getServerRequestHeaders()
-      const res = await fetch(`http://localhost:${port}/token-usage/daily?period=${normalizedPeriod}`, {
-        headers,
-        signal: AbortSignal.timeout(5000)
-      })
-      if (!res.ok) return null
-      return res.json()
-    } catch {
-      return null
-    }
-  })
+  ipcMain.handle(
+    'server:fetch-token-usage-daily',
+    async (_event, period: string) => {
+      const port = getPort()
+      const normalizedPeriod =
+        period === 'week' || period === 'month' ? period : 'day'
+      try {
+        const headers = await getServerRequestHeaders()
+        const res = await fetch(
+          `http://localhost:${port}/token-usage/daily?period=${normalizedPeriod}`,
+          {
+            headers,
+            signal: AbortSignal.timeout(5000),
+          },
+        )
+        if (!res.ok) return null
+        return (await res.json()) as unknown
+      } catch {
+        return null
+      }
+    },
+  )
 
-  ipcMain.handle('server:fetch-token-usage-events', async (_event, period: string, page: number, pageSize: number) => {
-    const port = getPort()
-    const normalizedPeriod = period === 'week' || period === 'month' ? period : 'day'
-    const normalizedPage = Number.isFinite(page) && page > 0 ? Math.floor(page) : 1
-    const normalizedPageSize = Number.isFinite(pageSize) && pageSize > 0 ? Math.floor(pageSize) : 20
-    const params = new URLSearchParams({
-      page: String(normalizedPage),
-      page_size: String(normalizedPageSize),
-      period: normalizedPeriod
-    })
-    try {
-      const headers = await getServerRequestHeaders()
-      const res = await fetch(`http://localhost:${port}/token-usage/events?${params.toString()}`, {
-        headers,
-        signal: AbortSignal.timeout(5000)
+  ipcMain.handle(
+    'server:fetch-token-usage-events',
+    async (_event, period: string, page: number, pageSize: number) => {
+      const port = getPort()
+      const normalizedPeriod =
+        period === 'week' || period === 'month' ? period : 'day'
+      const normalizedPage =
+        Number.isFinite(page) && page > 0 ? Math.floor(page) : 1
+      const normalizedPageSize =
+        Number.isFinite(pageSize) && pageSize > 0 ? Math.floor(pageSize) : 20
+      const params = new URLSearchParams({
+        page: String(normalizedPage),
+        page_size: String(normalizedPageSize),
+        period: normalizedPeriod,
       })
-      if (!res.ok) return null
-      return res.json()
-    } catch {
-      return null
-    }
-  })
+      try {
+        const headers = await getServerRequestHeaders()
+        const res = await fetch(
+          `http://localhost:${port}/token-usage/events?${params.toString()}`,
+          {
+            headers,
+            signal: AbortSignal.timeout(5000),
+          },
+        )
+        if (!res.ok) return null
+        return (await res.json()) as unknown
+      } catch {
+        return null
+      }
+    },
+  )
 
   ipcMain.handle('server:get-auth-info', async () => getServerAuthInfo())
 

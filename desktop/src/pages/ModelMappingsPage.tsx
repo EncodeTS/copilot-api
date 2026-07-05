@@ -12,7 +12,9 @@ interface ModelMappingsPageProps {
   serverRunning: boolean
 }
 
-export default function ModelMappingsPage({ serverRunning }: ModelMappingsPageProps) {
+export default function ModelMappingsPage({
+  serverRunning,
+}: ModelMappingsPageProps) {
   const { t } = useLanguage()
   const translationRef = useRef(t)
   const [configPath, setConfigPath] = useState('')
@@ -112,7 +114,9 @@ export default function ModelMappingsPage({ serverRunning }: ModelMappingsPagePr
     }
 
     if (result.reason === 'duplicate') {
-      setError(t('advancedConfig.validationDuplicate', { model: result.model ?? '' }))
+      setError(
+        t('advancedConfig.validationDuplicate', { model: result.model ?? '' }),
+      )
       return null
     }
 
@@ -191,11 +195,11 @@ export default function ModelMappingsPage({ serverRunning }: ModelMappingsPagePr
               <div />
             </div>
 
-            {loading ? (
+            {loading ?
               <div className="px-3 py-8 text-center text-[13px] text-ink-faint">
                 {t('dashboard.loading')}
               </div>
-            ) : rows.length === 0 ? (
+            : rows.length === 0 ?
               <div className="px-3 py-10 text-center">
                 <div className="text-[14px] font-semibold text-ink">
                   {t('advancedConfig.emptyTitle')}
@@ -204,8 +208,7 @@ export default function ModelMappingsPage({ serverRunning }: ModelMappingsPagePr
                   {t('advancedConfig.emptyDescription')}
                 </p>
               </div>
-            ) : (
-              <div className="divide-y divide-line-soft flex-1 overflow-y-auto">
+            : <div className="divide-y divide-line-soft flex-1 overflow-y-auto">
                 {rows.map((row) => (
                   <div
                     key={row.id}
@@ -250,7 +253,7 @@ export default function ModelMappingsPage({ serverRunning }: ModelMappingsPagePr
                   </div>
                 ))}
               </div>
-            )}
+            }
           </section>
 
           <aside className="flex min-w-0 flex-col gap-3">

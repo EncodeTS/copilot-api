@@ -4,7 +4,7 @@ import {
   useEffect,
   useState,
   useCallback,
-  type ReactNode
+  type ReactNode,
 } from 'react'
 import type { ThemePreference } from '../types/ipc'
 
@@ -20,7 +20,9 @@ const ThemeContext = createContext<ThemeContextValue | null>(null)
 
 function getSystemTheme(): ResolvedTheme {
   if (typeof window === 'undefined') return 'light'
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ?
+      'dark'
+    : 'light'
 }
 
 function resolveTheme(pref: ThemePreference): ResolvedTheme {
@@ -38,17 +40,22 @@ function applyThemeClass(theme: ResolvedTheme): void {
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [themePref, setThemePrefState] = useState<ThemePreference>('auto')
-  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => resolveTheme('auto'))
+  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() =>
+    resolveTheme('auto'),
+  )
 
   useEffect(() => {
     let active = true
-    window.electronAPI.getSettings().then((settings) => {
-      if (!active) return
-      setThemePrefState(settings.theme)
-      const resolved = resolveTheme(settings.theme)
-      setResolvedTheme(resolved)
-      applyThemeClass(resolved)
-    }).catch(() => {})
+    window.electronAPI
+      .getSettings()
+      .then((settings) => {
+        if (!active) return
+        setThemePrefState(settings.theme)
+        const resolved = resolveTheme(settings.theme)
+        setResolvedTheme(resolved)
+        applyThemeClass(resolved)
+      })
+      .catch(() => {})
     return () => {
       active = false
     }

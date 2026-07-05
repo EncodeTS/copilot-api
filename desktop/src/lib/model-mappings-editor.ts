@@ -19,7 +19,11 @@ function createModelMappingRowId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 }
 
-export function createModelMappingRow(source = '', target = '', id = createModelMappingRowId()): ModelMappingRow {
+export function createModelMappingRow(
+  source = '',
+  target = '',
+  id = createModelMappingRowId(),
+): ModelMappingRow {
   return {
     id,
     source,
@@ -27,7 +31,9 @@ export function createModelMappingRow(source = '', target = '', id = createModel
   }
 }
 
-export function modelMappingsToRows(modelMappings: Record<string, string>): ModelMappingRow[] {
+export function modelMappingsToRows(
+  modelMappings: Record<string, string>,
+): ModelMappingRow[] {
   return Object.entries(modelMappings).map(([source, target]) =>
     createModelMappingRow(source, target),
   )

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test } from 'bun:test'
 
 import {
   configureDesktopProvider,
@@ -6,21 +6,21 @@ import {
   getDesktopAuthStatus,
   loginCodexForDesktop,
   shouldStartInProviderMode,
-} from "../electron/provider-auth"
-import type { ProviderConfig } from "../../src/lib/config"
+} from '../electron/provider-auth'
+import type { ProviderConfig } from '../../src/lib/config'
 
-describe("desktop provider auth", () => {
-  test("configures deepseek from the quick provider template with defaults", () => {
-    let writtenProviderName = ""
+describe('desktop provider auth', () => {
+  test('configures deepseek from the quick provider template with defaults', () => {
+    let writtenProviderName = ''
     let writtenProviderConfig: ProviderConfig | undefined
 
     const result = configureDesktopProvider(
       {
-        apiKey: "deepseek-key",
-        provider: "deepseek",
+        apiKey: 'deepseek-key',
+        provider: 'deepseek',
       },
       {
-        getEnabledProviders: () => ["deepseek"],
+        getEnabledProviders: () => ['deepseek'],
         getRawProviderConfig: () => null,
         setProviderConfig(name, provider) {
           writtenProviderName = name
@@ -31,42 +31,42 @@ describe("desktop provider auth", () => {
     )
 
     expect(result).toEqual({
-      mode: "provider",
-      providers: ["deepseek"],
+      mode: 'provider',
+      providers: ['deepseek'],
       success: true,
     })
-    expect(writtenProviderName).toBe("deepseek")
+    expect(writtenProviderName).toBe('deepseek')
     expect(writtenProviderConfig).toEqual({
-      apiKey: "deepseek-key",
-      baseUrl: "https://api.deepseek.com/anthropic",
+      apiKey: 'deepseek-key',
+      baseUrl: 'https://api.deepseek.com/anthropic',
       enabled: true,
-      pricingCurrency: "CNY",
-      type: "anthropic",
+      pricingCurrency: 'CNY',
+      type: 'anthropic',
     })
   })
 
-  test("configures a custom provider with normalized fields and preserved model settings", () => {
-    let writtenProviderName = ""
+  test('configures a custom provider with normalized fields and preserved model settings', () => {
+    let writtenProviderName = ''
     let writtenProviderConfig: ProviderConfig | undefined
 
     const result = configureDesktopProvider(
       {
-        apiKey: " custom-key ",
-        authType: "__default__",
-        baseUrl: "https://custom.example/api///",
-        name: "custom_deepseek",
-        provider: "custom",
-        type: "anthropic",
+        apiKey: ' custom-key ',
+        authType: '__default__',
+        baseUrl: 'https://custom.example/api///',
+        name: 'custom_deepseek',
+        provider: 'custom',
+        type: 'anthropic',
       },
       {
-        getEnabledProviders: () => ["custom_deepseek"],
+        getEnabledProviders: () => ['custom_deepseek'],
         getRawProviderConfig: () => ({
           models: {
-            "deepseek-v4-pro": {
+            'deepseek-v4-pro': {
               temperature: 0.2,
             },
           },
-          pricingCurrency: "CNY",
+          pricingCurrency: 'CNY',
         }),
         setProviderConfig(name, provider) {
           writtenProviderName = name
@@ -77,37 +77,37 @@ describe("desktop provider auth", () => {
     )
 
     expect(result).toEqual({
-      mode: "provider",
-      providers: ["custom_deepseek"],
+      mode: 'provider',
+      providers: ['custom_deepseek'],
       success: true,
     })
-    expect(writtenProviderName).toBe("custom_deepseek")
+    expect(writtenProviderName).toBe('custom_deepseek')
     expect(writtenProviderConfig).toEqual({
-      apiKey: "custom-key",
-      baseUrl: "https://custom.example/api",
+      apiKey: 'custom-key',
+      baseUrl: 'https://custom.example/api',
       enabled: true,
       models: {
-        "deepseek-v4-pro": {
+        'deepseek-v4-pro': {
           temperature: 0.2,
         },
       },
-      pricingCurrency: "CNY",
-      type: "anthropic",
+      pricingCurrency: 'CNY',
+      type: 'anthropic',
     })
   })
 
-  test("configures openrouter with a fixed anthropic provider type", () => {
+  test('configures openrouter with a fixed anthropic provider type', () => {
     let writtenProviderConfig: ProviderConfig | undefined
 
     configureDesktopProvider(
       {
-        apiKey: "openrouter-key",
-        baseUrl: "https://openrouter.example/api///",
-        provider: "openrouter",
-        type: "openai-compatible",
+        apiKey: 'openrouter-key',
+        baseUrl: 'https://openrouter.example/api///',
+        provider: 'openrouter',
+        type: 'openai-compatible',
       },
       {
-        getEnabledProviders: () => ["openrouter"],
+        getEnabledProviders: () => ['openrouter'],
         getRawProviderConfig: () => null,
         setProviderConfig(_name, provider) {
           writtenProviderConfig = provider
@@ -117,26 +117,26 @@ describe("desktop provider auth", () => {
     )
 
     expect(writtenProviderConfig).toEqual({
-      apiKey: "openrouter-key",
-      baseUrl: "https://openrouter.example/api",
+      apiKey: 'openrouter-key',
+      baseUrl: 'https://openrouter.example/api',
       enabled: true,
-      pricingCurrency: "USD",
-      type: "anthropic",
+      pricingCurrency: 'USD',
+      type: 'anthropic',
     })
   })
 
-  test("configures opencode-go with a fixed openai-compatible provider type", () => {
+  test('configures opencode-go with a fixed openai-compatible provider type', () => {
     let writtenProviderConfig: ProviderConfig | undefined
 
     configureDesktopProvider(
       {
-        apiKey: "opencode-key",
-        baseUrl: "https://opencode.example/zen/go///",
-        provider: "opencode-go",
-        type: "anthropic",
+        apiKey: 'opencode-key',
+        baseUrl: 'https://opencode.example/zen/go///',
+        provider: 'opencode-go',
+        type: 'anthropic',
       },
       {
-        getEnabledProviders: () => ["opencode-go"],
+        getEnabledProviders: () => ['opencode-go'],
         getRawProviderConfig: () => null,
         setProviderConfig(_name, provider) {
           writtenProviderConfig = provider
@@ -146,15 +146,15 @@ describe("desktop provider auth", () => {
     )
 
     expect(writtenProviderConfig).toEqual({
-      apiKey: "opencode-key",
-      baseUrl: "https://opencode.example/zen/go",
+      apiKey: 'opencode-key',
+      baseUrl: 'https://opencode.example/zen/go',
       enabled: true,
-      pricingCurrency: "USD",
-      type: "openai-compatible",
+      pricingCurrency: 'USD',
+      type: 'openai-compatible',
     })
   })
 
-  test("rejects invalid provider input before writing config", () => {
+  test('rejects invalid provider input before writing config', () => {
     let writes = 0
     const dependencies = {
       getEnabledProviders: () => [],
@@ -168,12 +168,12 @@ describe("desktop provider auth", () => {
     expect(() =>
       configureDesktopProvider(
         {
-          apiKey: "key",
-          authType: "__default__",
-          baseUrl: "https://example.com",
-          name: "copilot",
-          provider: "custom",
-          type: "anthropic",
+          apiKey: 'key',
+          authType: '__default__',
+          baseUrl: 'https://example.com',
+          name: 'copilot',
+          provider: 'custom',
+          type: 'anthropic',
         },
         dependencies,
       ),
@@ -182,121 +182,121 @@ describe("desktop provider auth", () => {
     expect(() =>
       configureDesktopProvider(
         {
-          apiKey: "key",
-          authType: "oauth2",
-          baseUrl: "https://example.com",
-          name: "custom",
-          provider: "custom",
-          type: "anthropic",
+          apiKey: 'key',
+          authType: 'oauth2',
+          baseUrl: 'https://example.com',
+          name: 'custom',
+          provider: 'custom',
+          type: 'anthropic',
         } as never,
         dependencies,
       ),
-    ).toThrow("No provider auth type selected")
+    ).toThrow('No provider auth type selected')
 
     expect(() =>
       configureDesktopProvider(
         {
-          apiKey: "key",
-          authType: "__default__",
-          baseUrl: "   ",
-          name: "custom",
-          provider: "custom",
-          type: "anthropic",
+          apiKey: 'key',
+          authType: '__default__',
+          baseUrl: '   ',
+          name: 'custom',
+          provider: 'custom',
+          type: 'anthropic',
         },
         dependencies,
       ),
-    ).toThrow("baseUrl must be a non-empty string")
+    ).toThrow('baseUrl must be a non-empty string')
 
     expect(() =>
       configureDesktopProvider(
         {
-          apiKey: "   ",
-          baseUrl: "https://example.com",
-          provider: "deepseek",
-          type: "anthropic",
+          apiKey: '   ',
+          baseUrl: 'https://example.com',
+          provider: 'deepseek',
+          type: 'anthropic',
         },
         dependencies,
       ),
-    ).toThrow("apiKey must be a non-empty string")
+    ).toThrow('apiKey must be a non-empty string')
 
     expect(() =>
       configureDesktopProvider(
         {
-          apiKey: "key",
-          baseUrl: "https://example.com",
-          provider: "deepseek",
-          type: "unsupported",
+          apiKey: 'key',
+          baseUrl: 'https://example.com',
+          provider: 'deepseek',
+          type: 'unsupported',
         } as never,
         dependencies,
       ),
-    ).toThrow("No provider type selected")
+    ).toThrow('No provider type selected')
 
     expect(writes).toBe(0)
   })
 
-  test("reports desktop auth status from token and provider dependencies", async () => {
+  test('reports desktop auth status from token and provider dependencies', async () => {
     await expect(
       getDesktopAuthStatus({
         listEnabledProviders: () => [],
         readToken: async () => null,
       }),
     ).resolves.toEqual({
-      mode: "none",
+      mode: 'none',
       providers: [],
       success: false,
     })
 
     await expect(
       getDesktopAuthStatus({
-        listEnabledProviders: () => ["deepseek"],
-        readToken: async () => "stale-token",
+        listEnabledProviders: () => ['deepseek'],
+        readToken: async () => 'stale-token',
         verifyGitHubToken: async () => {
-          throw new Error("stale")
+          throw new Error('stale')
         },
       }),
     ).resolves.toEqual({
-      mode: "provider",
-      providers: ["deepseek"],
+      mode: 'provider',
+      providers: ['deepseek'],
       success: true,
     })
 
     await expect(
       getDesktopAuthStatus({
         listEnabledProviders: () => [],
-        readToken: async () => "valid-token",
+        readToken: async () => 'valid-token',
         verifyGitHubToken: async (token) => {
-          expect(token).toBe("valid-token")
+          expect(token).toBe('valid-token')
         },
       }),
     ).resolves.toEqual({
-      mode: "copilot",
+      mode: 'copilot',
       success: true,
     })
   })
 
-  test("logs in to codex through injected desktop OAuth dependencies", async () => {
-    let openedUrl = ""
-    let promptValue = ""
-    let persistedAccessToken = ""
+  test('logs in to codex through injected desktop OAuth dependencies', async () => {
+    let openedUrl = ''
+    let promptValue = ''
+    let persistedAccessToken = ''
     let enableProvider: boolean | undefined
 
     const result = await loginCodexForDesktop(
       {
-        callbackUrlOrCode: " callback-code ",
+        callbackUrlOrCode: ' callback-code ',
         openUrl: (url) => {
           openedUrl = url
         },
       },
       {
-        getEnabledProviders: () => ["codex"],
+        getEnabledProviders: () => ['codex'],
         loginCodex: async (options) => {
-          options.onAuth({ url: "https://auth.example" })
-          promptValue = await options.onPrompt("Paste code")
+          options.onAuth({ url: 'https://auth.example' })
+          promptValue = await options.onPrompt('Paste code')
           return {
-            accessToken: "codex-access-token",
-            accountId: "acct_test",
+            accessToken: 'codex-access-token',
+            accountId: 'acct_test',
             expiresAt: 1_893_456_000_000,
-            refreshToken: "codex-refresh-token",
+            refreshToken: 'codex-refresh-token',
           }
         },
         persistCodexCredentials: async (credentials, options) => {
@@ -306,84 +306,89 @@ describe("desktop provider auth", () => {
       },
     )
 
-    expect(openedUrl).toBe("https://auth.example")
-    expect(promptValue).toBe("callback-code")
-    expect(persistedAccessToken).toBe("codex-access-token")
+    expect(openedUrl).toBe('https://auth.example')
+    expect(promptValue).toBe('callback-code')
+    expect(persistedAccessToken).toBe('codex-access-token')
     expect(enableProvider).toBe(true)
     expect(result).toEqual({
-      mode: "provider",
-      providers: ["codex"],
+      mode: 'provider',
+      providers: ['codex'],
       success: true,
     })
   })
 
-  test("starts in provider mode only for provider auth mode", () => {
-    expect(shouldStartInProviderMode("provider")).toBe(true)
-    expect(shouldStartInProviderMode("copilot")).toBe(false)
+  test('starts in provider mode only for provider auth mode', () => {
+    expect(shouldStartInProviderMode('provider')).toBe(true)
+    expect(shouldStartInProviderMode('copilot')).toBe(false)
     expect(shouldStartInProviderMode(undefined)).toBe(false)
   })
 
-  test("configureProviderWithAuthStatus keeps copilot mode when a valid token exists", async () => {
+  test('configureProviderWithAuthStatus keeps copilot mode when a valid token exists', async () => {
     const result = await configureProviderWithAuthStatus(
-      { apiKey: "deepseek-key", provider: "deepseek" },
+      { apiKey: 'deepseek-key', provider: 'deepseek' },
       {
-        getEnabledProviders: () => ["deepseek"],
+        getEnabledProviders: () => ['deepseek'],
         getRawProviderConfig: () => null,
         setProviderConfig: () => ({}),
-        listEnabledProviders: () => ["deepseek"],
-        readToken: async () => "valid-token",
+        listEnabledProviders: () => ['deepseek'],
+        readToken: async () => 'valid-token',
         verifyGitHubToken: async () => {},
       },
     )
 
-    expect(result).toEqual({ success: true, mode: "copilot" })
+    expect(result).toEqual({ success: true, mode: 'copilot' })
   })
 
-  test("configureProviderWithAuthStatus falls back to provider mode without a token", async () => {
+  test('configureProviderWithAuthStatus falls back to provider mode without a token', async () => {
     const result = await configureProviderWithAuthStatus(
-      { apiKey: "deepseek-key", provider: "deepseek" },
+      { apiKey: 'deepseek-key', provider: 'deepseek' },
       {
-        getEnabledProviders: () => ["deepseek"],
+        getEnabledProviders: () => ['deepseek'],
         getRawProviderConfig: () => null,
         setProviderConfig: () => ({}),
-        listEnabledProviders: () => ["deepseek"],
+        listEnabledProviders: () => ['deepseek'],
         readToken: async () => null,
       },
     )
 
     expect(result).toEqual({
-      mode: "provider",
-      providers: ["deepseek"],
+      mode: 'provider',
+      providers: ['deepseek'],
       success: true,
     })
   })
 
-  test("configureProviderWithAuthStatus drops to provider mode when the token is stale", async () => {
+  test('configureProviderWithAuthStatus drops to provider mode when the token is stale', async () => {
     const result = await configureProviderWithAuthStatus(
-      { apiKey: "deepseek-key", provider: "deepseek" },
+      { apiKey: 'deepseek-key', provider: 'deepseek' },
       {
-        getEnabledProviders: () => ["deepseek"],
+        getEnabledProviders: () => ['deepseek'],
         getRawProviderConfig: () => null,
         setProviderConfig: () => ({}),
-        listEnabledProviders: () => ["deepseek"],
-        readToken: async () => "stale-token",
+        listEnabledProviders: () => ['deepseek'],
+        readToken: async () => 'stale-token',
         verifyGitHubToken: async () => {
-          throw new Error("stale")
+          throw new Error('stale')
         },
       },
     )
 
     expect(result).toEqual({
-      mode: "provider",
-      providers: ["deepseek"],
+      mode: 'provider',
+      providers: ['deepseek'],
       success: true,
     })
   })
 
-  test("configureProviderWithAuthStatus rethrows configuration validation errors", async () => {
+  test('configureProviderWithAuthStatus rethrows configuration validation errors', async () => {
     await expect(
       configureProviderWithAuthStatus(
-        { apiKey: "   ", baseUrl: "https://example.com", provider: "deepseek", type: "anthropic" },
+        {
+          apiKey: '   ',
+          baseUrl: 'https://example.com',
+          provider: 'deepseek',
+          type: 'anthropic',
+        },
         {
           getEnabledProviders: () => [],
           getRawProviderConfig: () => null,
@@ -392,6 +397,6 @@ describe("desktop provider auth", () => {
           readToken: async () => null,
         },
       ),
-    ).rejects.toThrow("apiKey must be a non-empty string")
+    ).rejects.toThrow('apiKey must be a non-empty string')
   })
 })

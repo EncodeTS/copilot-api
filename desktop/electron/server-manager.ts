@@ -38,7 +38,10 @@ function skipCsiSequence(input: string, startIndex: number): number {
   return inputLength
 }
 
-function skipStringTerminatedSequence(input: string, startIndex: number): number {
+function skipStringTerminatedSequence(
+  input: string,
+  startIndex: number,
+): number {
   const inputLength = input.length
   let index = startIndex
 
@@ -86,7 +89,13 @@ function stripAnsi(input: string): string {
       continue
     }
 
-    if (next === ']' || next === 'P' || next === 'X' || next === '^' || next === '_') {
+    if (
+      next === ']'
+      || next === 'P'
+      || next === 'X'
+      || next === '^'
+      || next === '_'
+    ) {
       index = skipStringTerminatedSequence(input, index + 2)
       lastIndex = index
       continue
@@ -115,14 +124,14 @@ function createLogStream() {
   let flushed = false
 
   return {
-    handleData(data: Buffer) {
+    handleData: (data: Buffer) => {
       emitLog(decoder.write(data))
     },
-    flush() {
+    flush: () => {
       if (flushed) return
       flushed = true
       emitLog(decoder.end())
-    }
+    },
   }
 }
 
@@ -162,13 +171,13 @@ export async function startServer(
     verbose?: boolean
     showToken?: boolean
     proxy?: DesktopProxySettings
-  }
+  },
 ): Promise<ServerStatus> {
   const available = await checkPortAvailable(port)
   if (!available) {
     return {
       running: false,
-      error: await tMain('server.portInUse', { port })
+      error: await tMain('server.portInUse', { port }),
     }
   }
 
@@ -183,10 +192,11 @@ export async function startServer(
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    NODE_ENV: 'production'
+    NODE_ENV: 'production',
   }
-  const proxyEnabled = serverOptions?.proxy
-    ? applyDesktopProxySettingsToEnv(env, serverOptions.proxy)
+  const proxyEnabled =
+    serverOptions?.proxy ?
+      applyDesktopProxySettingsToEnv(env, serverOptions.proxy)
     : false
 
   const serverPath = getServerPath()
@@ -200,7 +210,7 @@ export async function startServer(
   const proc = utilityProcess.fork(serverPath, args, {
     env,
     stdio: 'pipe',
-    serviceName: 'copilot-api-server'
+    serviceName: 'copilot-api-server',
   })
   serverProcess = proc
 
@@ -222,8 +232,9 @@ export async function startServer(
     if (serverProcess === proc) {
       serverProcess = null
     }
-    const msg = startResult.exitCode !== undefined
-      ? await tMain('server.startFailed', { code: startResult.exitCode })
+    const msg =
+      startResult.exitCode !== undefined ?
+        await tMain('server.startFailed', { code: startResult.exitCode })
       : await tMain('server.startTimeout', { port })
     return { running: false, error: msg }
   }
@@ -241,12 +252,14 @@ export async function startServer(
       return
     }
 
-    void tMain('server.processExit', { code: String(code ?? 'unknown') }).then((error) => {
-      statusCallback?.({
-        running: false,
-        error
-      })
-    })
+    void tMain('server.processExit', { code: String(code ?? 'unknown') }).then(
+      (error) => {
+        statusCallback?.({
+          running: false,
+          error,
+        })
+      },
+    )
   })
 
   return { running: true, port }
@@ -255,7 +268,7 @@ export async function startServer(
 // Wait for server readiness or process exit, whichever happens first.
 async function waitForServer(
   port: number,
-  proc: UtilityProcess
+  proc: UtilityProcess,
 ): Promise<{ ok: boolean; exitCode?: number }> {
   return new Promise((resolve) => {
     let settled = false
