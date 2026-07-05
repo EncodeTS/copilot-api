@@ -116,8 +116,8 @@ const IconRefresh = ({ spinning = false }: { spinning?: boolean }) => (
 const IconDashboard = () => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
-    width="13"
-    height="13"
+    width="16"
+    height="16"
     viewBox="0 0 24 24"
     fill="none"
     stroke="currentColor"
@@ -135,8 +135,8 @@ const IconDashboard = () => (
 const IconTokenUsage = () => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
-    width="13"
-    height="13"
+    width="16"
+    height="16"
     viewBox="0 0 24 24"
     fill="none"
     stroke="currentColor"
@@ -144,19 +144,18 @@ const IconTokenUsage = () => (
     strokeLinecap="round"
     strokeLinejoin="round"
   >
-    <path d="M4 19V5" />
-    <path d="M4 19h16" />
-    <rect x="7" y="11" width="3" height="5" rx="1" />
-    <rect x="12" y="8" width="3" height="8" rx="1" />
-    <rect x="17" y="5" width="3" height="11" rx="1" />
+    <path d="M3 3v18h18" />
+    <path d="M18 17V9" />
+    <path d="M13 17V5" />
+    <path d="M8 17v-3" />
   </svg>
 )
 
 const IconMappings = () => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
-    width="13"
-    height="13"
+    width="16"
+    height="16"
     viewBox="0 0 24 24"
     fill="none"
     stroke="currentColor"
@@ -174,8 +173,8 @@ const IconMappings = () => (
 const IconLogs = () => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
-    width="13"
-    height="13"
+    width="16"
+    height="16"
     viewBox="0 0 24 24"
     fill="none"
     stroke="currentColor"
@@ -713,13 +712,13 @@ export default function DashboardPage({
 
       {/* Tabs shown only while the server is running */}
       {started && (
-        <div className="flex items-center justify-between gap-3 px-4 bg-surface border-b border-line-soft shrink-0">
-          <div className="flex min-w-0">
+        <div className="flex items-center justify-between gap-3 px-4 h-[52px] bg-surface border-b border-line-soft shrink-0">
+          <div className="flex min-w-0 h-full items-stretch gap-4">
             {dashboardTabs.map((tabItem) => (
               <button
                 key={tabItem.key}
                 onClick={() => setTab(tabItem.key)}
-                className={`inline-flex items-center gap-1.5 px-3 py-2 text-[13px] border-b-2 transition-colors ${
+                className={`inline-flex items-center gap-1.5 px-3 text-[14px] border-b-2 transition-colors ${
                   tab === tabItem.key ?
                     'font-semibold text-ink border-accent'
                   : 'text-ink-faint border-transparent hover:text-ink-soft'
