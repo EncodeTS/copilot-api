@@ -114,6 +114,20 @@ export interface Locale {
     showWindow: string
     quit: string
   }
+  menu: {
+    file: string
+    fileSettings: string
+    fileQuit: string
+    view: string
+    viewReload: string
+    viewZoomIn: string
+    viewZoomOut: string
+    viewZoomReset: string
+    help: string
+    helpAbout: string
+    aboutVersion: string
+    helpDocs: string
+  }
   server: {
     tokenNotFound: string
     authRequired: string

@@ -10,7 +10,7 @@ function BootScreen({ loadingText }: { loadingText: string }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-canvas px-6">
       <div className="flex w-full max-w-sm flex-col items-center gap-4 text-center">
-        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent-strong text-base font-extrabold text-white shadow-[0_10px_30px_rgba(30,41,59,0.20)]">
+        <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-accent-strong text-base font-extrabold text-white shadow-[0_10px_30px_rgba(30,41,59,0.20)] dark:bg-[#4f94f8]">
           CA
         </div>
         <div className="space-y-1">

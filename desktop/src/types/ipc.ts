@@ -206,6 +206,17 @@ declare global {
       onAuthSuccess: (callback: (result: AuthResult) => void) => () => void
       onServerStatus: (callback: (status: ServerStatus) => void) => () => void
       onServerLog: (callback: (log: string) => void) => () => void
+      platform: NodeJS.Platform
+      windowReload: () => void
+      windowMinimize: () => void
+      windowMaximizeToggle: () => void
+      windowClose: () => void
+      windowQuit: () => void
+      windowZoomIn: () => void
+      windowZoomOut: () => void
+      windowZoomReset: () => void
+      windowIsMaximized: () => Promise<boolean>
+      onWindowMaximizeChange: (callback: (maximized: boolean) => void) => () => void
     }
   }
 }

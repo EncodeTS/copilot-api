@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, type ReactNode } from 'react'
 
 import Header from '../components/Header'
 import { TokenUsageCostMetric, TokenUsageMetric, TokenUsageValueLines } from '../components/TokenUsageMetric'
@@ -68,6 +68,72 @@ const EMPTY_TOKEN_USAGE_TOTALS: TokenUsageTotals = {
   request_count: 0,
   total_tokens: 0
 }
+
+const IconLaunch = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z" />
+    <path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z" />
+    <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0" />
+    <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
+    <circle cx="15" cy="9" r="1" />
+  </svg>
+)
+
+const IconRefresh = ({ spinning = false }: { spinning?: boolean }) => (
+  <svg
+    className={spinning ? 'animate-spin' : undefined}
+    xmlns="http://www.w3.org/2000/svg"
+    width="14"
+    height="14"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M21 12a9 9 0 0 1-15.3 6.36" />
+    <path d="M3 12A9 9 0 0 1 18.3 5.64" />
+    <path d="M18 2v4h-4" />
+    <path d="M6 22v-4h4" />
+  </svg>
+)
+
+const IconDashboard = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="3" width="7" height="9" rx="1.5" />
+    <rect x="14" y="3" width="7" height="5" rx="1.5" />
+    <rect x="14" y="12" width="7" height="9" rx="1.5" />
+    <rect x="3" y="16" width="7" height="5" rx="1.5" />
+  </svg>
+)
+
+const IconTokenUsage = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 19V5" />
+    <path d="M4 19h16" />
+    <rect x="7" y="11" width="3" height="5" rx="1" />
+    <rect x="12" y="8" width="3" height="8" rx="1" />
+    <rect x="17" y="5" width="3" height="11" rx="1" />
+  </svg>
+)
+
+const IconMappings = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 7h11" />
+    <path d="m12 4 3 3-3 3" />
+    <path d="M20 17H9" />
+    <path d="m12 14-3 3 3 3" />
+  </svg>
+)
+
+const IconLogs = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="m8 10 3 2-3 2" />
+    <path d="M13 15h4" />
+  </svg>
+)
 
 function calcUsedPct(q: QuotaDetail): number {
   if (q.unlimited || q.entitlement === 0) return 0
@@ -481,11 +547,11 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
       value: formatRefreshTime(lastDashboardRefreshAt)
     }
   ]
-  const dashboardTabs: Array<{ key: DashboardTab; label: string }> = [
-    { key: 'dashboard', label: t('dashboard.tabDashboard') },
-    { key: 'tokenUsage', label: t('dashboard.tabTokenUsage') },
-    { key: 'advancedConfig', label: t('header.advancedConfig') },
-    { key: 'logs', label: t('dashboard.tabLogs') }
+  const dashboardTabs: Array<{ icon: ReactNode; key: DashboardTab; label: string }> = [
+    { icon: <IconDashboard />, key: 'dashboard', label: t('dashboard.tabDashboard') },
+    { icon: <IconTokenUsage />, key: 'tokenUsage', label: t('dashboard.tabTokenUsage') },
+    { icon: <IconMappings />, key: 'advancedConfig', label: t('header.advancedConfig') },
+    { icon: <IconLogs />, key: 'logs', label: t('dashboard.tabLogs') }
   ]
   const showRefreshButton = started && tab !== 'advancedConfig' && tab !== 'logs'
 
@@ -514,12 +580,13 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
               <button
                 key={tabItem.key}
                 onClick={() => setTab(tabItem.key)}
-                className={`px-3 py-2 text-[13px] border-b-2 transition-colors ${
+                className={`inline-flex items-center gap-1.5 px-3 py-2 text-[13px] border-b-2 transition-colors ${
                   tab === tabItem.key
                     ? 'font-semibold text-ink border-accent'
                     : 'text-ink-faint border-transparent hover:text-ink-soft'
                 }`}
               >
+                {tabItem.icon}
                 {tabItem.label}
               </button>
             ))}
@@ -528,8 +595,9 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
             <button
               onClick={handleRefreshActiveTab}
               disabled={isActiveTabRefreshing}
-              className="h-7 shrink-0 rounded-md border border-line bg-surface px-2.5 text-[13px] text-ink-soft transition-colors hover:bg-sunken disabled:opacity-40"
+              className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-[13px] text-ink-soft transition-colors hover:bg-sunken hover:text-ink disabled:opacity-40"
             >
+              <IconRefresh spinning={isActiveTabRefreshing} />
               {isActiveTabRefreshing ? t('dashboard.refreshing') : t('dashboard.refresh')}
             </button>
           )}
@@ -542,7 +610,9 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
         {/* Empty state: start form */}
         {!started && (
           <div className="h-full flex flex-col items-center justify-center gap-4 px-6">
-            <div className="w-11 h-11 bg-sunken rounded-xl flex items-center justify-center text-[13px]">🚀</div>
+            <div className="w-11 h-11 bg-sunken rounded-xl flex items-center justify-center text-ink-soft dark:bg-[#4f94f8] dark:text-white">
+              <IconLaunch />
+            </div>
             <div className="text-center">
               <p className="text-[13px] font-semibold text-ink">{t('dashboard.serverStopped')}</p>
               <p className="text-[13px] text-ink-faint mt-1">{t('dashboard.configPort')}</p>
@@ -567,8 +637,9 @@ export default function DashboardPage({ authMode, defaultPort, onChangeAuth }: D
               <button
                 onClick={handleStart}
                 disabled={starting}
-                className="w-full py-2 bg-accent-strong text-white text-[13px] font-semibold rounded-lg hover:bg-accent-strong/90 disabled:opacity-50 transition-colors"
+                className="inline-flex w-full items-center justify-center gap-1.5 py-2 bg-accent-strong text-white text-[13px] font-semibold rounded-lg hover:bg-accent-strong/90 disabled:opacity-50 transition-colors"
               >
+                <IconLaunch />
                 {starting ? t('dashboard.starting') : t('dashboard.startServer')}
               </button>
             </div>
