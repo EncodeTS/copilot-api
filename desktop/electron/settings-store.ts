@@ -10,7 +10,7 @@ const SETTINGS_PATH = path.join(
   '.local',
   'share',
   'copilot-api',
-  'desktop-config.json'
+  'desktop-config.json',
 )
 
 const DEFAULT_SETTINGS: DesktopSettings = {
@@ -28,46 +28,95 @@ const DEFAULT_SETTINGS: DesktopSettings = {
     mode: 'system',
     http_proxy: 'http://127.0.0.1:8888',
     https_proxy: 'http://127.0.0.1:8888',
-    no_proxy: 'localhost,127.0.0.1'
-  }
+    no_proxy: 'localhost,127.0.0.1',
+  },
 }
 
-function isDesktopProxyMode(value: unknown): value is DesktopProxySettings['mode'] {
+function isDesktopProxyMode(
+  value: unknown,
+): value is DesktopProxySettings['mode'] {
   return value === 'system' || value === 'custom' || value === 'direct'
 }
 
 export function normalizeProxySettings(
-  proxy: Partial<DesktopProxySettings> | null | undefined
+  proxy: Partial<DesktopProxySettings> | null | undefined,
 ): DesktopProxySettings {
   return {
-    mode: isDesktopProxyMode(proxy?.mode) ? proxy.mode : DEFAULT_SETTINGS.proxy.mode,
-    http_proxy: typeof proxy?.http_proxy === 'string' ? proxy.http_proxy : DEFAULT_SETTINGS.proxy.http_proxy,
-    https_proxy: typeof proxy?.https_proxy === 'string' ? proxy.https_proxy : DEFAULT_SETTINGS.proxy.https_proxy,
-    no_proxy: typeof proxy?.no_proxy === 'string' ? proxy.no_proxy : DEFAULT_SETTINGS.proxy.no_proxy
+    mode:
+      isDesktopProxyMode(proxy?.mode) ?
+        proxy.mode
+      : DEFAULT_SETTINGS.proxy.mode,
+    http_proxy:
+      typeof proxy?.http_proxy === 'string' ?
+        proxy.http_proxy
+      : DEFAULT_SETTINGS.proxy.http_proxy,
+    https_proxy:
+      typeof proxy?.https_proxy === 'string' ?
+        proxy.https_proxy
+      : DEFAULT_SETTINGS.proxy.https_proxy,
+    no_proxy:
+      typeof proxy?.no_proxy === 'string' ?
+        proxy.no_proxy
+      : DEFAULT_SETTINGS.proxy.no_proxy,
   }
 }
 
-export function normalizeSettings(settings: Partial<DesktopSettings> | null | undefined): DesktopSettings {
+export function normalizeSettings(
+  settings: Partial<DesktopSettings> | null | undefined,
+): DesktopSettings {
   return {
-    apiHome: typeof settings?.apiHome === 'string' ? settings.apiHome : DEFAULT_SETTINGS.apiHome,
-    oauthApp: settings?.oauthApp === 'opencode' ? 'opencode' : DEFAULT_SETTINGS.oauthApp,
-    enterpriseUrl: typeof settings?.enterpriseUrl === 'string' ? settings.enterpriseUrl : DEFAULT_SETTINGS.enterpriseUrl,
-    lastPort: typeof settings?.lastPort === 'number' ? settings.lastPort : DEFAULT_SETTINGS.lastPort,
-    minimizeToTray: typeof settings?.minimizeToTray === 'boolean'
-      ? settings.minimizeToTray
+    apiHome:
+      typeof settings?.apiHome === 'string' ?
+        settings.apiHome
+      : DEFAULT_SETTINGS.apiHome,
+    oauthApp:
+      settings?.oauthApp === 'opencode' ?
+        'opencode'
+      : DEFAULT_SETTINGS.oauthApp,
+    enterpriseUrl:
+      typeof settings?.enterpriseUrl === 'string' ?
+        settings.enterpriseUrl
+      : DEFAULT_SETTINGS.enterpriseUrl,
+    lastPort:
+      typeof settings?.lastPort === 'number' ?
+        settings.lastPort
+      : DEFAULT_SETTINGS.lastPort,
+    minimizeToTray:
+      typeof settings?.minimizeToTray === 'boolean' ?
+        settings.minimizeToTray
       : DEFAULT_SETTINGS.minimizeToTray,
-    accountType: settings?.accountType === 'business' || settings?.accountType === 'enterprise'
-      ? settings.accountType
+    accountType:
+      (
+        settings?.accountType === 'business'
+        || settings?.accountType === 'enterprise'
+      ) ?
+        settings.accountType
       : DEFAULT_SETTINGS.accountType,
-    verbose: typeof settings?.verbose === 'boolean' ? settings.verbose : DEFAULT_SETTINGS.verbose,
-    showToken: typeof settings?.showToken === 'boolean' ? settings.showToken : DEFAULT_SETTINGS.showToken,
-    language: settings?.language === 'en' || settings?.language === 'zh' || settings?.language === 'auto'
-      ? settings.language
+    verbose:
+      typeof settings?.verbose === 'boolean' ?
+        settings.verbose
+      : DEFAULT_SETTINGS.verbose,
+    showToken:
+      typeof settings?.showToken === 'boolean' ?
+        settings.showToken
+      : DEFAULT_SETTINGS.showToken,
+    language:
+      (
+        settings?.language === 'en'
+        || settings?.language === 'zh'
+        || settings?.language === 'auto'
+      ) ?
+        settings.language
       : DEFAULT_SETTINGS.language,
-    theme: settings?.theme === 'light' || settings?.theme === 'dark' || settings?.theme === 'auto'
-      ? settings.theme
+    theme:
+      (
+        settings?.theme === 'light'
+        || settings?.theme === 'dark'
+        || settings?.theme === 'auto'
+      ) ?
+        settings.theme
       : DEFAULT_SETTINGS.theme,
-    proxy: normalizeProxySettings(settings?.proxy)
+    proxy: normalizeProxySettings(settings?.proxy),
   }
 }
 
@@ -91,5 +140,9 @@ export async function readSettings(): Promise<DesktopSettings> {
 
 export async function writeSettings(settings: DesktopSettings): Promise<void> {
   await fs.mkdir(path.dirname(SETTINGS_PATH), { recursive: true })
-  await fs.writeFile(SETTINGS_PATH, JSON.stringify(normalizeSettings(settings), null, 2), 'utf8')
+  await fs.writeFile(
+    SETTINGS_PATH,
+    JSON.stringify(normalizeSettings(settings), null, 2),
+    'utf8',
+  )
 }

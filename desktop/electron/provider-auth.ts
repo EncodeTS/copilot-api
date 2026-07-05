@@ -154,8 +154,8 @@ export async function getDesktopAuthStatus(
 ): Promise<AuthStatus> {
   const readSavedToken = dependencies.readToken ?? readToken
   const verifyGitHubToken =
-    dependencies.verifyGitHubToken ??
-    (async (token: string) => {
+    dependencies.verifyGitHubToken
+    ?? (async (token: string) => {
       await getGitHubUser(token)
     })
   const getEnabledProviders =
@@ -181,8 +181,10 @@ export function configureDesktopProvider(
   input: ProviderAuthInput,
   dependencies: ProviderConfigDependencies = {},
 ): AuthResult {
-  const readProviderConfig = dependencies.getRawProviderConfig ?? getRawProviderConfig
-  const writeProviderConfig = dependencies.setProviderConfig ?? setProviderConfig
+  const readProviderConfig =
+    dependencies.getRawProviderConfig ?? getRawProviderConfig
+  const writeProviderConfig =
+    dependencies.setProviderConfig ?? setProviderConfig
   const getEnabledProviders =
     dependencies.getEnabledProviders ?? getEnabledDesktopProviders
 
@@ -277,6 +279,8 @@ export async function loginCodexForDesktop(
   }
 }
 
-export function shouldStartInProviderMode(mode: DesktopAuthMode | undefined): boolean {
+export function shouldStartInProviderMode(
+  mode: DesktopAuthMode | undefined,
+): boolean {
   return mode === 'provider'
 }

@@ -8,7 +8,10 @@ function getSystemLocale(): string {
   return Intl.DateTimeFormat().resolvedOptions().locale
 }
 
-export async function tMain(key: LocaleKey, vars?: LocaleVars): Promise<string> {
+export async function tMain(
+  key: LocaleKey,
+  vars?: LocaleVars,
+): Promise<string> {
   try {
     const settings = await readSettings()
     return translate(key, settings.language, vars, getSystemLocale())

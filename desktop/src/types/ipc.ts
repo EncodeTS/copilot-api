@@ -21,10 +21,12 @@ export interface AuthStatus extends AuthResult {
   mode: DesktopAuthMode
 }
 
-export type ProviderType = 'anthropic' | 'openai-compatible' | 'openai-responses'
+export type ProviderType =
+  'anthropic' | 'openai-compatible' | 'openai-responses'
 export type ProviderAuthType = 'authorization' | 'x-api-key'
 export type ProviderAuthTypeInput = ProviderAuthType | '__default__'
-export type QuickProviderName = 'opencode-go' | 'deepseek' | 'dashscope' | 'openrouter'
+export type QuickProviderName =
+  'opencode-go' | 'deepseek' | 'dashscope' | 'openrouter'
 
 export type ProviderAuthInput =
   | {
@@ -188,19 +190,28 @@ declare global {
       configureProvider: (input: ProviderAuthInput) => Promise<AuthResult>
       startCodexLogin: (callbackUrlOrCode?: string) => Promise<AuthResult>
       logout: () => Promise<void>
-      startServer: (port: number, authMode?: DesktopAuthMode) => Promise<ServerStatus>
+      startServer: (
+        port: number,
+        authMode?: DesktopAuthMode,
+      ) => Promise<ServerStatus>
       stopServer: () => Promise<void>
       getServerStatus: () => Promise<ServerStatus>
       getSettings: () => Promise<DesktopSettings>
       saveSettings: (settings: DesktopSettings) => Promise<void>
       getModelMappingsConfig: () => Promise<ModelMappingsConfig>
-      saveModelMappings: (modelMappings: Record<string, string>) => Promise<void>
+      saveModelMappings: (
+        modelMappings: Record<string, string>,
+      ) => Promise<void>
       openUrl: (url: string) => Promise<void>
       fetchUsage: () => Promise<unknown>
       fetchModels: () => Promise<unknown>
       fetchTokenUsage: (period: TokenUsagePeriod) => Promise<unknown>
       fetchTokenUsageDaily: (period: TokenUsagePeriod) => Promise<unknown>
-      fetchTokenUsageEvents: (period: TokenUsagePeriod, page: number, pageSize: number) => Promise<unknown>
+      fetchTokenUsageEvents: (
+        period: TokenUsagePeriod,
+        page: number,
+        pageSize: number,
+      ) => Promise<unknown>
       getServerAuthInfo: () => Promise<ServerAuthInfo>
       getLogs: () => Promise<string[]>
       onAuthSuccess: (callback: (result: AuthResult) => void) => () => void
@@ -216,7 +227,9 @@ declare global {
       windowZoomOut: () => void
       windowZoomReset: () => void
       windowIsMaximized: () => Promise<boolean>
-      onWindowMaximizeChange: (callback: (maximized: boolean) => void) => () => void
+      onWindowMaximizeChange: (
+        callback: (maximized: boolean) => void,
+      ) => () => void
     }
   }
 }

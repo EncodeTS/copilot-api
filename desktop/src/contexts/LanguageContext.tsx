@@ -12,7 +12,10 @@ const LanguageContext = createContext<LanguageContextValue | null>(null)
 export function LanguageProvider({ children }: { children: ReactNode }) {
   const [langPref, setLangPref] = useState<LangPreference>('auto')
 
-  const t = (key: LocaleKey, vars?: Record<string, string | number>): string => {
+  const t = (
+    key: LocaleKey,
+    vars?: Record<string, string | number>,
+  ): string => {
     return translate(key, langPref, vars, navigator.language)
   }
 

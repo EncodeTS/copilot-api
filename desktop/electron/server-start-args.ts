@@ -1,6 +1,6 @@
 export function buildServerStartArgs(
   port: number,
-  githubToken?: string | null
+  githubToken?: string | null,
 ): string[] {
   const args = ['start', '--port', String(port)]
   const normalizedToken = githubToken?.trim()

@@ -137,13 +137,16 @@ const zh: Locale = {
   },
   settings: {
     title: '设置',
-    restartAppNote: 'OAuth App、API Home 和 Enterprise URL 修改后需重启应用才能生效。',
-    restartAppPrompt: '设置已保存。OAuth App、API Home 和 Enterprise URL 需重启应用后才能生效。',
+    restartAppNote:
+      'OAuth App、API Home 和 Enterprise URL 修改后需重启应用才能生效。',
+    restartAppPrompt:
+      '设置已保存。OAuth App、API Home 和 Enterprise URL 需重启应用后才能生效。',
     sectionGeneral: '通用',
     minimizeToTray: '最小化到托盘',
     minimizeToTrayDesc: '关闭窗口时隐藏到系统托盘，不退出程序',
     sectionNetwork: '网络',
-    proxySystemNote: '默认使用系统代理。选择自定义代理后，Electron 和新启动的本地服务会使用下方配置；选择不使用代理后将直连网络。已运行的服务需重启后生效。',
+    proxySystemNote:
+      '默认使用系统代理。选择自定义代理后，Electron 和新启动的本地服务会使用下方配置；选择不使用代理后将直连网络。已运行的服务需重启后生效。',
     proxyMode: '代理模式',
     proxyModeSystem: '系统代理',
     proxyModeCustom: '自定义代理',
@@ -155,11 +158,13 @@ const zh: Locale = {
     sectionStartup: '启动参数',
     oauthApp: 'OAuth App',
     oauthAppDefault: '默认 GitHub',
-    oauthAppDesc: '选择 opencode 后，Electron 启动时会按 opencode OAuth 流程进行鉴权。',
+    oauthAppDesc:
+      '选择 opencode 后，Electron 启动时会按 opencode OAuth 流程进行鉴权。',
     apiHome: 'API Home',
     apiHomeDesc: '可选，自定义 token 与 config.json 的存放目录。',
     enterpriseUrl: 'Enterprise URL',
-    enterpriseUrlDesc: '可选，例如 company.ghe.com。用于连接 GitHub Enterprise。',
+    enterpriseUrlDesc:
+      '可选，例如 company.ghe.com。用于连接 GitHub Enterprise。',
     verbose: '详细日志',
     verboseDesc: '输出更详细的调试信息',
     showToken: '显示 Token',
@@ -178,12 +183,15 @@ const zh: Locale = {
   },
   advancedConfig: {
     title: '模型映射',
-    subtitle: '通过正在运行的服务接口管理共享的模型映射，保存后新的 `POST /v1/messages`、`POST /v1/messages/count_tokens`、`POST /v1/responses` 和 `POST /v1/chat/completions` 请求都会立即使用最新规则。',
+    subtitle:
+      '通过正在运行的服务接口管理共享的模型映射，保存后新的 `POST /v1/messages`、`POST /v1/messages/count_tokens`、`POST /v1/responses` 和 `POST /v1/chat/completions` 请求都会立即使用最新规则。',
     back: '返回看板',
     modelMappingsTitle: '模型映射',
-    modelMappingsDesc: '将请求模型名映射为另一个模型 ID 或 provider/model。所有接口共用。',
+    modelMappingsDesc:
+      '将请求模型名映射为另一个模型 ID 或 provider/model。所有接口共用。',
     scopeLabel: '作用范围',
-    scopeNote: '同一份映射会统一作用于 `POST /v1/messages`、`POST /v1/messages/count_tokens`、`POST /v1/responses` 和 `POST /v1/chat/completions`。匹配为精确匹配，应用不会自动帮你裁剪空格或规范化大小写。',
+    scopeNote:
+      '同一份映射会统一作用于 `POST /v1/messages`、`POST /v1/messages/count_tokens`、`POST /v1/responses` 和 `POST /v1/chat/completions`。匹配为精确匹配，应用不会自动帮你裁剪空格或规范化大小写。',
     restartNote: '保存成功后会立刻刷新当前服务进程中的配置缓存。',
     configPath: '配置路径',
     addMapping: '新增映射',
@@ -191,9 +199,12 @@ const zh: Locale = {
     targetModel: '目标模型',
     remove: '删除',
     emptyTitle: '还没有映射规则',
-    emptyDescription: '新增一条规则后，所有支持接口里的模型名都会在网关解析实际上游模型前先被改写。',
-    saveHelp: '保存时会通过服务接口只更新 config.json 里的 modelMappings 字段，不会覆盖其他配置。',
-    saved: '已通过服务接口保存。后续新的 `POST /v1/messages`、`POST /v1/messages/count_tokens`、`POST /v1/responses` 和 `POST /v1/chat/completions` 请求都会立即使用最新映射。',
+    emptyDescription:
+      '新增一条规则后，所有支持接口里的模型名都会在网关解析实际上游模型前先被改写。',
+    saveHelp:
+      '保存时会通过服务接口只更新 config.json 里的 modelMappings 字段，不会覆盖其他配置。',
+    saved:
+      '已通过服务接口保存。后续新的 `POST /v1/messages`、`POST /v1/messages/count_tokens`、`POST /v1/responses` 和 `POST /v1/chat/completions` 请求都会立即使用最新映射。',
     loadFailed: '加载模型映射失败',
     saveFailed: '保存模型映射失败',
     serverRequired: '请先启动本地服务，再通过接口读取或保存模型映射。',

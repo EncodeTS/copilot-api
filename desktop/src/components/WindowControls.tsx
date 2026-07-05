@@ -11,9 +11,12 @@ export default function WindowControls() {
 
   useEffect(() => {
     let active = true
-    window.electronAPI.windowIsMaximized().then((value) => {
-      if (active) setMaximized(value)
-    }).catch(() => {})
+    window.electronAPI
+      .windowIsMaximized()
+      .then((value) => {
+        if (active) setMaximized(value)
+      })
+      .catch(() => {})
     const unsubscribe = window.electronAPI.onWindowMaximizeChange((value) => {
       setMaximized(value)
     })
@@ -43,16 +46,42 @@ export default function WindowControls() {
         className="flex w-[46px] items-center justify-center text-ink-soft hover:bg-sunken transition-colors"
         title={maximized ? 'Restore' : 'Maximize'}
       >
-        {maximized ? (
+        {maximized ?
           <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-            <rect x="2.5" y="0.5" width="7" height="7" rx="1" fill="none" stroke="currentColor" strokeWidth="1" />
-            <rect x="0.5" y="2.5" width="7" height="7" rx="1" fill="var(--color-surface)" stroke="currentColor" strokeWidth="1" />
+            <rect
+              x="2.5"
+              y="0.5"
+              width="7"
+              height="7"
+              rx="1"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1"
+            />
+            <rect
+              x="0.5"
+              y="2.5"
+              width="7"
+              height="7"
+              rx="1"
+              fill="var(--color-surface)"
+              stroke="currentColor"
+              strokeWidth="1"
+            />
           </svg>
-        ) : (
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-            <rect x="0.5" y="0.5" width="9" height="9" rx="1" fill="none" stroke="currentColor" strokeWidth="1" />
+        : <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+            <rect
+              x="0.5"
+              y="0.5"
+              width="9"
+              height="9"
+              rx="1"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1"
+            />
           </svg>
-        )}
+        }
       </button>
 
       <button
@@ -61,7 +90,12 @@ export default function WindowControls() {
         title="Close"
       >
         <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-          <path d="M0.5 0.5 L9.5 9.5 M9.5 0.5 L0.5 9.5" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
+          <path
+            d="M0.5 0.5 L9.5 9.5 M9.5 0.5 L0.5 9.5"
+            stroke="currentColor"
+            strokeWidth="1"
+            strokeLinecap="round"
+          />
         </svg>
       </button>
     </div>

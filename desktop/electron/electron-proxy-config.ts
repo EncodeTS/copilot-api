@@ -8,7 +8,7 @@ const PROXY_ENV_KEYS = [
   'HTTPS_PROXY',
   'https_proxy',
   'NO_PROXY',
-  'no_proxy'
+  'no_proxy',
 ] as const
 
 export type ElectronProxyConfig =
@@ -49,7 +49,10 @@ function normalizeProxyEnvValue(rawProxy: string): string | null {
 function formatProxyHost(url: URL): string | null {
   if (!url.hostname) return null
 
-  const hostname = url.hostname.includes(':') ? `[${url.hostname.replace(/^\[|\]$/g, '')}]` : url.hostname
+  const hostname =
+    url.hostname.includes(':') ?
+      `[${url.hostname.replace(/^\[|\]$/g, '')}]`
+    : url.hostname
   return `${hostname}${url.port ? `:${url.port}` : ''}`
 }
 
@@ -101,17 +104,17 @@ export function hasNoProxyServerSwitch(argv: readonly string[]): boolean {
 
 export function applyNoProxyServerOverride(
   proxySettings: DesktopProxySettings,
-  noProxyServer: boolean
+  noProxyServer: boolean,
 ): DesktopProxySettings {
   if (!noProxyServer) return proxySettings
   return {
     ...proxySettings,
-    mode: 'direct'
+    mode: 'direct',
   }
 }
 
 export function resolveElectronProxyConfigFromSettings(
-  proxySettings: DesktopProxySettings
+  proxySettings: DesktopProxySettings,
 ): ElectronProxyConfig {
   if (proxySettings.mode === 'direct') return { mode: 'direct' }
   if (proxySettings.mode !== 'custom') return { mode: 'system' }
@@ -125,19 +128,19 @@ export function resolveElectronProxyConfigFromSettings(
 
   const proxyRules = [
     httpProxyServer ? `http=${httpProxyServer}` : null,
-    httpsProxyServer ? `https=${httpsProxyServer}` : null
+    httpsProxyServer ? `https=${httpsProxyServer}` : null,
   ].filter((rule): rule is string => rule !== null)
 
   return {
     mode: 'fixed_servers',
     proxyBypassRules: buildProxyBypassRules(proxySettings.no_proxy),
-    proxyRules: proxyRules.join(';')
+    proxyRules: proxyRules.join(';'),
   }
 }
 
 export function applyDesktopProxySettingsToEnv(
   env: NodeJS.ProcessEnv,
-  proxySettings: DesktopProxySettings
+  proxySettings: DesktopProxySettings,
 ): boolean {
   for (const key of PROXY_ENV_KEYS) {
     delete env[key]

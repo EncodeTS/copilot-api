@@ -47,7 +47,9 @@ export async function clearToken(): Promise<void> {
   }
 }
 
-export async function getCopilotAccountType(token: string): Promise<CopilotAccountType> {
+export async function getCopilotAccountType(
+  token: string,
+): Promise<CopilotAccountType> {
   try {
     return await fetchCopilotAccountType(token)
   } catch {
