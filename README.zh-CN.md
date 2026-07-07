@@ -614,7 +614,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
 - **smallModel：** 无工具预热消息的回退模型（例如 Claude Code 的探测请求）；默认是 `gpt-5-mini`。
 - **useResponsesApiContextManagement：** 当为 `true` 时，代理会为 Responses API 附加 `context_management` 压缩指令。默认值为 `true`。如需全局关闭，可设为 `false`。启用后，请求体会带上 `context_management`，并在后续轮次中仅保留最新的压缩承载内容，因此特别适合长任务场景。
 - **modelResponsesApiCompactThresholds：** 按模型覆盖 Responses API 的 `compact_threshold`，仅在代理自动附加 `context_management` 时使用。它的优先级高于 `resolveResponsesCompactThreshold` 基于 `max_prompt_tokens * ratio` 的兜底阈值。默认将 `gpt-5.4` 和 `gpt-5.5` 设为 `217600`（`272000 * 0.8`）。未列出的模型继续使用原有兜底逻辑。
-- **modelReasoningEfforts：** 按模型配置发送到 Responses API 的 `reasoning.effort`。可选值包括 `none`、`minimal`、`low`、`medium`、`high`、`xhigh` 和 `max`。若某模型未配置，则默认使用 `high`；GPT-5.3+ 模型未显式配置时回退为 `xhigh`。
+- **modelReasoningEfforts：** 按模型配置的推理强度，仅作用于 `/v1/messages` 请求。当请求走 Copilot 原生 Messages API 时设置 `output_config.effort`；当请求被翻译为 Responses API 时设置 `reasoning.effort`。可选值包括 `none`、`minimal`、`low`、`medium`、`high`、`xhigh` 和 `max`。若某模型未配置，则默认使用 `high`；GPT-5.3+ 模型未显式配置时回退为 `xhigh`。
 - **useMessagesApi：** 当为 `true` 时，支持 Copilot 原生 `/v1/messages` 的 Claude 系模型会走 Messages API；否则回退到 `/chat/completions`。设为 `false` 可禁用 Messages API 路由，始终使用 `/chat/completions`。默认值为 `true`。
 - **useResponsesApiWebSocket：** 当为 `true` 时，Responses API 请求会优先对声明了 `ws:/responses` 的模型使用 Copilot websocket transport；仅声明 `/responses` 的模型仍走 HTTP。设为 `false` 可禁用 websocket 路由，并在模型支持 `/responses` 时使用 HTTP `/responses`。默认值为 `true`。
 - **useResponsesApiWebSearch：** 当为 `true` 时，服务端会保留 Responses API 中 `type: "web_search"` 的工具并透传到上游。设为 `false` 则会从 `/responses` payload 中移除这些工具。默认值为 `true`。
