@@ -18,7 +18,7 @@ import {
 
 export const RESPONSES_ENDPOINT = "/responses"
 export const RESPONSES_WS_ENDPOINT = "ws:/responses"
-export const DEFAULT_RESPONSES_COMPACT_THRESHOLD_RATIO = 0.9
+export const DEFAULT_RESPONSES_COMPACT_THRESHOLD_RATIO = 0.85
 
 export const responsesUtilsDependencies = {
   getModelResponsesApiCompactThreshold:
