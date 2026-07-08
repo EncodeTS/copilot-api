@@ -430,6 +430,7 @@ const isTextReadable = (
 
 const toError = (value: unknown): Error => {
   if (value instanceof Error) {
+    consola.error("Responses websocket error", value)
     return value
   }
 
