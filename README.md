@@ -242,7 +242,8 @@ Example `~/.config/opencode/opencode.json`:
             "output": ["text"]
           },
           "limit": {
-            "context": 300000,
+            "context": 400000,
+            "input": 272000,
             "output": 128000
           }
         },
