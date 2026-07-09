@@ -349,11 +349,13 @@ const createWebSocketMessageStream = async function* <TChunk>(
   }
 
   const onClose = () => {
+    consola.debug("WebSocket closed")
     closed = true
     wake()
   }
 
   const onError = (event: WebSocketErrorEvent) => {
+    consola.error("WebSocket error:", event, event.error)
     error = createWebSocketError(options.streamErrorMessage, event)
     wake()
   }
@@ -430,7 +432,6 @@ const isTextReadable = (
 
 const toError = (value: unknown): Error => {
   if (value instanceof Error) {
-    consola.error("Responses websocket error", value)
     return value
   }
 
