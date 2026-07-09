@@ -306,9 +306,25 @@ describe("responses handler token usage", () => {
     )
 
     const app = createApp()
+    const latestInput = {
+      content: "Continue after the latest compaction.",
+      role: "user",
+    }
+    const compactionTrigger = {
+      type: "compaction_trigger",
+    }
     const response = await app.request("/v1/responses", {
       body: JSON.stringify({
         input: [
+          {
+            content: "old content before compaction",
+            role: "user",
+          },
+          {
+            encrypted_content: "cipher",
+            id: "compaction-1",
+            type: "compaction",
+          },
           {
             content: [
               {
@@ -320,9 +336,8 @@ describe("responses handler token usage", () => {
             role: "assistant",
             type: "message",
           },
-          {
-            type: "compaction_trigger",
-          },
+          latestInput,
+          compactionTrigger,
         ],
         model: "gpt-test",
       }),
@@ -335,6 +350,68 @@ describe("responses handler token usage", () => {
     expect(response.status).toBe(200)
     expect(createResponses).toHaveBeenCalledTimes(1)
     expect(createResponses.mock.calls[0][0].context_management).toBeUndefined()
+    expect(createResponses.mock.calls[0][0].input).toEqual([
+      {
+        encrypted_content: "cipher",
+        id: "compaction-1",
+        type: "compaction",
+      },
+      {
+        content: [
+          {
+            text: "Completed the review for the latest two commits.",
+            type: "output_text",
+          },
+        ],
+        phase: "final_answer",
+        role: "assistant",
+        type: "message",
+      },
+      latestInput,
+      compactionTrigger,
+    ])
+  })
+
+  test("does not compact input ending with compaction trigger when context management is disabled", async () => {
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+
+    const input = [
+      {
+        content: "old content before compaction",
+        role: "user",
+      },
+      {
+        encrypted_content: "cipher",
+        id: "compaction-1",
+        type: "compaction",
+      },
+      {
+        content: "Continue after the latest compaction.",
+        role: "user",
+      },
+      {
+        type: "compaction_trigger",
+      },
+    ]
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        input,
+        model: "gpt-test",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(1)
+    expect(createResponses.mock.calls[0][0].context_management).toBeUndefined()
+    expect(createResponses.mock.calls[0][0].input).toEqual(input)
   })
 
   test("preserves custom apply_patch tools for Copilot Responses", async () => {
