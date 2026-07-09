@@ -90,8 +90,6 @@ export const handleResponses = async (c: Context) => {
     removeWebSearchTool(payload)
   }
 
-  compactInputByLatestCompaction(payload)
-
   const selectedModel = state.models?.data.find(
     (model) => model.id === payload.model,
   )
@@ -122,7 +120,17 @@ export const handleResponses = async (c: Context) => {
 
   // Smaller than the client compaction threshold, use server-side compaction to maintain cache hit rate
   const maxPromptTokens = selectedModel?.capabilities.limits.max_prompt_tokens
-  applyResponsesApiContextManagement(payload, maxPromptTokens, 0.8)
+  const shouldCompactInput = applyResponsesApiContextManagement(
+    payload,
+    maxPromptTokens,
+    {
+      compactThresholdRatio: 0.8,
+      source: "responses",
+    },
+  )
+  if (shouldCompactInput) {
+    compactInputByLatestCompaction(payload)
+  }
 
   debugJson(logger, "Translated Responses payload:", payload)
 

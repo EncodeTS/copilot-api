@@ -221,12 +221,17 @@ export const handleWithResponsesApi = async (
     payload: anthropicPayload,
   })
 
-  applyResponsesApiContextManagement(
+  const shouldCompactInput = applyResponsesApiContextManagement(
     responsesPayload,
     selectedModel?.capabilities.limits.max_prompt_tokens,
+    {
+      source: "messages",
+    },
   )
 
-  compactInputByLatestCompaction(responsesPayload)
+  if (shouldCompactInput) {
+    compactInputByLatestCompaction(responsesPayload)
+  }
 
   debugJson(logger, "Translated Responses payload:", responsesPayload)
 
