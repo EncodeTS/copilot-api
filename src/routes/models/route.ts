@@ -167,16 +167,9 @@ async function getAggregatedModels(
 async function logCodexModelsResponse(response: Response): Promise<void> {
   try {
     const responseText = await response.clone().text()
-    let models: unknown = responseText
-    try {
-      models = JSON.parse(responseText)
-    } catch {
-      // Keep non-JSON upstream responses visible as text.
-    }
-
     logger.debug("models.codex.response", {
       statusCode: response.status,
-      models,
+      models: responseText,
     })
   } catch (error) {
     logger.warn("models.codex.response_log_error", { error })
