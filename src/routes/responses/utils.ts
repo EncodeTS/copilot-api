@@ -308,7 +308,7 @@ export const applyResponsesApiContextManagement = (
   },
 ): boolean => {
   if (hasTerminalCompactionTrigger(payload)) {
-    return false
+    return isContextManagementEnabledForSource(options.source)
   }
 
   if (payload.context_management !== undefined) {
