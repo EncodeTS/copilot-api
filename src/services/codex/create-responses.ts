@@ -146,18 +146,24 @@ export function buildCodexResponsesHeaders(
   requestHeaders: Headers,
   options: CodexResponsesHeaderOptions = {},
 ): Headers {
-  const { accessToken, accountId } = requireCodexAuthContext()
-  const headers = buildForwardedCodexRequestHeaders(requestHeaders)
+  const headers = buildCodexRequestHeaders(requestHeaders)
 
   setDefaultCodexHeader(
     headers,
     "accept",
     options.stream ? "text/event-stream" : "application/json",
   )
-  headers.set("authorization", `Bearer ${accessToken}`)
-  headers.set("chatgpt-account-id", accountId)
   setDefaultCodexHeader(headers, "content-type", "application/json")
   setDefaultCodexHeader(headers, "OpenAI-Beta", "responses=experimental")
+  return headers
+}
+
+export function buildCodexRequestHeaders(requestHeaders: Headers): Headers {
+  const { accessToken, accountId } = requireCodexAuthContext()
+  const headers = buildForwardedCodexRequestHeaders(requestHeaders)
+
+  headers.set("authorization", `Bearer ${accessToken}`)
+  headers.set("chatgpt-account-id", accountId)
   setDefaultCodexHeader(headers, "originator", "copilot-api")
   setDefaultCodexHeader(headers, "user-agent", "copilot-api")
   applyOpencodeCodexHeaders(headers)
