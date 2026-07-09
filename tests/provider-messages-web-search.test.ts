@@ -58,9 +58,13 @@ const { providerMessageRoutes } = await import(
 )
 const { messageRoutes } = await import("../src/routes/messages/route")
 const { state } = await import("../src/lib/state")
+const { responsesUtilsDependencies } = await import(
+  "../src/routes/responses/utils"
+)
 
 const originalCodexAccessToken = state.codexAccessToken
 const originalCodexAccountId = state.codexAccountId
+const defaultResponsesUtilsDependencies = { ...responsesUtilsDependencies }
 
 const makeResponsesResult = (
   overrides: Partial<ResponsesResult> = {},
@@ -301,6 +305,11 @@ beforeEach(() => {
   state.codexAccountId = "codex-account"
   messageApiWebSearchModel = undefined
   findEndpointModel.mockClear()
+  responsesUtilsDependencies.getModelResponsesApiCompactThreshold = () =>
+    undefined
+  responsesUtilsDependencies.isContextManagementEnabledForMessages = () => true
+  responsesUtilsDependencies.isContextManagementEnabledForResponses = () =>
+    false
   fetchMock.mockClear()
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
     fetchMock as unknown as typeof fetch
@@ -310,11 +319,45 @@ afterEach(() => {
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
   state.codexAccessToken = originalCodexAccessToken
   state.codexAccountId = originalCodexAccountId
+  Object.assign(responsesUtilsDependencies, defaultResponsesUtilsDependencies)
   providerConfigs = {}
   messageApiWebSearchModel = undefined
 })
 
 describe("provider messages web_search", () => {
+  test("adds context management when provider Messages uses Responses API", async () => {
+    const app = createApp()
+    const response = await app.request("/search/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-search",
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe("https://provider.example/v1/responses")
+
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      context_management?: unknown
+      model: string
+    }
+    expect(upstreamBody.model).toBe("gpt-search")
+    expect(upstreamBody.context_management).toEqual([
+      {
+        compact_threshold: 170000,
+        type: "compaction",
+      },
+    ])
+  })
+
   test("routes top-level Copilot messages web_search to provider/model", async () => {
     messageApiWebSearchModel = "search/gpt-search"
 

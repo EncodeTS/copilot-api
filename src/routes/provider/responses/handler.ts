@@ -14,6 +14,10 @@ import {
   normalizeResponsesUsage,
   type UsageTokens,
 } from "~/lib/token-usage"
+import {
+  applyResponsesApiContextManagement,
+  compactInputByLatestCompaction,
+} from "~/routes/responses/utils"
 
 import type {
   ResponsesPayload,
@@ -22,6 +26,7 @@ import type {
   ResponsesStream,
 } from "~/services/copilot/create-responses"
 import { forwardCodexResponses } from "~/services/codex/create-responses"
+import { getModels as getCodexModels } from "~/services/codex/get-models"
 import {
   createProviderProxyResponse,
   forwardProviderResponses,
@@ -58,6 +63,29 @@ export async function handleProviderResponsesForProvider(
       400,
     )
   }
+
+  const model =
+    providerConfig.name === "codex" ?
+      getCodexModels().data.find((model) => model.id === payload.model)
+    : undefined
+
+  // Smaller than the client compaction threshold, use server-side compaction to maintain cache hit rate.
+  const shouldCompactInput = applyResponsesApiContextManagement(
+    payload,
+    model?.capabilities.limits.max_prompt_tokens,
+    {
+      compactThresholdRatio: 0.8,
+      source: "responses",
+    },
+  )
+  if (shouldCompactInput) {
+    compactInputByLatestCompaction(payload)
+  }
+
+  debugJson(logger, "Translated Responses request payload:", {
+    contextManagement: payload.context_management,
+    provider,
+  })
 
   const modelConfig = providerConfig.models?.[payload.model]
 

@@ -311,7 +311,7 @@ enabled = false
 ```
 
 > [!NOTE]
-> This configuration is specific to Codex and the GitHub Copilot provider. `name` must be set to `"OpenAI"`. It can help mitigate Codex local compact cache miss issues. If you have enabled `useResponsesApiContextManagement` (Responses API context management compaction), `remote_compaction_v2` or local compact is generally not triggered, but it may still occur when tool results return a large number of tokens.
+> This configuration is specific to Codex and the GitHub Copilot provider. `name` must be set to `"OpenAI"`. It can help mitigate Codex local compact cache miss issues. If you enable `contextManagement.responses` (Responses API context management compaction), `remote_compaction_v2` or local compact is generally not triggered, but it may still occur when tool results return a large number of tokens. Before enabling it for native Responses API traffic, check that your client supports context management compaction.
 
 ## GPT Tool Search
 
@@ -518,7 +518,10 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
       "gpt-5-mini": "<built-in exploration prompt>"
     },
     "smallModel": "gpt-5-mini",
-    "useResponsesApiContextManagement": true,
+    "contextManagement": {
+      "messages": true,
+      "responses": false
+    },
     "modelResponsesApiCompactThresholds": {
       "gpt-5.4": 217600,
       "gpt-5.5": 217600
@@ -607,7 +610,7 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
   ```
   Built-in token prices cover Codex GPT models in USD, DashScope `qwen3.7-max`, `qwen3.7-plus`, `glm-5.1`, `glm-5.2` in CNY, DeepSeek `deepseek-v4-flash`, `deepseek-v4-pro`, `deepseek-chat`, `deepseek-reasoner` in CNY, and OpenCode Go models (`glm-5.2`, `deepseek-v4-flash`, `deepseek-v4-pro`, `kimi-k2.7-code`, `mimo-v2.5`, `mimo-v2.5-pro`, `qwen3.7-plus`, `qwen3.7-max`, `minimax-m2.5`, `minimax-m3`) in USD. User `pricing` entries override built-ins. For DashScope, cached tokens are charged as explicit cache reads when the upstream usage includes `cache_creation_input_tokens`; otherwise `cachedInput` is used as the implicit cache read price. For DeepSeek, `prompt_cache_hit_tokens` map to cached input and `prompt_cache_miss_tokens` map to regular input.
 - **smallModel:** Fallback model used for tool-less warmup messages (e.g., Claude Code probe requests); defaults to gpt-5-mini.
-- **useResponsesApiContextManagement:** When `true`, the proxy adds Responses API `context_management` compaction instructions. Defaults to `true`. Set it to `false` to disable this globally. When enabled, the request includes `context_management` in the body and keeps only the latest compaction carrier on follow-up turns. This is especially useful for long-running tasks.
+- **contextManagement:** Controls whether the proxy adds Responses API `context_management` compaction instructions. `messages` applies when Anthropic-style `/v1/messages` requests are translated to Responses API, including `openai-responses` provider message routes, and defaults to `true`. `responses` applies to native `/v1/responses` traffic, including `provider/model` aliases and the built-in `codex` provider, and defaults to `false`. Enable `responses` only after checking that your client supports context management compaction. When enabled, the request includes `context_management` in the body and keeps only the latest compaction carrier on follow-up turns.
 - **modelResponsesApiCompactThresholds:** Per-model Responses API `compact_threshold` overrides used when the proxy adds `context_management`. These values take precedence over the fallback threshold from `resolveResponsesCompactThreshold` (`max_prompt_tokens * ratio`, or the default fallback). Defaults set `gpt-5.4` and `gpt-5.5` to `217600` (`272000 * 0.8`). Models not listed continue to use the normal fallback logic.
 - **modelReasoningEfforts:** Per-model reasoning effort applied to `/v1/messages` requests. When routed to the Copilot native Messages API it sets `output_config.effort`; when translated to the Responses API it sets `reasoning.effort`. Allowed values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. If a model isn't listed, `high` is used by default; GPT-5.3+ models fall back to `xhigh` when not explicitly configured.
 - **useMessagesApi:** When `true`, Claude-family models that support Copilot's native `/v1/messages` endpoint will use the Messages API; otherwise they fall back to `/chat/completions`. Set to `false` to disable Messages API routing and always use `/chat/completions`. Defaults to `true`.
