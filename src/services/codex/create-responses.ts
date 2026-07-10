@@ -154,7 +154,13 @@ export function buildCodexResponsesHeaders(
     options.stream ? "text/event-stream" : "application/json",
   )
   setDefaultCodexHeader(headers, "content-type", "application/json")
-  setDefaultCodexHeader(headers, "OpenAI-Beta", "responses=experimental")
+  if (options.stream) {
+    setDefaultCodexHeader(
+      headers,
+      "openai-beta",
+      "responses_websockets=2026-02-06",
+    )
+  }
   return headers
 }
 
