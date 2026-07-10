@@ -249,6 +249,7 @@ export function normalizeResponsesUsage(
         input_tokens?: number
         input_tokens_details?: {
           cached_tokens?: number
+          cache_write_tokens?: number
         }
         output_tokens?: number
         total_tokens?: number
@@ -259,10 +260,16 @@ export function normalizeResponsesUsage(
   const cachedTokens = normalizeToken(
     usage?.input_tokens_details?.cached_tokens,
   )
+  const cacheWriteTokens = normalizeToken(
+    usage?.input_tokens_details?.cache_write_tokens,
+  )
   const inputTokens = normalizeToken(usage?.input_tokens)
   return {
+    ...(cacheWriteTokens > 0 && {
+      cache_creation_input_tokens: cacheWriteTokens,
+    }),
     cache_read_input_tokens: cachedTokens,
-    input_tokens: Math.max(0, inputTokens - cachedTokens),
+    input_tokens: Math.max(0, inputTokens - cachedTokens - cacheWriteTokens),
     output_tokens: normalizeToken(usage?.output_tokens),
     total_tokens: normalizeOptionalToken(usage?.total_tokens),
   }
