@@ -4,6 +4,7 @@ import type { AnthropicStreamEventData } from "~/routes/messages/anthropic-types
 import type {
   ResponseCompletedEvent,
   ResponseOutputItemAddedEvent,
+  ResponseOutputItemDoneEvent,
   ResponseFunctionCallArgumentsDeltaEvent,
   ResponseFunctionCallArgumentsDoneEvent,
 } from "~/services/copilot/create-responses"
@@ -329,5 +330,24 @@ describe("translateResponsesStreamEvent tool calls", () => {
         input: {},
       })
     }
+  })
+
+  test("suppresses reasoning events when thinking is disabled", () => {
+    const state = createResponsesStreamState({ emitThinking: false })
+    const event: ResponseOutputItemDoneEvent = {
+      type: "response.output_item.done",
+      sequence_number: 1,
+      output_index: 0,
+      item: {
+        id: "reasoning-1",
+        type: "reasoning",
+        summary: [{ type: "summary_text", text: "hidden reasoning" }],
+        encrypted_content: "opaque",
+        status: "completed",
+      },
+    }
+
+    expect(translateResponsesStreamEvent(event, state)).toEqual([])
+    expect(state.openBlocks.size).toBe(0)
   })
 })

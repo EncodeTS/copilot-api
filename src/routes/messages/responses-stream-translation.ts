@@ -73,6 +73,7 @@ export interface ResponsesStreamState {
   functionCallStateByOutputIndex: Map<number, FunctionCallStreamState>
   toolSearchName: string
   hasToolCall: boolean
+  emitThinking: boolean
 }
 
 type FunctionCallStreamState = {
@@ -84,6 +85,7 @@ type FunctionCallStreamState = {
 
 export const createResponsesStreamState = (options?: {
   toolSearchName?: string
+  emitThinking?: boolean
 }): ResponsesStreamState => ({
   messageStartSent: false,
   messageCompleted: false,
@@ -94,6 +96,7 @@ export const createResponsesStreamState = (options?: {
   functionCallStateByOutputIndex: new Map(),
   toolSearchName: options?.toolSearchName ?? BRIDGE_TOOL_SEARCH_NAME,
   hasToolCall: false,
+  emitThinking: options?.emitThinking ?? true,
 })
 
 export const translateResponsesStreamEvent = (
@@ -206,6 +209,10 @@ const handleOutputItemDone = (
   const item = rawEvent.item
   const itemType = item.type
   const outputIndex = rawEvent.output_index
+
+  if (itemType === "reasoning" && !state.emitThinking) {
+    return events
+  }
 
   if (itemType === "tool_search_call") {
     const blockIndex = openFunctionCallBlock(state, {
@@ -423,6 +430,10 @@ const handleReasoningSummaryTextDelta = (
   rawEvent: ResponseReasoningSummaryTextDeltaEvent,
   state: ResponsesStreamState,
 ): Array<AnthropicStreamEventData> => {
+  if (!state.emitThinking) {
+    return []
+  }
+
   const outputIndex = rawEvent.output_index
   const deltaText = rawEvent.delta
   const events = new Array<AnthropicStreamEventData>()
@@ -445,6 +456,10 @@ const handleReasoningSummaryTextDone = (
   rawEvent: ResponseReasoningSummaryTextDoneEvent,
   state: ResponsesStreamState,
 ): Array<AnthropicStreamEventData> => {
+  if (!state.emitThinking) {
+    return []
+  }
+
   const outputIndex = rawEvent.output_index
   const text = rawEvent.text
   const events = new Array<AnthropicStreamEventData>()
@@ -503,6 +518,7 @@ const handleResponseCompleted = (
   closeAllOpenBlocks(state, events)
   const anthropic = translateResponsesResultToAnthropic(response, {
     hasToolCall: state.hasToolCall,
+    includeThinking: state.emitThinking,
     toolSearchName: state.toolSearchName,
   })
   events.push(

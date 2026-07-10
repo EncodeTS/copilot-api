@@ -899,6 +899,60 @@ describe("translateResponsesResultToAnthropic", () => {
     }
   })
 
+  it("suppresses reasoning output when thinking is disabled", () => {
+    const responsesResult: ResponsesResult = {
+      id: "resp_disabled",
+      object: "response",
+      created_at: 0,
+      model: "gpt-5.5",
+      output: [
+        {
+          id: "reasoning-1",
+          type: "reasoning",
+          summary: [{ type: "summary_text", text: "hidden reasoning" }],
+          encrypted_content: "opaque",
+          status: "completed",
+        },
+        {
+          id: "message-1",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [
+            {
+              type: "output_text",
+              text: "OK",
+              annotations: [],
+            },
+          ],
+        },
+      ],
+      output_text: "OK",
+      status: "completed",
+      usage: {
+        input_tokens: 2,
+        output_tokens: 1,
+        total_tokens: 3,
+      },
+      error: null,
+      incomplete_details: null,
+      instructions: null,
+      metadata: null,
+      parallel_tool_calls: false,
+      temperature: null,
+      tool_choice: null,
+      tools: [],
+      top_p: null,
+    }
+
+    const anthropicResponse = translateResponsesResultToAnthropic(
+      responsesResult,
+      { includeThinking: false },
+    )
+
+    expect(anthropicResponse.content).toEqual([{ type: "text", text: "OK" }])
+  })
+
   it("uses function_call namespace as the Anthropic tool_use name", () => {
     const responsesResult: ResponsesResult = {
       id: "resp_namespace",

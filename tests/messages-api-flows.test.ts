@@ -97,7 +97,8 @@ const logger = {
 
 const createContext = () =>
   ({
-    json: (body: unknown) => Response.json(body),
+    json: (body: unknown, status?: number) =>
+      Response.json(body, { status: status ?? 200 }),
   }) as Parameters<typeof handleWithChatCompletions>[0]
 
 beforeEach(async () => {
@@ -283,6 +284,28 @@ test("messages Chat Completions flow omits reasoning effort without model suppor
 
   expect(response.status).toBe(200)
   expect(capturedPayload).not.toHaveProperty("reasoning_effort")
+})
+
+test("messages Chat Completions flow uses the lowest supported effort when thinking is disabled", async () => {
+  const payload: AnthropicMessagesPayload = {
+    model: "gemini-test",
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    thinking: {
+      type: "disabled",
+    },
+  }
+
+  const response = await handleWithChatCompletions(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+    selectedModel: createModel([], {
+      reasoningEffort: ["minimal", "low", "medium", "high"],
+    }),
+  })
+
+  expect(response.status).toBe(200)
+  expect(capturedPayload?.reasoning_effort).toBe("minimal")
 })
 
 test("Copilot Chat Completions payload preparation marks two system and latest non-system message", () => {
@@ -553,6 +576,121 @@ test("messages Messages flow emits error event when upstream stream throws", asy
   )
 })
 
+test("messages Chat Completions flow emits error on clean EOF without terminal", async () => {
+  createChatCompletions.mockResolvedValueOnce(
+    createMessagesStream([]) as unknown as ChatCompletionResponse,
+  )
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithChatCompletions(c, payload, {
+      logger,
+      requestId: "request-1",
+    }),
+  )
+
+  const body = await (await app.request("/", { method: "POST" })).text()
+  expect(body).toContain("event: error")
+  expect(body).toContain(
+    "Chat Completions stream ended without a terminal event",
+  )
+})
+
+test("messages Responses flow emits error on clean EOF without terminal", async () => {
+  createResponses.mockResolvedValueOnce(
+    createMessagesStream([]) as unknown as CreateResponsesReturn,
+  )
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithResponsesApi(c, payload, {
+      logger,
+      requestId: "request-1",
+      selectedModel: createModel(["/responses"]),
+    }),
+  )
+
+  const body = await (await app.request("/", { method: "POST" })).text()
+  expect(body).toContain("event: error")
+  expect(body).toContain("Responses stream ended without completion")
+})
+
+test("messages Messages flow emits error on clean EOF without terminal", async () => {
+  createMessages.mockResolvedValueOnce(
+    createMessagesStream([]) as unknown as CreateMessagesReturn,
+  )
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "claude-sonnet-4.6",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithMessagesApi(c, payload, {
+      logger,
+      requestId: "request-1",
+    }),
+  )
+
+  const body = await (await app.request("/", { method: "POST" })).text()
+  expect(body).toContain("event: error")
+  expect(body).toContain("Messages stream ended without a terminal event")
+})
+
+test("messages Responses flow ignores DONE before a typed terminal event", async () => {
+  const responseResult = createResponsesResult("gpt-test")
+  createResponses.mockResolvedValueOnce(
+    createMessagesStream([
+      { event: "", data: "[DONE]" },
+      {
+        event: "response.created",
+        data: JSON.stringify({
+          type: "response.created",
+          sequence_number: 0,
+          response: responseResult,
+        }),
+      },
+      {
+        event: "response.completed",
+        data: JSON.stringify({
+          type: "response.completed",
+          sequence_number: 1,
+          response: responseResult,
+        }),
+      },
+    ]) as unknown as CreateResponsesReturn,
+  )
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithResponsesApi(c, payload, {
+      logger,
+      requestId: "request-1",
+      selectedModel: createModel(["/responses"]),
+    }),
+  )
+
+  const body = await (await app.request("/", { method: "POST" })).text()
+  expect(body).not.toContain("event: error")
+  expect(body).toContain("event: message_stop")
+})
+
 test("messages Messages flow records Copilot AIU from non-streaming response", async () => {
   createMessages.mockImplementationOnce(
     (payload: AnthropicMessagesPayload): Promise<CreateMessagesReturn> => {
@@ -625,6 +763,124 @@ test("messages Responses flow uses websocket transport by default for dual-endpo
   expect(response.status).toBe(200)
   expect(createResponses).toHaveBeenCalledTimes(1)
   expect(capturedResponsesOptions?.transport).toBe("websocket")
+})
+
+test("messages Responses flow maps disabled thinking to effort none", async () => {
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    thinking: {
+      type: "disabled",
+    },
+  }
+
+  const response = await handleWithResponsesApi(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+    selectedModel: createModel(["/responses"]),
+  })
+
+  expect(response.status).toBe(200)
+  expect(capturedResponsesPayload?.reasoning?.effort).toBe("none")
+})
+
+test("messages Responses flow rejects assistant prefill before dispatch", async () => {
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [
+      { role: "user", content: "Return JSON" },
+      { role: "assistant", content: '{"value":' },
+    ],
+    model: "gpt-test",
+  }
+
+  const response = await handleWithResponsesApi(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+    selectedModel: createModel(["/responses"]),
+  })
+
+  expect(response.status).toBe(400)
+  expect(createResponses).not.toHaveBeenCalled()
+  expect(await response.json()).toEqual({
+    type: "error",
+    error: {
+      type: "invalid_request_error",
+      message:
+        "Assistant prefill is not supported by the Responses API bridge.",
+    },
+  })
+})
+
+test("messages Responses flow returns an error for a failed result", async () => {
+  createResponses.mockResolvedValueOnce({
+    ...createResponsesResult("gpt-test"),
+    status: "failed",
+    error: {
+      code: "server_error",
+      message: "model failed",
+    },
+  })
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+  }
+
+  const response = await handleWithResponsesApi(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+    selectedModel: createModel(["/responses"]),
+  })
+
+  expect(response.status).toBe(502)
+  expect(await response.json()).toEqual({
+    type: "error",
+    error: {
+      type: "api_error",
+      message: "model failed",
+    },
+  })
+})
+
+test("messages Chat Completions flow returns an error for finish_reason error", async () => {
+  createChatCompletions.mockResolvedValueOnce({
+    id: "chatcmpl-error",
+    object: "chat.completion",
+    created: 0,
+    model: "gemini-test",
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: "",
+        },
+        finish_reason: "error",
+        logprobs: null,
+      },
+    ],
+  })
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gemini-test",
+  }
+
+  const response = await handleWithChatCompletions(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+  })
+
+  expect(response.status).toBe(502)
+  expect(await response.json()).toEqual({
+    type: "error",
+    error: {
+      type: "api_error",
+      message: "Chat Completions upstream ended with finish_reason=error",
+    },
+  })
 })
 
 test("messages Responses flow adds context management by default", async () => {

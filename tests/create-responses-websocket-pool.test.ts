@@ -105,6 +105,10 @@ class MockWebSocket {
     this.emit("error", payload)
   }
 
+  emitMessage(data: string): void {
+    this.emit("message", { data })
+  }
+
   completeLatestResponse(): void {
     const latestSent = this.sent.at(-1)
     if (!latestSent) {
@@ -309,6 +313,43 @@ test("Responses websocket does not open until the stream is consumed", async () 
   MockWebSocket.instances[0]?.completeLatestResponse()
   await firstChunk
   await iterator.next()
+})
+
+test("Responses websocket closes a pooled connection when the consumer returns before terminal", async () => {
+  MockWebSocket.autoComplete = false
+
+  const response = await createResponses(
+    {
+      input: "hello",
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      initiator: "user",
+      requestId: "request-1",
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const iterator = (response as AsyncIterable<unknown>)[Symbol.asyncIterator]()
+  const firstChunk = iterator.next()
+
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  MockWebSocket.instances[0]?.emitMessage(
+    JSON.stringify({
+      response: createResponsesResult("gpt-test", "resp-partial"),
+      sequence_number: 0,
+      type: "response.created",
+    }),
+  )
+  await firstChunk
+  await iterator.return?.()
+
+  expect(MockWebSocket.instances[0]?.readyState).toBe(MockWebSocket.CLOSED)
+
+  MockWebSocket.autoComplete = true
+  await collectResponsesStream("request-1")
+  expect(MockWebSocket.instances).toHaveLength(2)
 })
 
 test("Responses websocket delayed concurrent streams still use dedicated connections", async () => {

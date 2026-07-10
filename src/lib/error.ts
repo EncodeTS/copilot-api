@@ -68,11 +68,20 @@ export async function forwardError(
 
   if (error instanceof LocalPayloadTooLargeError) {
     consola.error("Payload budget details:", error.details)
+    const clientDetails = {
+      ...error.details,
+      compressionDiagnosticSamples:
+        error.details.compressionDiagnosticSamples?.map((sample) => {
+          const sanitized: Record<string, unknown> = { ...sample }
+          delete sanitized.stack
+          return sanitized
+        }),
+    }
     return c.json(
       {
         error: {
           code: error.code,
-          details: error.details,
+          details: clientDetails,
           message: error.message,
           type: "payload_too_large",
         },
@@ -99,6 +108,15 @@ export async function forwardError(
       errorJson = errorText
     }
     consola.error("HTTP error:", errorJson)
+
+    if (typeof errorJson === "object" && errorJson !== null) {
+      c.header(
+        "content-type",
+        error.response.headers.get("content-type") ?? "application/json",
+      )
+      return c.body(errorText, error.response.status as ContentfulStatusCode)
+    }
+
     return c.json(
       {
         error: {
