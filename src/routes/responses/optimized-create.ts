@@ -28,8 +28,13 @@ import type {
   ResponsesPayload,
   ResponsesTransport,
 } from "~/services/copilot/create-responses"
+import {
+  buildResponsesWebSocketPayload,
+  ensureEncryptedReasoningIncluded,
+} from "~/services/copilot/create-responses"
 
 import {
+  calculateResponsesPayloadBytes,
   optimizeInputImagesForPayloadBudget,
   type ImageCompressionAdapter,
   type ImagePayloadBudgetResult,
@@ -55,6 +60,7 @@ export const createOptimizedCopilotResponses = async (
   payload: ResponsesPayload,
   options: OptimizedResponsesCreateOptions,
 ): Promise<CreateResponsesReturn> => {
+  ensureEncryptedReasoningIncluded(payload)
   const originalPayload = cloneResponsesPayload(payload)
   const firstPrepare = await prepareCopilotResponsesPayloadForSend(payload, {
     ...options,
@@ -85,6 +91,10 @@ export const createOptimizedCopilotResponses = async (
       {
         ...options,
         mode: "retry",
+        requestOptions: {
+          ...options.requestOptions,
+          transport: "http",
+        },
       },
     )
 
@@ -121,6 +131,12 @@ export const prepareCopilotResponsesPayloadForSend = async (
   options: PrepareOptions,
 ): Promise<{ imageBudget: ImagePayloadBudgetResult }> => {
   payload.service_tier = undefined
+  ensureEncryptedReasoningIncluded(payload)
+  const sendHardLimitBytes = getResponsesSendHardLimitForTransport(
+    payload,
+    getResponsesPayloadSendHardLimitBytes(),
+    options.requestOptions,
+  )
   const imageBudget = await optimizeInputImagesForPayloadBudget(payload, {
     allowNormalReplacement: isResponsesImageNormalReplacementAllowed(),
     allowReplacingLatestImages:
@@ -138,7 +154,7 @@ export const prepareCopilotResponsesPayloadForSend = async (
     maxPromptImageSize: options.maxPromptImageSize,
     nearBudgetRatio: getResponsesImageNearBudgetRatio(),
     preserveLatestUserImageGroup: shouldPreserveLatestUserImageGroup(),
-    sendHardLimitBytes: getResponsesPayloadSendHardLimitBytes(),
+    sendHardLimitBytes,
   })
 
   logImageBudgetResult(options.logger, imageBudget, options.mode)
@@ -184,6 +200,23 @@ export const prepareCopilotResponsesPayloadForSend = async (
   }
 
   return { imageBudget }
+}
+
+export const getResponsesSendHardLimitForTransport = (
+  payload: ResponsesPayload,
+  configuredLimitBytes: number,
+  requestOptions: Pick<CreateResponsesOptions, "initiator" | "transport">,
+): number => {
+  if (requestOptions.transport !== "websocket") {
+    return configuredLimitBytes
+  }
+
+  const payloadBytes = calculateResponsesPayloadBytes(payload)
+  const websocketBytes = calculateResponsesPayloadBytes(
+    buildResponsesWebSocketPayload(payload, requestOptions.initiator),
+  )
+  const transportOverheadBytes = Math.max(0, websocketBytes - payloadBytes)
+  return Math.max(1, configuredLimitBytes - transportOverheadBytes)
 }
 
 const getConfiguredImageCompressionAdapter = (

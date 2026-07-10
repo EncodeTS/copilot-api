@@ -56,7 +56,7 @@ const PROFILE_RANK: Record<ImageCompressionInput["profile"]["name"], number> = {
 
 let sharpImportPromise: Promise<Sharp | null> | undefined
 let sharpImportError: unknown
-let globalSemaphore: Semaphore | undefined
+let globalSemaphore: CompressionSemaphore | undefined
 let globalSemaphoreConcurrency = 0
 const optimizedOutputRanks = new Map<string, number>()
 
@@ -115,8 +115,17 @@ export const createSharpImageCompressionAdapter = (
         return await running
       }
 
-      const promise = withTimeout(
-        semaphore.run(async () => {
+      const createTimeoutResult = (): ImageCompressionResult =>
+        createCompressionResult("timeout", startedAt, {
+          diagnostic: "compression_timeout",
+          diagnosticDetail: {
+            message: `Compression exceeded ${options.timeoutMs}ms timeout.`,
+            stage: "timeout",
+          },
+        })
+      const abortController = new AbortController()
+      const operation = semaphore
+        .run(async () => {
           const result = await compressWithSharp(
             parsed.buffer,
             input,
@@ -159,23 +168,22 @@ export const createSharpImageCompressionAdapter = (
             })
           }
           return result
-        }),
-        options.timeoutMs,
-      )
-        .then(
-          (result) =>
-            result
-            ?? createCompressionResult("timeout", startedAt, {
-              diagnostic: "compression_timeout",
-              diagnosticDetail: {
-                message: `Compression exceeded ${options.timeoutMs}ms timeout.`,
-                stage: "timeout",
-              },
-            }),
-        )
-        .finally(() => {
-          inFlight.delete(key)
+        }, abortController.signal)
+        .catch((error: unknown) => {
+          if (isAbortError(error)) {
+            return createTimeoutResult()
+          }
+          throw error
         })
+      const promise = withTimeout(operation, options.timeoutMs, () =>
+        abortController.abort(),
+      ).then((result) => result ?? createTimeoutResult())
+      const clearInFlight = () => {
+        if (inFlight.get(key) === promise) {
+          inFlight.delete(key)
+        }
+      }
+      void operation.then(clearInFlight, clearInFlight)
 
       inFlight.set(key, promise)
       return await promise
@@ -535,13 +543,13 @@ const loadSharp = async (): Promise<Sharp | null> => {
   return await sharpImportPromise
 }
 
-const getGlobalSemaphore = (concurrency: number): Semaphore => {
+const getGlobalSemaphore = (concurrency: number): CompressionSemaphore => {
   const normalizedConcurrency = Math.max(1, Math.floor(concurrency))
   if (
     !globalSemaphore
     || globalSemaphoreConcurrency !== normalizedConcurrency
   ) {
-    globalSemaphore = new Semaphore(normalizedConcurrency)
+    globalSemaphore = new CompressionSemaphore(normalizedConcurrency)
     globalSemaphoreConcurrency = normalizedConcurrency
   }
   return globalSemaphore
@@ -715,17 +723,24 @@ class NegativeLruCache {
   }
 }
 
-class Semaphore {
+interface SemaphoreWaiter {
+  abort?: () => void
+  reject: (error: Error) => void
+  resolve: () => void
+  signal?: AbortSignal
+}
+
+export class CompressionSemaphore {
   private active = 0
   private readonly limit: number
-  private readonly queue: Array<() => void> = []
+  private readonly queue: Array<SemaphoreWaiter> = []
 
   constructor(limit: number) {
     this.limit = limit
   }
 
-  async run<T>(task: () => Promise<T>): Promise<T> {
-    const release = await this.acquire()
+  async run<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const release = await this.acquire(signal)
     try {
       return await task()
     } finally {
@@ -733,14 +748,33 @@ class Semaphore {
     }
   }
 
-  private async acquire(): Promise<() => void> {
+  private async acquire(signal?: AbortSignal): Promise<() => void> {
+    if (signal?.aborted) {
+      throw createAbortError()
+    }
+
     if (this.active < this.limit) {
       this.active += 1
       return () => this.release()
     }
 
-    await new Promise<void>((resolve) => {
-      this.queue.push(resolve)
+    await new Promise<void>((resolve, reject) => {
+      const waiter: SemaphoreWaiter = {
+        reject,
+        resolve,
+        signal,
+      }
+      if (signal) {
+        waiter.abort = () => {
+          const index = this.queue.indexOf(waiter)
+          if (index >= 0) {
+            this.queue.splice(index, 1)
+          }
+          reject(createAbortError())
+        }
+        signal.addEventListener("abort", waiter.abort, { once: true })
+      }
+      this.queue.push(waiter)
     })
     this.active += 1
     return () => this.release()
@@ -748,20 +782,41 @@ class Semaphore {
 
   private release(): void {
     this.active -= 1
-    this.queue.shift()?.()
+    const waiter = this.queue.shift()
+    if (!waiter) {
+      return
+    }
+
+    if (waiter.abort && waiter.signal) {
+      waiter.signal.removeEventListener("abort", waiter.abort)
+    }
+    waiter.resolve()
   }
 }
+
+const createAbortError = (): Error => {
+  const error = new Error("Semaphore acquisition aborted")
+  error.name = "AbortError"
+  return error
+}
+
+const isAbortError = (error: unknown): boolean =>
+  error instanceof Error && error.name === "AbortError"
 
 const withTimeout = async <T>(
   promise: Promise<T>,
   timeoutMs: number,
+  onTimeout?: () => void,
 ): Promise<T | null> => {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     return await Promise.race([
       promise,
       new Promise<null>((resolve) => {
-        timer = setTimeout(() => resolve(null), timeoutMs)
+        timer = setTimeout(() => {
+          resolve(null)
+          onTimeout?.()
+        }, timeoutMs)
         timer.unref()
       }),
     ])

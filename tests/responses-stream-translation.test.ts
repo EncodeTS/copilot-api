@@ -4,6 +4,7 @@ import type { AnthropicStreamEventData } from "~/routes/messages/anthropic-types
 import type {
   ResponseCompletedEvent,
   ResponseOutputItemAddedEvent,
+  ResponseOutputItemDoneEvent,
   ResponseFunctionCallArgumentsDeltaEvent,
   ResponseFunctionCallArgumentsDoneEvent,
   ResponseReasoningSummaryPartAddedEvent,
@@ -334,9 +335,86 @@ describe("translateResponsesStreamEvent tool calls", () => {
       })
     }
   })
+
+  test("suppresses reasoning events when thinking is disabled", () => {
+    const state = createResponsesStreamState({ emitThinking: false })
+    const event: ResponseOutputItemDoneEvent = {
+      type: "response.output_item.done",
+      sequence_number: 1,
+      output_index: 0,
+      item: {
+        id: "reasoning-1",
+        type: "reasoning",
+        summary: [{ type: "summary_text", text: "hidden reasoning" }],
+        encrypted_content: "opaque",
+        status: "completed",
+      },
+    }
+
+    expect(translateResponsesStreamEvent(event, state)).toEqual([])
+    expect(state.openBlocks.size).toBe(0)
+  })
 })
 
 describe("translateResponsesStreamEvent reasoning summaries", () => {
+  test("does not open a summary block when thinking is disabled", () => {
+    const state = createResponsesStreamState({ emitThinking: false })
+
+    const events = translateResponsesStreamEvent(
+      {
+        type: "response.reasoning_summary_part.added",
+        item_id: "reasoning-1",
+        output_index: 0,
+        summary_index: 1,
+        sequence_number: 1,
+        part: { type: "summary_text", text: "" },
+      } satisfies ResponseReasoningSummaryPartAddedEvent,
+      state,
+    )
+
+    expect(events).toEqual([])
+    expect(state.openBlocks.size).toBe(0)
+  })
+
+  test("does not insert a separator before the first non-empty summary", () => {
+    const state = createResponsesStreamState()
+    const partAdded = (summaryIndex: number, sequenceNumber: number) =>
+      translateResponsesStreamEvent(
+        {
+          type: "response.reasoning_summary_part.added",
+          item_id: "reasoning-1",
+          output_index: 0,
+          summary_index: summaryIndex,
+          sequence_number: sequenceNumber,
+          part: { type: "summary_text", text: "" },
+        } satisfies ResponseReasoningSummaryPartAddedEvent,
+        state,
+      )
+
+    partAdded(0, 1)
+    translateResponsesStreamEvent(
+      {
+        type: "response.reasoning_summary_text.done",
+        item_id: "reasoning-1",
+        output_index: 0,
+        summary_index: 0,
+        sequence_number: 2,
+        text: "",
+      } satisfies ResponseReasoningSummaryTextDoneEvent,
+      state,
+    )
+    const events = partAdded(1, 3)
+
+    expect(events).not.toContainEqual({
+      type: "content_block_delta",
+      index: 0,
+      delta: {
+        type: "thinking_delta",
+        thinking: REASONING_SUMMARY_SEPARATOR,
+      },
+    })
+  })
+
   test("separates delta and done-only summaries exactly once", () => {
     const state = createResponsesStreamState()
     const partAdded = (summaryIndex: number, sequenceNumber: number) =>

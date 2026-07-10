@@ -107,6 +107,7 @@ const createPayload = (
 
 beforeEach(() => {
   state.verbose = false
+  state.tokenBasedBilling = false
   messagesApiEnabled = true
   responsesApiWebSocketEnabled = true
   parityFirstEnabled = true
@@ -434,6 +435,38 @@ describe("messages handler orchestration", () => {
     })
   })
 
+  test("does not add cache_control in legacy mode for token-based billing", async () => {
+    parityFirstEnabled = false
+    state.tokenBasedBilling = true
+    selectedModel = {
+      id: "messages-model",
+      supported_endpoints: ["/v1/messages"],
+    }
+    const payload = createPayload({
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "hello" }],
+        },
+      ],
+    })
+
+    const response = await createApp().request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    })
+
+    expect(response.status).toBe(200)
+    const [, forwardedPayload] = handleWithMessagesApi.mock.calls[0]
+    expect(forwardedPayload.messages[0]).toEqual({
+      role: "user",
+      content: [{ type: "text", text: "hello" }],
+    })
+  })
+
   test("preserves cache_control captured before Tool loaded is stripped in legacy mode", async () => {
     parityFirstEnabled = false
     selectedModel = {
@@ -668,6 +701,33 @@ describe("messages handler orchestration", () => {
     expect(handleWithMessagesApi).not.toHaveBeenCalled()
     expect(handleWithResponsesApi).toHaveBeenCalledTimes(1)
     expect(handleWithChatCompletions).not.toHaveBeenCalled()
+  })
+
+  test("falls back to Chat Completions for assistant prefill when supported", async () => {
+    selectedModel = {
+      id: "dual-model",
+      supported_endpoints: ["/responses", "/chat/completions"],
+    }
+
+    const response = await createApp().request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(
+        createPayload({
+          messages: [
+            { role: "user", content: "Return JSON" },
+            { role: "assistant", content: '{"value":' },
+          ],
+        }),
+      ),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe("chat")
+    expect(handleWithResponsesApi).not.toHaveBeenCalled()
+    expect(handleWithChatCompletions).toHaveBeenCalledTimes(1)
   })
 
   test("does not delegate compact requests to a ws-only Responses API model", async () => {

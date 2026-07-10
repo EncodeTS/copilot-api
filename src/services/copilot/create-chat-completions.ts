@@ -125,7 +125,13 @@ export interface Delta {
 export interface Choice {
   index: number
   delta: Delta
-  finish_reason: "stop" | "length" | "tool_calls" | "content_filter" | null
+  finish_reason:
+    | "stop"
+    | "length"
+    | "tool_calls"
+    | "content_filter"
+    | "error"
+    | null
   logprobs: object | null
 }
 
@@ -169,7 +175,7 @@ interface ChoiceNonStreaming {
   index: number
   message: ResponseMessage
   logprobs: object | null
-  finish_reason: "stop" | "length" | "tool_calls" | "content_filter"
+  finish_reason: "stop" | "length" | "tool_calls" | "content_filter" | "error"
 }
 
 // Payload types

@@ -1,5 +1,3 @@
-import consola from "consola"
-
 import {
   BRIDGE_TOOL_SEARCH_NAME,
   formatToolSearchBridgeArguments,
@@ -66,6 +64,7 @@ import {
   type AnthropicUserMessage,
 } from "./anthropic-types"
 import { normalizeToolSchema } from "./non-stream-translation"
+import { parseFunctionCallArguments } from "./tool-arguments"
 
 const MESSAGE_TYPE = "message"
 const COMPACTION_SIGNATURE_PREFIX = "cm1#"
@@ -76,6 +75,26 @@ export const REASONING_SUMMARY_SEPARATOR = "\u2063\n\n"
 
 const resolveReasoningEffort = (payload: AnthropicMessagesPayload) =>
   payload.output_config?.effort ?? getReasoningEffortForModel(payload.model)
+
+export const hasTrailingAssistantPrefill = (
+  payload: AnthropicMessagesPayload,
+): boolean => {
+  const lastMessage = payload.messages.at(-1)
+  if (!lastMessage || lastMessage.role !== "assistant") {
+    return false
+  }
+
+  if (typeof lastMessage.content === "string") {
+    return lastMessage.content.length > 0
+  }
+
+  return (
+    Array.isArray(lastMessage.content)
+    && lastMessage.content.some(
+      (block) => block.type === "text" && block.text.length > 0,
+    )
+  )
+}
 
 const buildPromptCacheKey = (
   basePromptCacheKey: string | null,
@@ -154,7 +173,10 @@ export const translateAnthropicMessagesToResponsesPayload = (
     store: false,
     parallel_tool_calls: true,
     reasoning: {
-      effort: resolveReasoningEffort(payload),
+      effort:
+        payload.thinking?.type === "disabled" ?
+          "none"
+        : resolveReasoningEffort(payload),
       summary: "auto",
       context: isSupportAllTurns(payload) ? "all_turns" : "auto",
     },
@@ -813,6 +835,7 @@ const convertAnthropicToolChoice = (
 interface ResponsesToAnthropicOptions {
   toolSearchName?: string
   hasToolCall?: boolean
+  includeThinking?: boolean
 }
 
 export const translateResponsesResultToAnthropic = (
@@ -851,6 +874,9 @@ const mapOutputToAnthropicContent = (
   for (const item of output) {
     switch (item.type) {
       case "reasoning": {
+        if (options?.includeThinking === false) {
+          break
+        }
         const thinkingText = extractReasoningText(item)
         if (thinkingText.length > 0) {
           contentBlocks.push({
@@ -1031,33 +1057,6 @@ const createCompactionThinkingBlock = (
       encrypted_content: item.encrypted_content,
     }),
   }
-}
-
-const parseFunctionCallArguments = (
-  rawArguments: string,
-): Record<string, unknown> => {
-  if (typeof rawArguments !== "string" || rawArguments.trim().length === 0) {
-    return {}
-  }
-
-  try {
-    const parsed: unknown = JSON.parse(rawArguments)
-
-    if (Array.isArray(parsed)) {
-      return { arguments: parsed }
-    }
-
-    if (parsed && typeof parsed === "object") {
-      return parsed as Record<string, unknown>
-    }
-  } catch (error) {
-    consola.warn("Failed to parse function call arguments", {
-      error,
-      rawArguments,
-    })
-  }
-
-  return { raw_arguments: rawArguments }
 }
 
 const parseToolSearchArguments = (

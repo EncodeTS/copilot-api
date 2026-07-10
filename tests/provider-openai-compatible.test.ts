@@ -264,6 +264,74 @@ describe("openai-compatible provider messages", () => {
     ])
   })
 
+  test("suppresses provider reasoning when thinking is disabled", async () => {
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        thinking: {
+          type: "disabled",
+        },
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const json = (await response.json()) as {
+      content: Array<Record<string, unknown>>
+    }
+    expect(json.content).toEqual([{ type: "text", text: "answer text" }])
+  })
+
+  test("returns an error when provider finish_reason is error", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        Response.json({
+          id: "chatcmpl-error",
+          object: "chat.completion",
+          created: 0,
+          model: "qwen-plus",
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: "",
+              },
+              finish_reason: "error",
+              logprobs: null,
+            },
+          ],
+        }),
+      ),
+    )
+
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+      }),
+    })
+
+    expect(response.status).toBe(502)
+    expect(await response.json()).toEqual({
+      type: "error",
+      error: {
+        type: "api_error",
+        message: "Provider upstream ended with finish_reason=error",
+      },
+    })
+  })
+
   test("adds stream_options include_usage for OpenAI-compatible streams", async () => {
     providerConfig = {
       ...providerConfig,
@@ -632,6 +700,90 @@ describe("openai-responses provider messages", () => {
       input_tokens: 10,
       output_tokens: 4,
       total_tokens: 16,
+    })
+  })
+
+  test("rejects assistant prefill before calling a Responses provider", async () => {
+    providerConfig = {
+      apiKey: "provider-key",
+      authType: "authorization",
+      baseUrl: "https://responses.example",
+      models: {
+        "gpt-resp": {},
+      },
+      name: "dash",
+      type: "openai-responses",
+    }
+
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [
+          { role: "user", content: "Return JSON" },
+          { role: "assistant", content: '{"value":' },
+        ],
+        model: "gpt-resp",
+      }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("maps disabled thinking and failed Responses provider results", async () => {
+    providerConfig = {
+      apiKey: "provider-key",
+      authType: "authorization",
+      baseUrl: "https://responses.example",
+      models: {
+        "gpt-resp": {},
+      },
+      name: "dash",
+      type: "openai-responses",
+    }
+    fetchMock.mockImplementationOnce((_url, init) => {
+      const requestBody = JSON.parse(init?.body as string) as {
+        reasoning?: { effort?: string }
+      }
+      expect(requestBody.reasoning?.effort).toBe("none")
+      return Promise.resolve(
+        Response.json({
+          ...createResponsesResult(),
+          status: "failed",
+          error: {
+            code: "server_error",
+            message: "provider failed",
+          },
+        }),
+      )
+    })
+
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-resp",
+        thinking: {
+          type: "disabled",
+        },
+      }),
+    })
+
+    expect(response.status).toBe(502)
+    expect(await response.json()).toEqual({
+      type: "error",
+      error: {
+        type: "api_error",
+        message: "provider failed",
+      },
     })
   })
 })

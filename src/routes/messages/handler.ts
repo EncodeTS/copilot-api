@@ -20,6 +20,7 @@ import {
 } from "~/lib/utils"
 import { handleProviderMessagesForProvider } from "~/routes/provider/messages/handler"
 import { getResponsesTransportForModel } from "~/routes/responses/utils"
+import { hasTrailingAssistantPrefill } from "./responses-translation"
 
 import type { AnthropicMessagesPayload } from "./anthropic-types"
 import {
@@ -121,8 +122,8 @@ export async function handleCompletion(c: Context) {
       mergeToolResultForClaude(anthropicPayload, {
         skipLastMessage: compactType === COMPACT_REQUEST,
       })
+      applyLastMessageCacheControl(anthropicPayload, lastMessageCacheControl)
     }
-    applyLastMessageCacheControl(anthropicPayload, lastMessageCacheControl)
   }
   const requestId = generateRequestIdFromPayload(anthropicPayload, sessionId)
   logger.debug("Generated request ID:", requestId)
@@ -151,7 +152,7 @@ export async function handleCompletion(c: Context) {
     )
   }
 
-  if (shouldUseResponsesApi(selectedModel, compactType)) {
+  if (shouldUseResponsesApi(selectedModel, compactType, anthropicPayload)) {
     return await messagesFlowHandlers.handleWithResponsesApi(
       c,
       anthropicPayload,
@@ -181,11 +182,20 @@ export async function handleCompletion(c: Context) {
 }
 
 const MESSAGES_ENDPOINT = "/v1/messages"
+const CHAT_COMPLETIONS_ENDPOINT = "/chat/completions"
 
 const shouldUseResponsesApi = (
   selectedModel: Model | undefined,
   compactType: ReturnType<typeof getCompactType>,
+  payload: AnthropicMessagesPayload,
 ): boolean => {
+  if (
+    hasTrailingAssistantPrefill(payload)
+    && selectedModel?.supported_endpoints?.includes(CHAT_COMPLETIONS_ENDPOINT)
+  ) {
+    return false
+  }
+
   return Boolean(getResponsesTransportForModel(selectedModel, { compactType }))
 }
 

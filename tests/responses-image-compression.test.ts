@@ -5,7 +5,10 @@ import type {
   ImageCompressionResult,
 } from "~/routes/responses/utils"
 
-import { createSharpImageCompressionAdapter } from "~/routes/responses/image-compression"
+import {
+  CompressionSemaphore,
+  createSharpImageCompressionAdapter,
+} from "~/routes/responses/image-compression"
 
 const toDataUrl = (mimeType: string, buffer: Buffer): string =>
   `data:${mimeType};base64,${buffer.toString("base64")}`
@@ -25,6 +28,102 @@ const expectStructuredResult = (
 }
 
 describe("Responses image compression adapter", () => {
+  test("removes aborted work from the compression queue", async () => {
+    const semaphore = new CompressionSemaphore(1)
+    let finishFirst: (() => void) | undefined
+    const first = semaphore.run(
+      () =>
+        new Promise<void>((resolve) => {
+          finishFirst = resolve
+        }),
+    )
+    await Promise.resolve()
+
+    let abortedTaskRan = false
+    const controller = new AbortController()
+    const aborted = semaphore.run(() => {
+      abortedTaskRan = true
+      return Promise.resolve()
+    }, controller.signal)
+    controller.abort()
+
+    let abortError: unknown
+    try {
+      await aborted
+    } catch (error) {
+      abortError = error
+    }
+    expect(abortError).toMatchObject({ name: "AbortError" })
+    expect(abortedTaskRan).toBe(false)
+
+    let nextTaskRan = false
+    const next = semaphore.run(() => {
+      nextTaskRan = true
+      return Promise.resolve()
+    })
+    finishFirst?.()
+    await first
+    await next
+    expect(nextTaskRan).toBe(true)
+  })
+
+  test("keeps timed-out active work deduplicated until it settles", async () => {
+    const sharp = (await import("sharp")).default
+    const pixels = Buffer.alloc(1800 * 1200 * 3)
+    for (let index = 0; index < pixels.length; index += 3) {
+      pixels[index] = index % 251
+      pixels[index + 1] = (index / 3) % 241
+      pixels[index + 2] = (index / 7) % 239
+    }
+    const png = await sharp(pixels, {
+      raw: {
+        channels: 3,
+        height: 1200,
+        width: 1800,
+      },
+    })
+      .png()
+      .toBuffer()
+    const input = {
+      dataUrl: toDataUrl("image/png", png),
+      decodedBytes: png.byteLength,
+      group: "history_user",
+      mimeType: "image/png",
+      profile: {
+        detail: "keep-original",
+        jpegQuality: 82,
+        maxLongEdge: 900,
+        name: "history-soft",
+      },
+    } satisfies ImageCompressionInput
+    const adapter = createSharpImageCompressionAdapter({
+      cacheBytes: 16 * 1024 * 1024,
+      cacheEntries: 8,
+      concurrency: 1,
+      format: "jpeg",
+      namespace: "test-timeout-dedup",
+      timeoutMs: 1,
+    })
+
+    const first = expectStructuredResult(await adapter.compress(input))
+    const second = expectStructuredResult(await adapter.compress(input))
+    expect(first.status).toBe("timeout")
+    expect(second).toBe(first)
+
+    let cached: ImageCompressionResult | null = null
+    for (let attempt = 0; attempt < 100; attempt++) {
+      await Bun.sleep(20)
+      const candidate = expectStructuredResult(await adapter.compress(input))
+      if (candidate.cacheHit === "positive") {
+        cached = candidate
+        break
+      }
+    }
+
+    expect(cached?.status).toBe("compressed")
+    expect(cached?.cacheHit).toBe("positive")
+  })
+
   test("compresses PNG input to a smaller JPEG data URL", async () => {
     const sharp = (await import("sharp")).default
     const pixels = Buffer.alloc(1200 * 900 * 3)
