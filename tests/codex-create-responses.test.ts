@@ -170,6 +170,7 @@ describe("codex api helpers", () => {
 
     expect(headers.get("accept")).toBe("text/event-stream")
     expect(headers.get("cf-ray")).toBeNull()
+    expect(headers.get("openai-beta")).toBeNull()
     expect(headers.get("originator")).toBe("opencode")
     expect(headers.get("session-id")).toBe("opencode-session")
   })
@@ -200,6 +201,9 @@ describe("codex api helpers", () => {
     expect(request.headers.accept).toBeUndefined()
     expect(request.headers["content-type"]).toBeUndefined()
     expect(request.headers.authorization).toBe("Bearer codex-token")
+    expect(request.headers["openai-beta"]).toBe(
+      "responses_websockets=2026-02-06",
+    )
   })
 
   test("returns the static codex model catalog", () => {
