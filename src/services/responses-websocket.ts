@@ -62,6 +62,7 @@ const runPooledWebSocketRequest = async function* <TPayload, TChunk>(
   options: PooledWebSocketStreamOptions<TChunk>,
 ): AsyncIterable<TChunk> {
   const { entry, pooled } = getPooledWebSocketRequestTarget(request, options)
+  let reachedTerminal = false
   const release = acquirePooledWebSocketEntry(
     request.poolKey,
     entry,
@@ -83,6 +84,7 @@ const runPooledWebSocketRequest = async function* <TPayload, TChunk>(
       yield chunk
 
       if (options.isTerminalChunk(chunk)) {
+        reachedTerminal = true
         return
       }
     }
@@ -93,6 +95,9 @@ const runPooledWebSocketRequest = async function* <TPayload, TChunk>(
     removePooledWebSocketEntry(request.poolKey, entry)
     throw toError(error)
   } finally {
+    if (!reachedTerminal) {
+      removePooledWebSocketEntry(request.poolKey, entry)
+    }
     release()
   }
 }

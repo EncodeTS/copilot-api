@@ -28,6 +28,7 @@ import {
   type AnthropicUserContentBlock,
   type AnthropicUserMessage,
 } from "./anthropic-types"
+import { parseFunctionCallArguments } from "./tool-arguments"
 import { mapOpenAIStopReasonToAnthropic } from "./utils"
 
 // Compatible with opencode, it will filter out blocks where the thinking text is empty, so we need add a default thinking text
@@ -105,6 +106,29 @@ function getReasoningEffort(
   payload: AnthropicMessagesPayload,
   options: TranslateToOpenAIOptions,
 ): string | undefined {
+  if (payload.thinking?.type === "disabled") {
+    if (!options.validateReasoningEffort) {
+      return undefined
+    }
+
+    const supportedEfforts = options.reasoningEffortSupport
+    if (!supportedEfforts || supportedEfforts.length === 0) {
+      return undefined
+    }
+
+    const disabledFallbackOrder = [
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+    ]
+    return disabledFallbackOrder.find((effort) =>
+      supportedEfforts.includes(effort),
+    )
+  }
+
   const effort = payload.output_config?.effort
   if (!effort) {
     return undefined
@@ -551,6 +575,7 @@ function translateAnthropicToolChoiceToOpenAI(
 
 export function translateToAnthropic(
   response: ChatCompletionResponse,
+  options: { includeThinking?: boolean } = {},
 ): AnthropicResponse {
   // Merge content from all choices
   const assistantContentBlocks: Array<AnthropicAssistantContentBlock> = []
@@ -559,10 +584,13 @@ export function translateToAnthropic(
   // Process all choices to extract text and tool use blocks
   for (const choice of response.choices) {
     const textBlocks = getAnthropicTextBlocks(choice.message.content)
-    const thinkBlocks = getAnthropicThinkBlocks(
-      getOpenAIReasoningText(choice.message),
-      choice.message.reasoning_opaque,
-    )
+    const thinkBlocks =
+      options.includeThinking === false ?
+        []
+      : getAnthropicThinkBlocks(
+          getOpenAIReasoningText(choice.message),
+          choice.message.reasoning_opaque,
+        )
     const toolUseBlocks = getAnthropicToolUseBlocks(choice.message.tool_calls)
 
     assistantContentBlocks.push(...thinkBlocks, ...textBlocks, ...toolUseBlocks)
@@ -668,6 +696,6 @@ function getAnthropicToolUseBlocks(
     type: "tool_use",
     id: toolCall.id,
     name: toolCall.function.name,
-    input: JSON.parse(toolCall.function.arguments) as Record<string, unknown>,
+    input: parseFunctionCallArguments(toolCall.function.arguments),
   }))
 }

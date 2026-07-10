@@ -26,6 +26,7 @@ import {
   translateResponsesStreamEvent,
 } from "~/routes/messages/responses-stream-translation"
 import {
+  hasTrailingAssistantPrefill,
   translateAnthropicMessagesToResponsesPayload,
   translateResponsesResultToAnthropic,
 } from "~/routes/messages/responses-translation"
@@ -72,6 +73,17 @@ const COPILOT_CONTEXT_CACHE_NON_SYSTEM_MARKER_LIMIT = 1
 const COPILOT_CONTEXT_CACHE_CONTROL = {
   type: "ephemeral",
 } as const
+
+const createAnthropicErrorBody = (
+  message: string,
+  type: "api_error" | "invalid_request_error" = "api_error",
+) => ({
+  type: "error" as const,
+  error: {
+    type,
+    message,
+  },
+})
 
 export const messagesApiFlowDependencies = {
   createChatCompletions: createCopilotChatCompletions,
@@ -145,7 +157,18 @@ export const handleWithChatCompletions = async (
         response.copilot_usage?.total_nano_aiu,
       ),
     })
-    const anthropicResponse = translateToAnthropic(response)
+    if (response.choices.some((choice) => choice.finish_reason === "error")) {
+      return c.json(
+        createAnthropicErrorBody(
+          "Chat Completions upstream ended with finish_reason=error",
+        ),
+        502,
+      )
+    }
+
+    const anthropicResponse = translateToAnthropic(response, {
+      includeThinking: anthropicPayload.thinking?.type !== "disabled",
+    })
     debugJson(logger, "Translated Anthropic response:", anthropicResponse)
     return c.json(anthropicResponse)
   }
@@ -153,12 +176,15 @@ export const handleWithChatCompletions = async (
   logger.debug("Streaming response from Copilot")
   return streamSSE(c, async (stream) => {
     let usage: UsageTokens = {}
+    let terminalSeen = false
+    let streamFailed = false
     const streamState: AnthropicStreamState = {
       messageStartSent: false,
       contentBlockIndex: 0,
       contentBlockOpen: false,
       toolCalls: {},
       thinkingBlockOpen: false,
+      emitThinking: anthropicPayload.thinking?.type !== "disabled",
     }
 
     try {
@@ -173,6 +199,20 @@ export const handleWithChatCompletions = async (
         }
 
         const chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
+        if (chunk.choices.some((choice) => choice.finish_reason === "error")) {
+          terminalSeen = true
+          streamFailed = true
+          await emitAnthropicStreamError(stream, logger, {
+            error: new Error(
+              "Chat Completions upstream ended with finish_reason=error",
+            ),
+            flow: "chat_completions",
+          })
+          break
+        }
+        terminalSeen ||= chunk.choices.some((choice) =>
+          Boolean(choice.finish_reason),
+        )
         if (chunk.usage || chunk.copilot_usage) {
           usage = {
             ...normalizeOpenAIUsage(chunk.usage),
@@ -193,13 +233,22 @@ export const handleWithChatCompletions = async (
         }
       }
 
-      for (const event of flushPendingAnthropicStreamEvents(streamState)) {
-        const eventData = JSON.stringify(event)
-        debugLazy(logger, () => ["Translated Anthropic event:", eventData])
-        await stream.writeSSE({
-          event: event.type,
-          data: eventData,
+      if (!terminalSeen) {
+        await emitAnthropicStreamError(stream, logger, {
+          error: new Error(
+            "Chat Completions stream ended without a terminal event",
+          ),
+          flow: "chat_completions",
         })
+      } else if (!streamFailed) {
+        for (const event of flushPendingAnthropicStreamEvents(streamState)) {
+          const eventData = JSON.stringify(event)
+          debugLazy(logger, () => ["Translated Anthropic event:", eventData])
+          await stream.writeSSE({
+            event: event.type,
+            data: eventData,
+          })
+        }
       }
     } catch (error) {
       await emitAnthropicStreamError(stream, logger, {
@@ -218,6 +267,16 @@ export const handleWithResponsesApi = async (
   options: ResponsesFlowOptions,
 ) => {
   const { logger, selectedModel, ...requestOptions } = options
+
+  if (hasTrailingAssistantPrefill(anthropicPayload)) {
+    return c.json(
+      createAnthropicErrorBody(
+        "Assistant prefill is not supported by the Responses API bridge.",
+        "invalid_request_error",
+      ),
+      400,
+    )
+  }
 
   const responsesPayload = translateAnthropicMessagesToResponsesPayload(
     anthropicPayload,
@@ -267,6 +326,7 @@ export const handleWithResponsesApi = async (
     logger.debug("Streaming response from Copilot (Responses API)")
     return streamSSE(c, async (stream) => {
       const streamState = createResponsesStreamState({
+        emitThinking: anthropicPayload.thinking?.type !== "disabled",
         toolSearchName: resolveBridgeToolSearchName(anthropicPayload.tools),
       })
       let usage: UsageTokens = {}
@@ -280,7 +340,7 @@ export const handleWithResponsesApi = async (
           }
 
           const data = chunk.data
-          if (!data) {
+          if (!data || data === "[DONE]") {
             continue
           }
 
@@ -344,20 +404,34 @@ export const handleWithResponsesApi = async (
     })
   }
 
-  debugJson(logger, "Non-streaming Responses result:", response)
-  const anthropicResponse = translateResponsesResultToAnthropic(
-    response as ResponsesResult,
-    {
-      toolSearchName: resolveBridgeToolSearchName(anthropicPayload.tools),
-    },
-  )
   const responsesResult = response as ResponsesResult
+  debugJson(logger, "Non-streaming Responses result:", responsesResult)
   recordUsage({
     ...normalizeResponsesUsage(responsesResult.usage),
     total_nano_aiu: normalizeOptionalToken(
       responsesResult.copilot_usage?.total_nano_aiu,
     ),
   })
+  if (
+    responsesResult.status === "failed"
+    || responsesResult.status === "cancelled"
+  ) {
+    return c.json(
+      createAnthropicErrorBody(
+        responsesResult.error?.message
+          ?? `Responses upstream ended with status=${responsesResult.status}`,
+      ),
+      502,
+    )
+  }
+
+  const anthropicResponse = translateResponsesResultToAnthropic(
+    responsesResult,
+    {
+      includeThinking: anthropicPayload.thinking?.type !== "disabled",
+      toolSearchName: resolveBridgeToolSearchName(anthropicPayload.tools),
+    },
+  )
   debugJson(logger, "Translated Anthropic response:", anthropicResponse)
   return c.json(anthropicResponse)
 }
@@ -402,6 +476,7 @@ export const handleWithMessagesApi = async (
     logger.debug("Streaming response from Copilot (Messages API)")
     return streamSSE(c, async (stream) => {
       let usage: UsageTokens = {}
+      let terminalSeen = false
 
       try {
         for await (const event of response) {
@@ -425,10 +500,19 @@ export const handleWithMessagesApi = async (
               ...normalizeAnthropicUsage(parsedEvent.usage),
               ...normalizeCopilotUsage(parsedEvent.copilot_usage),
             })
+          } else if (parsedEvent?.type === "message_stop") {
+            terminalSeen = true
           }
           await stream.writeSSE({
             event: eventName,
             data,
+          })
+        }
+
+        if (!terminalSeen) {
+          await emitAnthropicStreamError(stream, logger, {
+            error: new Error("Messages stream ended without a terminal event"),
+            flow: "messages",
           })
         }
       } catch (error) {

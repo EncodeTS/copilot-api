@@ -65,6 +65,7 @@ import {
 } from "~/routes/messages/responses-stream-translation"
 import { collectResponsesStreamResult } from "~/routes/messages/responses-stream-collection"
 import {
+  hasTrailingAssistantPrefill,
   translateAnthropicMessagesToResponsesPayload,
   translateResponsesResultToAnthropic,
 } from "~/routes/messages/responses-translation"
@@ -133,6 +134,20 @@ export async function handleProviderMessagesForProvider(
     applyModelDefaults(payload, modelConfig)
 
     if (effectiveType === "openai-responses") {
+      if (hasTrailingAssistantPrefill(payload)) {
+        return c.json(
+          {
+            type: "error",
+            error: {
+              type: "invalid_request_error",
+              message:
+                "Assistant prefill is not supported by the Responses API bridge.",
+            },
+          },
+          400,
+        )
+      }
+
       if (hasWebSearchServerTool(payload)) {
         if (isWebSearchOnlyRequest(payload)) {
           return await handleOpenAIResponsesProviderWebSearchMessages(c, {
@@ -745,6 +760,7 @@ const streamOpenAICompatibleProviderMessages = ({
       contentBlockOpen: false,
       toolCalls: {},
       thinkingBlockOpen: false,
+      emitThinking: payload.thinking?.type !== "disabled",
     }
     let terminatedWithError = false
 
@@ -863,6 +879,7 @@ const streamResponsesProviderMessages = ({
   return streamSSE(c, async (stream) => {
     let usage: UsageTokens = {}
     const streamState = createResponsesStreamState({
+      emitThinking: payload.thinking?.type !== "disabled",
       toolSearchName: resolveBridgeToolSearchName(payload.tools),
     })
 
@@ -1176,7 +1193,22 @@ const respondOpenAICompatibleProviderMessagesJson = (
   )
   recordUsage(normalizeOpenAIUsage(body.usage))
 
-  const anthropicResponse = translateToAnthropic(body)
+  if (body.choices.some((choice) => choice.finish_reason === "error")) {
+    return c.json(
+      {
+        type: "error",
+        error: {
+          type: "api_error",
+          message: "Provider upstream ended with finish_reason=error",
+        },
+      },
+      502,
+    )
+  }
+
+  const anthropicResponse = translateToAnthropic(body, {
+    includeThinking: payload.thinking?.type !== "disabled",
+  })
   debugJson(
     logger,
     "provider.messages.openai_compatible.no_stream result:",
@@ -1212,7 +1244,23 @@ const respondResponsesProviderMessagesJson = (
   )
   recordUsage(normalizeResponsesUsage(body.usage))
 
+  if (body.status === "failed" || body.status === "cancelled") {
+    return c.json(
+      {
+        type: "error",
+        error: {
+          type: "api_error",
+          message:
+            body.error?.message
+            ?? `Responses provider ended with status=${body.status}`,
+        },
+      },
+      502,
+    )
+  }
+
   const anthropicResponse = translateResponsesResultToAnthropic(body, {
+    includeThinking: payload.thinking?.type !== "disabled",
     toolSearchName: resolveBridgeToolSearchName(payload.tools),
   })
   debugJson(
