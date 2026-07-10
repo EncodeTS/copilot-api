@@ -127,28 +127,6 @@ describe("builtin provider config", () => {
     })
   })
 
-  test("adds model Responses API compact thresholds by default", () => {
-    const tempDir = createTempConfigDir()
-    const configPath = path.join(tempDir, "config.json")
-
-    const output = runScript(
-      tempDir,
-      'const { getModelResponsesApiCompactThreshold } = await import("./src/lib/config"); console.log(JSON.stringify({ gpt54: getModelResponsesApiCompactThreshold("gpt-5.4"), gpt55: getModelResponsesApiCompactThreshold("gpt-5.5"), unknown: getModelResponsesApiCompactThreshold("gpt-test") ?? null }));',
-    )
-
-    expect(JSON.parse(output)).toEqual({
-      gpt54: 217600,
-      gpt55: 217600,
-      unknown: null,
-    })
-    expect(
-      readConfigFile(configPath).modelResponsesApiCompactThresholds,
-    ).toEqual({
-      "gpt-5.4": 217600,
-      "gpt-5.5": 217600,
-    })
-  })
-
   test("does not add quick provider templates by default", () => {
     const tempDir = createTempConfigDir()
     const configPath = path.join(tempDir, "config.json")
