@@ -106,6 +106,7 @@ export interface Reasoning {
     | "max"
     | null
   summary?: "auto" | "concise" | "detailed" | null
+  context?: "auto" | "current_turn" | "all_turns" | null
 }
 
 export interface ResponseContextManagementCompactionItem {

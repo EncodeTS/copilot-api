@@ -151,6 +151,7 @@ export const translateAnthropicMessagesToResponsesPayload = (
     reasoning: {
       effort: getReasoningEffortForModel(payload.model),
       summary: "detailed",
+      context: "all_turns",
     },
     include: ["reasoning.encrypted_content"],
   }
