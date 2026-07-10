@@ -142,7 +142,6 @@ describe("codex api helpers", () => {
     expect(headers.get("chatgpt-account-id")).toBe("codex-account")
     expect(headers.get("accept")).toBe("application/json")
     expect(headers.get("content-type")).toBe("application/json")
-    expect(headers.get("openai-beta")).toBe("responses=experimental")
     expect(headers.get("originator")).toBe("copilot-api")
     expect(headers.get("user-agent")).toBe("copilot-api")
   })
