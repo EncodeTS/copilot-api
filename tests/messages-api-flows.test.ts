@@ -901,7 +901,7 @@ test("messages Responses flow adds context management by default", async () => {
   expect(capturedResponsesPayload?.context_management).toEqual([
     {
       type: "compaction",
-      compact_threshold: 108800,
+      compact_threshold: 96000,
     },
   ])
 })

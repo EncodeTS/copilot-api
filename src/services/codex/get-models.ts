@@ -8,6 +8,7 @@ interface CodexModelDefinition {
   contextWindow: number
   id: string
   input: Array<"text" | "image">
+  maxContextWindow?: number
   maxTokens: number
   name: string
 }
@@ -21,14 +22,15 @@ const CODEX_MODELS: Array<CodexModelDefinition> = [
     name: "GPT-5.3 Codex Spark",
   },
   {
-    contextWindow: 400_000,
+    contextWindow: 272_000,
     id: "gpt-5.4",
     input: ["text", "image"],
+    maxContextWindow: 1_000_000,
     maxTokens: 128_000,
     name: "GPT-5.4",
   },
   {
-    contextWindow: 400_000,
+    contextWindow: 272_000,
     id: "gpt-5.4-mini",
     input: ["text", "image"],
     maxTokens: 128_000,
@@ -99,7 +101,8 @@ function normalizeCodexModel(model: CodexModelDefinition): Model {
     capabilities: {
       family: "gpt",
       limits: {
-        max_context_window_tokens: model.contextWindow,
+        max_context_window_tokens:
+          model.maxContextWindow ?? model.contextWindow,
         max_output_tokens: model.maxTokens,
         max_prompt_tokens: model.contextWindow,
       },

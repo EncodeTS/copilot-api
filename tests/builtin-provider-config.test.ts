@@ -211,26 +211,23 @@ describe("builtin provider config", () => {
     })
   })
 
-  test("adds model Responses API compact thresholds by default", () => {
+  test("does not persist static model Responses API compact thresholds", () => {
     const tempDir = createTempConfigDir()
     const configPath = path.join(tempDir, "config.json")
 
     const output = runScript(
       tempDir,
-      'const { getModelResponsesApiCompactThreshold } = await import("./src/lib/config"); console.log(JSON.stringify({ gpt54: getModelResponsesApiCompactThreshold("gpt-5.4"), gpt55: getModelResponsesApiCompactThreshold("gpt-5.5"), unknown: getModelResponsesApiCompactThreshold("gpt-test") ?? null }));',
+      'const { getModelResponsesApiCompactThreshold } = await import("./src/lib/config"); console.log(JSON.stringify({ gpt54: getModelResponsesApiCompactThreshold("gpt-5.4") ?? null, gpt55: getModelResponsesApiCompactThreshold("gpt-5.5") ?? null, unknown: getModelResponsesApiCompactThreshold("gpt-test") ?? null }));',
     )
 
     expect(JSON.parse(output)).toEqual({
-      gpt54: 217600,
-      gpt55: 217600,
+      gpt54: null,
+      gpt55: null,
       unknown: null,
     })
     expect(
       readConfigFile(configPath).modelResponsesApiCompactThresholds,
-    ).toEqual({
-      "gpt-5.4": 217600,
-      "gpt-5.5": 217600,
-    })
+    ).toBeUndefined()
   })
 
   test("does not add quick provider templates by default", () => {
@@ -283,12 +280,56 @@ describe("builtin provider config", () => {
 
     const output = runScript(
       tempDir,
-      'const { getModelResponsesApiCompactThreshold } = await import("./src/lib/config"); console.log(JSON.stringify({ gpt54: getModelResponsesApiCompactThreshold("gpt-5.4"), gpt55: getModelResponsesApiCompactThreshold("gpt-5.5") }));',
+      'const { getModelResponsesApiCompactThreshold } = await import("./src/lib/config"); console.log(JSON.stringify({ gpt54: getModelResponsesApiCompactThreshold("gpt-5.4"), gpt55: getModelResponsesApiCompactThreshold("gpt-5.5") ?? null }));',
     )
 
     expect(JSON.parse(output)).toEqual({
       gpt54: 123456,
-      gpt55: 217600,
+      gpt55: null,
+    })
+  })
+
+  test("removes legacy compact thresholds while preserving other overrides", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {
+      modelResponsesApiCompactThresholds: {
+        "gpt-5.4": 217600,
+        "gpt-5.5": 217600,
+        "gpt-6": 100000,
+      },
+    })
+
+    runScript(
+      tempDir,
+      'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults(); mergeConfigWithDefaults();',
+    )
+
+    expect(
+      readConfigFile(configPath).modelResponsesApiCompactThresholds,
+    ).toEqual({
+      "gpt-6": 100000,
+    })
+  })
+
+  test("preserves non-legacy compact threshold values", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {
+      modelResponsesApiCompactThresholds: {
+        "gpt-5.4": 217601,
+        "gpt-5.5": 200000,
+      },
+    })
+
+    runScript(
+      tempDir,
+      'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
+    )
+
+    expect(
+      readConfigFile(configPath).modelResponsesApiCompactThresholds,
+    ).toEqual({
+      "gpt-5.4": 217601,
+      "gpt-5.5": 200000,
     })
   })
 

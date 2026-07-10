@@ -542,10 +542,6 @@ Copilot API 现在使用子命令结构，主要命令包括：
       "messages": true,
       "responses": false
     },
-    "modelResponsesApiCompactThresholds": {
-      "gpt-5.4": 217600,
-      "gpt-5.5": 217600
-    },
     "modelReasoningEfforts": {
       "gpt-5-mini": "low"
     },
@@ -633,7 +629,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
 - **smallModel：** 仅在 `parityFirst` 为 `false` 时用于无工具预热消息（例如 Claude Code 的探测请求）的回退模型；默认是 `gpt-5-mini`。
 - **parityFirst：** 当为 `true`（默认）时，代理会避免省请求改写：无工具预热请求继续使用客户端请求的模型，不回退到 `smallModel`，并保留 `tool_result` 边界。显式 `modelMappings`、provider alias、endpoint 模型规范化以及 schema 兼容性修正仍会生效。设为 `false` 可恢复旧的预热请求改用 `smallModel`、合并 `tool_result` 内容等行为。
 - **contextManagement：** 控制代理是否为 Responses API 附加 `context_management` 压缩指令。`messages` 作用于被翻译成 Responses API 的 Anthropic 风格 `/v1/messages` 请求，包括 `openai-responses` provider 的 Messages 路由，默认值为 `true`。`responses` 作用于 native `/v1/responses` 流量，包括 `provider/model` 别名和内置 `codex` provider，默认值为 `false`。只有在确认客户端支持 context management compaction 后，才建议在 Responses API 下启用 `responses`。启用后，请求体会带上 `context_management`，并在后续轮次中仅保留最新的压缩承载内容。
-- **modelResponsesApiCompactThresholds：** 按模型覆盖 Responses API 的 `compact_threshold`，仅在代理自动附加 `context_management` 时使用。它的优先级高于 `resolveResponsesCompactThreshold` 基于 `max_prompt_tokens * ratio` 的兜底阈值。默认将 `gpt-5.4` 和 `gpt-5.5` 设为 `217600`（`272000 * 0.8`）。未列出的模型继续使用原有兜底逻辑。
+- **modelResponsesApiCompactThresholds：** 可选的按模型 Responses API `compact_threshold` 覆盖，仅在代理自动附加 `context_management` 时使用。显式值优先于动态计算。未配置时使用实时模型 limits：Messages bridge 按 `max_prompt_tokens` 的 90% 触发，并至少保留 32,000 个输入增长 token；缺少 `max_prompt_tokens` 时使用 `max_context_window_tokens - max_output_tokens`。原生 Responses 默认仍关闭中转压缩，显式启用时保留 80% 策略。历史版本自动写入的 `gpt-5.4` / `gpt-5.5 = 217600` 会在配置迁移时删除。
 - **modelReasoningEfforts：** 按模型配置的推理强度，仅作用于 `/v1/messages` 请求。当请求走 Copilot 原生 Messages API 时设置 `output_config.effort`；当请求被翻译为 Responses API 时设置 `reasoning.effort`。可选值包括 `none`、`minimal`、`low`、`medium`、`high`、`xhigh` 和 `max`。若某模型未配置，则默认使用 `high`；GPT-5.3+ 模型未显式配置时回退为 `xhigh`。
 - **useMessagesApi：** 当为 `true` 时，支持 Copilot 原生 `/v1/messages` 的 Claude 系模型会走 Messages API；否则回退到 `/chat/completions`。设为 `false` 可禁用 Messages API 路由，始终使用 `/chat/completions`。默认值为 `true`。
 - **useResponsesApiWebSocket：** 当为 `true` 时，Responses API 请求会优先对声明了 `ws:/responses` 的模型使用 Copilot websocket transport；仅声明 `/responses` 的模型仍走 HTTP。设为 `false` 可禁用 websocket 路由，并在模型支持 `/responses` 时使用 HTTP `/responses`。默认值为 `true`。
