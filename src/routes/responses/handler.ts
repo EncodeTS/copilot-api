@@ -113,10 +113,9 @@ export const handleResponses = async (c: Context) => {
   }
 
   // Smaller than the client compaction threshold, use server-side compaction to maintain cache hit rate
-  const maxPromptTokens = selectedModel?.capabilities.limits.max_prompt_tokens
   const shouldCompactInput = applyResponsesApiContextManagement(
     payload,
-    maxPromptTokens,
+    selectedModel?.capabilities.limits,
     {
       compactThresholdRatio: 0.8,
       source: "responses",

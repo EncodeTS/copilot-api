@@ -456,7 +456,7 @@ describe("responses handler token usage", () => {
     expect(createResponses.mock.calls[0][0].tools?.[0]).toEqual(applyPatchTool)
   })
 
-  test("disables context management for gpt-5.6 models even when responses context management is enabled", async () => {
+  test("applies configured context management to gpt-5.6 models", async () => {
     state.models = {
       object: "list",
       data: [
@@ -474,7 +474,7 @@ describe("responses handler token usage", () => {
     responsesUtilsDependencies.isContextManagementEnabledForResponses = () =>
       true
     responsesUtilsDependencies.getModelResponsesApiCompactThreshold = () =>
-      231200
+      undefined
     createResponses.mockImplementation((payload) =>
       Promise.resolve(createResponsesResult(payload.model)),
     )
@@ -493,10 +493,12 @@ describe("responses handler token usage", () => {
 
     expect(response.status).toBe(200)
     expect(createResponses).toHaveBeenCalledTimes(1)
-    expect(createResponses.mock.calls[0][0].context_management).toBeUndefined()
+    expect(createResponses.mock.calls[0][0].context_management).toEqual([
+      { type: "compaction", compact_threshold: 217600 },
+    ])
   })
 
-  test("disables context management for gpt-6 models even when responses context management is enabled", async () => {
+  test("does not disable configured context management for future GPT models", async () => {
     state.models = {
       object: "list",
       data: [
@@ -531,7 +533,9 @@ describe("responses handler token usage", () => {
 
     expect(response.status).toBe(200)
     expect(createResponses).toHaveBeenCalledTimes(1)
-    expect(createResponses.mock.calls[0][0].context_management).toBeUndefined()
+    expect(createResponses.mock.calls[0][0].context_management).toEqual([
+      { type: "compaction", compact_threshold: 217600 },
+    ])
   })
 
   test("uses Codex subagent headers for Responses request attribution", async () => {

@@ -901,12 +901,12 @@ test("messages Responses flow adds context management by default", async () => {
   expect(capturedResponsesPayload?.context_management).toEqual([
     {
       type: "compaction",
-      compact_threshold: 108800,
+      compact_threshold: 96000,
     },
   ])
 })
 
-test("messages Responses flow disables context management for gpt-5.6 models", async () => {
+test("messages Responses flow applies configured context management to gpt-5.6 models", async () => {
   const payload: AnthropicMessagesPayload = {
     max_tokens: 128,
     messages: [{ role: "user", content: "hello" }],
@@ -921,7 +921,12 @@ test("messages Responses flow disables context management for gpt-5.6 models", a
 
   expect(response.status).toBe(200)
   expect(createResponses).toHaveBeenCalledTimes(1)
-  expect(capturedResponsesPayload?.context_management).toBeUndefined()
+  expect(capturedResponsesPayload?.context_management).toEqual([
+    {
+      type: "compaction",
+      compact_threshold: 96000,
+    },
+  ])
 })
 
 test("messages Responses flow keeps HTTP transport for dual-endpoint models when websocket is disabled", async () => {

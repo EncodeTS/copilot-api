@@ -359,7 +359,7 @@ const handleOpenAIResponsesProviderMessages = async (
 
   const shouldCompactInput = applyResponsesApiContextManagement(
     responsesPayload,
-    selectedModel?.capabilities.limits.max_prompt_tokens,
+    selectedModel?.capabilities.limits,
     {
       source: "messages",
     },
