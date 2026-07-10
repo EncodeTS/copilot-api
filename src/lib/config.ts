@@ -175,12 +175,12 @@ You interact with the user through a terminal. You have 2 ways of communicating 
 - As you are thinking, you very frequently provide updates even if not taking any actions, informing the user of your progress. You interrupt your thinking and send multiple updates in a row if thinking for more than 100 words.
 - Tone of your updates MUST match your personality.`
 
-const modelResponsesApiCompactThresholds = {
-  "gpt-5.4": 272_000 * 0.8,
-  "gpt-5.5": 272_000 * 0.8,
-  "gpt-5.6-sol": 272_000 * 0.85,
-  "gpt-5.6-terra": 272_000 * 0.85,
-  "gpt-5.6-luna": 272_000 * 0.85,
+const legacyResponsesApiCompactThresholds: Record<string, number> = {
+  "gpt-5.4": 217_600,
+  "gpt-5.5": 217_600,
+  "gpt-5.6-sol": 231_200,
+  "gpt-5.6-terra": 231_200,
+  "gpt-5.6-luna": 231_200,
 }
 
 const defaultContextManagement = {
@@ -223,7 +223,6 @@ const defaultConfig: AppConfig = {
   },
   smallModel: "gpt-5-mini",
   contextManagement: defaultContextManagement,
-  modelResponsesApiCompactThresholds,
   modelReasoningEfforts: {
     "gpt-5-mini": "low",
   },
@@ -339,8 +338,15 @@ function mergeDefaultConfig(config: AppConfig): {
   const defaultExtraPrompts = defaultConfig.extraPrompts ?? {}
   const responsesApiCompactThresholds =
     config.modelResponsesApiCompactThresholds ?? {}
-  const defaultResponsesApiCompactThresholds =
-    defaultConfig.modelResponsesApiCompactThresholds ?? {}
+  const migratedResponsesApiCompactThresholds = Object.fromEntries(
+    Object.entries(responsesApiCompactThresholds).filter(
+      ([model, threshold]) =>
+        legacyResponsesApiCompactThresholds[model] !== threshold,
+    ),
+  )
+  const hasLegacyResponsesApiCompactThresholds =
+    Object.keys(migratedResponsesApiCompactThresholds).length
+    !== Object.keys(responsesApiCompactThresholds).length
   const modelReasoningEfforts = config.modelReasoningEfforts ?? {}
   const defaultModelReasoningEfforts = defaultConfig.modelReasoningEfforts ?? {}
   const contextManagement = normalizeContextManagementConfig(
@@ -355,17 +361,12 @@ function mergeDefaultConfig(config: AppConfig): {
   const missingReasoningEffortModels = Object.keys(
     defaultModelReasoningEfforts,
   ).filter((model) => !Object.hasOwn(modelReasoningEfforts, model))
-  const missingResponsesApiCompactThresholdModels = Object.keys(
-    defaultResponsesApiCompactThresholds,
-  ).filter((model) => !Object.hasOwn(responsesApiCompactThresholds, model))
   const missingContextManagementKeys = Object.keys(
     defaultContextManagementConfig,
   ).filter((key) => !Object.hasOwn(contextManagement, key))
 
   const hasExtraPromptChanges = missingExtraPromptModels.length > 0
   const hasReasoningEffortChanges = missingReasoningEffortModels.length > 0
-  const hasResponsesApiCompactThresholdChanges =
-    missingResponsesApiCompactThresholdModels.length > 0
   const hasContextManagementChanges = missingContextManagementKeys.length > 0
   const hasParityFirstChange = config.parityFirst === undefined
   const missingResponsesImageConfigKeys = Object.keys(
@@ -377,7 +378,7 @@ function mergeDefaultConfig(config: AppConfig): {
   if (
     !hasExtraPromptChanges
     && !hasReasoningEffortChanges
-    && !hasResponsesApiCompactThresholdChanges
+    && !hasLegacyResponsesApiCompactThresholds
     && !hasContextManagementChanges
     && !hasParityFirstChange
     && !hasResponsesImageConfigChanges
@@ -396,10 +397,10 @@ function mergeDefaultConfig(config: AppConfig): {
         ...defaultExtraPrompts,
         ...extraPrompts,
       },
-      modelResponsesApiCompactThresholds: {
-        ...defaultResponsesApiCompactThresholds,
-        ...responsesApiCompactThresholds,
-      },
+      ...(config.modelResponsesApiCompactThresholds !== undefined && {
+        modelResponsesApiCompactThresholds:
+          migratedResponsesApiCompactThresholds,
+      }),
       modelReasoningEfforts: {
         ...defaultModelReasoningEfforts,
         ...modelReasoningEfforts,

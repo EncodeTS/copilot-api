@@ -14,14 +14,21 @@ import {
   getModelResponsesApiCompactThreshold as getConfiguredModelResponsesApiCompactThreshold,
   isContextManagementEnabledForMessages as isConfiguredContextManagementEnabledForMessages,
   isContextManagementEnabledForResponses as isConfiguredContextManagementEnabledForResponses,
-  isGpt56OrAbove,
   isResponsesApiWebSocketEnabled as isConfiguredResponsesApiWebSocketEnabled,
 } from "~/lib/config"
 
 export const RESPONSES_ENDPOINT = "/responses"
 export const RESPONSES_WS_ENDPOINT = "ws:/responses"
-export const DEFAULT_RESPONSES_COMPACT_THRESHOLD_RATIO = 0.85
+export const DEFAULT_RESPONSES_COMPACT_THRESHOLD_RATIO = 0.9
+export const MIN_RESPONSES_COMPACT_HEADROOM_TOKENS = 32_000
+const DEFAULT_RESPONSES_PROMPT_LIMIT_TOKENS = 200_000
 export type ResponsesApiContextManagementSource = "messages" | "responses"
+
+export interface ResponsesModelLimits {
+  max_context_window_tokens?: number
+  max_output_tokens?: number
+  max_prompt_tokens?: number
+}
 
 export const responsesUtilsDependencies = {
   getModelResponsesApiCompactThreshold:
@@ -30,7 +37,6 @@ export const responsesUtilsDependencies = {
     isConfiguredContextManagementEnabledForMessages,
   isContextManagementEnabledForResponses:
     isConfiguredContextManagementEnabledForResponses,
-  isGpt56OrAbove,
   isResponsesApiWebSocketEnabled: isConfiguredResponsesApiWebSocketEnabled,
 }
 
@@ -1737,14 +1743,47 @@ const isResponseInputImage = (
 }
 
 export const resolveResponsesCompactThreshold = (
-  maxPromptTokens?: number,
+  modelLimits?: ResponsesModelLimits,
   compactThresholdRatio = DEFAULT_RESPONSES_COMPACT_THRESHOLD_RATIO,
 ): number => {
-  if (typeof maxPromptTokens === "number" && maxPromptTokens > 0) {
-    return Math.floor(maxPromptTokens * compactThresholdRatio)
+  const promptLimit = resolveResponsesPromptLimit(modelLimits)
+  const ratio =
+    (
+      Number.isFinite(compactThresholdRatio)
+      && compactThresholdRatio > 0
+      && compactThresholdRatio <= 1
+    ) ?
+      compactThresholdRatio
+    : DEFAULT_RESPONSES_COMPACT_THRESHOLD_RATIO
+  const ratioThreshold = Math.floor(promptLimit * ratio)
+  const headroomThreshold = Math.max(
+    1,
+    promptLimit - MIN_RESPONSES_COMPACT_HEADROOM_TOKENS,
+  )
+  return Math.max(1, Math.min(ratioThreshold, headroomThreshold))
+}
+
+export const resolveResponsesPromptLimit = (
+  modelLimits?: ResponsesModelLimits,
+): number => {
+  const promptLimit = modelLimits?.max_prompt_tokens
+  if (typeof promptLimit === "number" && promptLimit > 0) {
+    return promptLimit
   }
 
-  return 200_000 * compactThresholdRatio
+  const contextLimit = modelLimits?.max_context_window_tokens
+  if (typeof contextLimit === "number" && contextLimit > 0) {
+    const outputLimit = modelLimits?.max_output_tokens
+    return Math.max(
+      1,
+      contextLimit
+        - (typeof outputLimit === "number" && outputLimit > 0 ?
+          outputLimit
+        : 0),
+    )
+  }
+
+  return DEFAULT_RESPONSES_PROMPT_LIMIT_TOKENS
 }
 
 const getModelResponsesApiCompactThreshold = (
@@ -1775,16 +1814,12 @@ const createCompactionContextManagement = (
 
 export const applyResponsesApiContextManagement = (
   payload: ResponsesPayload,
-  maxPromptTokens: number | undefined,
+  modelLimits: ResponsesModelLimits | undefined,
   options: {
     compactThresholdRatio?: number
     source: ResponsesApiContextManagementSource
   },
 ): boolean => {
-  if (responsesUtilsDependencies.isGpt56OrAbove(payload.model)) {
-    return false
-  }
-
   if (hasTerminalCompactionTrigger(payload)) {
     return isContextManagementEnabledForSource(options.source)
   }
@@ -1803,7 +1838,7 @@ export const applyResponsesApiContextManagement = (
   payload.context_management = createCompactionContextManagement(
     modelCompactThreshold
       ?? resolveResponsesCompactThreshold(
-        maxPromptTokens,
+        modelLimits,
         options.compactThresholdRatio
           ?? DEFAULT_RESPONSES_COMPACT_THRESHOLD_RATIO,
       ),

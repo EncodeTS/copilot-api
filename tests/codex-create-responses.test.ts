@@ -224,5 +224,18 @@ describe("codex api helpers", () => {
         (model) => !model.supported_endpoints?.includes("/v1/embeddings"),
       ),
     ).toBe(true)
+    expect(
+      models.data.find((model) => model.id === "gpt-5.4")?.capabilities.limits,
+    ).toMatchObject({
+      max_context_window_tokens: 1_000_000,
+      max_prompt_tokens: 272_000,
+    })
+    expect(
+      models.data.find((model) => model.id === "gpt-5.4-mini")?.capabilities
+        .limits,
+    ).toMatchObject({
+      max_context_window_tokens: 272_000,
+      max_prompt_tokens: 272_000,
+    })
   })
 })

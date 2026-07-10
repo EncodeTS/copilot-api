@@ -202,7 +202,7 @@ describe("provider Responses context management", () => {
     ])
   })
 
-  test("disables context management for gpt-5.6 models even when responses is enabled", async () => {
+  test("applies enabled context management to gpt-5.6 provider models", async () => {
     responsesUtilsDependencies.isContextManagementEnabledForResponses = () =>
       true
 
@@ -241,11 +241,13 @@ describe("provider Responses context management", () => {
       input: Array<unknown>
     }
 
-    expect(body.context_management).toBeUndefined()
-    expect(body.input).toHaveLength(3)
+    expect(body.context_management).toEqual([
+      { compact_threshold: 160000, type: "compaction" },
+    ])
+    expect(body.input).toHaveLength(2)
   })
 
-  test("disables context management for gpt-6 models even when responses is enabled", async () => {
+  test("does not disable enabled context management for future GPT provider models", async () => {
     responsesUtilsDependencies.isContextManagementEnabledForResponses = () =>
       true
 
@@ -284,7 +286,9 @@ describe("provider Responses context management", () => {
       input: Array<unknown>
     }
 
-    expect(body.context_management).toBeUndefined()
-    expect(body.input).toHaveLength(3)
+    expect(body.context_management).toEqual([
+      { compact_threshold: 160000, type: "compaction" },
+    ])
+    expect(body.input).toHaveLength(2)
   })
 })

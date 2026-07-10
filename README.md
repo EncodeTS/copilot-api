@@ -535,10 +535,6 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
       "messages": true,
       "responses": false
     },
-    "modelResponsesApiCompactThresholds": {
-      "gpt-5.4": 217600,
-      "gpt-5.5": 217600
-    },
     "modelReasoningEfforts": {
       "gpt-5-mini": "low"
     },
@@ -626,7 +622,7 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
 - **smallModel:** Fallback model used for tool-less warmup messages (e.g., Claude Code probe requests) only when `parityFirst` is `false`; defaults to `gpt-5-mini`.
 - **parityFirst:** When `true` (default), the proxy avoids request-saving rewrites: warmup/no-tools requests keep their requested model instead of falling back to `smallModel`, and `tool_result` boundaries are preserved. Explicit `modelMappings`, provider aliases, endpoint model normalization, and schema-compatibility fixes still apply. Set to `false` to restore the legacy warmup-to-`smallModel` override and `tool_result` content merging behavior.
 - **contextManagement:** Controls whether the proxy adds Responses API `context_management` compaction instructions. `messages` applies when Anthropic-style `/v1/messages` requests are translated to Responses API, including `openai-responses` provider message routes, and defaults to `true`. `responses` applies to native `/v1/responses` traffic, including `provider/model` aliases and the built-in `codex` provider, and defaults to `false`. Enable `responses` only after checking that your client supports context management compaction. When enabled, the request includes `context_management` in the body and keeps only the latest compaction carrier on follow-up turns.
-- **modelResponsesApiCompactThresholds:** Per-model Responses API `compact_threshold` overrides used when the proxy adds `context_management`. These values take precedence over the fallback threshold from `resolveResponsesCompactThreshold` (`max_prompt_tokens * ratio`, or the default fallback). Defaults set `gpt-5.4` and `gpt-5.5` to `217600` (`272000 * 0.8`). Models not listed continue to use the normal fallback logic.
+- **modelResponsesApiCompactThresholds:** Optional per-model Responses API `compact_threshold` overrides used when the proxy adds `context_management`. Explicit values take precedence over dynamic calculation. Without an override, the proxy uses live model limits: Messages bridges compact at 90% of `max_prompt_tokens` while retaining at least 32,000 input-growth tokens; if `max_prompt_tokens` is absent it uses `max_context_window_tokens - max_output_tokens`. Native Responses compaction remains disabled by default and retains its explicit 80% policy when enabled. Legacy auto-written `gpt-5.4` / `gpt-5.5` values of `217600` and `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna` values of `231200` are removed from config during migration.
 - **modelReasoningEfforts:** Per-model fallback reasoning effort for `/v1/messages` requests. It is used only when the request does not provide `output_config.effort`.
   - **Priority:** request `output_config.effort` > `modelReasoningEfforts[model]` > built-in default (`xhigh` for GPT-5.3+ models, otherwise `high`).
   - **Forwarding:** the resolved value remains `output_config.effort` for the Copilot native Messages API and becomes `reasoning.effort` when translated to the Responses API.

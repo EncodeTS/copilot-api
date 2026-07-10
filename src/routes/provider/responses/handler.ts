@@ -72,7 +72,7 @@ export async function handleProviderResponsesForProvider(
   // Smaller than the client compaction threshold, use server-side compaction to maintain cache hit rate.
   const shouldCompactInput = applyResponsesApiContextManagement(
     payload,
-    model?.capabilities.limits.max_prompt_tokens,
+    model?.capabilities.limits,
     {
       compactThresholdRatio: 0.8,
       source: "responses",

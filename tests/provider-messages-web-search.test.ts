@@ -407,7 +407,7 @@ describe("provider messages web_search", () => {
     expect(upstreamBody.model).toBe("gpt-search")
     expect(upstreamBody.context_management).toEqual([
       {
-        compact_threshold: 170000,
+        compact_threshold: 168000,
         type: "compaction",
       },
     ])
