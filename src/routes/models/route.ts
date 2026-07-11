@@ -2,7 +2,7 @@ import { Hono } from "hono"
 
 import { listEnabledProviders } from "~/lib/config"
 import { forwardError } from "~/lib/error"
-import { createHandlerLogger } from "~/lib/logger"
+import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { toClientModelId } from "~/lib/models"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
 import { state } from "~/lib/state"
@@ -167,7 +167,7 @@ async function getAggregatedModels(
 async function logCodexModelsResponse(response: Response): Promise<void> {
   try {
     const responseText = await response.clone().text()
-    logger.debug("models.codex.response", {
+    debugJson(logger, "models.codex.response", {
       statusCode: response.status,
       models: responseText,
     })
@@ -195,7 +195,6 @@ modelRoutes.get("/", async (c) => {
       const upstreamResponse = await forwardCodexModels(
         c.req.url,
         c.req.raw.headers,
-        codexProviderConfig.baseUrl,
       )
       await logCodexModelsResponse(upstreamResponse)
       return createProviderProxyResponse(upstreamResponse)

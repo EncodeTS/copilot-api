@@ -667,8 +667,14 @@ curl http://localhost:4141/admin/config/model-mappings \
 | --- | --- | --- |
 | `POST /v1/responses` | `POST` | OpenAI 中用于生成模型响应的高级接口。支持 `openai-responses` provider 的 `provider/model` 别名。 |
 | `POST /v1/chat/completions` | `POST` | 为给定聊天对话创建模型响应。支持 `openai-compatible` provider 的 `provider/model` 别名；目标 provider 已配置时可在没有 Copilot 的情况下使用。 |
-| `GET /v1/models` | `GET` | 列出 Copilot 模型以及已启用 provider 的 `provider/model-id` 模型。 |
+| `GET /v1/models` | `GET` | 列出 Copilot 模型以及已启用 provider 的 `provider/model-id` 模型。来自 Codex 客户端（`User-Agent` 以 `codex` 开头）的请求会转发到 Codex Models 上游。 |
 | `POST /v1/embeddings` | `POST` | 创建表示输入文本的向量嵌入。 |
+
+### Codex 后端代理端点
+
+| 端点 | 方法 | 说明 |
+| --- | --- | --- |
+| `POST /alpha/search` | `POST` | 将 JSON 请求体和查询参数透明转发到 Codex Alpha Search 上游。网关会使用当前 Codex 登录态覆盖客户端的 authorization 和 account header，透传 `accept`、`content-type`、`originator`、`user-agent`、`cookie` 等兼容 header，并原样返回上游状态码、响应头和响应体。 |
 
 ### Anthropic 兼容端点
 

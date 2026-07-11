@@ -64,14 +64,10 @@ const CODEX_MODELS: Array<CodexModelDefinition> = [
   },
 ]
 
-export function resolveCodexModelsUrl(
-  requestUrl: string,
-  baseUrl: string = CODEX_API_BASE_URL,
-): string {
-  const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/u, "")
-  const codexBaseUrl = normalizedBaseUrl || CODEX_API_BASE_URL
-  const modelsUrl = `${codexBaseUrl.replace(/\/codex(?:\/models)?$/u, "")}/codex/models`
-  const upstreamUrl = new URL(modelsUrl)
+const CODEX_MODELS_URL = `${CODEX_API_BASE_URL}/codex/models`
+
+export function resolveCodexModelsUrl(requestUrl: string): string {
+  const upstreamUrl = new URL(CODEX_MODELS_URL)
   upstreamUrl.search = new URL(requestUrl, "http://localhost").search
   return upstreamUrl.toString()
 }
@@ -79,14 +75,13 @@ export function resolveCodexModelsUrl(
 export async function forwardCodexModels(
   requestUrl: string,
   requestHeaders: Headers,
-  baseUrl: string = CODEX_API_BASE_URL,
 ): Promise<Response> {
   const headers = buildCodexRequestHeaders(requestHeaders)
   if (!headers.has("accept")) {
     headers.set("accept", "application/json")
   }
 
-  return await fetch(resolveCodexModelsUrl(requestUrl, baseUrl), {
+  return await fetch(resolveCodexModelsUrl(requestUrl), {
     method: "GET",
     headers,
   })
