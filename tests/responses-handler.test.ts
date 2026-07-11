@@ -447,6 +447,84 @@ describe("responses handler token usage", () => {
     expect(createResponses.mock.calls[0][0].tools?.[0]).toEqual(applyPatchTool)
   })
 
+  test("disables context management for gpt-5.6 models even when responses context management is enabled", async () => {
+    state.models = {
+      object: "list",
+      data: [
+        {
+          capabilities: {
+            limits: {
+              max_prompt_tokens: 272000,
+            },
+          },
+          id: "gpt-5.6-sol",
+          supported_endpoints: ["/responses"],
+        },
+      ],
+    } as typeof state.models
+    responsesUtilsDependencies.isContextManagementEnabledForResponses = () =>
+      true
+    responsesUtilsDependencies.getModelResponsesApiCompactThreshold = () =>
+      231200
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        input: "hello",
+        model: "gpt-5.6-sol",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(1)
+    expect(createResponses.mock.calls[0][0].context_management).toBeUndefined()
+  })
+
+  test("disables context management for gpt-6 models even when responses context management is enabled", async () => {
+    state.models = {
+      object: "list",
+      data: [
+        {
+          capabilities: {
+            limits: {
+              max_prompt_tokens: 272000,
+            },
+          },
+          id: "gpt-6",
+          supported_endpoints: ["/responses"],
+        },
+      ],
+    } as typeof state.models
+    responsesUtilsDependencies.isContextManagementEnabledForResponses = () =>
+      true
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        input: "hello",
+        model: "gpt-6",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(1)
+    expect(createResponses.mock.calls[0][0].context_management).toBeUndefined()
+  })
+
   test("uses Codex subagent headers for Responses request attribution", async () => {
     createResponses.mockImplementation((payload) =>
       Promise.resolve(createResponsesResult(payload.model)),
