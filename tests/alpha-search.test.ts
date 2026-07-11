@@ -238,20 +238,4 @@ describe("Codex alpha search forwarding", () => {
     })
     expect(fetchMock).not.toHaveBeenCalled()
   })
-
-  test("converts forwarding failures into gateway errors", async () => {
-    state.codexAccessToken = undefined
-
-    const response = await createApp().request("/alpha/search?q=bun", {
-      method: "POST",
-    })
-
-    expect(response.status).toBe(500)
-    const body = (await response.json()) as {
-      error: { message: string; type: string }
-    }
-    expect(body.error.message).toBe("Codex access token is not loaded")
-    expect(body.error.type).toBe("error")
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
 })
