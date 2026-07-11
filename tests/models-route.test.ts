@@ -114,6 +114,8 @@ beforeEach(() => {
 afterEach(() => {
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
   state.models = undefined
+  state.codexAccessToken = undefined
+  state.codexAccountId = undefined
 })
 
 describe("model routes", () => {
@@ -191,5 +193,36 @@ describe("model routes", () => {
     expect(body.data.map((model) => model.id)).toContain("codex/gpt-5.4")
     expect(body.data.map((model) => model.id)).toContain("codex/gpt-5.6-sol")
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("forwards Codex clients to the fixed Codex models endpoint", async () => {
+    providerConfigs = {
+      codex: {
+        apiKey: "codex-token",
+        authType: "oauth2",
+        baseUrl: "https://ignored.example/backend-api",
+        name: "codex",
+        type: "openai-responses",
+      },
+    }
+    state.codexAccessToken = "codex-access-token"
+    state.codexAccountId = "account-123"
+
+    const response = await createApp().request("/v1/models?client=codex", {
+      headers: {
+        accept: "*/*",
+        "user-agent": "codex-tui/0.144.1",
+      },
+    })
+
+    expect(response.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://chatgpt.com/backend-api/codex/models?client=codex",
+    )
+    const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers)
+    expect(headers.get("authorization")).toBe("Bearer codex-access-token")
+    expect(headers.get("chatgpt-account-id")).toBe("account-123")
+    expect(headers.get("accept")).toBe("*/*")
   })
 })

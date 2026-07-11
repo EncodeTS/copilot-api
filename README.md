@@ -661,8 +661,14 @@ These endpoints mimic the OpenAI API structure.
 | --------------------------- | ------ | ---------------------------------------------------------------- |
 | `POST /v1/responses`        | `POST` | OpenAI Most advanced interface for generating model responses. Supports `provider/model` aliases for `openai-responses` providers. |
 | `POST /v1/chat/completions` | `POST` | Creates a model response for the given chat conversation. Supports `provider/model` aliases for `openai-compatible` providers and can be used without Copilot when the target provider is configured. |
-| `GET /v1/models`            | `GET`  | Lists Copilot models plus enabled provider models using `provider/model-id` IDs. |
+| `GET /v1/models`            | `GET`  | Lists Copilot models plus enabled provider models using `provider/model-id` IDs. Requests from Codex clients (`User-Agent` beginning with `codex`) are forwarded to the Codex Models upstream. |
 | `POST /v1/embeddings`       | `POST` | Creates an embedding vector representing the input text.         |
+
+### Codex Backend Proxy Endpoints
+
+| Endpoint             | Method | Description |
+| -------------------- | ------ | ----------- |
+| `POST /alpha/search` | `POST` | Transparently forwards the JSON body and query parameters to the Codex Alpha Search upstream. The gateway replaces client authorization and account headers with the active Codex login, forwards compatible headers such as `accept`, `content-type`, `originator`, `user-agent`, and `cookie`, and returns the upstream status, headers, and body unchanged. |
 
 ### Anthropic Compatible Endpoints
 
