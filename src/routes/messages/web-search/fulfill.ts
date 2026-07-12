@@ -30,8 +30,6 @@ import {
 } from "~/lib/utils"
 import {
   createResponses as createCopilotResponses,
-  type CopilotUsage,
-  type ResponseStreamEvent,
   type ResponsesPayload,
   type ResponsesResult,
   type ResponsesStream,
@@ -48,6 +46,7 @@ import type {
   AnthropicWebSearchResultItem,
 } from "../anthropic-types"
 import { normalizeSystemMessages } from "../preprocess"
+import { collectResponsesStreamResult } from "../responses-stream-collection"
 import { translateAnthropicMessagesToResponsesPayload } from "../responses-translation"
 import {
   getResponsesRequestOptions,
@@ -268,63 +267,6 @@ export const reconstructWebSearchResponse = (
   return { extract, response }
 }
 
-interface WebSearchResponsesStreamCollection {
-  outputItemsByIndex: Map<number, ResponsesResult["output"][number]>
-}
-
-export const collectWebSearchResponsesStreamResult = async ({
-  errorMessagePrefix = "Web search responses stream",
-  parseEvent = parseResponsesStreamEvent,
-  upstreamResponse,
-  logger,
-}: {
-  errorMessagePrefix?: string
-  parseEvent?: (data: string) => ResponseStreamEvent | null
-  upstreamResponse: ResponsesStream
-  logger: ConsolaInstance
-}): Promise<ResponsesResult> => {
-  const state = createWebSearchResponsesStreamCollection()
-
-  for await (const chunk of upstreamResponse) {
-    debugJson(logger, "Received web search responses stream chunk:", chunk)
-    if (chunk.event === "ping") {
-      continue
-    }
-
-    if (!chunk.data || chunk.data === "[DONE]") {
-      continue
-    }
-
-    const parsed = parseEvent(chunk.data)
-    if (!parsed) {
-      continue
-    }
-
-    if (parsed.type === "error") {
-      throw new Error(
-        getStreamErrorMessage(parsed) ?? `${errorMessagePrefix} failed`,
-      )
-    }
-
-    const result = collectResponsesStreamEvent(parsed, state)
-    if (result) {
-      return result
-    }
-  }
-
-  throw new Error(`${errorMessagePrefix} ended without a terminal event`)
-}
-
-const parseResponsesStreamEvent = (
-  data: string,
-): ResponseStreamEvent | null => {
-  try {
-    return JSON.parse(data) as ResponseStreamEvent
-  } catch {
-    return null
-  }
-}
-
 const isWebSearchResponsesStream = (
   value: unknown,
 ): value is ResponsesStream => {
@@ -332,44 +274,6 @@ const isWebSearchResponsesStream = (
     Boolean(value)
     && typeof (value as ResponsesStream)[Symbol.asyncIterator] === "function"
   )
-}
-
-const createWebSearchResponsesStreamCollection =
-  (): WebSearchResponsesStreamCollection => ({
-    outputItemsByIndex: new Map(),
-  })
-
-const collectResponsesStreamEvent = (
-  event: ResponseStreamEvent,
-  state: WebSearchResponsesStreamCollection,
-): ResponsesResult | undefined => {
-  switch (event.type) {
-    case "response.completed":
-    case "response.failed":
-    case "response.incomplete": {
-      event.response.copilot_usage ??= event.copilot_usage as CopilotUsage
-      const response = event.response
-      if (!response) {
-        throw new Error("Web search responses stream ended without a response")
-      }
-      const output = [...state.outputItemsByIndex.entries()]
-        .sort(([leftIndex], [rightIndex]) => leftIndex - rightIndex)
-        .map(([, item]) => item)
-      return {
-        ...response,
-        output: output.length > 0 ? output : response.output,
-      }
-    }
-    case "response.output_item.done":
-      state.outputItemsByIndex.set(event.output_index, event.item)
-      break
-  }
-}
-
-const getStreamErrorMessage = (
-  event: Extract<ResponseStreamEvent, { type: "error" }>,
-): string | undefined => {
-  return event.error?.message ?? event.message ?? undefined
 }
 
 const createUsageRecorder = (
@@ -489,7 +393,7 @@ export const handleWebSearchViaResponses = async (
 
   const result =
     isWebSearchResponsesStream(upstreamResult) ?
-      await collectWebSearchResponsesStreamResult({
+      await collectResponsesStreamResult({
         errorMessagePrefix: "Web search responses stream",
         upstreamResponse: upstreamResult,
         logger,
