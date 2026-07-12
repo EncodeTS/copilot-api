@@ -15,6 +15,7 @@ import { HTTPError } from "~/lib/error"
 import {
   getExtraPromptForModel,
   getReasoningEffortForModel,
+  isGpt56OrAbove,
 } from "~/lib/config"
 import { requestContext } from "~/lib/request-context"
 import { parseUserIdMetadata } from "~/lib/utils"
@@ -154,7 +155,7 @@ export const translateAnthropicMessagesToResponsesPayload = (
     reasoning: {
       effort: resolveReasoningEffort(payload),
       summary: "detailed",
-      context: "all_turns",
+      context: isSupportAllTurns(payload) ? "all_turns" : "auto",
     },
     include: ["reasoning.encrypted_content"],
   }
@@ -1170,4 +1171,15 @@ const convertToolResultContent = (
   }
 
   return ""
+}
+
+const isSupportAllTurns = (payload: AnthropicMessagesPayload): boolean => {
+  if (
+    payload.model === "gpt-5.4"
+    || payload.model === "gpt-5.4-mini"
+    || payload.model === "gpt-5.5"
+  ) {
+    return true
+  }
+  return isGpt56OrAbove(payload.model)
 }
