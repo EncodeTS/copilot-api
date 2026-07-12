@@ -72,6 +72,7 @@ const COMPACTION_SIGNATURE_PREFIX = "cm1#"
 const COMPACTION_SIGNATURE_SEPARATOR = "@"
 
 export const THINKING_TEXT = "Thinking..."
+export const REASONING_SUMMARY_SEPARATOR = "\u2063\n\n"
 
 const resolveReasoningEffort = (payload: AnthropicMessagesPayload) =>
   payload.output_config?.effort ?? getReasoningEffortForModel(payload.model)
@@ -154,7 +155,7 @@ export const translateAnthropicMessagesToResponsesPayload = (
     parallel_tool_calls: true,
     reasoning: {
       effort: resolveReasoningEffort(payload),
-      summary: "detailed",
+      summary: "auto",
       context: isSupportAllTurns(payload) ? "all_turns" : "auto",
     },
     include: ["reasoning.encrypted_content"],
@@ -447,12 +448,30 @@ const createReasoningContent = (
   // https://github.com/microsoft/vscode/blob/1.128.0/extensions/copilot/src/platform/endpoint/node/responsesApi.ts#L651
   const { encryptedContent, id } = parseReasoningSignature(block.signature)
   const thinking = block.thinking === THINKING_TEXT ? "" : block.thinking
+
   return {
     id,
     type: "reasoning",
-    summary: thinking ? [{ type: "summary_text", text: thinking }] : [],
+    summary: createReasoningSummary(thinking),
     encrypted_content: encryptedContent,
   }
+}
+
+const createReasoningSummary = (
+  thinking: string,
+): ResponseInputReasoning["summary"] => {
+  if (thinking.length === 0) {
+    return []
+  }
+
+  if (!thinking.includes(REASONING_SUMMARY_SEPARATOR)) {
+    return [{ type: "summary_text", text: thinking }]
+  }
+
+  return thinking.split(REASONING_SUMMARY_SEPARATOR).map((text) => ({
+    type: "summary_text",
+    text,
+  }))
 }
 
 const createCompactionContent = (
@@ -948,7 +967,7 @@ const extractReasoningText = (item: ResponseOutputReasoning): string => {
 
   collectFromBlocks(item.summary)
 
-  return segments.join("").trim()
+  return segments.join(REASONING_SUMMARY_SEPARATOR).trim()
 }
 
 const createToolUseContentBlock = (
