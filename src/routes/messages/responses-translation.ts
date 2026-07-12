@@ -72,6 +72,9 @@ const COMPACTION_SIGNATURE_SEPARATOR = "@"
 
 export const THINKING_TEXT = "Thinking..."
 
+const resolveReasoningEffort = (payload: AnthropicMessagesPayload) =>
+  payload.output_config?.effort ?? getReasoningEffortForModel(payload.model)
+
 const buildPromptCacheKey = (
   basePromptCacheKey: string | null,
   subagentAgentId?: string | null,
@@ -149,7 +152,7 @@ export const translateAnthropicMessagesToResponsesPayload = (
     store: false,
     parallel_tool_calls: true,
     reasoning: {
-      effort: getReasoningEffortForModel(payload.model),
+      effort: resolveReasoningEffort(payload),
       summary: "detailed",
       context: "all_turns",
     },

@@ -81,6 +81,17 @@ const emptySessionUserId = JSON.stringify({
 const subagentAgentId = "agent-123"
 
 describe("translateAnthropicMessagesToResponsesPayload", () => {
+  it("prefers the requested output_config reasoning effort", () => {
+    const result = translateAnthropicMessagesToResponsesPayload({
+      ...samplePayload,
+      output_config: {
+        effort: "xhigh",
+      },
+    })
+
+    expect(result.reasoning?.effort).toBe("xhigh")
+  })
+
   it("converts anthropic text blocks into response input messages", () => {
     const result = translateAnthropicMessagesToResponsesPayload(samplePayload)
 
