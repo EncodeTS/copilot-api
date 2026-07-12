@@ -442,9 +442,8 @@ const createFileContent = (
 const createReasoningContent = (
   block: AnthropicThinkingBlock,
 ): ResponseInputReasoning => {
-  // align with vscode-copilot-chat extractThinkingData, should add id, otherwise it will cause miss cache occasionally —— the usage input cached tokens to be 0
-  // https://github.com/microsoft/vscode-copilot-chat/blob/main/src/platform/endpoint/node/responsesApi.ts#L162
-  // when use in codex cli, reasoning id is empty, so it will cause miss cache occasionally
+  // align with vscode-copilot-chat extractThinkingData, should add id
+  // https://github.com/microsoft/vscode/blob/1.128.0/extensions/copilot/src/platform/endpoint/node/responsesApi.ts#L651
   const { encryptedContent, id } = parseReasoningSignature(block.signature)
   const thinking = block.thinking === THINKING_TEXT ? "" : block.thinking
   return {
