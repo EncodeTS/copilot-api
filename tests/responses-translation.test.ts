@@ -6,12 +6,14 @@ import type { AnthropicMessagesPayload } from "~/routes/messages/anthropic-types
 import type {
   ResponseFunctionCallOutputItem,
   ResponseInputMessage,
+  ResponseInputReasoning,
   ResponseToolSearchCallItem,
   ResponseToolSearchOutputItem,
   ResponsesResult,
 } from "~/services/copilot/create-responses"
 
 import {
+  REASONING_SUMMARY_SEPARATOR,
   translateAnthropicMessagesToResponsesPayload,
   translateResponsesResultToAnthropic,
 } from "~/routes/messages/responses-translation"
@@ -80,7 +82,46 @@ const emptySessionUserId = JSON.stringify({
 
 const subagentAgentId = "agent-123"
 
+const translateThinking = (thinking: string): ResponseInputReasoning => {
+  const result = translateAnthropicMessagesToResponsesPayload({
+    ...samplePayload,
+    messages: [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "thinking",
+            thinking,
+            signature: "encrypted-content@reasoning-id",
+          },
+        ],
+      },
+    ],
+  })
+
+  return (result.input as Array<ResponseInputReasoning>)[0]
+}
+
 describe("translateAnthropicMessagesToResponsesPayload", () => {
+  it("restores marked summary boundaries and preserves unmarked history", () => {
+    const firstSummary =
+      "**Preparing to search online**\n\nI need to use web.run."
+    const secondSummary = "**Running the search**"
+    const unmarkedThinking =
+      "**Preparing**\n\nDescription\n\n**A bold body line**\n\nMore text"
+    const marked = translateThinking(
+      firstSummary + REASONING_SUMMARY_SEPARATOR + secondSummary,
+    )
+
+    expect(marked.summary).toEqual([
+      { type: "summary_text", text: firstSummary },
+      { type: "summary_text", text: secondSummary },
+    ])
+    expect(translateThinking(unmarkedThinking).summary).toEqual([
+      { type: "summary_text", text: unmarkedThinking },
+    ])
+  })
+
   it("prefers the requested output_config reasoning effort", () => {
     const result = translateAnthropicMessagesToResponsesPayload({
       ...samplePayload,
@@ -832,7 +873,13 @@ describe("translateResponsesResultToAnthropic", () => {
         {
           id: "reason_1",
           type: "reasoning",
-          summary: [{ type: "summary_text", text: "Thinking about the task." }],
+          summary: [
+            {
+              type: "summary_text",
+              text: "**Thinking about the task**\n\nReviewing the request.",
+            },
+            { type: "summary_text", text: "**Preparing the tool call**" },
+          ],
           status: "completed",
           encrypted_content: "encrypted_reasoning_content",
         },
@@ -887,7 +934,11 @@ describe("translateResponsesResultToAnthropic", () => {
 
     expect(thinkingBlock.type).toBe("thinking")
     if (thinkingBlock.type === "thinking") {
-      expect(thinkingBlock.thinking).toContain("Thinking about the task")
+      expect(thinkingBlock.thinking).toBe(
+        "**Thinking about the task**\n\nReviewing the request."
+          + REASONING_SUMMARY_SEPARATOR
+          + "**Preparing the tool call**",
+      )
     }
 
     expect(toolUseBlock.type).toBe("tool_use")
