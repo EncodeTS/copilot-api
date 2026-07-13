@@ -13,6 +13,7 @@ import { alphaSearchRoutes } from "./routes/alpha-search/route"
 import { completionRoutes } from "./routes/chat-completions/route"
 import { configRoutes } from "./routes/admin/config/route"
 import { embeddingRoutes } from "./routes/embeddings/route"
+import { imageRoutes } from "./routes/images/route"
 import { messageRoutes } from "./routes/messages/route"
 import { modelRoutes } from "./routes/models/route"
 import { providerMessageRoutes } from "./routes/provider/messages/route"
@@ -60,12 +61,15 @@ server.route("/token-usage", tokenUsageRoute)
 server.route("/token", tokenRoute)
 server.route("/responses", responsesRoutes)
 server.route("/alpha/search", alphaSearchRoutes)
+server.route("/images", imageRoutes)
 
 // Compatibility with tools that expect v1/ prefix
 server.route("/v1/chat/completions", completionRoutes)
 server.route("/v1/models", modelRoutes)
 server.route("/v1/embeddings", embeddingRoutes)
 server.route("/v1/responses", responsesRoutes)
+server.route("/v1/alpha/search", alphaSearchRoutes)
+server.route("/v1/images", imageRoutes)
 
 // Anthropic compatible endpoints
 server.route("/v1/messages", messageRoutes)
