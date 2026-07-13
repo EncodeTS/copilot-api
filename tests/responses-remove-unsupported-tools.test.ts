@@ -48,6 +48,29 @@ describe("removeUnsupportedTools", () => {
     expect(payload.tools).toHaveLength(2)
   })
 
+  it("preserves the supported image_gen namespace tool", () => {
+    const imageGenNamespace = {
+      type: "namespace",
+      name: "image_gen",
+      tools: [
+        {
+          type: "function",
+          name: "imagegen",
+          description: "Generate or edit an image",
+          parameters: { type: "object" },
+          strict: false,
+        },
+      ],
+    }
+    const payload = makePayload([
+      imageGenNamespace,
+    ] as ResponsesPayload["tools"])
+
+    removeUnsupportedTools(payload)
+
+    expect(payload.tools).toEqual([imageGenNamespace])
+  })
+
   it("is a no-op when tools is missing or empty", () => {
     const empty = makePayload([] as ResponsesPayload["tools"])
     removeUnsupportedTools(empty)

@@ -261,6 +261,55 @@ describe("responses handler token usage", () => {
     expect(createResponses.mock.calls[0][0].context_management).toBeUndefined()
   })
 
+  test("preserves the Codex native Responses intent bundle", async () => {
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+    const input = [
+      {
+        role: "user",
+        content: [{ type: "input_text", text: "hello" }],
+      },
+    ]
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        model: "gpt-test",
+        input,
+        include: ["reasoning.encrypted_content"],
+        parallel_tool_calls: false,
+        prompt_cache_key: "codex-native-session",
+        reasoning: {
+          effort: "max",
+          summary: "concise",
+          context: "all_turns",
+        },
+        store: false,
+        text: { verbosity: "low" },
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(1)
+    expect(createResponses.mock.calls[0][0]).toMatchObject({
+      include: ["reasoning.encrypted_content"],
+      input,
+      parallel_tool_calls: false,
+      prompt_cache_key: "codex-native-session",
+      reasoning: {
+        effort: "max",
+        summary: "concise",
+        context: "all_turns",
+      },
+      store: false,
+      text: { verbosity: "low" },
+    })
+  })
+
   test("uses model Responses API compact threshold before max token fallback", async () => {
     state.models = {
       object: "list",

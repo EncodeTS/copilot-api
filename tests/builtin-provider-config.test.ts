@@ -303,12 +303,13 @@ describe("builtin provider config", () => {
 
     const output = runScript(
       tempDir,
-      'const { getModelResponsesApiCompactThreshold } = await import("./src/lib/config"); console.log(JSON.stringify({ gpt54: getModelResponsesApiCompactThreshold("gpt-5.4"), gpt55: getModelResponsesApiCompactThreshold("gpt-5.5") ?? null }));',
+      'const { getModelResponsesApiCompactThreshold } = await import("./src/lib/config"); console.log(JSON.stringify({ gpt54: getModelResponsesApiCompactThreshold("gpt-5.4"), gpt55: getModelResponsesApiCompactThreshold("gpt-5.5") ?? null, gpt56: getModelResponsesApiCompactThreshold("gpt-5.6-sol") ?? null }));',
     )
 
     expect(JSON.parse(output)).toEqual({
       gpt54: 123456,
       gpt55: null,
+      gpt56: null,
     })
   })
 
