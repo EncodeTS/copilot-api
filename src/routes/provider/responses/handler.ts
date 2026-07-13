@@ -70,7 +70,7 @@ export async function handleProviderResponsesForProvider(
     : undefined
 
   // Smaller than the client compaction threshold, use server-side compaction to maintain cache hit rate.
-  const shouldCompactInput = applyResponsesApiContextManagement(
+  const contextManagementDecision = applyResponsesApiContextManagement(
     payload,
     model?.capabilities.limits,
     {
@@ -78,7 +78,7 @@ export async function handleProviderResponsesForProvider(
       source: "responses",
     },
   )
-  if (shouldCompactInput) {
+  if (contextManagementDecision.shouldPruneInput) {
     compactInputByLatestCompaction(payload)
   }
 

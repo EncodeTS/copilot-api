@@ -20,7 +20,7 @@ describe("removeUnsupportedTools", () => {
     expect((payload.tools as Array<{ type: string }>)[0].type).toBe("function")
   })
 
-  it("removes image_gen namespace tools", () => {
+  it("preserves image_gen namespace tools alongside other tools", () => {
     const payload = makePayload([
       {
         type: "namespace",
@@ -32,8 +32,10 @@ describe("removeUnsupportedTools", () => {
 
     removeUnsupportedTools(payload)
 
-    expect(payload.tools).toHaveLength(1)
-    expect((payload.tools as Array<{ name: string }>)[0].name).toBe("foo")
+    expect(payload.tools).toHaveLength(2)
+    expect(
+      (payload.tools as Array<{ name: string }>).map((tool) => tool.name),
+    ).toEqual(["image_gen", "foo"])
   })
 
   it("leaves payload unchanged when no unsupported tools present", () => {

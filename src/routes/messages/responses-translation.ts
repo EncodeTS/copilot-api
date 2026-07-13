@@ -16,6 +16,7 @@ import {
   isGpt56OrAbove,
 } from "~/lib/config"
 import { requestContext } from "~/lib/request-context"
+import { normalizeResponsesUsage } from "~/lib/token-usage"
 import { parseUserIdMetadata } from "~/lib/utils"
 import {
   type ResponsesPayload,
@@ -144,6 +145,7 @@ export const translateAnthropicMessagesToResponsesPayload = (
     payload.tool_choice,
     toolSearchEnabled,
   )
+  const outputFormat = payload.output_config?.format
 
   // Remove safetyIdentifier to align with vscode copilot
   const { sessionId: metadataPromptCacheKey } = parseUserIdMetadata(
@@ -162,16 +164,16 @@ export const translateAnthropicMessagesToResponsesPayload = (
     model: payload.model,
     input,
     instructions: translateSystemPrompt(payload.system, payload.model),
-    temperature: 1, // reasoning high temperature fixed to 1
+    temperature: payload.temperature ?? 1,
     top_p: payload.top_p ?? null,
-    max_output_tokens: Math.max(payload.max_tokens, 12800),
+    max_output_tokens: payload.max_tokens,
     tools: translatedTools,
-    tool_choice: toolChoice,
+    ...(hasOriginalTools ? { tool_choice: toolChoice } : {}),
     metadata: payload.metadata ? { ...payload.metadata } : null,
     //prompt_cache_retention: "24h",  not work in gpt-5.4
     stream: payload.stream ?? null,
     store: false,
-    parallel_tool_calls: true,
+    parallel_tool_calls: !payload.tool_choice?.disable_parallel_tool_use,
     reasoning: {
       effort:
         payload.thinking?.type === "disabled" ?
@@ -181,6 +183,18 @@ export const translateAnthropicMessagesToResponsesPayload = (
       context: isSupportAllTurns(payload) ? "all_turns" : "auto",
     },
     include: ["reasoning.encrypted_content"],
+    ...(outputFormat ?
+      {
+        text: {
+          format: {
+            type: "json_schema" as const,
+            name: "anthropic_output",
+            strict: true,
+            schema: outputFormat.schema,
+          },
+        },
+      }
+    : {}),
   }
 
   if (hasOriginalTools) {
@@ -232,6 +246,16 @@ export const decodeCompactionCarrierSignature = (
   }
 
   return undefined
+}
+
+export const encodeReasoningCarrierSignature = (
+  reasoning: Pick<ResponseOutputReasoning, "encrypted_content" | "id">,
+): string | undefined => {
+  if (!reasoning.encrypted_content || !reasoning.id) {
+    return undefined
+  }
+
+  return `${reasoning.encrypted_content}@${reasoning.id}`
 }
 
 const translateMessage = (
@@ -326,12 +350,15 @@ const translateAssistantMessage = (
       }
 
       if (block.signature.includes("@")) {
-        flushPendingContent(pendingContent, items, {
-          role: "assistant",
-          phase: assistantPhase,
-        })
-        items.push(createReasoningContent(block))
-        continue
+        const reasoningContent = createReasoningContent(block)
+        if (reasoningContent) {
+          flushPendingContent(pendingContent, items, {
+            role: "assistant",
+            phase: assistantPhase,
+          })
+          items.push(reasoningContent)
+          continue
+        }
       }
     }
 
@@ -465,10 +492,15 @@ const createFileContent = (
 
 const createReasoningContent = (
   block: AnthropicThinkingBlock,
-): ResponseInputReasoning => {
+): ResponseInputReasoning | undefined => {
   // align with vscode-copilot-chat extractThinkingData, should add id
   // https://github.com/microsoft/vscode/blob/1.128.0/extensions/copilot/src/platform/endpoint/node/responsesApi.ts#L651
-  const { encryptedContent, id } = parseReasoningSignature(block.signature)
+  const carrier = parseReasoningSignature(block.signature)
+  if (!carrier) {
+    return undefined
+  }
+
+  const { encryptedContent, id } = carrier
   const thinking = block.thinking === THINKING_TEXT ? "" : block.thinking
 
   return {
@@ -513,11 +545,11 @@ const createCompactionContent = (
 
 const parseReasoningSignature = (
   signature: string,
-): { encryptedContent: string; id: string } => {
+): { encryptedContent: string; id: string } | undefined => {
   const splitIndex = signature.lastIndexOf("@")
 
   if (splitIndex <= 0 || splitIndex === signature.length - 1) {
-    return { encryptedContent: signature, id: "" }
+    return undefined
   }
 
   return {
@@ -720,9 +752,11 @@ const convertAnthropicTools = (
   tools: Array<AnthropicTool> | undefined,
   toolSearchEnabled: boolean,
 ): Array<Tool> | null => {
-  if (!tools || tools.length === 0) {
+  if (!tools) {
     return null
   }
+
+  if (tools.length === 0) return []
 
   const converted: Array<Tool> = []
   let addedToolSearch = false
@@ -843,7 +877,7 @@ export const translateResponsesResultToAnthropic = (
   options?: ResponsesToAnthropicOptions,
 ): AnthropicResponse => {
   const contentBlocks = mapOutputToAnthropicContent(response.output, options)
-  const usage = mapResponsesUsage(response)
+  const usage = mapResponsesUsageToAnthropic(response.usage)
   let anthropicContent = fallbackContentBlocks(response.output_text)
   if (contentBlocks.length > 0) {
     anthropicContent = contentBlocks
@@ -882,7 +916,7 @@ const mapOutputToAnthropicContent = (
           contentBlocks.push({
             type: "thinking",
             thinking: thinkingText,
-            signature: (item.encrypted_content ?? "") + "@" + item.id,
+            signature: encodeReasoningCarrierSignature(item) ?? "",
           })
         }
         break
@@ -915,6 +949,9 @@ const mapOutputToAnthropicContent = (
         break
       }
       case "compaction": {
+        if (options?.includeThinking === false) {
+          break
+        }
         const compactionBlock = createCompactionThinkingBlock(item)
         if (compactionBlock) {
           contentBlocks.push(compactionBlock)
@@ -1114,24 +1151,23 @@ const mapResponsesStopReason = (
   return null
 }
 
-const mapResponsesUsage = (
-  response: ResponsesResult,
+export const mapResponsesUsageToAnthropic = (
+  usage: ResponsesResult["usage"],
 ): AnthropicResponse["usage"] => {
-  const inputTokens = response.usage?.input_tokens ?? 0
-  const outputTokens = response.usage?.output_tokens ?? 0
-  const inputCachedTokens = response.usage?.input_tokens_details?.cached_tokens
-  const cacheWriteTokens =
-    response.usage?.input_tokens_details?.cache_write_tokens
+  const normalized = normalizeResponsesUsage(usage)
+  const hasCachedTokens = Boolean(
+    usage?.input_tokens_details
+      && Object.hasOwn(usage.input_tokens_details, "cached_tokens"),
+  )
 
   return {
-    input_tokens:
-      inputTokens - (inputCachedTokens ?? 0) - (cacheWriteTokens ?? 0),
-    output_tokens: outputTokens,
-    ...(inputCachedTokens !== undefined && {
-      cache_read_input_tokens: inputCachedTokens,
+    input_tokens: normalized.input_tokens ?? 0,
+    output_tokens: normalized.output_tokens ?? 0,
+    ...(hasCachedTokens && {
+      cache_read_input_tokens: normalized.cache_read_input_tokens ?? 0,
     }),
-    ...(cacheWriteTokens !== undefined && {
-      cache_creation_input_tokens: cacheWriteTokens,
+    ...(typeof normalized.cache_creation_input_tokens === "number" && {
+      cache_creation_input_tokens: normalized.cache_creation_input_tokens,
     }),
   }
 }

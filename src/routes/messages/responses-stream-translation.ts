@@ -26,6 +26,8 @@ import {
   REASONING_SUMMARY_SEPARATOR,
   THINKING_TEXT,
   encodeCompactionCarrierSignature,
+  encodeReasoningCarrierSignature,
+  mapResponsesUsageToAnthropic,
   resolveToolUseName,
   translateResponsesResultToAnthropic,
 } from "./responses-translation"
@@ -218,7 +220,10 @@ const handleOutputItemDone = (
   const itemType = item.type
   const outputIndex = rawEvent.output_index
 
-  if (itemType === "reasoning" && !state.emitThinking) {
+  if (
+    (itemType === "reasoning" || itemType === "compaction")
+    && !state.emitThinking
+  ) {
     return events
   }
 
@@ -284,34 +289,36 @@ const handleOutputItemDone = (
     return events
   }
 
-  const blockIndex = openThinkingBlockIfNeeded(state, outputIndex, events)
-  const signature = (item.encrypted_content ?? "") + "@" + item.id
-  if (signature) {
-    // Compatible with opencode, it will filter out blocks where the thinking text is empty, so we add a default thinking text here
-    if (
-      (!item.summary || item.summary.length === 0)
-      && !state.blockHasDelta.has(blockIndex)
-    ) {
-      events.push({
-        type: "content_block_delta",
-        index: blockIndex,
-        delta: {
-          type: "thinking_delta",
-          thinking: THINKING_TEXT,
-        },
-      })
-    }
+  const signature = encodeReasoningCarrierSignature(item)
+  if (!signature) {
+    return events
+  }
 
+  const blockIndex = openThinkingBlockIfNeeded(state, outputIndex, events)
+  // Compatible with opencode, it will filter out blocks where the thinking text is empty, so we add a default thinking text here
+  if (
+    (!item.summary || item.summary.length === 0)
+    && !state.blockHasDelta.has(blockIndex)
+  ) {
     events.push({
       type: "content_block_delta",
       index: blockIndex,
       delta: {
-        type: "signature_delta",
-        signature,
+        type: "thinking_delta",
+        thinking: THINKING_TEXT,
       },
     })
-    state.blockHasDelta.add(blockIndex)
   }
+
+  events.push({
+    type: "content_block_delta",
+    index: blockIndex,
+    delta: {
+      type: "signature_delta",
+      signature,
+    },
+  })
+  state.blockHasDelta.add(blockIndex)
 
   return events
 }
@@ -639,13 +646,7 @@ const messageStart = (
   response: ResponsesResult,
 ): Array<AnthropicStreamEventData> => {
   state.messageStartSent = true
-  const inputCachedTokens = response.usage?.input_tokens_details?.cached_tokens
-  const cacheWriteTokens =
-    response.usage?.input_tokens_details?.cache_write_tokens
-  const inputTokens =
-    (response.usage?.input_tokens ?? 0)
-    - (inputCachedTokens ?? 0)
-    - (cacheWriteTokens ?? 0)
+  const usage = mapResponsesUsageToAnthropic(response.usage)
   return [
     {
       type: "message_start",
@@ -658,12 +659,8 @@ const messageStart = (
         stop_reason: null,
         stop_sequence: null,
         usage: {
-          input_tokens: inputTokens,
+          ...usage,
           output_tokens: 0,
-          cache_read_input_tokens: inputCachedTokens ?? 0,
-          ...(cacheWriteTokens !== undefined && {
-            cache_creation_input_tokens: cacheWriteTokens,
-          }),
         },
       },
     },

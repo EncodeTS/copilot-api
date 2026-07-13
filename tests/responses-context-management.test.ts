@@ -81,7 +81,11 @@ test("keeps explicit model overrides ahead of the dynamic threshold", () => {
       { max_prompt_tokens: 922_000 },
       { source: "messages" },
     ),
-  ).toBe(true)
+  ).toEqual({
+    owner: "gateway",
+    injected: true,
+    shouldPruneInput: true,
+  })
   expect(payload.context_management).toEqual([
     {
       type: "compaction",
@@ -105,7 +109,11 @@ test("does not disable configured context management based on a GPT-5.6 model na
       { max_prompt_tokens: 372_000 },
       { source: "messages" },
     ),
-  ).toBe(true)
+  ).toEqual({
+    owner: "gateway",
+    injected: true,
+    shouldPruneInput: true,
+  })
   expect(payload.context_management).toEqual([
     {
       type: "compaction",
@@ -128,7 +136,11 @@ test("does not inject native Responses compaction unless enabled", () => {
       { max_prompt_tokens: 922_000 },
       { source: "responses" },
     ),
-  ).toBe(false)
+  ).toEqual({
+    owner: "none",
+    injected: false,
+    shouldPruneInput: false,
+  })
   expect(payload.context_management).toBeUndefined()
 })
 
@@ -147,7 +159,11 @@ test("preserves client-provided context management", () => {
       { max_prompt_tokens: 922_000 },
       { source: "responses" },
     ),
-  ).toBe(true)
+  ).toEqual({
+    owner: "client",
+    injected: false,
+    shouldPruneInput: false,
+  })
   expect(payload.context_management).toEqual([
     {
       type: "compaction",

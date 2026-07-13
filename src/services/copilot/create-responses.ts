@@ -45,6 +45,15 @@ export interface ResponsesPayload {
   parallel_tool_calls?: boolean | null
   store?: boolean | null
   reasoning?: Reasoning | null
+  text?: {
+    format?: {
+      type: "json_schema"
+      name: string
+      strict: boolean
+      schema: { [key: string]: unknown }
+    } | null
+    [key: string]: unknown
+  } | null
   context_management?: Array<ResponseContextManagementItem> | null
   include?: Array<ResponseIncludable>
   service_tier?: string | null // NOTE: Unsupported by GitHub Copilot

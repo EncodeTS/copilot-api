@@ -289,7 +289,7 @@ export const handleWithResponsesApi = async (
     payload: anthropicPayload,
   })
 
-  const shouldCompactInput = applyResponsesApiContextManagement(
+  const contextManagementDecision = applyResponsesApiContextManagement(
     responsesPayload,
     selectedModel?.capabilities.limits,
     {
@@ -297,7 +297,7 @@ export const handleWithResponsesApi = async (
     },
   )
 
-  if (shouldCompactInput) {
+  if (contextManagementDecision.shouldPruneInput) {
     compactInputByLatestCompaction(responsesPayload)
   }
 

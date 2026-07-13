@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test"
 import type { AnthropicStreamEventData } from "~/routes/messages/anthropic-types"
 import type {
   ResponseCompletedEvent,
+  ResponseCreatedEvent,
   ResponseOutputItemAddedEvent,
   ResponseOutputItemDoneEvent,
   ResponseFunctionCallArgumentsDeltaEvent,
@@ -30,6 +31,56 @@ const createFunctionCallAddedEvent = (): ResponseOutputItemAddedEvent => ({
     arguments: "",
     status: "in_progress",
   },
+})
+
+test("response.created clamps ordinary input usage and preserves cache buckets", () => {
+  const state = createResponsesStreamState()
+  const events = translateResponsesStreamEvent(
+    {
+      type: "response.created",
+      sequence_number: 1,
+      response: {
+        id: "resp-usage",
+        object: "response",
+        created_at: 0,
+        model: "gpt-5.6-sol",
+        output: [],
+        output_text: "",
+        status: "in_progress",
+        usage: {
+          input_tokens: 10,
+          input_tokens_details: {
+            cached_tokens: 8,
+            cache_write_tokens: 7,
+          },
+          output_tokens: 3,
+          total_tokens: 13,
+        },
+        error: null,
+        incomplete_details: null,
+        instructions: null,
+        metadata: null,
+        parallel_tool_calls: false,
+        temperature: null,
+        tool_choice: null,
+        tools: [],
+        top_p: null,
+      },
+    } satisfies ResponseCreatedEvent,
+    state,
+  )
+
+  expect(events[0]).toMatchObject({
+    type: "message_start",
+    message: {
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 7,
+        cache_read_input_tokens: 8,
+      },
+    },
+  })
 })
 
 describe("translateResponsesStreamEvent tool calls", () => {
@@ -338,25 +389,89 @@ describe("translateResponsesStreamEvent tool calls", () => {
 
   test("suppresses reasoning events when thinking is disabled", () => {
     const state = createResponsesStreamState({ emitThinking: false })
-    const event: ResponseOutputItemDoneEvent = {
-      type: "response.output_item.done",
-      sequence_number: 1,
-      output_index: 0,
-      item: {
-        id: "reasoning-1",
-        type: "reasoning",
-        summary: [{ type: "summary_text", text: "hidden reasoning" }],
-        encrypted_content: "opaque",
-        status: "completed",
+    const events: Array<ResponseOutputItemDoneEvent> = [
+      {
+        type: "response.output_item.done",
+        sequence_number: 1,
+        output_index: 0,
+        item: {
+          id: "reasoning-1",
+          type: "reasoning",
+          summary: [{ type: "summary_text", text: "hidden reasoning" }],
+          encrypted_content: "opaque",
+          status: "completed",
+        },
       },
-    }
+      {
+        type: "response.output_item.done",
+        sequence_number: 2,
+        output_index: 1,
+        item: {
+          id: "compaction-1",
+          type: "compaction",
+          encrypted_content: "opaque-compaction",
+        },
+      },
+    ]
 
-    expect(translateResponsesStreamEvent(event, state)).toEqual([])
+    expect(
+      events.flatMap((event) => translateResponsesStreamEvent(event, state)),
+    ).toEqual([])
     expect(state.openBlocks.size).toBe(0)
   })
 })
 
 describe("translateResponsesStreamEvent reasoning summaries", () => {
+  test("does not emit a signature delta without an encrypted reasoning carrier", () => {
+    const state = createResponsesStreamState()
+    const events = [
+      translateResponsesStreamEvent(
+        {
+          type: "response.reasoning_summary_part.added",
+          item_id: "reasoning-1",
+          output_index: 0,
+          summary_index: 0,
+          sequence_number: 1,
+          part: { type: "summary_text", text: "" },
+        } satisfies ResponseReasoningSummaryPartAddedEvent,
+        state,
+      ),
+      translateResponsesStreamEvent(
+        {
+          type: "response.reasoning_summary_text.delta",
+          item_id: "reasoning-1",
+          output_index: 0,
+          summary_index: 0,
+          sequence_number: 2,
+          delta: "Visible summary",
+        } satisfies ResponseReasoningSummaryTextDeltaEvent,
+        state,
+      ),
+      translateResponsesStreamEvent(
+        {
+          type: "response.output_item.done",
+          output_index: 0,
+          sequence_number: 3,
+          item: {
+            id: "reasoning-1",
+            type: "reasoning",
+            summary: [{ type: "summary_text", text: "Visible summary" }],
+            status: "completed",
+          },
+        } satisfies ResponseOutputItemDoneEvent,
+        state,
+      ),
+    ].flat()
+
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "content_block_delta"
+          && event.delta.type === "signature_delta",
+      ),
+    ).toEqual([])
+  })
+
   test("does not open a summary block when thinking is disabled", () => {
     const state = createResponsesStreamState({ emitThinking: false })
 

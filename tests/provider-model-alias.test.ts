@@ -5,6 +5,7 @@ import type { ResolvedProviderConfig } from "../src/lib/config"
 
 const actualConfigModule = await import("../src/lib/config")
 const actualTokenUsageModule = await import("../src/lib/token-usage")
+const actualTokenizerModule = await import("../src/lib/tokenizer")
 
 let providerConfig: ResolvedProviderConfig | null = null
 let modelMappings: Record<string, string> = {}
@@ -33,6 +34,7 @@ await mock.module("~/lib/config", () => ({
 }))
 
 await mock.module("~/lib/tokenizer", () => ({
+  ...actualTokenizerModule,
   getTokenCount,
 }))
 

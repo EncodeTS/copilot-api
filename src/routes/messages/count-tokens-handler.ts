@@ -3,22 +3,65 @@ import type { Context } from "hono"
 import consola from "consola"
 
 import {
-  getAnthropicApiKey,
   getClaudeTokenMultiplier,
+  isMessagesApiEnabled,
   resolveMappedModel,
 } from "~/lib/config"
 import {
   createFallbackModel,
   parseProviderModelAlias,
 } from "~/lib/provider-model"
-import { getTokenCount } from "~/lib/tokenizer"
+import { HTTPError } from "~/lib/error"
+import { getTextTokenCount, getTokenCount } from "~/lib/tokenizer"
+import { generateRequestIdFromPayload, getRootSessionId } from "~/lib/utils"
 import { handleProviderCountTokensForProvider } from "~/routes/provider/messages/count-tokens-handler"
+import {
+  applyResponsesApiContextManagement,
+  compactInputByLatestCompaction,
+  getResponsesTransportForModel,
+} from "~/routes/responses/utils"
+import { countMessagesTokens } from "~/services/copilot/create-messages"
+import type { ResponsesPayload } from "~/services/copilot/create-responses"
 import { type Model } from "~/services/copilot/get-models"
 
-import { findEndpointModel } from "../../lib/models"
+import { findEndpointModel } from "~/lib/models"
 import { type AnthropicMessagesPayload } from "./anthropic-types"
 import { translateToOpenAI } from "./non-stream-translation"
-import { normalizeSystemMessages } from "./preprocess"
+import {
+  normalizeSystemMessages,
+  prepareMessagesApiPayload,
+  sanitizeIdeTools,
+} from "./preprocess"
+import { translateAnthropicMessagesToResponsesPayload } from "./responses-translation"
+
+const RESPONSES_ESTIMATE_SAFETY_FACTOR = 1.02
+
+export const estimateResponsesInputTokens = async (
+  payload: ResponsesPayload,
+  selectedModel: Model,
+): Promise<number> => {
+  const tokenBearingPayload = {
+    context_management: payload.context_management,
+    input: payload.input,
+    instructions: payload.instructions,
+    parallel_tool_calls: payload.parallel_tool_calls,
+    reasoning: payload.reasoning,
+    text: payload.text,
+    tool_choice: payload.tool_choice,
+    tools: payload.tools,
+  }
+  const structuralTokens = await getTextTokenCount(
+    JSON.stringify(tokenBearingPayload),
+    selectedModel,
+  )
+  return Math.ceil(structuralTokens * RESPONSES_ESTIMATE_SAFETY_FACTOR)
+}
+
+export const countTokensHandlerDependencies = {
+  countCopilotMessagesTokens: countMessagesTokens,
+  estimateResponsesInputTokens,
+  findEndpointModel,
+}
 
 export const resolveCountTokensModel = (
   modelId: string,
@@ -38,58 +81,6 @@ export const resolveCountTokensModel = (
   }
 }
 
-/**
- * Forwards token counting to Anthropic's real /v1/messages/count_tokens endpoint.
- * Returns the result on success, or null to fall through to estimation.
- */
-async function countTokensViaAnthropic(
-  c: Context,
-  payload: AnthropicMessagesPayload,
-): Promise<Response | null> {
-  if (!payload.model.startsWith("claude")) return null
-
-  const apiKey = getAnthropicApiKey()
-  if (!apiKey) return null
-
-  // Copilot uses dotted names (claude-opus-4.6) but Anthropic requires dashes (claude-opus-4-6)
-  const model = payload.model.replaceAll(".", "-")
-
-  const res = await fetch(
-    "https://api.anthropic.com/v1/messages/count_tokens",
-    {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-beta": "token-counting-2024-11-01",
-      },
-      body: JSON.stringify({ ...payload, model }),
-    },
-  )
-
-  if (!res.ok) {
-    consola.warn(
-      "Anthropic count_tokens failed:",
-      res.status,
-      await res.text().catch(() => ""),
-      "- falling back to estimation",
-    )
-    return null
-  }
-
-  const result = (await res.json()) as { input_tokens: number }
-  consola.info("Token count (Anthropic API):", result.input_tokens)
-  return c.json(result)
-}
-
-/**
- * Handles token counting for Anthropic messages.
- *
- * When an Anthropic API key is available (via config or ANTHROPIC_API_KEY env var)
- * and the model is a Claude model, forwards to Anthropic's free /v1/messages/count_tokens
- * endpoint for accurate counts. Otherwise falls back to GPT tokenizer estimation.
- */
 export async function handleCountTokens(c: Context) {
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
   anthropicPayload.model = resolveMappedModel(anthropicPayload.model)
@@ -104,20 +95,80 @@ export async function handleCountTokens(c: Context) {
     })
   }
 
-  // Try Anthropic's real endpoint first (Claude models only)
-  const anthropicResult = await countTokensViaAnthropic(c, anthropicPayload)
-  if (anthropicResult) return anthropicResult
-
-  // Fallback: GPT tokenizer estimation (also used for non-Claude models)
   const anthropicBeta = c.req.header("anthropic-beta")
 
-  const openAIPayload = translateToOpenAI(anthropicPayload)
-
   const requestedModel = anthropicPayload.model
-  const resolve = resolveCountTokensModel(requestedModel)
-
+  const resolve = resolveCountTokensModel(
+    requestedModel,
+    countTokensHandlerDependencies.findEndpointModel,
+  )
   const selectedModel = resolve.model
   anthropicPayload.model = selectedModel.id
+  let messagesCountUnavailable = false
+
+  if (
+    isMessagesApiEnabled()
+    && selectedModel.supported_endpoints?.includes("/v1/messages")
+  ) {
+    sanitizeIdeTools(anthropicPayload)
+    prepareMessagesApiPayload(anthropicPayload, selectedModel)
+    const sessionId = getRootSessionId(anthropicPayload, c)
+    try {
+      const result =
+        await countTokensHandlerDependencies.countCopilotMessagesTokens(
+          anthropicPayload,
+          anthropicBeta,
+          {
+            requestId: generateRequestIdFromPayload(
+              anthropicPayload,
+              sessionId,
+            ),
+            sessionId,
+          },
+        )
+      consola.info("Token count (Copilot Messages API):", result.input_tokens)
+      return c.json(result)
+    } catch (error) {
+      if (
+        !(error instanceof HTTPError)
+        || (error.response.status !== 404 && error.response.status !== 501)
+      ) {
+        throw error
+      }
+      messagesCountUnavailable = true
+      consola.warn(
+        `Copilot Messages count endpoint unavailable (${error.response.status}); using a local estimate`,
+      )
+    }
+  }
+
+  if (
+    !messagesCountUnavailable
+    && getResponsesTransportForModel(selectedModel)
+  ) {
+    const responsesPayload =
+      translateAnthropicMessagesToResponsesPayload(anthropicPayload)
+    const decision = applyResponsesApiContextManagement(
+      responsesPayload,
+      selectedModel.capabilities.limits,
+      { source: "messages" },
+    )
+    if (decision.shouldPruneInput) {
+      compactInputByLatestCompaction(responsesPayload)
+    }
+    const inputTokens =
+      await countTokensHandlerDependencies.estimateResponsesInputTokens(
+        responsesPayload,
+        selectedModel,
+      )
+    consola.info("Estimated token count (Responses payload):", inputTokens)
+    c.header("x-copilot-api-token-count-mode", "estimate")
+    return c.json({ input_tokens: inputTokens })
+  }
+
+  // Fallback: local tokenizer estimation for non-Messages models.
+
+  const openAIPayload = translateToOpenAI(anthropicPayload)
 
   if (resolve.fallback) {
     consola.warn(
@@ -154,6 +205,7 @@ export async function handleCountTokens(c: Context) {
 
   consola.info("Token count:", finalTokenCount)
 
+  c.header("x-copilot-api-token-count-mode", "estimate")
   return c.json({
     input_tokens: finalTokenCount,
   })
