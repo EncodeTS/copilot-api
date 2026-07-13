@@ -985,6 +985,55 @@ test("messages Responses flow keeps HTTP transport for /responses-only models", 
   expect(capturedResponsesOptions?.transport).toBe("http")
 })
 
+test("messages Responses non-stream flow suppresses reasoning when thinking is disabled", async () => {
+  createResponses.mockImplementationOnce((payload, options) => {
+    capturedResponsesPayload = payload
+    capturedResponsesOptions = options
+    return Promise.resolve({
+      ...createResponsesResult(payload.model),
+      output: [
+        {
+          id: "reasoning-1",
+          type: "reasoning",
+          summary: [{ type: "summary_text", text: "hidden reasoning" }],
+          encrypted_content: "opaque-carrier",
+          status: "completed",
+        },
+        {
+          id: "message-1",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [
+            {
+              type: "output_text",
+              text: "visible answer",
+              annotations: [],
+            },
+          ],
+        },
+      ],
+      output_text: "visible answer",
+    })
+  })
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    thinking: { type: "disabled" },
+  }
+
+  const response = await handleWithResponsesApi(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+    selectedModel: createModel(["/responses"]),
+  })
+
+  expect(response.status).toBe(200)
+  const body = (await response.json()) as AnthropicResponse
+  expect(body.content).toEqual([{ type: "text", text: "visible answer" }])
+})
+
 test("messages Responses flow keeps streaming transport for deferred tool search", async () => {
   const payload: AnthropicMessagesPayload = {
     max_tokens: 128,

@@ -863,6 +863,79 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
 })
 
 describe("translateResponsesResultToAnthropic", () => {
+  it("round-trips a real encrypted reasoning carrier into the next Responses input", () => {
+    const firstTurn: ResponsesResult = {
+      id: "resp_carrier",
+      object: "response",
+      created_at: 0,
+      model: "gpt-5.6-sol",
+      output: [
+        {
+          id: "reason_carrier",
+          type: "reasoning",
+          summary: [{ type: "summary_text", text: "Checked the request." }],
+          encrypted_content: "opaque-encrypted-carrier",
+          status: "completed",
+        },
+      ],
+      output_text: "",
+      status: "completed",
+      usage: null,
+      error: null,
+      incomplete_details: null,
+      instructions: null,
+      metadata: null,
+      parallel_tool_calls: false,
+      temperature: null,
+      tool_choice: null,
+      tools: [],
+      top_p: null,
+    }
+
+    const anthropic = translateResponsesResultToAnthropic(firstTurn)
+    expect(anthropic.content).toEqual([
+      {
+        type: "thinking",
+        thinking: "Checked the request.",
+        signature: "opaque-encrypted-carrier@reason_carrier",
+      },
+    ])
+
+    const nextTurn = translateAnthropicMessagesToResponsesPayload({
+      model: "gpt-5.6-sol",
+      max_tokens: 128,
+      messages: [
+        {
+          role: "assistant",
+          content: anthropic.content,
+        },
+        {
+          role: "user",
+          content: "continue",
+        },
+      ],
+    })
+
+    expect(nextTurn.input).toEqual([
+      {
+        id: "reason_carrier",
+        type: "reasoning",
+        summary: [
+          {
+            type: "summary_text",
+            text: "Checked the request.",
+          },
+        ],
+        encrypted_content: "opaque-encrypted-carrier",
+      },
+      {
+        type: "message",
+        role: "user",
+        content: "continue",
+      },
+    ])
+  })
+
   it("handles reasoning and function call items", () => {
     const responsesResult: ResponsesResult = {
       id: "resp_123",
