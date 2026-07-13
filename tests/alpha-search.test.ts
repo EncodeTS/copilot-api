@@ -89,6 +89,7 @@ const fetchMock = mock(
 function createApp() {
   const app = new Hono()
   app.route("/alpha/search", alphaSearchRoutes)
+  app.route("/v1/alpha/search", alphaSearchRoutes)
   return app
 }
 
@@ -102,6 +103,7 @@ beforeEach(() => {
   }
   state.codexAccessToken = "codex-access-token"
   state.codexAccountId = "account-123"
+  state.verbose = false
   fetchMock.mockClear()
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
     fetchMock as unknown as typeof fetch
@@ -111,6 +113,7 @@ afterEach(() => {
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
   state.codexAccessToken = undefined
   state.codexAccountId = undefined
+  state.verbose = false
 })
 
 describe("Codex alpha search URL", () => {
@@ -206,6 +209,31 @@ describe("Codex alpha search forwarding", () => {
 
     expect(response.status).toBe(404)
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("supports the v1 alpha search alias", async () => {
+    const response = await createApp().request("/v1/alpha/search?q=bun", {
+      method: "POST",
+      body: JSON.stringify(alphaSearchPayload),
+    })
+
+    expect(response.status).toBe(200)
+    const [url] = fetchMock.mock.calls[0] ?? []
+    expect(url).toBe("https://chatgpt.com/backend-api/codex/alpha/search?q=bun")
+  })
+
+  test("reads request and response bodies when debug logging is enabled", async () => {
+    state.verbose = true
+
+    const response = await createApp().request("/alpha/search", {
+      method: "POST",
+      body: JSON.stringify(alphaSearchPayload),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({
+      results: [{ title: "result" }],
+    })
   })
 
   test("adds JSON content type when a request body has none", async () => {

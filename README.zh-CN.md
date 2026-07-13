@@ -674,9 +674,15 @@ curl http://localhost:4141/admin/config/model-mappings \
 
 ### Codex 后端代理端点
 
+这些端点要求已有可用的 Codex 登录态。每个端点同时提供无版本前缀和 `/v1` 两种路径。
+
 | 端点 | 方法 | 说明 |
 | --- | --- | --- |
-| `POST /alpha/search` | `POST` | 将 JSON 请求体和查询参数透明转发到 Codex Alpha Search 上游。网关会使用当前 Codex 登录态覆盖客户端的 authorization 和 account header，透传 `accept`、`content-type`、`originator`、`user-agent`、`cookie` 等兼容 header，并原样返回上游状态码、响应头和响应体。 |
+| `POST /alpha/search`<br>`POST /v1/alpha/search` | `POST` | 将 JSON 请求体和查询参数透明转发到 Codex Alpha Search 上游。 |
+| `POST /images/generations`<br>`POST /v1/images/generations` | `POST` | 将 JSON 图片生成请求转发到 Codex Images 上游。请求未携带 `Content-Type` 时，网关默认补充 `application/json`。 |
+| `POST /images/edits`<br>`POST /v1/images/edits` | `POST` | 将图片编辑请求转发到 Codex Images 上游。请使用 `multipart/form-data`，并让 HTTP 客户端自动生成 `boundary`；网关会保留传入的 content type，并以流式方式转发上传请求体。 |
+
+对于以上所有端点，网关都会使用当前 Codex 登录态覆盖客户端的 authorization 和 account header，保留查询参数及兼容的请求头，并返回上游状态码、响应头和响应体。
 
 ### Anthropic 兼容端点
 

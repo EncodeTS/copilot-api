@@ -1,6 +1,6 @@
 import { afterEach, expect, mock, test } from "bun:test"
 
-import { debugJson, debugJsonTail } from "../src/lib/logger"
+import { debugJson, debugJsonAsync, debugJsonTail } from "../src/lib/logger"
 import { state } from "../src/lib/state"
 
 afterEach(() => {
@@ -31,6 +31,35 @@ test("debugJson logs the serialized payload when verbose logging is enabled", ()
 
   debugJson(logger as never, "payload", payload)
 
+  expect(logger.debug).toHaveBeenCalledWith("payload", JSON.stringify(payload))
+})
+
+test("debugJsonAsync skips reading when verbose logging is disabled", async () => {
+  state.verbose = false
+
+  const logger = {
+    debug: mock(() => {}),
+  }
+  const readValue = mock(() => Promise.resolve({ body: "request body" }))
+
+  await debugJsonAsync(logger as never, "payload", readValue)
+
+  expect(readValue).not.toHaveBeenCalled()
+  expect(logger.debug).not.toHaveBeenCalled()
+})
+
+test("debugJsonAsync reads and logs when verbose logging is enabled", async () => {
+  state.verbose = true
+
+  const logger = {
+    debug: mock(() => {}),
+  }
+  const payload = { body: "response body" }
+  const readValue = mock(() => Promise.resolve(payload))
+
+  await debugJsonAsync(logger as never, "payload", readValue)
+
+  expect(readValue).toHaveBeenCalledTimes(1)
   expect(logger.debug).toHaveBeenCalledWith("payload", JSON.stringify(payload))
 })
 

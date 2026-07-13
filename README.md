@@ -668,9 +668,15 @@ These endpoints mimic the OpenAI API structure.
 
 ### Codex Backend Proxy Endpoints
 
-| Endpoint             | Method | Description |
-| -------------------- | ------ | ----------- |
-| `POST /alpha/search` | `POST` | Transparently forwards the JSON body and query parameters to the Codex Alpha Search upstream. The gateway replaces client authorization and account headers with the active Codex login, forwards compatible headers such as `accept`, `content-type`, `originator`, `user-agent`, and `cookie`, and returns the upstream status, headers, and body unchanged. |
+These endpoints require an active Codex login. Each endpoint is available both without a version prefix and under `/v1`.
+
+| Endpoint | Method | Description |
+| --- | --- | --- |
+| `POST /alpha/search`<br>`POST /v1/alpha/search` | `POST` | Transparently forwards the JSON body and query parameters to the Codex Alpha Search upstream. |
+| `POST /images/generations`<br>`POST /v1/images/generations` | `POST` | Forwards a JSON image generation request to the Codex Images upstream. When the request omits `Content-Type`, the gateway defaults it to `application/json`. |
+| `POST /images/edits`<br>`POST /v1/images/edits` | `POST` | Forwards an image edit request to the Codex Images upstream. Send this request as `multipart/form-data` and let the HTTP client generate the `boundary`; the gateway preserves the incoming content type and streams the upload body. |
+
+For every endpoint above, the gateway replaces client authorization and account headers with the active Codex login, preserves query parameters and compatible request headers, and returns the upstream status, headers, and body.
 
 ### Anthropic Compatible Endpoints
 
