@@ -108,11 +108,11 @@ describe("builtin provider config", () => {
     )
 
     expect(JSON.parse(output)).toEqual({
-      messages: true,
+      messages: false,
       responses: false,
     })
     expect(readConfigFile(configPath).contextManagement).toEqual({
-      messages: true,
+      messages: false,
       responses: false,
     })
   })
@@ -195,7 +195,7 @@ describe("builtin provider config", () => {
     const tempDir = createTempConfigDir()
     writeConfigFile(tempDir, {
       contextManagement: {
-        messages: false,
+        messages: true,
         responses: true,
       },
     })
@@ -206,7 +206,7 @@ describe("builtin provider config", () => {
     )
 
     expect(JSON.parse(output)).toEqual({
-      messages: false,
+      messages: true,
       responses: true,
     })
   })

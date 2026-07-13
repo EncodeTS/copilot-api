@@ -113,7 +113,7 @@ export const handleResponses = async (c: Context) => {
   }
 
   // Smaller than the client compaction threshold, use server-side compaction to maintain cache hit rate
-  const shouldCompactInput = applyResponsesApiContextManagement(
+  const contextManagementDecision = applyResponsesApiContextManagement(
     payload,
     selectedModel?.capabilities.limits,
     {
@@ -121,7 +121,7 @@ export const handleResponses = async (c: Context) => {
       source: "responses",
     },
   )
-  if (shouldCompactInput) {
+  if (contextManagementDecision.shouldPruneInput) {
     compactInputByLatestCompaction(payload)
   }
 
@@ -155,6 +155,7 @@ export const handleResponses = async (c: Context) => {
     return streamSSE(c, async (stream) => {
       const idTracker = createStreamIdTracker()
       let usage: UsageTokens = {}
+      let terminalSeen = false
 
       try {
         for await (const chunk of response) {
@@ -163,6 +164,10 @@ export const handleResponses = async (c: Context) => {
             tailLength: 1_000,
           })
           const parsedEvent = parseResponsesStreamEvent(chunk)
+          const isTerminal = isTerminalResponsesStreamEvent(parsedEvent)
+          if (isTerminal) {
+            terminalSeen = true
+          }
           if (
             parsedEvent?.type === "response.completed"
             || parsedEvent?.type === "response.failed"
@@ -187,9 +192,25 @@ export const handleResponses = async (c: Context) => {
             event: (chunk as { event?: string }).event,
             data: processedData,
           })
+
+          if (isTerminal) {
+            break
+          }
         }
       } catch (error) {
-        await emitResponsesStreamError(stream, logger, error)
+        if (!terminalSeen) {
+          await emitResponsesStreamError(stream, logger, error)
+        }
+        recordUsage(usage)
+        return
+      }
+
+      if (!terminalSeen) {
+        await emitResponsesStreamError(
+          stream,
+          logger,
+          new Error("Responses stream ended without a terminal event"),
+        )
       }
 
       recordUsage(usage)
@@ -232,6 +253,14 @@ const parseResponsesStreamEvent = (
   }
 }
 
+const isTerminalResponsesStreamEvent = (
+  event: ResponseStreamEvent | null,
+): boolean =>
+  event?.type === "response.completed"
+  || event?.type === "response.failed"
+  || event?.type === "response.incomplete"
+  || event?.type === "error"
+
 const removeWebSearchTool = (payload: ResponsesPayload): void => {
   if (!Array.isArray(payload.tools) || payload.tools.length === 0) return
 
@@ -241,7 +270,6 @@ const removeWebSearchTool = (payload: ResponsesPayload): void => {
 }
 
 const COPILOT_UNSUPPORTED_TOOL_TYPES = new Set(["image_generation"])
-const COPILOT_UNSUPPORTED_TOOL_NAMESPACES = new Set(["image_gen"])
 
 export const removeUnsupportedTools = (payload: ResponsesPayload): void => {
   if (!Array.isArray(payload.tools) || payload.tools.length === 0) return
@@ -249,13 +277,8 @@ export const removeUnsupportedTools = (payload: ResponsesPayload): void => {
   const dropped: Array<string> = []
   payload.tools = payload.tools.filter((t) => {
     const type = t.type as string
-    const name = "name" in t && typeof t.name === "string" ? t.name : undefined
-    const isUnsupportedNamespace =
-      type === "namespace"
-      && name !== undefined
-      && COPILOT_UNSUPPORTED_TOOL_NAMESPACES.has(name)
-    if (COPILOT_UNSUPPORTED_TOOL_TYPES.has(type) || isUnsupportedNamespace) {
-      dropped.push(isUnsupportedNamespace ? `${type}:${name}` : type)
+    if (COPILOT_UNSUPPORTED_TOOL_TYPES.has(type)) {
+      dropped.push(type)
       return false
     }
     return true

@@ -261,6 +261,42 @@ describe("responses handler token usage", () => {
     expect(createResponses.mock.calls[0][0].context_management).toBeUndefined()
   })
 
+  test("preserves client-owned context management without pruning input", async () => {
+    responsesUtilsDependencies.isContextManagementEnabledForResponses = () =>
+      true
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+    const input = [
+      { role: "user", content: "old history" },
+      {
+        type: "compaction",
+        id: "compaction-1",
+        encrypted_content: "cipher",
+      },
+      { role: "user", content: "latest history" },
+    ]
+    const contextManagement = [
+      { type: "compaction", compact_threshold: 345_678 },
+    ]
+
+    const response = await createApp().request("/v1/responses", {
+      body: JSON.stringify({
+        model: "gpt-test",
+        input,
+        context_management: contextManagement,
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(createResponses.mock.calls[0][0]).toMatchObject({
+      context_management: contextManagement,
+      input,
+    })
+  })
+
   test("preserves the Codex native Responses intent bundle", async () => {
     createResponses.mockImplementation((payload) =>
       Promise.resolve(createResponsesResult(payload.model)),
@@ -356,7 +392,7 @@ describe("responses handler token usage", () => {
     ])
   })
 
-  test("does not add context management when input ends with compaction trigger", async () => {
+  test("preserves client input ending with a compaction trigger", async () => {
     responsesUtilsDependencies.isContextManagementEnabledForResponses = () =>
       true
     createResponses.mockImplementation((payload) =>
@@ -409,6 +445,10 @@ describe("responses handler token usage", () => {
     expect(createResponses).toHaveBeenCalledTimes(1)
     expect(createResponses.mock.calls[0][0].context_management).toBeUndefined()
     expect(createResponses.mock.calls[0][0].input).toEqual([
+      {
+        content: "old content before compaction",
+        role: "user",
+      },
       {
         encrypted_content: "cipher",
         id: "compaction-1",
@@ -1167,6 +1207,97 @@ describe("responses handler token usage", () => {
     expect(page.items[0]?.total_tokens).toBe(7)
   })
 
+  test("emits one native Responses error when upstream ends without a typed terminal", async () => {
+    createResponses.mockImplementation(() =>
+      Promise.resolve(streamChunks([]) as never),
+    )
+
+    const response = await createApp().request("/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        input: "hello",
+        model: "gpt-test",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body.match(/event: error/gu)).toHaveLength(1)
+    expect(body).toContain("Responses stream ended without a terminal event")
+  })
+
+  test("stops reading after every native Responses typed terminal", async () => {
+    const responseResult = createResponsesResult("gpt-test")
+    const terminalEvents = [
+      {
+        event: "response.completed",
+        data: JSON.stringify({
+          type: "response.completed",
+          sequence_number: 1,
+          response: { ...responseResult, status: "completed" },
+        }),
+      },
+      {
+        event: "response.failed",
+        data: JSON.stringify({
+          type: "response.failed",
+          sequence_number: 1,
+          response: { ...responseResult, status: "failed" },
+        }),
+      },
+      {
+        event: "response.incomplete",
+        data: JSON.stringify({
+          type: "response.incomplete",
+          sequence_number: 1,
+          response: { ...responseResult, status: "incomplete" },
+        }),
+      },
+      {
+        event: "error",
+        data: JSON.stringify({
+          type: "error",
+          sequence_number: 1,
+          code: null,
+          message: "typed upstream error",
+          param: null,
+        }),
+      },
+    ]
+
+    for (const terminalEvent of terminalEvents) {
+      let readsPastTerminal = 0
+      async function* terminalThenTail() {
+        await Promise.resolve()
+        yield terminalEvent
+        readsPastTerminal += 1
+        throw new Error("read past typed terminal")
+      }
+      createResponses.mockReset()
+      createResponses.mockImplementation(() =>
+        Promise.resolve(terminalThenTail() as never),
+      )
+
+      const response = await createApp().request("/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          input: "hello",
+          model: "gpt-test",
+          stream: true,
+        }),
+      })
+      const body = await response.text()
+
+      expect(response.status).toBe(200)
+      expect(body).toContain(`event: ${terminalEvent.event}`)
+      expect(body).not.toContain("read past typed terminal")
+      expect(readsPastTerminal).toBe(0)
+    }
+  })
+
   test("emits native Responses error event when upstream stream throws", async () => {
     createResponses.mockImplementation(() =>
       Promise.resolve(
@@ -1190,7 +1321,7 @@ describe("responses handler token usage", () => {
     expect(response.status).toBe(200)
     const body = await response.text()
 
-    expect(body).toContain("event: error")
+    expect(body.match(/event: error/gu)).toHaveLength(1)
     expect(body).toContain('"type":"error"')
     expect(body).toContain(
       "Upstream stream ended unexpectedly: native responses stream reset",

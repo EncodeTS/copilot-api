@@ -77,9 +77,9 @@ test("debugJsonAsync redacts media payloads when verbose logging is enabled", as
   }
   const imageDataUrl = `data:image/png;base64,${"E".repeat(64)}`
 
-  await debugJsonAsync(logger as never, "payload", async () => ({
-    image_url: imageDataUrl,
-  }))
+  await debugJsonAsync(logger as never, "payload", () =>
+    Promise.resolve({ image_url: imageDataUrl }),
+  )
 
   const serialized = (
     logger.debug.mock.calls as Array<Array<unknown>>

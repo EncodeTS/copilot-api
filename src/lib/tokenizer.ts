@@ -156,6 +156,14 @@ export const getTokenizerFromModel = (model: Model): string => {
   return model.capabilities.tokenizer || "o200k_base"
 }
 
+export const getTextTokenCount = async (
+  text: string,
+  model: Model,
+): Promise<number> => {
+  const encoder = await getEncodeChatFunction(getTokenizerFromModel(model))
+  return encoder.encode(text).length
+}
+
 /**
  * Get model-specific constants for token calculation
  */

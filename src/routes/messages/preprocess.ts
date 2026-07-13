@@ -869,6 +869,36 @@ const filterAssistantThinkingBlocks = (
   }
 }
 
+const resolveEffortForThinkingBudget = (
+  budgetTokens: number | undefined,
+  maxThinkingBudget: number | undefined,
+  supportedEfforts: Array<string> | undefined,
+): string | undefined => {
+  if (
+    typeof budgetTokens !== "number"
+    || typeof maxThinkingBudget !== "number"
+    || maxThinkingBudget <= 0
+    || !supportedEfforts
+    || supportedEfforts.length === 0
+  ) {
+    return undefined
+  }
+
+  const orderedEfforts = supportedEfforts.filter(
+    (effort) => effort !== "none" && effort !== "minimal",
+  )
+  if (orderedEfforts.length === 0) {
+    return undefined
+  }
+
+  const ratio = Math.max(0, Math.min(1, budgetTokens / maxThinkingBudget))
+  const index = Math.min(
+    orderedEfforts.length - 1,
+    Math.max(0, Math.ceil(ratio * orderedEfforts.length) - 1),
+  )
+  return orderedEfforts[index]
+}
+
 export const prepareMessagesApiPayload = (
   payload: AnthropicMessagesPayload,
   selectedModel?: Model,
@@ -878,12 +908,19 @@ export const prepareMessagesApiPayload = (
   stripToolEagerInputStreaming(payload)
   filterAssistantThinkingBlocks(payload)
 
-  // https://platform.claude.com/docs/en/build-with-claude/extended-thinking#extended-thinking-with-tool-use
-  // Using tool_choice: {"type": "any"} or tool_choice: {"type": "tool", "name": "..."} will result in an error because these options force tool use, which is incompatible with extended thinking.
+  // Adaptive thinking supports forced tool choice. Older enabled/budget shapes
+  // still need to be normalized before the forced choice is forwarded.
   const toolChoice = payload.tool_choice
   const disableThink = toolChoice?.type === "any" || toolChoice?.type === "tool"
+  const requestedThinkingBudget =
+    payload.thinking?.type === "enabled" ?
+      payload.thinking.budget_tokens
+    : undefined
 
-  if (selectedModel?.capabilities.supports.adaptive_thinking && !disableThink) {
+  if (
+    selectedModel?.capabilities.supports.adaptive_thinking
+    && (!disableThink || payload.thinking !== undefined)
+  ) {
     if (!payload.thinking) {
       payload.thinking = {
         type: "adaptive",
@@ -906,17 +943,23 @@ export const prepareMessagesApiPayload = (
       payload.thinking.display = "summarized"
     }
 
-    delete payload.temperature
-
     if (payload.thinking.type !== "adaptive") {
       return
     }
+    const maxThinkingBudget =
+      selectedModel.capabilities.supports.max_thinking_budget
+    const reasoningEffort = selectedModel.capabilities.supports.reasoning_effort
     let effort: string =
-      payload.output_config?.effort ?? getReasoningEffortForModel(payload.model)
+      payload.output_config?.effort
+      ?? resolveEffortForThinkingBudget(
+        requestedThinkingBudget,
+        maxThinkingBudget,
+        reasoningEffort,
+      )
+      ?? getReasoningEffortForModel(payload.model)
     if (effort === "none" || effort === "minimal") {
       effort = "low"
     }
-    const reasoningEffort = selectedModel.capabilities.supports.reasoning_effort
     if (reasoningEffort && !reasoningEffort.includes(effort)) {
       effort = reasoningEffort.at(-1) as
         | "low"

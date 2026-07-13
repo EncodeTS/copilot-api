@@ -1160,6 +1160,82 @@ describe("prepareMessagesApiPayload", () => {
     }
   })
 
+  test("maps Claude Opus maximum thinking budget to adaptive max effort", () => {
+    const format = {
+      type: "json_schema" as const,
+      schema: {
+        type: "object",
+        properties: { ok: { type: "boolean" } },
+        required: ["ok"],
+      },
+    }
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4.8",
+      max_tokens: 32_000,
+      messages: [{ role: "user", content: "hello" }],
+      thinking: {
+        type: "enabled",
+        budget_tokens: 31_999,
+      },
+      output_config: { format },
+      temperature: 0.7,
+    }
+
+    prepareMessagesApiPayload(payload, {
+      capabilities: {
+        supports: {
+          adaptive_thinking: true,
+          max_thinking_budget: 32_000,
+          reasoning_effort: ["low", "medium", "high", "xhigh", "max"],
+        },
+      },
+    } as never)
+
+    expect(payload.thinking).toEqual({
+      type: "adaptive",
+      display: "summarized",
+    })
+    expect(payload.output_config).toEqual({
+      effort: "max",
+      format,
+    })
+    expect(payload.temperature).toBe(0.7)
+  })
+
+  test("maps manual thinking budgets monotonically across supported efforts", () => {
+    const cases = [
+      [1, "low"],
+      [8_000, "medium"],
+      [16_000, "high"],
+      [24_000, "xhigh"],
+      [31_999, "max"],
+    ] as const
+
+    for (const [budgetTokens, expectedEffort] of cases) {
+      const payload: AnthropicMessagesPayload = {
+        model: "claude-opus-4.8",
+        max_tokens: 32_000,
+        messages: [{ role: "user", content: "hello" }],
+        thinking: {
+          type: "enabled",
+          budget_tokens: budgetTokens,
+        },
+      }
+
+      prepareMessagesApiPayload(payload, {
+        capabilities: {
+          supports: {
+            adaptive_thinking: true,
+            max_thinking_budget: 32_000,
+            reasoning_effort: ["low", "medium", "high", "xhigh", "max"],
+          },
+        },
+      } as never)
+
+      expect(payload.output_config?.effort).toBe(expectedEffort)
+    }
+  })
+
   test("sets summarized display for non-Opus Claude versions at least 4.7", () => {
     const payload: AnthropicMessagesPayload = {
       model: "claude-sonnet-4.7",
@@ -1211,7 +1287,7 @@ describe("prepareMessagesApiPayload", () => {
     })
   })
 
-  test("preserves client effort when thinking is active", () => {
+  test("preserves client effort and temperature when thinking is active", () => {
     const payload: AnthropicMessagesPayload = {
       model: "gpt-5.4",
       max_tokens: 128,
@@ -1242,7 +1318,7 @@ describe("prepareMessagesApiPayload", () => {
     expect(payload.output_config).toEqual({
       effort: "low",
     })
-    expect(payload.temperature).toBeUndefined()
+    expect(payload.temperature).toBe(0.7)
   })
 
   test("does not synthesize effort for manual budget thinking", () => {
@@ -1271,7 +1347,7 @@ describe("prepareMessagesApiPayload", () => {
       budget_tokens: 1024,
     })
     expect(payload.output_config).toBeUndefined()
-    expect(payload.temperature).toBeUndefined()
+    expect(payload.temperature).toBe(0.7)
   })
 
   test("preserves disabled thinking without setting effort", () => {
@@ -1324,6 +1400,42 @@ describe("prepareMessagesApiPayload", () => {
 
     expect(payload.thinking).toBeUndefined()
     expect(payload.output_config).toBeUndefined()
+  })
+
+  test("normalizes enabled thinking before preserving forced tool choice", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4.8",
+      max_tokens: 32_000,
+      messages: [{ role: "user", content: "use the tool" }],
+      thinking: {
+        type: "enabled",
+        budget_tokens: 31_999,
+      },
+      tool_choice: {
+        type: "tool",
+        name: "apply_patch",
+      },
+    }
+
+    prepareMessagesApiPayload(payload, {
+      capabilities: {
+        supports: {
+          adaptive_thinking: true,
+          max_thinking_budget: 32_000,
+          reasoning_effort: ["low", "medium", "high", "xhigh", "max"],
+        },
+      },
+    } as never)
+
+    expect(payload.thinking).toEqual({
+      type: "adaptive",
+      display: "summarized",
+    })
+    expect(payload.output_config).toEqual({ effort: "max" })
+    expect(payload.tool_choice).toEqual({
+      type: "tool",
+      name: "apply_patch",
+    })
   })
 
   test("strips top-level cache_control sent by Zed (minimal-mode shape)", () => {

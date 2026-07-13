@@ -357,14 +357,14 @@ const handleOpenAIResponsesProviderMessages = async (
     responsesPayload.stream = true
   }
 
-  const shouldCompactInput = applyResponsesApiContextManagement(
+  const contextManagementDecision = applyResponsesApiContextManagement(
     responsesPayload,
     selectedModel?.capabilities.limits,
     {
       source: "messages",
     },
   )
-  if (shouldCompactInput) {
+  if (contextManagementDecision.shouldPruneInput) {
     compactInputByLatestCompaction(responsesPayload)
   }
 

@@ -691,6 +691,63 @@ test("messages Responses flow ignores DONE before a typed terminal event", async
   expect(body).toContain("event: message_stop")
 })
 
+test("messages Responses flow emits one in-band error for failed terminals", async () => {
+  const failedResponse = {
+    ...createResponsesResult("gpt-test"),
+    status: "failed",
+    error: { code: "server_error", message: "model failed" },
+  }
+  const terminalEvents = [
+    {
+      event: "response.failed",
+      data: JSON.stringify({
+        type: "response.failed",
+        sequence_number: 1,
+        response: failedResponse,
+      }),
+    },
+    {
+      event: "error",
+      data: JSON.stringify({
+        type: "error",
+        sequence_number: 1,
+        code: "server_error",
+        message: "typed stream error",
+        param: null,
+      }),
+    },
+  ]
+
+  for (const terminalEvent of terminalEvents) {
+    createResponses.mockResolvedValueOnce(
+      createThrowingStream(
+        [terminalEvent],
+        "read past terminal",
+      ) as unknown as CreateResponsesReturn,
+    )
+    const payload: AnthropicMessagesPayload = {
+      max_tokens: 128,
+      messages: [{ role: "user", content: "hello" }],
+      model: "gpt-test",
+      stream: true,
+    }
+    const app = new Hono()
+    app.post("/", (c) =>
+      handleWithResponsesApi(c, payload, {
+        logger,
+        requestId: "request-1",
+        selectedModel: createModel(["/responses"]),
+      }),
+    )
+
+    const body = await (await app.request("/", { method: "POST" })).text()
+    expect(body.match(/event: error/gu)).toHaveLength(1)
+    expect(body).not.toContain("Responses stream ended without completion")
+    expect(body).not.toContain("read past terminal")
+    expect(body).not.toContain("event: message_stop")
+  }
+})
+
 test("messages Messages flow records Copilot AIU from non-streaming response", async () => {
   createMessages.mockImplementationOnce(
     (payload: AnthropicMessagesPayload): Promise<CreateMessagesReturn> => {

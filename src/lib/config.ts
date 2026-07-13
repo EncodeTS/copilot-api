@@ -184,7 +184,7 @@ const legacyResponsesApiCompactThresholds: Record<string, number> = {
 }
 
 const defaultContextManagement = {
-  messages: true,
+  messages: false,
   responses: false,
 } satisfies Required<ContextManagementConfig>
 

@@ -122,6 +122,31 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
     ])
   })
 
+  it("does not restore legacy malformed reasoning signatures into Responses input", () => {
+    const translateSignature = (signature: string) =>
+      translateAnthropicMessagesToResponsesPayload({
+        model: "gpt-5.6-sol",
+        max_tokens: 128,
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "thinking",
+                thinking: "Historical summary",
+                signature,
+              },
+            ],
+          },
+        ],
+      }).input
+
+    expect([
+      translateSignature("@reasoning-id"),
+      translateSignature("opaque-cipher@"),
+    ]).toEqual([[], []])
+  })
+
   it("prefers the requested output_config reasoning effort", () => {
     const result = translateAnthropicMessagesToResponsesPayload({
       ...samplePayload,
@@ -131,6 +156,55 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
     })
 
     expect(result.reasoning?.effort).toBe("xhigh")
+  })
+
+  it("preserves the Claude client request bundle when bridging to GPT Responses", () => {
+    const schema = {
+      type: "object",
+      properties: { ok: { type: "boolean" } },
+      required: ["ok"],
+      additionalProperties: false,
+    }
+    const result = translateAnthropicMessagesToResponsesPayload({
+      model: "gpt-5.6-sol",
+      max_tokens: 100,
+      messages: [{ role: "user", content: "return structured output" }],
+      temperature: 0.7,
+      thinking: { type: "adaptive" },
+      output_config: {
+        effort: "max",
+        format: {
+          type: "json_schema",
+          schema,
+        },
+      },
+      tools: [],
+      tool_choice: {
+        type: "auto",
+        disable_parallel_tool_use: true,
+      },
+    } as unknown as AnthropicMessagesPayload)
+
+    expect(result).toMatchObject({
+      max_output_tokens: 100,
+      temperature: 0.7,
+      parallel_tool_calls: false,
+      reasoning: {
+        effort: "max",
+        summary: "auto",
+        context: "all_turns",
+      },
+      text: {
+        format: {
+          type: "json_schema",
+          name: "anthropic_output",
+          strict: true,
+          schema,
+        },
+      },
+      tools: [],
+    })
+    expect(result).not.toHaveProperty("tool_choice")
   })
 
   it("converts anthropic text blocks into response input messages", () => {
@@ -863,6 +937,80 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
 })
 
 describe("translateResponsesResultToAnthropic", () => {
+  it("clamps ordinary input usage while preserving cache buckets", () => {
+    const response = {
+      id: "resp_usage",
+      object: "response",
+      created_at: 0,
+      model: "gpt-5.6-sol",
+      output: [],
+      output_text: "",
+      status: "completed",
+      usage: {
+        input_tokens: 10,
+        input_tokens_details: {
+          cached_tokens: 8,
+          cache_write_tokens: 7,
+        },
+        output_tokens: 3,
+        total_tokens: 13,
+      },
+      error: null,
+      incomplete_details: null,
+      instructions: null,
+      metadata: null,
+      parallel_tool_calls: false,
+      temperature: null,
+      tool_choice: null,
+      tools: [],
+      top_p: null,
+    } as ResponsesResult
+
+    expect(translateResponsesResultToAnthropic(response).usage).toEqual({
+      input_tokens: 0,
+      output_tokens: 3,
+      cache_creation_input_tokens: 7,
+      cache_read_input_tokens: 8,
+    })
+  })
+
+  it("does not invent a reasoning signature when Copilot returned no encrypted carrier", () => {
+    const response = {
+      id: "resp_without_carrier",
+      object: "response",
+      created_at: 0,
+      model: "gpt-5.6-sol",
+      output: [
+        {
+          id: "reason_without_carrier",
+          type: "reasoning",
+          summary: [{ type: "summary_text", text: "Visible summary" }],
+          status: "completed",
+        },
+      ],
+      output_text: "",
+      status: "completed",
+      usage: null,
+      error: null,
+      incomplete_details: null,
+      instructions: null,
+      metadata: null,
+      parallel_tool_calls: false,
+      temperature: null,
+      tool_choice: null,
+      tools: [],
+      top_p: null,
+    } as ResponsesResult
+
+    expect(translateResponsesResultToAnthropic(response).content).toEqual([
+      {
+        type: "thinking",
+        thinking: "Visible summary",
+        signature: "",
+      },
+    ])
+  })
+
   it("round-trips a real encrypted reasoning carrier into the next Responses input", () => {
     const firstTurn: ResponsesResult = {
       id: "resp_carrier",
@@ -900,6 +1048,10 @@ describe("translateResponsesResultToAnthropic", () => {
         signature: "opaque-encrypted-carrier@reason_carrier",
       },
     ])
+    const reasoningBlock = anthropic.content[0]
+    if (reasoningBlock?.type !== "thinking") {
+      throw new Error("Expected translated encrypted reasoning")
+    }
 
     const nextTurn = translateAnthropicMessagesToResponsesPayload({
       model: "gpt-5.6-sol",
@@ -907,7 +1059,7 @@ describe("translateResponsesResultToAnthropic", () => {
       messages: [
         {
           role: "assistant",
-          content: anthropic.content,
+          content: [reasoningBlock],
         },
         {
           role: "user",
@@ -1047,6 +1199,11 @@ describe("translateResponsesResultToAnthropic", () => {
           summary: [{ type: "summary_text", text: "hidden reasoning" }],
           encrypted_content: "opaque",
           status: "completed",
+        },
+        {
+          id: "compaction-1",
+          type: "compaction",
+          encrypted_content: "opaque-compaction",
         },
         {
           id: "message-1",

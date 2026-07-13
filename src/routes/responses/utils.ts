@@ -1812,6 +1812,12 @@ const createCompactionContextManagement = (
   },
 ]
 
+export type ResponsesContextManagementDecision = {
+  owner: "client" | "gateway" | "none"
+  injected: boolean
+  shouldPruneInput: boolean
+}
+
 export const applyResponsesApiContextManagement = (
   payload: ResponsesPayload,
   modelLimits: ResponsesModelLimits | undefined,
@@ -1819,17 +1825,29 @@ export const applyResponsesApiContextManagement = (
     compactThresholdRatio?: number
     source: ResponsesApiContextManagementSource
   },
-): boolean => {
+): ResponsesContextManagementDecision => {
   if (hasTerminalCompactionTrigger(payload)) {
-    return isContextManagementEnabledForSource(options.source)
+    return {
+      owner: "client",
+      injected: false,
+      shouldPruneInput: false,
+    }
   }
 
   if (payload.context_management !== undefined) {
-    return true
+    return {
+      owner: "client",
+      injected: false,
+      shouldPruneInput: false,
+    }
   }
 
   if (!isContextManagementEnabledForSource(options.source)) {
-    return false
+    return {
+      owner: "none",
+      injected: false,
+      shouldPruneInput: false,
+    }
   }
 
   const modelCompactThreshold = getModelResponsesApiCompactThreshold(
@@ -1843,7 +1861,11 @@ export const applyResponsesApiContextManagement = (
           ?? DEFAULT_RESPONSES_COMPACT_THRESHOLD_RATIO,
       ),
   )
-  return true
+  return {
+    owner: "gateway",
+    injected: true,
+    shouldPruneInput: true,
+  }
 }
 
 const isContextManagementEnabledForSource = (

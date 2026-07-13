@@ -31,7 +31,7 @@ const allowedAnthropicBetas = new Set([
   ADVANCED_TOOL_USE_BETA,
 ])
 
-const buildAnthropicBetaHeader = (
+export const buildAnthropicBetaHeader = (
   anthropicBetaHeader: string | undefined,
   thinking: AnthropicMessagesPayload["thinking"],
   _model: string,
@@ -61,7 +61,7 @@ const buildAnthropicBetaHeader = (
   return undefined
 }
 
-export const createMessages = async (
+export const buildMessagesRequestHeaders = (
   payload: AnthropicMessagesPayload,
   anthropicBetaHeader: string | undefined,
   options: {
@@ -70,7 +70,7 @@ export const createMessages = async (
     sessionId?: string
     compactType?: CompactType
   },
-): Promise<CreateMessagesReturn> => {
+): Record<string, string> => {
   if (!state.copilotToken) throw new Error("Copilot token not found")
 
   const enableVision = payload.messages.some((message) => {
@@ -124,7 +124,6 @@ export const createMessages = async (
     prepareMessageProxyHeaders(headers)
   }
 
-  // align with vscode copilot extension anthropic-beta
   const anthropicBeta = buildAnthropicBetaHeader(
     anthropicBetaHeader,
     payload.thinking,
@@ -133,6 +132,54 @@ export const createMessages = async (
   if (anthropicBeta) {
     headers["anthropic-beta"] = anthropicBeta
   }
+
+  return headers
+}
+
+export const countMessagesTokens = async (
+  payload: AnthropicMessagesPayload,
+  anthropicBetaHeader: string | undefined,
+  options: {
+    requestId: string
+    sessionId?: string
+  },
+): Promise<{ input_tokens: number }> => {
+  const response = await fetch(
+    `${copilotBaseUrl(state)}/v1/messages/count_tokens`,
+    {
+      method: "POST",
+      headers: buildMessagesRequestHeaders(
+        payload,
+        anthropicBetaHeader,
+        options,
+      ),
+      body: JSON.stringify(payload),
+    },
+  )
+
+  logCopilotRateLimits(response.headers)
+  if (!response.ok) {
+    throw new HTTPError("Failed to count messages tokens", response)
+  }
+
+  return (await response.json()) as { input_tokens: number }
+}
+
+export const createMessages = async (
+  payload: AnthropicMessagesPayload,
+  anthropicBetaHeader: string | undefined,
+  options: {
+    subagentMarker?: SubagentMarker | null
+    requestId: string
+    sessionId?: string
+    compactType?: CompactType
+  },
+): Promise<CreateMessagesReturn> => {
+  const headers = buildMessagesRequestHeaders(
+    payload,
+    anthropicBetaHeader,
+    options,
+  )
 
   consola.log(`<-- model: ${payload.model}`)
 
