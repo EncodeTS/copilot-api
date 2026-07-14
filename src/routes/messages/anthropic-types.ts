@@ -204,21 +204,43 @@ export interface AnthropicSystemMessage {
 export type AnthropicMessage = AnthropicUserMessage | AnthropicAssistantMessage
 export type AnthropicInputMessage = AnthropicMessage | AnthropicSystemMessage
 
-export interface AnthropicTool {
+export interface AnthropicCustomTool {
   name: string
   description?: string
   input_schema: Record<string, unknown>
   defer_loading?: boolean
   cache_control?: AnthropicCacheControl | null
-  // Server-side tool fields (e.g. web_search_20250305). Server tools carry a
-  // `type` and omit `input_schema`; these stay optional so the same interface
-  // can describe both custom and server tools without rippling type changes.
-  type?: string
+  type?: never
+  max_uses?: never
+  allowed_callers?: never
+  response_inclusion?: never
+  allowed_domains?: never
+  blocked_domains?: never
+  user_location?: never
+}
+
+export type AnthropicWebSearchCaller = "direct" | `code_execution_${number}`
+
+export interface AnthropicWebSearchTool {
+  name: "web_search"
+  type: `web_search_${number}`
+  description?: never
+  input_schema?: never
+  defer_loading?: never
+  cache_control?: never
   max_uses?: number
+  allowed_callers?: Array<AnthropicWebSearchCaller>
+  response_inclusion?: "full" | "excluded"
   allowed_domains?: Array<string>
   blocked_domains?: Array<string>
   user_location?: Record<string, unknown>
 }
+
+export type AnthropicTool = AnthropicCustomTool | AnthropicWebSearchTool
+
+export const isAnthropicCustomTool = (
+  tool: AnthropicTool,
+): tool is AnthropicCustomTool => tool.input_schema !== undefined
 
 // --- Web search result blocks (Anthropic server tool shape) ---------------
 // Emitted in the assistant response when the proxy fulfills a web_search tool.

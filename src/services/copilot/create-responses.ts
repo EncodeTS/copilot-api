@@ -38,6 +38,7 @@ export interface ResponsesPayload {
   temperature?: number | null
   top_p?: number | null
   max_output_tokens?: number | null
+  max_tool_calls?: number | null
   metadata?: Metadata | null
   stream?: boolean | null
   safety_identifier?: string | null

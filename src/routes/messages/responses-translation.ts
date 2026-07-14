@@ -51,11 +51,13 @@ import {
 
 import {
   isAnthropicDocumentBlock,
+  isAnthropicCustomTool,
   isAnthropicImageBlock,
   isAnthropicTextBlock,
   isAnthropicToolReferenceBlock,
   type AnthropicAssistantContentBlock,
   type AnthropicAssistantMessage,
+  type AnthropicCustomTool,
   type AnthropicDocumentBlock,
   type AnthropicResponse,
   type AnthropicImageBlock,
@@ -850,9 +852,9 @@ const extractMcpToolSearchSentinel = (
 const resolveDeferredTool = (
   toolName: string,
   originalTools: Array<AnthropicTool>,
-): AnthropicTool => {
+): AnthropicCustomTool => {
   const tool = originalTools.find((candidate) => candidate.name === toolName)
-  if (tool && isDeferredToolName(tool.name)) {
+  if (tool && isAnthropicCustomTool(tool) && isDeferredToolName(tool.name)) {
     return tool
   }
 
@@ -919,10 +921,11 @@ const convertAnthropicTools = (
 
   const converted: Array<Tool> = []
   let addedToolSearch = false
+  const customTools = tools.filter(isAnthropicCustomTool)
   const searchableToolNames =
-    toolSearchEnabled ? listDeferredToolNames(tools) : []
+    toolSearchEnabled ? listDeferredToolNames(customTools) : []
 
-  for (const tool of tools) {
+  for (const tool of customTools) {
     if (isBridgeToolSearchName(tool.name)) {
       if (toolSearchEnabled && !addedToolSearch) {
         converted.push(createResponsesToolSearchDefinition(searchableToolNames))
@@ -967,7 +970,7 @@ const createResponsesToolSearchDefinition = (
   },
 })
 
-const convertToolToFunction = (tool: AnthropicTool): Tool => ({
+const convertToolToFunction = (tool: AnthropicCustomTool): Tool => ({
   type: "function",
   name: tool.name,
   parameters: normalizeToolSchema(tool.input_schema),
@@ -975,7 +978,7 @@ const convertToolToFunction = (tool: AnthropicTool): Tool => ({
   ...(tool.description ? { description: tool.description } : {}),
 })
 
-const convertDeferredToolToNamespace = (tool: AnthropicTool): Tool => ({
+const convertDeferredToolToNamespace = (tool: AnthropicCustomTool): Tool => ({
   type: "namespace",
   name: tool.name,
   ...(tool.description ? { description: tool.description } : {}),

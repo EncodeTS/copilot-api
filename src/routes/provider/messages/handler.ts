@@ -71,6 +71,7 @@ import {
   translateResponsesResultToAnthropic,
 } from "~/routes/messages/responses-translation"
 import {
+  applyWebSearchFallbackHeaders,
   buildSyntheticStreamEvents,
   hasWebSearchServerTool,
   isWebSearchOnlyRequest,
@@ -252,6 +253,7 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
   },
 ): Promise<Response> => {
   const { modelConfig, payload, provider, providerConfig } = options
+  applyWebSearchFallbackHeaders(c, payload, logger)
   const responsesPayload = prepareWebSearchResponsesPayload(payload)
 
   debugJson(logger, "provider.messages.responses.web_search.request", {
