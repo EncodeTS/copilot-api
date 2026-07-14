@@ -1210,4 +1210,80 @@ describe("translateResponsesStreamEvent canonical done values", () => {
     expect(starts).toHaveLength(2)
     expect(starts.map((event) => event.index)).toEqual([0, 1])
   })
+
+  test("fails closed instead of reopening partial tool arguments", () => {
+    const state = createResponsesStreamState()
+    const call0 = {
+      type: "function_call" as const,
+      call_id: "call-0",
+      name: "lookup",
+      arguments: '{"query":"zero"}',
+      status: "completed" as const,
+    }
+    const call1 = {
+      type: "function_call" as const,
+      call_id: "call-1",
+      name: "lookup",
+      arguments: '{"query":"one"}',
+      status: "completed" as const,
+    }
+    const streamedEvents = [
+      ...translateResponsesStreamEvent(
+        {
+          type: "response.output_item.added",
+          item: { ...call0, arguments: "", status: "in_progress" },
+          output_index: 0,
+          sequence_number: 1,
+        },
+        state,
+      ),
+      ...translateResponsesStreamEvent(
+        {
+          type: "response.function_call_arguments.delta",
+          delta: '{"query":',
+          item_id: "call-0",
+          output_index: 0,
+          sequence_number: 2,
+        },
+        state,
+      ),
+      ...translateResponsesStreamEvent(
+        {
+          type: "response.output_item.added",
+          item: call1,
+          output_index: 1,
+          sequence_number: 3,
+        },
+        state,
+      ),
+      ...translateResponsesStreamEvent(
+        {
+          type: "response.function_call_arguments.done",
+          arguments: call1.arguments,
+          item_id: call1.call_id,
+          name: call1.name,
+          output_index: 1,
+          sequence_number: 4,
+        },
+        state,
+      ),
+    ]
+    const terminalEvents = translateResponsesStreamEvent(
+      createCompletedEvent([call0, call1]),
+      state,
+    )
+    const allEvents = [...streamedEvents, ...terminalEvents]
+
+    expect(
+      allEvents.filter((event) => event.type === "content_block_start"),
+    ).toHaveLength(2)
+    expect(terminalEvents.at(-1)).toEqual({
+      type: "error",
+      error: {
+        type: "api_error",
+        message:
+          "Responses function arguments terminal value arrived after its content block closed.",
+      },
+    })
+  })
 })
