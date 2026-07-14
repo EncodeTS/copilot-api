@@ -33,20 +33,32 @@ interface RunDebugOptions {
   json: boolean
 }
 
-async function getPackageVersion(): Promise<string> {
-  try {
-    const packageJsonPath = fileURLToPath(
-      new URL("../package.json", import.meta.url),
-    )
-    // @ts-expect-error https://github.com/sindresorhus/eslint-plugin-unicorn/blob/v59.0.1/docs/rules/prefer-json-parse-buffer.md
-    // JSON.parse() can actually parse buffers
-    const packageJson = JSON.parse(await fs.readFile(packageJsonPath)) as {
-      version: string
+export async function resolvePackageVersion(
+  moduleUrl: string | URL = import.meta.url,
+): Promise<string> {
+  const baseUrl = typeof moduleUrl === "string" ? new URL(moduleUrl) : moduleUrl
+  const candidates = [
+    new URL("./package.json", baseUrl),
+    new URL("../package.json", baseUrl),
+  ]
+
+  for (const candidate of candidates) {
+    try {
+      const packageJson = JSON.parse(
+        await fs.readFile(fileURLToPath(candidate), "utf8"),
+      ) as { version?: unknown }
+      if (
+        typeof packageJson.version === "string"
+        && packageJson.version.length > 0
+      ) {
+        return packageJson.version
+      }
+    } catch {
+      // Source and packaged bundles place package.json at different depths.
     }
-    return packageJson.version
-  } catch {
-    return "unknown"
   }
+
+  return "unknown"
 }
 
 function getRuntimeInfo() {
@@ -74,7 +86,7 @@ async function checkFileExists(filePath: string): Promise<boolean> {
 
 async function getDebugInfo(): Promise<DebugInfo> {
   const [version, tokenExists] = await Promise.all([
-    getPackageVersion(),
+    resolvePackageVersion(),
     checkFileExists(PATHS.GITHUB_TOKEN_PATH),
   ])
 
