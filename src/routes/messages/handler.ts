@@ -80,8 +80,6 @@ export async function handleCompletion(c: Context) {
 
   normalizeSystemMessages(anthropicPayload)
 
-  sanitizeIdeTools(anthropicPayload)
-
   const subagentMarker = parseSubagentMarkerFromFirstUser(anthropicPayload)
   if (subagentMarker) {
     debugJson(logger, "Detected Subagent marker:", subagentMarker)
@@ -125,6 +123,13 @@ export async function handleCompletion(c: Context) {
       applyLastMessageCacheControl(anthropicPayload, lastMessageCacheControl)
     }
   }
+
+  const selectedModel = findEndpointModel(anthropicPayload.model)
+  const useMessagesApi = shouldUseMessagesApi(selectedModel)
+  sanitizeIdeTools(anthropicPayload, {
+    preserveExecuteCode: useMessagesApi,
+  })
+
   const requestId = generateRequestIdFromPayload(anthropicPayload, sessionId)
   logger.debug("Generated request ID:", requestId)
 
@@ -133,10 +138,9 @@ export async function handleCompletion(c: Context) {
   }
   logger.debug("Extracted session ID:", sessionId)
 
-  const selectedModel = findEndpointModel(anthropicPayload.model)
   anthropicPayload.model = selectedModel?.id ?? anthropicPayload.model
 
-  if (shouldUseMessagesApi(selectedModel)) {
+  if (useMessagesApi) {
     return await messagesFlowHandlers.handleWithMessagesApi(
       c,
       anthropicPayload,

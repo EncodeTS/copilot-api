@@ -217,7 +217,7 @@ describe("messages handler orchestration", () => {
     ])
   })
 
-  test("removes executeCode and rewrites getDiagnostics before forwarding tools", async () => {
+  test("preserves executeCode for native Messages and rewrites getDiagnostics", async () => {
     selectedModel = {
       id: "messages-model",
       supported_endpoints: ["/v1/messages"],
@@ -258,6 +258,11 @@ describe("messages handler orchestration", () => {
     const [, forwardedPayload] = handleWithMessagesApi.mock.calls[0]
     expect(forwardedPayload.tools).toEqual([
       {
+        name: "mcp__ide__executeCode",
+        description: "Execute code in VS Code",
+        input_schema: { type: "object" },
+      },
+      {
         name: "mcp__ide__getDiagnostics",
         description:
           "Get language diagnostics from VS Code. Returns errors, warnings, information, and hints for files in the workspace.",
@@ -268,6 +273,80 @@ describe("messages handler orchestration", () => {
         description: "Keep me",
         input_schema: { type: "object" },
       },
+    ])
+  })
+
+  test("continues removing eager executeCode from the Responses bridge", async () => {
+    selectedModel = {
+      id: "responses-model",
+      supported_endpoints: ["/responses"],
+    }
+
+    const response = await createApp().request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(
+        createPayload({
+          tools: [
+            {
+              name: "mcp__ide__executeCode",
+              description: "Execute code in VS Code",
+              input_schema: { type: "object" },
+            },
+            {
+              name: "keep_me",
+              description: "Keep me",
+              input_schema: { type: "object" },
+            },
+          ],
+        }),
+      ),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe("responses")
+    const [, forwardedPayload] = handleWithResponsesApi.mock.calls[0]
+    expect(forwardedPayload.tools?.map((tool) => tool.name)).toEqual([
+      "keep_me",
+    ])
+  })
+
+  test("continues removing eager executeCode from Chat Completions", async () => {
+    selectedModel = {
+      id: "chat-model",
+      supported_endpoints: ["/chat/completions"],
+    }
+
+    const response = await createApp().request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(
+        createPayload({
+          tools: [
+            {
+              name: "mcp__ide__executeCode",
+              description: "Execute code in VS Code",
+              input_schema: { type: "object" },
+            },
+            {
+              name: "keep_me",
+              description: "Keep me",
+              input_schema: { type: "object" },
+            },
+          ],
+        }),
+      ),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe("chat")
+    const [, forwardedPayload] = handleWithChatCompletions.mock.calls[0]
+    expect(forwardedPayload.tools?.map((tool) => tool.name)).toEqual([
+      "keep_me",
     ])
   })
 
