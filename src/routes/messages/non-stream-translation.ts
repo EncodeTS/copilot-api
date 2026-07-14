@@ -14,6 +14,7 @@ import {
 
 import {
   isAnthropicDocumentBlock,
+  isAnthropicCustomTool,
   isAnthropicImageBlock,
   isAnthropicTextBlock,
   isAnthropicToolReferenceBlock,
@@ -552,7 +553,7 @@ function translateAnthropicToolsToOpenAI(
   if (!anthropicTools) {
     return undefined
   }
-  return anthropicTools.map((tool) => ({
+  return anthropicTools.filter(isAnthropicCustomTool).map((tool) => ({
     type: "function",
     function: {
       name: tool.name,

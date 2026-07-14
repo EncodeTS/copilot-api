@@ -11,6 +11,7 @@ import {
   getMessageApiWebSearchModel,
   isResponsesApiWebSearchEnabled,
 } from "~/lib/config"
+import { HTTPError } from "~/lib/error"
 import { findEndpointModel } from "~/lib/models"
 import {
   parseProviderModelAlias,
@@ -42,6 +43,7 @@ import type {
   AnthropicStreamEventData,
   AnthropicTextBlock,
   AnthropicTool,
+  AnthropicWebSearchTool,
   AnthropicWebSearchContentBlock,
   AnthropicWebSearchResultItem,
 } from "../anthropic-types"
@@ -87,7 +89,9 @@ export interface WebSearchFlowOptions {
   compactType?: CompactType
 }
 
-const isWebSearchServerTool = (tool: AnthropicTool): boolean =>
+const isWebSearchServerTool = (
+  tool: AnthropicTool,
+): tool is AnthropicWebSearchTool =>
   typeof tool.type === "string"
   && tool.type.startsWith("web_search")
   && !tool.input_schema
@@ -109,6 +113,66 @@ export const isWebSearchOnlyRequest = (
   Array.isArray(payload.tools)
   && payload.tools.length > 0
   && payload.tools.every(isWebSearchServerTool)
+
+type WebSearchFallbackPlan = {
+  downgradeReasons: Array<"dynamic-filtering" | "response-inclusion">
+  mode: "direct" | "direct-fallback"
+  toolType: string | null
+}
+
+const DYNAMIC_FILTERING_WEB_SEARCH_VERSION = 20_260_209
+
+export const resolveWebSearchFallbackPlan = (
+  payload: AnthropicMessagesPayload,
+): WebSearchFallbackPlan => {
+  const tool = payload.tools?.find(isWebSearchServerTool)
+  const toolType = tool?.type ?? null
+  const versionMatch = /^web_search_(\d{8})$/u.exec(toolType ?? "")
+  const version = versionMatch ? Number.parseInt(versionMatch[1], 10) : 0
+  const allowedCallers = tool?.allowed_callers
+  const dynamicFilteringRequested =
+    allowedCallers === undefined ?
+      version >= DYNAMIC_FILTERING_WEB_SEARCH_VERSION
+    : !allowedCallers.includes("direct")
+      || allowedCallers.some((caller) => caller !== "direct")
+
+  const downgradeReasons: WebSearchFallbackPlan["downgradeReasons"] = []
+  if (dynamicFilteringRequested) {
+    downgradeReasons.push("dynamic-filtering")
+    if (tool?.response_inclusion === "excluded") {
+      downgradeReasons.push("response-inclusion")
+    }
+  }
+
+  return {
+    downgradeReasons,
+    mode: downgradeReasons.length > 0 ? "direct-fallback" : "direct",
+    toolType,
+  }
+}
+
+export const applyWebSearchFallbackHeaders = (
+  c: Context,
+  payload: AnthropicMessagesPayload,
+  logger: ConsolaInstance,
+): WebSearchFallbackPlan => {
+  const fallbackPlan = resolveWebSearchFallbackPlan(payload)
+  c.header("x-copilot-api-web-search-mode", fallbackPlan.mode)
+
+  if (fallbackPlan.downgradeReasons.length > 0) {
+    const downgrade = fallbackPlan.downgradeReasons.join(",")
+    c.header("x-copilot-api-web-search-downgrade", downgrade)
+    logger.warn(
+      "Web search server tool downgraded to direct Responses search",
+      {
+        downgradeReasons: fallbackPlan.downgradeReasons,
+        toolType: fallbackPlan.toolType,
+      },
+    )
+  }
+
+  return fallbackPlan
+}
 
 /** Removes web_search server tools (used for unsupported mixed-tool requests). */
 export const stripWebSearchServerTool = (
@@ -155,12 +219,40 @@ export const extractWebSearchConfig = (
   payload: AnthropicMessagesPayload,
 ): WebSearchToolConfig => {
   const tool = payload.tools?.find(isWebSearchServerTool)
+  if (
+    tool?.max_uses !== undefined
+    && (!Number.isSafeInteger(tool.max_uses) || tool.max_uses <= 0)
+  ) {
+    throw createWebSearchInvalidRequestError(
+      "web_search max_uses must be a positive integer",
+    )
+  }
+
   return {
+    maxUses: tool?.max_uses,
     allowedDomains: tool?.allowed_domains,
     blockedDomains: tool?.blocked_domains,
     userLocation: tool?.user_location,
   }
 }
+
+const createWebSearchInvalidRequestError = (message: string): HTTPError =>
+  new HTTPError(
+    message,
+    new Response(
+      JSON.stringify({
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message,
+        },
+      }),
+      {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      },
+    ),
+  )
 
 const buildWebSearchResultBlock = (
   toolUseId: string,
@@ -228,6 +320,13 @@ export const prepareWebSearchResponsesPayload = (
     options.subagentAgentId,
   )
   responsesPayload.tools = [buildResponsesWebSearchTool(config)]
+  if (
+    typeof config.maxUses === "number"
+    && Number.isSafeInteger(config.maxUses)
+    && config.maxUses > 0
+  ) {
+    responsesPayload.max_tool_calls = config.maxUses
+  }
   responsesPayload.tool_choice = undefined
   responsesPayload.reasoning = {
     effort: "medium",
@@ -359,6 +458,7 @@ export const handleWebSearchViaResponses = async (
 ) => {
   const { logger, webSearchModel } = options
   const wantsStream = Boolean(payload.stream)
+  applyWebSearchFallbackHeaders(c, payload, logger)
 
   // Switch to the GPT web search model and drop the Anthropic server tool so the
   // standard Anthropic -> Responses translation does not choke on it; the
