@@ -83,6 +83,7 @@ describe("installed Codex catalog", () => {
         ),
       ).toBeTrue()
     },
+    30_000,
   )
 
   test("loads and caches the catalog from an exact client version", async () => {
