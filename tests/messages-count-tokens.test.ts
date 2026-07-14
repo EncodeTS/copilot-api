@@ -79,6 +79,12 @@ beforeEach(() => {
   } as typeof state.models
   countTokensHandlerDependencies.findEndpointModel = (model) =>
     model === claudeModel.id ? claudeModel : undefined
+  countTokensHandlerDependencies.getTokenCount = (payload) =>
+    Promise.resolve({
+      input: payload.tools?.length ? 20 : 10,
+      output: 0,
+    })
+  countTokensHandlerDependencies.isMessagesApiEnabled = () => true
   process.env.ANTHROPIC_API_KEY = "must-not-be-used"
   fetchMock.mockClear()
   globalThis.fetch = fetchMock as unknown as typeof fetch
@@ -118,6 +124,13 @@ test("Claude count_tokens forwards the final native Messages request to Copilot"
       output_config: {
         format: { type: "json_schema", schema },
       },
+      tools: [
+        {
+          name: "mcp__ide__executeCode",
+          description: "Execute code in the IDE",
+          input_schema: { type: "object", properties: {} },
+        },
+      ],
     }),
     headers: {
       "anthropic-beta": "context-management-2025-06-27",
@@ -147,6 +160,13 @@ test("Claude count_tokens forwards the final native Messages request to Copilot"
       effort: "max",
       format: { type: "json_schema", schema },
     },
+    tools: [
+      {
+        name: "mcp__ide__executeCode",
+        description: "Execute code in the IDE",
+        input_schema: { type: "object", properties: {} },
+      },
+    ],
   })
 })
 
@@ -187,7 +207,31 @@ test("Claude count_tokens falls back only when Copilot has no count endpoint", a
     Promise.resolve(new Response("not found", { status: 404 })),
   )
 
-  const response = await createApp().request("/v1/messages/count_tokens", {
+  const app = createApp()
+  const withToolResponse = await app.request("/v1/messages/count_tokens", {
+    body: JSON.stringify({
+      model: "claude-opus-4.8",
+      max_tokens: 128,
+      messages: [{ role: "user", content: "hello" }],
+      tools: [
+        {
+          name: "mcp__ide__executeCode",
+          description: "Execute code in the IDE",
+          input_schema: {
+            type: "object",
+            properties: { code: { type: "string" } },
+          },
+        },
+      ],
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })
+
+  fetchMock.mockImplementationOnce(() =>
+    Promise.resolve(new Response("not found", { status: 404 })),
+  )
+  const withoutToolResponse = await app.request("/v1/messages/count_tokens", {
     body: JSON.stringify({
       model: "claude-opus-4.8",
       max_tokens: 128,
@@ -197,13 +241,16 @@ test("Claude count_tokens falls back only when Copilot has no count endpoint", a
     method: "POST",
   })
 
-  expect(response.status).toBe(200)
-  expect(response.headers.get("x-copilot-api-token-count-mode")).toBe(
+  expect(withToolResponse.status).toBe(200)
+  expect(withToolResponse.headers.get("x-copilot-api-token-count-mode")).toBe(
     "estimate",
   )
-  const body = (await response.json()) as { input_tokens: number }
-  expect(typeof body.input_tokens).toBe("number")
-  expect(fetchMock).toHaveBeenCalledTimes(1)
+  const withTool = (await withToolResponse.json()) as { input_tokens: number }
+  const withoutTool = (await withoutToolResponse.json()) as {
+    input_tokens: number
+  }
+  expect(withTool.input_tokens).toBeGreaterThan(withoutTool.input_tokens)
+  expect(fetchMock).toHaveBeenCalledTimes(2)
 })
 
 test("GPT count_tokens estimates the final Responses payload without calling Messages count", async () => {

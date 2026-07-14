@@ -306,7 +306,6 @@ model_reasoning_summary = "auto"
 [model_providers.copilot_api]
 name = "OpenAI"
 base_url = "http://localhost:4141"
-requires_openai_auth = false
 supports_websockets = false
 wire_api = "responses"
 request_max_retries = 3
@@ -326,8 +325,28 @@ remote_compaction_v2 = true
 enabled = false
 ```
 
+On Windows without Node.js, replace only the
+`[model_providers.copilot_api.auth]` table above with this PowerShell 5.1/7
+compatible command:
+
+```toml
+[model_providers.copilot_api.auth]
+command = "powershell.exe"
+args = [
+  "-NoProfile",
+  "-NonInteractive",
+  "-Command",
+  "$v=$env:GITHUB_COPILOT_API_KEY; if ([string]::IsNullOrWhiteSpace($v)) { $v='dummy' }; [Console]::Out.Write($v)"
+]
+timeout_ms = 5000
+refresh_interval_ms = 300000
+```
+
+Use `pwsh.exe` instead of `powershell.exe` if you specifically want PowerShell
+7.
+
 > [!NOTE]
-> This configuration is specific to Codex and the GitHub Copilot provider. `name` must be set to `"OpenAI"`. The command-backed auth is intentional: current Codex versions refresh custom-provider `/v1/models` only for command auth. It prints `GITHUB_COPILOT_API_KEY` when set, or the placeholder `dummy` for a gateway without API-key protection. Do not hardcode `model_context_window` or `model_auto_compact_token_limit`: the gateway reads the bundled catalog from the matching local Codex version before overlaying the live Copilot context limits. If the matching Codex executable cannot be found, the gateway returns an empty remote catalog so Codex safely keeps its own bundled metadata. Set `COPILOT_API_CODEX_CLI_PATH` only when the executable is outside the standard locations.
+> This configuration is specific to Codex and the GitHub Copilot provider. `name` must be set to `"OpenAI"`. The command-backed auth is intentional: current Codex versions refresh a custom provider's `/models` endpoint only for command auth (`/v1/models` when the configured base URL includes `/v1`). It prints `GITHUB_COPILOT_API_KEY` when set, or the placeholder `dummy` for a gateway without API-key protection. Command auth is mutually exclusive with `env_key`, `experimental_bearer_token`, and `requires_openai_auth`; remove those fields instead of combining auth methods. Do not hardcode `model_context_window` or `model_auto_compact_token_limit`: the gateway reads the bundled catalog from the matching local Codex version before overlaying the live Copilot context limits. If the matching Codex executable cannot be found, the gateway returns an empty remote catalog so Codex safely keeps its own bundled metadata. Set `COPILOT_API_CODEX_CLI_PATH` only when the executable is outside the standard locations.
 
 ## GPT Tool Search
 
