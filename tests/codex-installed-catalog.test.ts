@@ -1,0 +1,381 @@
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+
+import {
+  clearCodexCatalogCache,
+  codexCatalogLoaderDependencies,
+  loadInstalledCodexCatalog,
+  type CodexModelsResponse,
+} from "../src/services/codex/installed-catalog"
+
+const originalGetExecutableCandidates =
+  codexCatalogLoaderDependencies.getExecutableCandidates
+const originalRunCommand = codexCatalogLoaderDependencies.runCommand
+
+const bundledCatalogObject: CodexModelsResponse = {
+  models: [
+    {
+      slug: "gpt-5.6-sol",
+      base_instructions: "bundled instructions",
+      context_window: 372_000,
+    },
+  ],
+}
+const bundledCatalog = JSON.stringify(bundledCatalogObject)
+
+function writeCodexCmdFixture(directory: string): string {
+  const executable = path.join(directory, "codex.cmd")
+  fs.writeFileSync(
+    executable,
+    [
+      "@echo off",
+      'if "%~1"=="--version" (',
+      "  echo codex-cli 0.144.1",
+      "  exit /b 0",
+      ")",
+      'if "%~1"=="debug" if "%~2"=="models" if "%~3"=="--bundled" (',
+      `  echo ${bundledCatalog}`,
+      "  exit /b 0",
+      ")",
+      "exit /b 1",
+      "",
+    ].join("\r\n"),
+    "utf8",
+  )
+  return executable
+}
+
+beforeEach(() => {
+  clearCodexCatalogCache()
+  codexCatalogLoaderDependencies.getExecutableCandidates = () => ["/mock/codex"]
+})
+
+afterEach(() => {
+  codexCatalogLoaderDependencies.getExecutableCandidates =
+    originalGetExecutableCandidates
+  codexCatalogLoaderDependencies.runCommand = originalRunCommand
+  clearCodexCatalogCache()
+})
+
+describe("installed Codex catalog", () => {
+  test("loads and caches the catalog from an exact client version", async () => {
+    const runCommand = mock((_executable: string, args: Array<string>) =>
+      Promise.resolve(
+        args[0] === "--version" ? "codex-cli 0.144.1\n" : bundledCatalog,
+      ),
+    )
+    codexCatalogLoaderDependencies.runCommand = runCommand
+
+    const first = await loadInstalledCodexCatalog("0.144.1")
+    const second = await loadInstalledCodexCatalog("0.144.1")
+
+    expect(first).toEqual({
+      models: [
+        {
+          slug: "gpt-5.6-sol",
+          base_instructions: "bundled instructions",
+          context_window: 372_000,
+        },
+      ],
+    })
+    expect(second).toEqual(first)
+    expect(runCommand).toHaveBeenCalledTimes(2)
+    expect(runCommand.mock.calls[0]).toEqual(["/mock/codex", ["--version"]])
+    expect(runCommand.mock.calls[1]).toEqual([
+      "/mock/codex",
+      ["debug", "models", "--bundled"],
+    ])
+  })
+
+  test("skips installed executables whose version does not match", async () => {
+    codexCatalogLoaderDependencies.getExecutableCandidates = () => [
+      "/mock/old-codex",
+      "/mock/current-codex",
+    ]
+    const runCommand = mock((executable: string, args: Array<string>) => {
+      if (args[0] === "--version") {
+        return Promise.resolve(
+          executable.includes("old") ?
+            "codex-cli 0.143.0\n"
+          : "codex-cli 0.144.1\n",
+        )
+      }
+      return Promise.resolve(bundledCatalog)
+    })
+    codexCatalogLoaderDependencies.runCommand = runCommand
+
+    const catalog = await loadInstalledCodexCatalog("0.144.1")
+
+    expect(catalog?.models[0]?.slug).toBe("gpt-5.6-sol")
+    expect(runCommand).toHaveBeenCalledTimes(3)
+    expect(runCommand.mock.calls[2]?.[0]).toBe("/mock/current-codex")
+  })
+
+  test("returns no override when the matching CLI catalog is invalid", async () => {
+    codexCatalogLoaderDependencies.runCommand = (_executable, args) =>
+      Promise.resolve(
+        args[0] === "--version" ? "codex-cli 0.144.1\n" : "not-json",
+      )
+
+    expect(await loadInstalledCodexCatalog("0.144.1")).toBeNull()
+  })
+
+  test("continues after an invalid catalog from a matching executable", async () => {
+    codexCatalogLoaderDependencies.getExecutableCandidates = () => [
+      "/mock/invalid-codex",
+      "/mock/valid-codex",
+    ]
+    const runCommand = mock((executable: string, args: Array<string>) =>
+      Promise.resolve(
+        args[0] === "--version" ? "codex-cli 0.144.1\r\n"
+        : executable.includes("invalid") ? "not-json"
+        : bundledCatalog,
+      ),
+    )
+    codexCatalogLoaderDependencies.runCommand = runCommand
+
+    expect(await loadInstalledCodexCatalog("0.144.1")).toEqual(
+      bundledCatalogObject,
+    )
+    expect(runCommand).toHaveBeenCalledTimes(4)
+  })
+
+  test("continues to another executable after a command failure", async () => {
+    codexCatalogLoaderDependencies.getExecutableCandidates = () => [
+      "/mock/broken-codex",
+      "/mock/current-codex",
+    ]
+    codexCatalogLoaderDependencies.runCommand = (executable, args) => {
+      if (executable.includes("broken")) {
+        return Promise.reject(new Error("spawn failed"))
+      }
+      return Promise.resolve(
+        args[0] === "--version" ? "codex-cli 0.144.1\n" : bundledCatalog,
+      )
+    }
+
+    expect((await loadInstalledCodexCatalog("0.144.1"))?.models[0]?.slug).toBe(
+      "gpt-5.6-sol",
+    )
+  })
+
+  test("runs a real Windows cmd shim from a Unicode path with spaces", async () => {
+    if (process.platform !== "win32") {
+      return
+    }
+
+    const tempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "copilot api codex \u6d4b\u8bd5 "),
+    )
+    const executable = writeCodexCmdFixture(tempDir)
+
+    try {
+      codexCatalogLoaderDependencies.getExecutableCandidates = () => [
+        executable,
+      ]
+      codexCatalogLoaderDependencies.runCommand = originalRunCommand
+
+      expect(await loadInstalledCodexCatalog("0.144.1")).toEqual(
+        bundledCatalogObject,
+      )
+    } finally {
+      fs.rmSync(tempDir, { force: true, recursive: true })
+    }
+  })
+
+  test("rejects unsafe Windows cmd paths before spawning", async () => {
+    if (process.platform !== "win32") {
+      return
+    }
+
+    let thrown: unknown
+    try {
+      await originalRunCommand(String.raw`C:\Temp\codex&echo-injected.cmd`, [
+        "--version",
+      ])
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(thrown).toBeInstanceOf(Error)
+    if (!(thrown instanceof Error)) {
+      throw new TypeError("Expected Windows command validation to throw")
+    }
+    expect(thrown.message).toBe("Unsafe Windows command path or argument")
+  })
+
+  test("loads a Windows cmd shim found on PATH", async () => {
+    if (process.platform !== "win32") {
+      return
+    }
+
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "copilot-api-path-"))
+    const originalPath = process.env.PATH
+    writeCodexCmdFixture(tempDir)
+
+    try {
+      process.env.PATH = `${tempDir}${path.delimiter}${originalPath ?? ""}`
+      codexCatalogLoaderDependencies.getExecutableCandidates = () => ["codex"]
+      codexCatalogLoaderDependencies.runCommand = originalRunCommand
+
+      expect(await loadInstalledCodexCatalog("0.144.1")).toEqual(
+        bundledCatalogObject,
+      )
+    } finally {
+      process.env.PATH = originalPath
+      fs.rmSync(tempDir, { force: true, recursive: true })
+    }
+  })
+
+  test("includes stable Windows installation candidates", () => {
+    if (process.platform !== "win32") {
+      return
+    }
+
+    const originalAppData = process.env.APPDATA
+    const originalLocalAppData = process.env.LOCALAPPDATA
+    const originalPnpmHome = process.env.PNPM_HOME
+    const originalOverride = process.env.COPILOT_API_CODEX_CLI_PATH
+    const appData = String.raw`C:\Users\Test User\AppData\Roaming`
+    const localAppData = String.raw`C:\Users\Test User\AppData\Local`
+    const pnpmHome = String.raw`C:\Users\Test User\pnpm`
+    const cmdOverride = String.raw`C:\Tools With Spaces\codex.cmd`
+    const exeOverride = String.raw`C:\Tools With Spaces\codex.exe`
+
+    try {
+      process.env.APPDATA = appData
+      process.env.LOCALAPPDATA = localAppData
+      process.env.PNPM_HOME = pnpmHome
+      process.env.COPILOT_API_CODEX_CLI_PATH = cmdOverride
+
+      const candidates = originalGetExecutableCandidates()
+      expect(candidates[0]).toBe(cmdOverride)
+
+      process.env.COPILOT_API_CODEX_CLI_PATH = exeOverride
+      expect(originalGetExecutableCandidates()[0]).toBe(exeOverride)
+
+      expect(candidates).toContain(
+        path.join(
+          localAppData,
+          "Programs",
+          "OpenAI",
+          "Codex",
+          "bin",
+          "codex.exe",
+        ),
+      )
+      expect(candidates).toContain(path.join(appData, "npm", "codex.cmd"))
+      expect(candidates).toContain(path.join(pnpmHome, "codex.cmd"))
+      expect(candidates).toContain(
+        path.join(os.homedir(), ".bun", "bin", "codex.exe"),
+      )
+      expect(candidates).toContain(
+        path.join(
+          appData,
+          "npm",
+          "node_modules",
+          "@openai",
+          "codex",
+          "node_modules",
+          "@openai",
+          "codex-win32-x64",
+          "vendor",
+          "x86_64-pc-windows-msvc",
+          "bin",
+          "codex.exe",
+        ),
+      )
+      expect(candidates).toContain(
+        path.join(
+          appData,
+          "npm",
+          "node_modules",
+          "@openai",
+          "codex",
+          "node_modules",
+          "@openai",
+          "codex-win32-arm64",
+          "vendor",
+          "aarch64-pc-windows-msvc",
+          "bin",
+          "codex.exe",
+        ),
+      )
+    } finally {
+      process.env.APPDATA = originalAppData
+      process.env.LOCALAPPDATA = originalLocalAppData
+      process.env.PNPM_HOME = originalPnpmHome
+      process.env.COPILOT_API_CODEX_CLI_PATH = originalOverride
+    }
+  })
+
+  test("rejects a JSON response that is not a Codex model catalog", async () => {
+    codexCatalogLoaderDependencies.runCommand = (_executable, args) =>
+      Promise.resolve(
+        args[0] === "--version" ? "codex-cli 0.144.1\n" : '{"data":[]}',
+      )
+
+    expect(await loadInstalledCodexCatalog("0.144.1")).toBeNull()
+  })
+
+  test("returns no catalog when every installed version differs", async () => {
+    codexCatalogLoaderDependencies.runCommand = () =>
+      Promise.resolve("codex-cli 0.143.0\n")
+
+    expect(await loadInstalledCodexCatalog("0.144.1")).toBeNull()
+  })
+
+  test("shares executable discovery across many unknown versions", async () => {
+    const runCommand = mock(() => Promise.resolve("codex-cli 0.144.1\r\n"))
+    codexCatalogLoaderDependencies.runCommand = runCommand
+
+    const catalogs = await Promise.all(
+      Array.from({ length: 100 }, (_, index) =>
+        loadInstalledCodexCatalog(`9.0.${index}`),
+      ),
+    )
+
+    expect(catalogs.every((catalog) => catalog === null)).toBeTrue()
+    expect(runCommand).toHaveBeenCalledTimes(1)
+  })
+
+  test("shares one catalog load across concurrent requests for a version", async () => {
+    const runCommand = mock((_executable: string, args: Array<string>) =>
+      Promise.resolve(
+        args[0] === "--version" ? "codex-cli 0.144.1\n" : bundledCatalog,
+      ),
+    )
+    codexCatalogLoaderDependencies.runCommand = runCommand
+
+    const catalogs = await Promise.all(
+      Array.from({ length: 20 }, () => loadInstalledCodexCatalog("0.144.1")),
+    )
+
+    expect(catalogs.every((catalog) => catalog === catalogs[0])).toBeTrue()
+    expect(runCommand).toHaveBeenCalledTimes(2)
+  })
+
+  test("evicts the oldest catalog after the cache reaches its limit", async () => {
+    const versionCount = 65
+    codexCatalogLoaderDependencies.getExecutableCandidates = () =>
+      Array.from({ length: versionCount }, (_, index) => `/mock/codex-${index}`)
+    const runCommand = mock((executable: string, args: Array<string>) => {
+      const index = executable.match(/\d+$/u)?.[0]
+      return Promise.resolve(
+        args[0] === "--version" ? `codex-cli 1.0.${index}\n` : bundledCatalog,
+      )
+    })
+    codexCatalogLoaderDependencies.runCommand = runCommand
+
+    for (let index = 0; index < versionCount; index += 1) {
+      await loadInstalledCodexCatalog(`1.0.${index}`)
+    }
+    await loadInstalledCodexCatalog("1.0.0")
+
+    expect(
+      runCommand.mock.calls.filter(([, args]) => args[0] === "debug"),
+    ).toHaveLength(versionCount + 1)
+  })
+})

@@ -1,24 +1,20 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 
 import {
-  clearCodexCatalogCache,
-  codexCatalogLoaderDependencies,
   codexClientModelsDependencies,
   createCodexModelsResponse,
   getCodexClientVersion,
   isCodexClientUserAgent,
-  loadInstalledCodexCatalog,
-  type CodexModelsResponse,
 } from "../src/services/codex/client-models"
+import type { CodexModelsResponse } from "../src/services/codex/installed-catalog"
 import type { Model } from "../src/services/copilot/get-models"
 
-const originalGetExecutableCandidates =
-  codexCatalogLoaderDependencies.getExecutableCandidates
-const originalRunCommand = codexCatalogLoaderDependencies.runCommand
 const originalLoadBundledCatalog =
   codexClientModelsDependencies.loadBundledCatalog
+const originalIsResponsesApiWebSocketEnabled =
+  codexClientModelsDependencies.isResponsesApiWebSocketEnabled
 
-const bundledCatalogObject: CodexModelsResponse = {
+const bundledCatalog: CodexModelsResponse = {
   models: [
     {
       slug: "gpt-5.6-sol",
@@ -27,7 +23,6 @@ const bundledCatalogObject: CodexModelsResponse = {
     },
   ],
 }
-const bundledCatalog = JSON.stringify(bundledCatalogObject)
 
 const createCopilotModel = (
   limits: Model["capabilities"]["limits"],
@@ -51,116 +46,16 @@ const createCopilotModel = (
 })
 
 beforeEach(() => {
-  clearCodexCatalogCache()
-  codexCatalogLoaderDependencies.getExecutableCandidates = () => ["/mock/codex"]
+  codexClientModelsDependencies.isResponsesApiWebSocketEnabled = () => true
 })
 
 afterEach(() => {
-  codexCatalogLoaderDependencies.getExecutableCandidates =
-    originalGetExecutableCandidates
-  codexCatalogLoaderDependencies.runCommand = originalRunCommand
   codexClientModelsDependencies.loadBundledCatalog = originalLoadBundledCatalog
-  clearCodexCatalogCache()
+  codexClientModelsDependencies.isResponsesApiWebSocketEnabled =
+    originalIsResponsesApiWebSocketEnabled
 })
 
-describe("Codex bundled model catalog", () => {
-  test("loads and caches the catalog from an exact client version", async () => {
-    const runCommand = mock((_executable: string, args: Array<string>) =>
-      Promise.resolve(
-        args[0] === "--version" ? "codex-cli 0.144.1\n" : bundledCatalog,
-      ),
-    )
-    codexCatalogLoaderDependencies.runCommand = runCommand
-
-    const first = await loadInstalledCodexCatalog("0.144.1")
-    const second = await loadInstalledCodexCatalog("0.144.1")
-
-    expect(first).toEqual({
-      models: [
-        {
-          slug: "gpt-5.6-sol",
-          base_instructions: "bundled instructions",
-          context_window: 372_000,
-        },
-      ],
-    })
-    expect(second).toEqual(first)
-    expect(runCommand).toHaveBeenCalledTimes(2)
-    expect(runCommand.mock.calls[0]).toEqual(["/mock/codex", ["--version"]])
-    expect(runCommand.mock.calls[1]).toEqual([
-      "/mock/codex",
-      ["debug", "models", "--bundled"],
-    ])
-  })
-
-  test("skips installed executables whose version does not match", async () => {
-    codexCatalogLoaderDependencies.getExecutableCandidates = () => [
-      "/mock/old-codex",
-      "/mock/current-codex",
-    ]
-    const runCommand = mock((executable: string, args: Array<string>) => {
-      if (args[0] === "--version") {
-        return Promise.resolve(
-          executable.includes("old") ?
-            "codex-cli 0.143.0\n"
-          : "codex-cli 0.144.1\n",
-        )
-      }
-      return Promise.resolve(bundledCatalog)
-    })
-    codexCatalogLoaderDependencies.runCommand = runCommand
-
-    const catalog = await loadInstalledCodexCatalog("0.144.1")
-
-    expect(catalog?.models[0]?.slug).toBe("gpt-5.6-sol")
-    expect(runCommand).toHaveBeenCalledTimes(3)
-    expect(runCommand.mock.calls[2]?.[0]).toBe("/mock/current-codex")
-  })
-
-  test("returns no override when the matching CLI catalog is invalid", async () => {
-    codexCatalogLoaderDependencies.runCommand = (_executable, args) =>
-      Promise.resolve(
-        args[0] === "--version" ? "codex-cli 0.144.1\n" : "not-json",
-      )
-
-    expect(await loadInstalledCodexCatalog("0.144.1")).toBeNull()
-  })
-
-  test("continues to another executable after a command failure", async () => {
-    codexCatalogLoaderDependencies.getExecutableCandidates = () => [
-      "/mock/broken-codex",
-      "/mock/current-codex",
-    ]
-    codexCatalogLoaderDependencies.runCommand = (executable, args) => {
-      if (executable.includes("broken")) {
-        return Promise.reject(new Error("spawn failed"))
-      }
-      return Promise.resolve(
-        args[0] === "--version" ? "codex-cli 0.144.1\n" : bundledCatalog,
-      )
-    }
-
-    expect((await loadInstalledCodexCatalog("0.144.1"))?.models[0]?.slug).toBe(
-      "gpt-5.6-sol",
-    )
-  })
-
-  test("rejects a JSON response that is not a Codex model catalog", async () => {
-    codexCatalogLoaderDependencies.runCommand = (_executable, args) =>
-      Promise.resolve(
-        args[0] === "--version" ? "codex-cli 0.144.1\n" : '{"data":[]}',
-      )
-
-    expect(await loadInstalledCodexCatalog("0.144.1")).toBeNull()
-  })
-
-  test("returns no catalog when every installed version differs", async () => {
-    codexCatalogLoaderDependencies.runCommand = () =>
-      Promise.resolve("codex-cli 0.143.0\n")
-
-    expect(await loadInstalledCodexCatalog("0.144.1")).toBeNull()
-  })
-
+describe("Codex client models", () => {
   test("parses the client version without trusting malformed query values", () => {
     expect(
       getCodexClientVersion(
@@ -175,13 +70,70 @@ describe("Codex bundled model catalog", () => {
     expect(isCodexClientUserAgent("curl/8.0")).toBeFalse()
   })
 
+  test("rejects conflicting query and user-agent versions", () => {
+    expect(
+      getCodexClientVersion(
+        "http://localhost/v1/models?client_version=0.144.1",
+        "codex-tui/0.144.2",
+      ),
+    ).toBeNull()
+    expect(
+      getCodexClientVersion(
+        "http://localhost/v1/models?client_version=0.144.1",
+        "codex-tui/0.144.1",
+      ),
+    ).toBe("0.144.1")
+  })
+
+  test("rejects client versions longer than the supported limit", () => {
+    const longVersion = `0.144.1-${"a".repeat(100)}`
+
+    expect(
+      getCodexClientVersion(
+        `http://localhost/v1/models?client_version=${longVersion}`,
+        undefined,
+      ),
+    ).toBeNull()
+    expect(
+      getCodexClientVersion(
+        "http://localhost/v1/models",
+        `codex-tui/${longVersion}`,
+      ),
+    ).toBeNull()
+  })
+
   test("preserves the bundled descriptor when Copilot omits context limits", async () => {
     codexClientModelsDependencies.loadBundledCatalog = () =>
-      Promise.resolve(bundledCatalogObject)
+      Promise.resolve(bundledCatalog)
 
     expect(await createCodexModelsResponse(null, [])).toEqual({ models: [] })
     expect(
       await createCodexModelsResponse("0.144.1", [createCopilotModel({})]),
-    ).toEqual(bundledCatalogObject)
+    ).toEqual(bundledCatalog)
+  })
+
+  test("keeps WebSocket-only models only when that transport is enabled", async () => {
+    codexClientModelsDependencies.loadBundledCatalog = () =>
+      Promise.resolve(bundledCatalog)
+    const model = createCopilotModel({
+      max_context_window_tokens: 1_050_000,
+    })
+    model.supported_endpoints = ["ws:/responses"]
+
+    expect(await createCodexModelsResponse("0.144.1", [model])).toEqual({
+      models: [
+        {
+          ...bundledCatalog.models[0],
+          auto_compact_token_limit: 945_000,
+          context_window: 1_050_000,
+          max_context_window: 1_050_000,
+        },
+      ],
+    })
+
+    codexClientModelsDependencies.isResponsesApiWebSocketEnabled = () => false
+    expect(await createCodexModelsResponse("0.144.1", [model])).toEqual({
+      models: [],
+    })
   })
 })

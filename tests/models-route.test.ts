@@ -23,11 +23,12 @@ await mock.module("~/lib/token", () => ({
 }))
 
 const { state } = await import("../src/lib/state")
-const {
-  clearCodexCatalogCache,
-  codexClientModelsDependencies,
-  loadInstalledCodexCatalog,
-} = await import("../src/services/codex/client-models")
+const { codexClientModelsDependencies } = await import(
+  "../src/services/codex/client-models"
+)
+const { clearCodexCatalogCache, loadInstalledCodexCatalog } = await import(
+  "../src/services/codex/installed-catalog"
+)
 const { modelRoutes } = await import("../src/routes/models/route")
 
 const originalFetch = globalThis.fetch
@@ -354,6 +355,23 @@ describe("model routes", () => {
       {
         headers: {
           "user-agent": "Codex Desktop/0.145.0",
+        },
+      },
+    )
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ models: [] })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("returns an empty catalog for conflicting Codex client versions", async () => {
+    state.models = createGpt56CopilotModels()
+
+    const response = await createApp().request(
+      "/v1/models?client_version=0.144.1",
+      {
+        headers: {
+          "user-agent": "codex-tui/0.144.2",
         },
       },
     )
