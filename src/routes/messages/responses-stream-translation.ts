@@ -24,6 +24,7 @@ import {
 } from "~/services/copilot/create-responses"
 
 import { type AnthropicStreamEventData } from "./anthropic-types"
+import type { ReasoningCarrierEndpoint } from "./reasoning-carrier"
 import {
   REASONING_SUMMARY_SEPARATOR,
   THINKING_TEXT,
@@ -104,6 +105,7 @@ const updateWhitespaceRunState = (
 }
 
 export interface ResponsesStreamState {
+  carrierSource?: ReasoningCarrierEndpoint
   messageStartSent: boolean
   messageCompleted: boolean
   nextContentBlockIndex: number
@@ -113,7 +115,9 @@ export interface ResponsesStreamState {
   textByBlockKey: Map<string, string>
   reasoningSummaryHasDelta: Set<string>
   reasoningSummaryTextByKey: Map<string, string>
+  completedFunctionCallStateByOutputIndex: Map<number, FunctionCallStreamState>
   functionCallStateByOutputIndex: Map<number, FunctionCallStreamState>
+  outputItemDoneIndexes: Set<number>
   toolSearchName: string
   hasToolCall: boolean
   emitThinking: boolean
@@ -128,9 +132,11 @@ type FunctionCallStreamState = {
 }
 
 export const createResponsesStreamState = (options?: {
+  carrierSource?: ReasoningCarrierEndpoint
   toolSearchName?: string
   emitThinking?: boolean
 }): ResponsesStreamState => ({
+  carrierSource: options?.carrierSource,
   messageStartSent: false,
   messageCompleted: false,
   nextContentBlockIndex: 0,
@@ -140,7 +146,9 @@ export const createResponsesStreamState = (options?: {
   textByBlockKey: new Map(),
   reasoningSummaryHasDelta: new Set(),
   reasoningSummaryTextByKey: new Map(),
+  completedFunctionCallStateByOutputIndex: new Map(),
   functionCallStateByOutputIndex: new Map(),
+  outputItemDoneIndexes: new Set(),
   toolSearchName: options?.toolSearchName ?? BRIDGE_TOOL_SEARCH_NAME,
   hasToolCall: false,
   emitThinking: options?.emitThinking ?? true,
@@ -274,6 +282,7 @@ const handleOutputItemDone = (
   const item = rawEvent.item
   const itemType = item.type
   const outputIndex = rawEvent.output_index
+  state.outputItemDoneIndexes.add(outputIndex)
 
   if (
     (itemType === "reasoning" || itemType === "compaction")
@@ -303,7 +312,16 @@ const handleOutputItemDone = (
       state.blockHasDelta.add(blockIndex)
     }
 
-    state.functionCallStateByOutputIndex.delete(outputIndex)
+    const functionCallState =
+      state.functionCallStateByOutputIndex.get(outputIndex)
+    if (functionCallState) {
+      functionCallState.argumentsText = finalArguments ?? ""
+      state.completedFunctionCallStateByOutputIndex.set(
+        outputIndex,
+        functionCallState,
+      )
+      state.functionCallStateByOutputIndex.delete(outputIndex)
+    }
     return events
   }
 
@@ -344,7 +362,10 @@ const handleOutputItemDone = (
     return events
   }
 
-  const signature = encodeReasoningCarrierSignature(item)
+  const signature = encodeReasoningCarrierSignature(
+    item,
+    state.carrierSource ?? { model: "unknown", provider: "copilot" },
+  )
   if (!signature) {
     return events
   }
@@ -493,6 +514,12 @@ const handleFunctionCallArgumentsDone = (
     functionCallState.argumentsText = finalArguments
   }
 
+  if (functionCallState) {
+    state.completedFunctionCallStateByOutputIndex.set(
+      outputIndex,
+      functionCallState,
+    )
+  }
   state.functionCallStateByOutputIndex.delete(outputIndex)
   return events
 }
@@ -746,8 +773,16 @@ const handleResponseCompleted = (
   const response = rawEvent.response
   const events = new Array<AnthropicStreamEventData>()
 
+  if (!state.messageStartSent) {
+    events.push(...messageStart(state, response))
+  }
+  backfillTerminalOutput(response, state, events)
+  if (state.messageCompleted) {
+    return events
+  }
   closeAllOpenBlocks(state, events)
   const anthropic = translateResponsesResultToAnthropic(response, {
+    carrierSource: state.carrierSource,
     hasToolCall: state.hasToolCall,
     includeThinking: state.emitThinking,
     toolSearchName: state.toolSearchName,
@@ -765,6 +800,99 @@ const handleResponseCompleted = (
   )
   state.messageCompleted = true
   return events
+}
+
+const backfillTerminalOutput = (
+  response: ResponsesResult,
+  state: ResponsesStreamState,
+  events: Array<AnthropicStreamEventData>,
+): void => {
+  for (const [outputIndex, item] of response.output.entries()) {
+    if (item.type === "message") {
+      for (const [contentIndex, content] of (item.content ?? []).entries()) {
+        const block = content as {
+          refusal?: unknown
+          text?: unknown
+          type?: unknown
+        }
+        const text =
+          block.type === "output_text" && typeof block.text === "string" ?
+            block.text
+          : block.type === "refusal" && typeof block.refusal === "string" ?
+            block.refusal
+          : undefined
+        if (text === undefined) {
+          continue
+        }
+
+        events.push(
+          ...handleOutputTextDone(
+            {
+              content_index: contentIndex,
+              item_id: item.id,
+              output_index: outputIndex,
+              sequence_number: 0,
+              text,
+              type: "response.output_text.done",
+            },
+            state,
+          ),
+        )
+        if (state.messageCompleted) {
+          return
+        }
+      }
+      continue
+    }
+
+    if (item.type === "function_call") {
+      const completedFunctionCall =
+        state.completedFunctionCallStateByOutputIndex.get(outputIndex)
+      if (completedFunctionCall) {
+        state.functionCallStateByOutputIndex.set(
+          outputIndex,
+          completedFunctionCall,
+        )
+      }
+      openFunctionCallBlock(state, {
+        outputIndex,
+        toolCallId: item.call_id,
+        name: resolveToolUseName(item),
+        events,
+      })
+      events.push(
+        ...handleFunctionCallArgumentsDone(
+          {
+            arguments: item.arguments,
+            item_id: item.id ?? item.call_id,
+            name: item.name,
+            output_index: outputIndex,
+            sequence_number: 0,
+            type: "response.function_call_arguments.done",
+          },
+          state,
+        ),
+      )
+      if (state.messageCompleted) {
+        return
+      }
+      continue
+    }
+
+    if (!state.outputItemDoneIndexes.has(outputIndex)) {
+      events.push(
+        ...handleOutputItemDone(
+          {
+            item,
+            output_index: outputIndex,
+            sequence_number: 0,
+            type: "response.output_item.done",
+          },
+          state,
+        ),
+      )
+    }
+  }
 }
 
 const handleResponseFailed = (
@@ -831,6 +959,7 @@ const messageStart = (
   state: ResponsesStreamState,
   response: ResponsesResult,
 ): Array<AnthropicStreamEventData> => {
+  state.carrierSource ??= { model: response.model, provider: "copilot" }
   state.messageStartSent = true
   const usage = mapResponsesUsageToAnthropic(response.usage)
   return [
@@ -949,6 +1078,8 @@ const closeAllOpenBlocks = (
   closeOpenBlocks(state, events)
 
   state.functionCallStateByOutputIndex.clear()
+  state.completedFunctionCallStateByOutputIndex.clear()
+  state.outputItemDoneIndexes.clear()
   state.reasoningSummaryHasDelta.clear()
   state.reasoningSummaryTextByKey.clear()
   state.textByBlockKey.clear()
@@ -958,6 +1089,8 @@ const abortAllOpenBlocks = (state: ResponsesStreamState): void => {
   state.openBlocks.clear()
   state.blockHasDelta.clear()
   state.functionCallStateByOutputIndex.clear()
+  state.completedFunctionCallStateByOutputIndex.clear()
+  state.outputItemDoneIndexes.clear()
   state.reasoningSummaryHasDelta.clear()
   state.reasoningSummaryTextByKey.clear()
   state.textByBlockKey.clear()
@@ -987,7 +1120,12 @@ const openFunctionCallBlock = (
 
   state.hasToolCall = true
 
-  let functionCallState = state.functionCallStateByOutputIndex.get(outputIndex)
+  let functionCallState =
+    state.functionCallStateByOutputIndex.get(outputIndex)
+    ?? state.completedFunctionCallStateByOutputIndex.get(outputIndex)
+  if (functionCallState) {
+    state.functionCallStateByOutputIndex.set(outputIndex, functionCallState)
+  }
 
   if (!functionCallState) {
     const blockIndex = state.nextContentBlockIndex

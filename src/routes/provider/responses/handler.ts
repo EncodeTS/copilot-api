@@ -103,6 +103,7 @@ export async function handleProviderResponsesForProvider(
       payload,
       c.req.raw.headers,
       providerConfig.baseUrl,
+      { signal: c.req.raw.signal },
     )
     const recordUsage = createProviderResponsesUsageRecorder(
       payload,
@@ -128,6 +129,7 @@ export async function handleProviderResponsesForProvider(
     providerConfig,
     payload,
     c.req.raw.headers,
+    c.req.raw.signal,
   )
 
   if (!upstreamResponse.ok) {

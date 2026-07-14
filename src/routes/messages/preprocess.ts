@@ -21,7 +21,7 @@ import type {
   AnthropicTextBlock,
   AnthropicUserMessage,
 } from "./anthropic-types"
-import { isOpenAIReasoningCarrierSignature } from "./anthropic-types"
+import { isOpenAIReasoningCarrierSignature } from "./reasoning-carrier"
 
 const SYSTEM_REMINDER_START = "<system-reminder>"
 const SYSTEM_REMINDER_END = "</system-reminder>"

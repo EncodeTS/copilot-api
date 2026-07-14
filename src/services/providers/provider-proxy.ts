@@ -1,5 +1,6 @@
 import consola from "consola"
 import type { ResolvedProviderConfig } from "~/lib/config"
+import { fetchWithUpstreamLifecycle } from "~/lib/upstream-lifecycle"
 import type { AnthropicMessagesPayload } from "~/routes/messages/anthropic-types"
 import type { ChatCompletionsPayload } from "~/services/copilot/create-chat-completions"
 import type { ResponsesPayload } from "~/services/copilot/create-responses"
@@ -83,47 +84,67 @@ export async function forwardProviderMessages(
   providerConfig: ResolvedProviderConfig,
   payload: AnthropicMessagesPayload,
   requestHeaders: Headers,
+  signal?: AbortSignal,
 ): Promise<Response> {
   consola.log(`<-- model: ${payload.model}`)
-  return await fetch(`${providerConfig.baseUrl}/v1/messages`, {
-    method: "POST",
-    headers: buildProviderUpstreamHeaders(providerConfig, requestHeaders),
-    body: JSON.stringify(payload),
-  })
+  return await fetchWithUpstreamLifecycle(
+    `${providerConfig.baseUrl}/v1/messages`,
+    {
+      method: "POST",
+      headers: buildProviderUpstreamHeaders(providerConfig, requestHeaders),
+      body: JSON.stringify(payload),
+    },
+    { signal },
+  )
 }
 
 export async function forwardProviderChatCompletions(
   providerConfig: ResolvedProviderConfig,
   payload: ChatCompletionsPayload,
   requestHeaders: Headers,
+  signal?: AbortSignal,
 ): Promise<Response> {
   consola.log(`<-- model: ${payload.model}`)
-  return await fetch(`${providerConfig.baseUrl}/v1/chat/completions`, {
-    method: "POST",
-    headers: buildProviderUpstreamHeaders(providerConfig, requestHeaders),
-    body: JSON.stringify(payload),
-  })
+  return await fetchWithUpstreamLifecycle(
+    `${providerConfig.baseUrl}/v1/chat/completions`,
+    {
+      method: "POST",
+      headers: buildProviderUpstreamHeaders(providerConfig, requestHeaders),
+      body: JSON.stringify(payload),
+    },
+    { signal },
+  )
 }
 
 export async function forwardProviderResponses(
   providerConfig: ResolvedProviderConfig,
   payload: ResponsesPayload,
   requestHeaders: Headers,
+  signal?: AbortSignal,
 ): Promise<Response> {
   consola.log(`<-- model: ${payload.model}`)
-  return await fetch(`${providerConfig.baseUrl}/v1/responses`, {
-    method: "POST",
-    headers: buildProviderUpstreamHeaders(providerConfig, requestHeaders),
-    body: JSON.stringify(payload),
-  })
+  return await fetchWithUpstreamLifecycle(
+    `${providerConfig.baseUrl}/v1/responses`,
+    {
+      method: "POST",
+      headers: buildProviderUpstreamHeaders(providerConfig, requestHeaders),
+      body: JSON.stringify(payload),
+    },
+    { signal },
+  )
 }
 
 export async function forwardProviderModels(
   providerConfig: ResolvedProviderConfig,
   requestHeaders: Headers,
+  signal?: AbortSignal,
 ): Promise<Response> {
-  return await fetch(`${providerConfig.baseUrl}/v1/models`, {
-    method: "GET",
-    headers: buildProviderUpstreamHeaders(providerConfig, requestHeaders),
-  })
+  return await fetchWithUpstreamLifecycle(
+    `${providerConfig.baseUrl}/v1/models`,
+    {
+      method: "GET",
+      headers: buildProviderUpstreamHeaders(providerConfig, requestHeaders),
+    },
+    { signal },
+  )
 }

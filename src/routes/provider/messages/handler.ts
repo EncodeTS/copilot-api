@@ -205,6 +205,7 @@ export async function handleProviderMessagesForProvider(
         },
       payload,
       c.req.raw.headers,
+      c.req.raw.signal,
     )
 
     if (!upstreamResponse.ok) {
@@ -267,6 +268,7 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
       responsesPayload,
       c.req.raw.headers,
       providerConfig.baseUrl,
+      { signal: c.req.raw.signal },
     )
 
     if (isResponsesStream(upstreamResponse)) {
@@ -299,6 +301,7 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
     providerConfig,
     responsesPayload,
     c.req.raw.headers,
+    c.req.raw.signal,
   )
 
   if (!upstreamResponse.ok) {
@@ -355,7 +358,11 @@ const handleOpenAIResponsesProviderMessages = async (
       getCodexModels().data.find((model) => model.id === payload.model)
     : undefined
   const wantsStream = payload.stream === true
-  const responsesPayload = translateAnthropicMessagesToResponsesPayload(payload)
+  const responsesPayload = translateAnthropicMessagesToResponsesPayload(
+    payload,
+    undefined,
+    { model: payload.model, provider },
+  )
 
   if (providerConfig.name === "codex" && !wantsStream) {
     responsesPayload.stream = true
@@ -389,6 +396,7 @@ const handleOpenAIResponsesProviderMessages = async (
       responsesPayload,
       c.req.raw.headers,
       providerConfig.baseUrl,
+      { signal: c.req.raw.signal },
     )
 
     if (isResponsesStream(upstreamResponse)) {
@@ -435,6 +443,7 @@ const handleOpenAIResponsesProviderMessages = async (
     providerConfig,
     responsesPayload,
     c.req.raw.headers,
+    c.req.raw.signal,
   )
 
   if (!upstreamResponse.ok) {
@@ -547,6 +556,7 @@ const handleOpenAICompatibleProviderMessages = async (
     providerConfig,
     openAIPayload,
     c.req.raw.headers,
+    c.req.raw.signal,
   )
 
   if (!upstreamResponse.ok) {
@@ -970,6 +980,7 @@ const streamResponsesProviderMessages = ({
   return streamSSE(c, async (stream) => {
     let usage: UsageTokens = {}
     const streamState = createResponsesStreamState({
+      carrierSource: { model: payload.model, provider },
       emitThinking: payload.thinking?.type !== "disabled",
       toolSearchName: resolveBridgeToolSearchName(payload.tools),
     })
@@ -1360,6 +1371,7 @@ const respondResponsesProviderMessagesJson = (
   }
 
   const anthropicResponse = translateResponsesResultToAnthropic(body, {
+    carrierSource: { model: payload.model, provider },
     includeThinking: payload.thinking?.type !== "disabled",
     toolSearchName: resolveBridgeToolSearchName(payload.tools),
   })

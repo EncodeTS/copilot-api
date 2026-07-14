@@ -1,5 +1,3 @@
-import { Buffer } from "node:buffer"
-
 import {
   BRIDGE_TOOL_SEARCH_NAME,
   formatToolSearchBridgeArguments,
@@ -53,8 +51,6 @@ import {
   isAnthropicDocumentBlock,
   isAnthropicCustomTool,
   isAnthropicImageBlock,
-  OPENAI_REASONING_CARRIER_SIGNATURE_PREFIX,
-  parseLegacyOpenAIReasoningCarrierSignature,
   isAnthropicTextBlock,
   isAnthropicToolReferenceBlock,
   type AnthropicAssistantContentBlock,
@@ -74,6 +70,12 @@ import {
   type AnthropicUserContentBlock,
   type AnthropicUserMessage,
 } from "./anthropic-types"
+import {
+  decodeVersionedReasoningCarrier,
+  encodeVersionedReasoningCarrier,
+  parseLegacyOpenAIReasoningCarrierSignature,
+  type ReasoningCarrierEndpoint,
+} from "./reasoning-carrier"
 import { normalizeToolSchema } from "./non-stream-translation"
 import { assertResponsesResultUsable } from "./responses-result"
 import { parseFunctionCallArguments } from "./tool-arguments"
@@ -127,6 +129,10 @@ const buildPromptCacheKey = (
 export const translateAnthropicMessagesToResponsesPayload = (
   payload: AnthropicMessagesPayload,
   subagentAgentId?: string | null,
+  carrierTarget: ReasoningCarrierEndpoint = {
+    model: payload.model,
+    provider: "copilot",
+  },
 ): ResponsesPayload => {
   const input: Array<ResponseInputItem> = []
   const applyPhase = shouldApplyPhase(payload.model)
@@ -135,6 +141,7 @@ export const translateAnthropicMessagesToResponsesPayload = (
     tools: payload.tools,
   })
   const translationState: TranslationState = {
+    carrierTarget,
     originalTools: payload.tools ?? [],
     toolSearchEnabled,
     toolUseNameById: new Map(),
@@ -264,6 +271,7 @@ const retainLatestPromptCacheBreakpoints = (
 }
 
 interface TranslationState {
+  carrierTarget: ReasoningCarrierEndpoint
   originalTools: Array<AnthropicTool>
   toolSearchEnabled: boolean
   toolUseNameById: Map<string, string>
@@ -309,15 +317,13 @@ export const decodeCompactionCarrierSignature = (
 
 export const encodeReasoningCarrierSignature = (
   reasoning: ResponseOutputReasoning,
+  source: ReasoningCarrierEndpoint,
 ): string | undefined => {
   if (!reasoning.encrypted_content || !reasoning.id) {
     return undefined
   }
 
-  return `${OPENAI_REASONING_CARRIER_SIGNATURE_PREFIX}${Buffer.from(
-    JSON.stringify(reasoning),
-    "utf8",
-  ).toString("base64url")}`
+  return encodeVersionedReasoningCarrier(reasoning, source)
 }
 
 const translateMessage = (
@@ -411,7 +417,10 @@ const translateAssistantMessage = (
         continue
       }
 
-      const reasoningContent = createReasoningContent(block)
+      const reasoningContent = createReasoningContent(
+        block,
+        state.carrierTarget,
+      )
       if (reasoningContent) {
         flushPendingContent(pendingContent, items, {
           role: "assistant",
@@ -586,8 +595,12 @@ const createFileContent = (
 
 const createReasoningContent = (
   block: AnthropicThinkingBlock,
+  carrierTarget: ReasoningCarrierEndpoint,
 ): ResponseInputReasoning | undefined => {
-  const versionedCarrier = decodeReasoningCarrierSignature(block.signature)
+  const versionedCarrier = decodeReasoningCarrierSignature(
+    block.signature,
+    carrierTarget,
+  )
   if (versionedCarrier) {
     return versionedCarrier
   }
@@ -644,22 +657,22 @@ const createCompactionContent = (
 
 const decodeReasoningCarrierSignature = (
   signature: string,
+  carrierTarget: ReasoningCarrierEndpoint,
 ): ResponseInputReasoning | undefined => {
-  if (!signature.startsWith(OPENAI_REASONING_CARRIER_SIGNATURE_PREFIX)) {
+  const carrier = decodeVersionedReasoningCarrier(signature)
+  if (!carrier) {
+    return undefined
+  }
+  if (
+    carrier.source
+    && (carrier.source.provider !== carrierTarget.provider
+      || carrier.source.model !== carrierTarget.model)
+  ) {
     return undefined
   }
 
-  const encoded = signature.slice(
-    OPENAI_REASONING_CARRIER_SIGNATURE_PREFIX.length,
-  )
-  if (!encoded) {
-    return undefined
-  }
-
+  const value = carrier.item
   try {
-    const value: unknown = JSON.parse(
-      Buffer.from(encoded, "base64url").toString("utf8"),
-    )
     if (
       !isRecord(value)
       || value.type !== "reasoning"
@@ -1006,6 +1019,7 @@ const convertAnthropicToolChoice = (
 }
 
 interface ResponsesToAnthropicOptions {
+  carrierSource?: ReasoningCarrierEndpoint
   toolSearchName?: string
   hasToolCall?: boolean
   includeThinking?: boolean
@@ -1016,14 +1030,24 @@ export const translateResponsesResultToAnthropic = (
   options?: ResponsesToAnthropicOptions,
 ): AnthropicResponse => {
   assertResponsesResultUsable(response)
-  const contentBlocks = mapOutputToAnthropicContent(response.output, options)
+  const resolvedOptions = {
+    ...options,
+    carrierSource: options?.carrierSource ?? {
+      model: response.model,
+      provider: "copilot",
+    },
+  }
+  const contentBlocks = mapOutputToAnthropicContent(
+    response.output,
+    resolvedOptions,
+  )
   const usage = mapResponsesUsageToAnthropic(response.usage)
   let anthropicContent = fallbackContentBlocks(response.output_text)
   if (contentBlocks.length > 0) {
     anthropicContent = contentBlocks
   }
 
-  const stopReason = mapResponsesStopReason(response, options)
+  const stopReason = mapResponsesStopReason(response, resolvedOptions)
 
   return {
     id: response.id,
@@ -1056,7 +1080,14 @@ const mapOutputToAnthropicContent = (
           contentBlocks.push({
             type: "thinking",
             thinking: thinkingText,
-            signature: encodeReasoningCarrierSignature(item) ?? "",
+            signature:
+              encodeReasoningCarrierSignature(
+                item,
+                options?.carrierSource ?? {
+                  model: "unknown",
+                  provider: "copilot",
+                },
+              ) ?? "",
           })
         }
         break

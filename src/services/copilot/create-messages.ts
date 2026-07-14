@@ -197,8 +197,8 @@ export const createMessages = async (
       body: JSON.stringify(payload),
     },
     {
-      headersTimeoutMs: options.timeouts?.httpHeadersMs,
       signal: options.signal,
+      timeouts: options.timeouts,
     },
   )
 
