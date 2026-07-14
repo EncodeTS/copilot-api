@@ -308,7 +308,6 @@ model_reasoning_summary = "auto"
 [model_providers.copilot_api]
 name = "OpenAI"
 base_url = "http://localhost:4141"
-requires_openai_auth = false
 supports_websockets = false
 wire_api = "responses"
 request_max_retries = 3
@@ -328,8 +327,27 @@ remote_compaction_v2 = true
 enabled = false
 ```
 
+Windows 没有安装 Node.js 时，只需把上面的
+`[model_providers.copilot_api.auth]` 表替换为下面这份兼容 Windows
+PowerShell 5.1/7 的命令：
+
+```toml
+[model_providers.copilot_api.auth]
+command = "powershell.exe"
+args = [
+  "-NoProfile",
+  "-NonInteractive",
+  "-Command",
+  "$v=$env:GITHUB_COPILOT_API_KEY; if ([string]::IsNullOrWhiteSpace($v)) { $v='dummy' }; [Console]::Out.Write($v)"
+]
+timeout_ms = 5000
+refresh_interval_ms = 300000
+```
+
+如果明确希望使用 PowerShell 7，请把 `powershell.exe` 改成 `pwsh.exe`。
+
 > [!NOTE]
-> 此配置仅限于 Codex 与 GitHub Copilot provider。`name` 一定要配置为 `"OpenAI"`。这里有意使用 command auth：当前 Codex 只会为 command auth 的自定义 provider 刷新 `/v1/models`。命令会优先输出 `GITHUB_COPILOT_API_KEY`；若 gateway 没启用 API Key 鉴权，则输出占位值 `dummy`。不要再硬编码 `model_context_window` 或 `model_auto_compact_token_limit`：gateway 会读取本机同版本 Codex 的 bundled catalog，再只覆盖 Copilot 官方实时返回的上下文能力。若找不到同版本 Codex 可执行文件，gateway 会返回空的远端 catalog，让 Codex 安全保留自己的内置模型定义。只有可执行文件不在常见位置时，才需要设置 `COPILOT_API_CODEX_CLI_PATH`。
+> 此配置仅限于 Codex 与 GitHub Copilot provider。`name` 一定要配置为 `"OpenAI"`。这里有意使用 command auth：当前 Codex 只会为 command auth 的自定义 provider 刷新 `/models`；若配置的 base URL 已包含 `/v1`，对应路径则为 `/v1/models`。命令会优先输出 `GITHUB_COPILOT_API_KEY`；若 gateway 没启用 API Key 鉴权，则输出占位值 `dummy`。Command auth 与 `env_key`、`experimental_bearer_token`、`requires_openai_auth` 互斥；请删除这些字段，不要组合多种鉴权。不要再硬编码 `model_context_window` 或 `model_auto_compact_token_limit`：gateway 会读取本机同版本 Codex 的 bundled catalog，再只覆盖 Copilot 官方实时返回的上下文能力。若找不到同版本 Codex 可执行文件，gateway 会返回空的远端 catalog，让 Codex 安全保留自己的内置模型定义。只有可执行文件不在常见位置时，才需要设置 `COPILOT_API_CODEX_CLI_PATH`。
 
 ## GPT Tool Search
 

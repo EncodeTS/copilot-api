@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import type {
   ResponsesPayload,
   ResponsesResult,
+  Tool,
 } from "../src/services/copilot/create-responses"
 
 import {
@@ -64,6 +65,14 @@ const fetchMock = mock((_url: string | URL | Request, _init?: RequestInit) =>
   ),
 )
 
+const parseFetchBody = (init: RequestInit | undefined): ResponsesPayload => {
+  expect(typeof init?.body).toBe("string")
+  return JSON.parse(init?.body as string) as ResponsesPayload
+}
+
+const getToolParameters = (tool: Tool | undefined): unknown =>
+  tool && "parameters" in tool ? tool.parameters : undefined
+
 beforeEach(() => {
   delete process.env.COPILOT_API_OAUTH_APP
   state.accountType = "individual"
@@ -123,6 +132,273 @@ describe("createResponses", () => {
     expect(body.initiator).toBeUndefined()
     expect(body.type).toBeUndefined()
     expect(body.include).toEqual(["reasoning.encrypted_content"])
+  })
+
+  test("normalizes a None function schema before forwarding Responses", async () => {
+    const payload: ResponsesPayload = {
+      input: "update the automation",
+      model: "gpt-test",
+      tools: [
+        {
+          name: "automation_update",
+          parameters: { type: "None" },
+          strict: false,
+          type: "function",
+        },
+      ],
+    }
+
+    await createResponses(payload, {
+      initiator: "user",
+      requestId: "request-1",
+      vision: false,
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = parseFetchBody(init)
+    const tool = body.tools?.[0]
+    expect(tool).toMatchObject({
+      name: "automation_update",
+      parameters: {
+        properties: {},
+        type: "object",
+      },
+      type: "function",
+    })
+  })
+
+  test("normalizes case variants of the None schema sentinel", async () => {
+    const payload: ResponsesPayload = {
+      input: "update the automation",
+      model: "gpt-test",
+      tools: ["None", "NONE", "none"].map((type, index) => ({
+        name: `automation_update_${index}`,
+        parameters: { type },
+        strict: false,
+        type: "function" as const,
+      })),
+    }
+
+    await createResponses(payload, {
+      initiator: "user",
+      requestId: "request-1",
+      vision: false,
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = parseFetchBody(init)
+    expect(body.tools?.map((tool) => getToolParameters(tool))).toEqual([
+      { properties: {}, type: "object" },
+      { properties: {}, type: "object" },
+      { properties: {}, type: "object" },
+    ])
+  })
+
+  test("normalizes a None schema inside a Responses namespace", async () => {
+    const payload: ResponsesPayload = {
+      input: "update the automation",
+      model: "gpt-test",
+      tools: [
+        {
+          name: "automations",
+          tools: [
+            {
+              name: "automation_update",
+              parameters: { type: "None" },
+              strict: false,
+              type: "function",
+            },
+          ],
+          type: "namespace",
+        },
+      ],
+    }
+
+    await createResponses(payload, {
+      initiator: "user",
+      requestId: "request-1",
+      vision: false,
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = parseFetchBody(init)
+    const namespace = body.tools?.[0]
+    expect(namespace).toMatchObject({
+      tools: [
+        {
+          name: "automation_update",
+          parameters: {
+            properties: {},
+            type: "object",
+          },
+          type: "function",
+        },
+      ],
+      type: "namespace",
+    })
+  })
+
+  test("normalizes a None schema returned by Responses tool search", async () => {
+    const payload: ResponsesPayload = {
+      input: [
+        {
+          call_id: "search-1",
+          tools: [
+            {
+              name: "automation_update",
+              parameters: { type: "None" },
+              strict: false,
+              type: "function",
+            },
+          ],
+          type: "tool_search_output",
+        },
+      ],
+      model: "gpt-test",
+    }
+
+    await createResponses(payload, {
+      initiator: "user",
+      requestId: "request-1",
+      vision: false,
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = parseFetchBody(init)
+    const toolSearchOutput = Array.isArray(body.input) ? body.input[0] : null
+    expect(toolSearchOutput).toMatchObject({
+      tools: [
+        {
+          name: "automation_update",
+          parameters: {
+            properties: {},
+            type: "object",
+          },
+          type: "function",
+        },
+      ],
+      type: "tool_search_output",
+    })
+  })
+
+  test("normalizes nested schemas in Responses additional tools", async () => {
+    const payload: ResponsesPayload = {
+      input: [
+        {
+          role: "developer",
+          tools: [
+            {
+              name: "automations",
+              tools: [
+                {
+                  name: "automation_update",
+                  parameters: { type: "None" },
+                  strict: false,
+                  type: "function",
+                },
+              ],
+              type: "namespace",
+            },
+          ],
+          type: "additional_tools",
+        },
+      ],
+      model: "gpt-test",
+    }
+
+    await createResponses(payload, {
+      initiator: "user",
+      requestId: "request-1",
+      vision: false,
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = parseFetchBody(init)
+    const additionalTools = Array.isArray(body.input) ? body.input[0] : null
+    expect(additionalTools).toMatchObject({
+      tools: [
+        {
+          tools: [
+            {
+              name: "automation_update",
+              parameters: { properties: {}, type: "object" },
+              type: "function",
+            },
+          ],
+          type: "namespace",
+        },
+      ],
+      type: "additional_tools",
+    })
+  })
+
+  test("preserves null and valid Responses function schemas", async () => {
+    const validSchema = {
+      properties: {
+        automation_id: { type: "string" },
+      },
+      required: ["automation_id"],
+      type: "object",
+    }
+    const payload: ResponsesPayload = {
+      input: "update the automation",
+      model: "gpt-test",
+      tools: [
+        {
+          name: "no_arguments",
+          parameters: null,
+          strict: false,
+          type: "function",
+        },
+        {
+          name: "automation_update",
+          parameters: validSchema,
+          strict: false,
+          type: "function",
+        },
+      ],
+    }
+
+    await createResponses(payload, {
+      initiator: "user",
+      requestId: "request-1",
+      vision: false,
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = parseFetchBody(init)
+    expect(getToolParameters(body.tools?.[0])).toBeNull()
+    expect(getToolParameters(body.tools?.[1])).toEqual(validSchema)
+  })
+
+  test("rejects an excessively deep Responses tool graph deterministically", () => {
+    let nestedTool: Record<string, unknown> = {
+      name: "automation_update",
+      parameters: { type: "None" },
+      strict: false,
+      type: "function",
+    }
+    for (let index = 0; index < 10_001; index += 1) {
+      nestedTool = {
+        name: `namespace-${index}`,
+        tools: [nestedTool],
+        type: "namespace",
+      }
+    }
+    const payload: ResponsesPayload = {
+      input: "update the automation",
+      model: "gpt-test",
+      tools: [nestedTool],
+    }
+
+    expect(
+      createResponses(payload, {
+        initiator: "user",
+        requestId: "request-1",
+        vision: false,
+      }),
+    ).rejects.toThrow("Responses tool graph exceeds 10000 entries")
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   test("preserves existing responses include values when adding encrypted reasoning", () => {
