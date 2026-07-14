@@ -27,6 +27,7 @@ import {
 
 const ENCRYPTED_REASONING_INCLUDE: ResponseIncludable =
   "reasoning.encrypted_content"
+const MAX_RESPONSES_TOOL_GRAPH_ENTRIES = 10_000
 
 export interface ResponsesPayload {
   model: string
@@ -628,6 +629,7 @@ export const createResponses = async (
 
   // service_tier is not supported by github copilot
   payload.service_tier = undefined
+  normalizeResponsesToolSchemas(payload)
   ensureEncryptedReasoningIncluded(payload)
 
   consola.log(`<-- model: ${payload.model}`)
@@ -650,6 +652,69 @@ export const createResponses = async (
 
   return await createHttpResponses(payload, headers)
 }
+
+const normalizeResponsesToolSchemas = (payload: ResponsesPayload): void => {
+  const toolGroups: Array<Array<Tool>> = []
+  if (payload.tools) {
+    toolGroups.push(payload.tools)
+  }
+
+  if (Array.isArray(payload.input)) {
+    for (const item of payload.input) {
+      if (isRecord(item) && isToolArray(item.tools)) {
+        toolGroups.push(item.tools)
+      }
+    }
+  }
+
+  normalizeToolSchemas(toolGroups)
+}
+
+const normalizeToolSchemas = (toolGroups: Array<Array<Tool>>): void => {
+  const pending: Array<Tool> = []
+  let enqueued = 0
+  const enqueue = (tools: Array<Tool>): void => {
+    for (const tool of tools) {
+      enqueued += 1
+      if (enqueued > MAX_RESPONSES_TOOL_GRAPH_ENTRIES) {
+        throw new RangeError("Responses tool graph exceeds 10000 entries")
+      }
+      pending.push(tool)
+    }
+  }
+  for (const tools of toolGroups) {
+    enqueue(tools)
+  }
+
+  while (pending.length > 0) {
+    const tool = pending.pop()
+    if (!isRecord(tool)) {
+      continue
+    }
+    const parameters = tool.parameters
+    if (
+      tool.type === "function"
+      && isRecord(parameters)
+      && typeof parameters.type === "string"
+      && parameters.type.trim().toLowerCase() === "none"
+    ) {
+      tool.parameters = {
+        properties: {},
+        type: "object",
+      }
+    }
+
+    if (tool.type === "namespace" && isToolArray(tool.tools)) {
+      enqueue(tool.tools)
+    }
+  }
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+
+const isToolArray = (value: unknown): value is Array<Tool> =>
+  Array.isArray(value) && value.every((tool: unknown) => isRecord(tool))
 
 export const ensureEncryptedReasoningIncluded = (
   payload: ResponsesPayload,

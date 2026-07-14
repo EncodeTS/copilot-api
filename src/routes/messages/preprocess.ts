@@ -744,14 +744,22 @@ export const mergeToolResultForClaude = (
   }
 }
 
-// align with vscode copilot claude agent tools
-export const sanitizeIdeTools = (payload: AnthropicMessagesPayload): void => {
+// Align IDE metadata with VS Code Copilot while allowing native Messages
+// callers to preserve executeCode when the upstream model supports it.
+export const sanitizeIdeTools = (
+  payload: AnthropicMessagesPayload,
+  options: { preserveExecuteCode?: boolean } = {},
+): void => {
   if (!payload.tools || payload.tools.length === 0) {
     return
   }
 
   payload.tools = payload.tools.flatMap((tool) => {
-    if (tool.name === IDE_EXECUTE_CODE_TOOL && !tool.defer_loading) {
+    if (
+      tool.name === IDE_EXECUTE_CODE_TOOL
+      && !tool.defer_loading
+      && !options.preserveExecuteCode
+    ) {
       return []
     }
 

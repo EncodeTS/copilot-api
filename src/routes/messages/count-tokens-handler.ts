@@ -61,6 +61,8 @@ export const countTokensHandlerDependencies = {
   countCopilotMessagesTokens: countMessagesTokens,
   estimateResponsesInputTokens,
   findEndpointModel,
+  getTokenCount,
+  isMessagesApiEnabled,
 }
 
 export const resolveCountTokensModel = (
@@ -105,12 +107,12 @@ export async function handleCountTokens(c: Context) {
   const selectedModel = resolve.model
   anthropicPayload.model = selectedModel.id
   let messagesCountUnavailable = false
-
-  if (
-    isMessagesApiEnabled()
+  const useNativeMessagesApi =
+    countTokensHandlerDependencies.isMessagesApiEnabled()
     && selectedModel.supported_endpoints?.includes("/v1/messages")
-  ) {
-    sanitizeIdeTools(anthropicPayload)
+
+  if (useNativeMessagesApi) {
+    sanitizeIdeTools(anthropicPayload, { preserveExecuteCode: true })
     prepareMessagesApiPayload(anthropicPayload, selectedModel)
     const sessionId = getRootSessionId(anthropicPayload, c)
     try {
@@ -140,6 +142,10 @@ export async function handleCountTokens(c: Context) {
         `Copilot Messages count endpoint unavailable (${error.response.status}); using a local estimate`,
       )
     }
+  }
+
+  if (!useNativeMessagesApi) {
+    sanitizeIdeTools(anthropicPayload)
   }
 
   if (
@@ -176,7 +182,10 @@ export async function handleCountTokens(c: Context) {
     )
   }
 
-  const tokenCount = await getTokenCount(openAIPayload, selectedModel)
+  const tokenCount = await countTokensHandlerDependencies.getTokenCount(
+    openAIPayload,
+    selectedModel,
+  )
 
   if (anthropicPayload.tools && anthropicPayload.tools.length > 0) {
     let addToolSystemPromptCount = false
