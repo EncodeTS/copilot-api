@@ -30,6 +30,21 @@ test("upstream HTTP request stops when the caller aborts", async () => {
   expect(await rejectionMessage(request)).toBe("client disconnected")
 })
 
+test("upstream HTTP lifecycle accepts an explicitly null RequestInit signal", async () => {
+  const fetcher = mock((_: string | URL | Request, init?: RequestInit) => {
+    expect(init?.signal).toBeInstanceOf(AbortSignal)
+    return Promise.resolve(new Response("ok"))
+  })
+
+  const response = await fetchWithUpstreamLifecycle(
+    "https://example.test/responses",
+    { signal: null },
+    { fetcher },
+  )
+
+  expect(await response.text()).toBe("ok")
+})
+
 test("upstream HTTP request times out while waiting for response headers", async () => {
   let observedSignal: AbortSignal | undefined
   const fetcher = mock((_: string | URL | Request, init?: RequestInit) => {
