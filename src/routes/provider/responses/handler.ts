@@ -4,7 +4,11 @@ import { events } from "fetch-event-stream"
 import { streamSSE } from "hono/streaming"
 
 import { logCodexRateLimitsEvent } from "~/lib/codex-rate-limit"
-import { type ModelConfig, resolveEffectiveProviderType } from "~/lib/config"
+import {
+  type ModelConfig,
+  resolveEffectiveProviderType,
+  supportsProviderResponsesContextManagement,
+} from "~/lib/config"
 import { HTTPError } from "~/lib/error"
 import { createHandlerLogger, debugJson, debugJsonTail } from "~/lib/logger"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
@@ -18,6 +22,7 @@ import {
   applyResponsesApiContextManagement,
   compactInputByLatestCompaction,
 } from "~/routes/responses/utils"
+import { emitResponsesStreamError } from "~/routes/responses/stream-error"
 
 import type {
   ResponsesPayload,
@@ -70,16 +75,20 @@ export async function handleProviderResponsesForProvider(
     : undefined
 
   // Smaller than the client compaction threshold, use server-side compaction to maintain cache hit rate.
-  const contextManagementDecision = applyResponsesApiContextManagement(
-    payload,
-    model?.capabilities.limits,
-    {
-      compactThresholdRatio: 0.8,
-      source: "responses",
-    },
-  )
-  if (contextManagementDecision.shouldPruneInput) {
-    compactInputByLatestCompaction(payload)
+  if (
+    supportsProviderResponsesContextManagement(providerConfig, payload.model)
+  ) {
+    const contextManagementDecision = applyResponsesApiContextManagement(
+      payload,
+      model?.capabilities.limits,
+      {
+        compactThresholdRatio: 0.8,
+        source: "responses",
+      },
+    )
+    if (contextManagementDecision.shouldPruneInput) {
+      compactInputByLatestCompaction(payload)
+    }
   }
 
   debugJson(logger, "Translated Responses request payload:", {
@@ -212,8 +221,9 @@ const streamProviderResponses = async (
 
   return streamSSE(c, async (stream) => {
     let usage: UsageTokens = {}
+    let terminalSeen = false
 
-    const writeChunk = async (chunk: typeof firstChunk) => {
+    const writeChunk = async (chunk: typeof firstChunk): Promise<boolean> => {
       debugJsonTail(logger, "Responses stream chunk:", {
         value: chunk,
         tailLength: 1_000,
@@ -246,21 +256,48 @@ const streamProviderResponses = async (
         data: responseChunk.data ?? "",
         event: responseChunk.event,
       })
+
+      return isTerminalProviderResponsesEvent(event)
     }
 
     try {
-      await writeChunk(firstChunk)
+      terminalSeen = await writeChunk(firstChunk)
 
-      for await (const chunk of {
-        [Symbol.asyncIterator]: () => iterator,
-      }) {
-        await writeChunk(chunk)
+      if (!terminalSeen) {
+        for await (const chunk of {
+          [Symbol.asyncIterator]: () => iterator,
+        }) {
+          terminalSeen = await writeChunk(chunk)
+          if (terminalSeen) {
+            break
+          }
+        }
+      }
+
+      if (!terminalSeen) {
+        await emitResponsesStreamError(
+          stream,
+          logger,
+          new Error("Provider Responses stream ended without a terminal event"),
+        )
+      }
+    } catch (error) {
+      if (!terminalSeen) {
+        await emitResponsesStreamError(stream, logger, error)
       }
     } finally {
       options.recordUsage(usage)
     }
   })
 }
+
+const isTerminalProviderResponsesEvent = (
+  event: ResponseStreamEvent | null,
+): boolean =>
+  event?.type === "response.completed"
+  || event?.type === "response.failed"
+  || event?.type === "response.incomplete"
+  || event?.type === "error"
 
 const parseProviderResponsesStreamEvent = (
   data: string,

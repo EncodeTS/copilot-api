@@ -188,6 +188,7 @@ const streamProviderChatCompletions = (
   })
   return streamSSE(c, async (stream) => {
     let usage: UsageTokens = {}
+    let terminalSeen = false
 
     try {
       for await (const chunk of events(upstreamResponse)) {
@@ -197,6 +198,22 @@ const streamProviderChatCompletions = (
           if (parsedChunk?.usage) {
             usage = normalizeOpenAIUsage(parsedChunk.usage)
           }
+          if (
+            parsedChunk?.choices.some(
+              (choice) => choice.finish_reason === "error",
+            )
+          ) {
+            terminalSeen = true
+            await stream.writeSSE(
+              createProviderChatStreamError(
+                "Provider upstream ended with finish_reason=error",
+              ),
+            )
+            break
+          }
+          terminalSeen ||= Boolean(
+            parsedChunk?.choices.some((choice) => choice.finish_reason),
+          )
         }
 
         await stream.writeSSE({
@@ -204,11 +221,40 @@ const streamProviderChatCompletions = (
           data: chunk.data ?? "",
         })
       }
+
+      if (!terminalSeen) {
+        await stream.writeSSE(
+          createProviderChatStreamError(
+            "Provider chat stream ended without finish_reason",
+          ),
+        )
+      }
+    } catch (error) {
+      if (!terminalSeen) {
+        await stream.writeSSE(
+          createProviderChatStreamError(
+            `Provider chat stream failed: ${getErrorMessage(error)}`,
+          ),
+        )
+      }
     } finally {
       options.recordUsage(usage)
     }
   })
 }
+
+const createProviderChatStreamError = (message: string) => ({
+  event: "error",
+  data: JSON.stringify({
+    error: {
+      message,
+      type: "api_error",
+    },
+  }),
+})
+
+const getErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error)
 
 const parseChatCompletionChunkData = (
   data: string,

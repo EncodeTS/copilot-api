@@ -53,6 +53,8 @@ import {
   isAnthropicDocumentBlock,
   isAnthropicCustomTool,
   isAnthropicImageBlock,
+  OPENAI_REASONING_CARRIER_SIGNATURE_PREFIX,
+  parseLegacyOpenAIReasoningCarrierSignature,
   isAnthropicTextBlock,
   isAnthropicToolReferenceBlock,
   type AnthropicAssistantContentBlock,
@@ -79,7 +81,6 @@ import { parseFunctionCallArguments } from "./tool-arguments"
 const MESSAGE_TYPE = "message"
 const COMPACTION_SIGNATURE_PREFIX = "cm1#"
 const COMPACTION_SIGNATURE_SEPARATOR = "@"
-const REASONING_SIGNATURE_PREFIX = "copilot-api-openai-reasoning-v1:"
 
 export const THINKING_TEXT = "Thinking..."
 export const REASONING_SUMMARY_SEPARATOR = "\u2063\n\n"
@@ -313,7 +314,7 @@ export const encodeReasoningCarrierSignature = (
     return undefined
   }
 
-  return `${REASONING_SIGNATURE_PREFIX}${Buffer.from(
+  return `${OPENAI_REASONING_CARRIER_SIGNATURE_PREFIX}${Buffer.from(
     JSON.stringify(reasoning),
     "utf8",
   ).toString("base64url")}`
@@ -593,7 +594,7 @@ const createReasoningContent = (
 
   // align with vscode-copilot-chat extractThinkingData, should add id
   // https://github.com/microsoft/vscode/blob/1.128.0/extensions/copilot/src/platform/endpoint/node/responsesApi.ts#L651
-  const carrier = parseLegacyReasoningSignature(block.signature)
+  const carrier = parseLegacyOpenAIReasoningCarrierSignature(block.signature)
   if (!carrier) {
     return undefined
   }
@@ -644,11 +645,13 @@ const createCompactionContent = (
 const decodeReasoningCarrierSignature = (
   signature: string,
 ): ResponseInputReasoning | undefined => {
-  if (!signature.startsWith(REASONING_SIGNATURE_PREFIX)) {
+  if (!signature.startsWith(OPENAI_REASONING_CARRIER_SIGNATURE_PREFIX)) {
     return undefined
   }
 
-  const encoded = signature.slice(REASONING_SIGNATURE_PREFIX.length)
+  const encoded = signature.slice(
+    OPENAI_REASONING_CARRIER_SIGNATURE_PREFIX.length,
+  )
   if (!encoded) {
     return undefined
   }
@@ -692,32 +695,6 @@ const isValidReasoningStatus = (status: unknown): boolean =>
   || status === "completed"
   || status === "in_progress"
   || status === "incomplete"
-
-const parseLegacyReasoningSignature = (
-  signature: string,
-): { encryptedContent: string; id: string } | undefined => {
-  const splitIndex = signature.lastIndexOf("@")
-
-  if (splitIndex <= 0 || splitIndex === signature.length - 1) {
-    return undefined
-  }
-
-  const encryptedContent = signature.slice(0, splitIndex)
-  const id = signature.slice(splitIndex + 1)
-  const legacyAlphabet = /^[A-Za-z0-9+/_=-]+$/u
-  const idLooksLikeReasoning =
-    /^rs(?:_|$)/u.test(id) || (id.length >= 64 && legacyAlphabet.test(id))
-
-  if (
-    encryptedContent.length < 64
-    || !legacyAlphabet.test(encryptedContent)
-    || !idLooksLikeReasoning
-  ) {
-    return undefined
-  }
-
-  return { encryptedContent, id }
-}
 
 const createFunctionToolCall = (
   block: AnthropicToolUseBlock,

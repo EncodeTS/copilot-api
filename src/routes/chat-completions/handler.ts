@@ -24,6 +24,10 @@ import {
 
 const logger = createHandlerLogger("chat-completions-handler")
 
+export const chatCompletionsHandlerDependencies = {
+  createChatCompletions,
+}
+
 export async function handleCompletion(c: Context) {
   let payload = await c.req.json<ChatCompletionsPayload>()
   const requestedModel = payload.model
@@ -80,10 +84,12 @@ export async function handleCompletion(c: Context) {
     model: payload.model,
   })
 
-  const response = await createChatCompletions(payload, {
-    requestId,
-    sessionId,
-  })
+  const response =
+    await chatCompletionsHandlerDependencies.createChatCompletions(payload, {
+      requestId,
+      sessionId,
+      signal: c.req.raw.signal,
+    })
 
   if (isNonStreaming(response)) {
     debugJson(logger, "Non-streaming response:", response)

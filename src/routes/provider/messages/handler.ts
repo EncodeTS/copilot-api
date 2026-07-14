@@ -25,6 +25,7 @@ import {
   type ResolvedProviderConfig,
   resolveEffectiveProviderType,
   resolveProviderAuthType,
+  supportsProviderResponsesContextManagement,
 } from "~/lib/config"
 import { logCodexRateLimitsEvent } from "~/lib/codex-rate-limit"
 import {
@@ -360,15 +361,22 @@ const handleOpenAIResponsesProviderMessages = async (
     responsesPayload.stream = true
   }
 
-  const contextManagementDecision = applyResponsesApiContextManagement(
-    responsesPayload,
-    selectedModel?.capabilities.limits,
-    {
-      source: "messages",
-    },
-  )
-  if (contextManagementDecision.shouldPruneInput) {
-    compactInputByLatestCompaction(responsesPayload)
+  if (
+    supportsProviderResponsesContextManagement(
+      providerConfig,
+      responsesPayload.model,
+    )
+  ) {
+    const contextManagementDecision = applyResponsesApiContextManagement(
+      responsesPayload,
+      selectedModel?.capabilities.limits,
+      {
+        source: "messages",
+      },
+    )
+    if (contextManagementDecision.shouldPruneInput) {
+      compactInputByLatestCompaction(responsesPayload)
+    }
   }
 
   debugJson(logger, "provider.messages.responses.request", {
@@ -696,40 +704,73 @@ const streamProviderMessages = ({
   )
   return streamSSE(c, async (stream) => {
     let usage: UsageTokens = {}
+    let terminalSeen = false
 
-    for await (const chunk of events(upstreamResponse)) {
-      debugJsonTail(logger, "provider.messages.raw_stream_event:", {
-        value: chunk.data,
-        tailLength: 1_000,
-      })
-      const eventName = chunk.event
-      if (eventName === "ping") {
-        await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
-        continue
+    try {
+      for await (const chunk of events(upstreamResponse)) {
+        debugJsonTail(logger, "provider.messages.raw_stream_event:", {
+          value: chunk.data,
+          tailLength: 1_000,
+        })
+        const eventName = chunk.event
+        if (eventName === "ping") {
+          await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
+          continue
+        }
+
+        let data = chunk.data
+        if (!data) {
+          continue
+        }
+
+        terminalSeen ||= eventName === "error"
+
+        if (chunk.data === "[DONE]") {
+          break
+        }
+
+        const parsed = parseProviderStreamEvent(data)
+        if (parsed) {
+          usage = mergeAnthropicUsage(usage, parsed.usage)
+          data = parsed.data
+          terminalSeen ||=
+            parsed.type === "message_stop" || parsed.type === "error"
+        }
+
+        await stream.writeSSE({
+          event: eventName,
+          data,
+        })
+
+        if (terminalSeen) {
+          break
+        }
       }
 
-      let data = chunk.data
-      if (!data) {
-        continue
+      if (!terminalSeen) {
+        const errorEvent = createAnthropicStreamErrorEvent({
+          message: "Provider Anthropic stream ended without message_stop",
+          type: "api_error",
+        })
+        await stream.writeSSE({
+          event: errorEvent.type,
+          data: JSON.stringify(errorEvent),
+        })
       }
-
-      if (chunk.data === "[DONE]") {
-        break
+    } catch (error) {
+      if (!terminalSeen) {
+        const errorEvent = createAnthropicStreamErrorEvent({
+          message: `Provider Anthropic stream failed: ${getProviderStreamErrorMessage(error)}`,
+          type: "api_error",
+        })
+        await stream.writeSSE({
+          event: errorEvent.type,
+          data: JSON.stringify(errorEvent),
+        })
       }
-
-      const parsed = parseProviderStreamEvent(data)
-      if (parsed) {
-        usage = mergeAnthropicUsage(usage, parsed.usage)
-        data = parsed.data
-      }
-
-      await stream.writeSSE({
-        event: eventName,
-        data,
-      })
+    } finally {
+      recordUsage(usage)
     }
-
-    recordUsage(usage)
   })
 }
 
@@ -766,6 +807,7 @@ const streamOpenAICompatibleProviderMessages = ({
       emitThinking: payload.thinking?.type !== "disabled",
     }
     let terminatedWithError = false
+    let terminalSeen = false
 
     try {
       for await (const chunk of events(upstreamResponse)) {
@@ -817,6 +859,28 @@ const streamOpenAICompatibleProviderMessages = ({
           usage = normalizeOpenAIUsage(parsed.chunk.usage)
         }
 
+        if (
+          parsed.chunk.choices.some(
+            (choice) => choice.finish_reason === "error",
+          )
+        ) {
+          const errorEvent = createAnthropicStreamErrorEvent({
+            message: "Provider upstream ended with finish_reason=error",
+            type: "api_error",
+          })
+          await stream.writeSSE({
+            event: errorEvent.type,
+            data: JSON.stringify(errorEvent),
+          })
+          terminalSeen = true
+          terminatedWithError = true
+          break
+        }
+
+        terminalSeen ||= parsed.chunk.choices.some((choice) =>
+          Boolean(choice.finish_reason),
+        )
+
         const events = translateChunkToAnthropicEvents(
           parsed.chunk,
           streamState,
@@ -834,7 +898,20 @@ const streamOpenAICompatibleProviderMessages = ({
         }
       }
 
-      if (!terminatedWithError) {
+      if (!terminatedWithError && !terminalSeen) {
+        const errorEvent = createAnthropicStreamErrorEvent({
+          message:
+            "Provider OpenAI-compatible stream ended without finish_reason",
+          type: "api_error",
+        })
+        await stream.writeSSE({
+          event: errorEvent.type,
+          data: JSON.stringify(errorEvent),
+        })
+        terminatedWithError = true
+      }
+
+      if (!terminatedWithError && terminalSeen) {
         for (const event of flushPendingAnthropicStreamEvents(streamState)) {
           const eventData = JSON.stringify(event)
           debugLazy(logger, () => [
@@ -846,6 +923,17 @@ const streamOpenAICompatibleProviderMessages = ({
             data: eventData,
           })
         }
+      }
+    } catch (error) {
+      if (!terminatedWithError) {
+        const errorEvent = createAnthropicStreamErrorEvent({
+          message: `Provider OpenAI-compatible stream failed: ${getProviderStreamErrorMessage(error)}`,
+          type: "api_error",
+        })
+        await stream.writeSSE({
+          event: errorEvent.type,
+          data: JSON.stringify(errorEvent),
+        })
       }
     } finally {
       recordUsage(usage)
@@ -1105,6 +1193,9 @@ const createAnthropicStreamErrorEvent = ({
   },
 })
 
+const getProviderStreamErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error)
+
 const parseResponsesProviderStreamChunk = (
   data: string,
   providerConfig: ResolvedProviderConfig,
@@ -1128,23 +1219,30 @@ const parseResponsesProviderStreamChunk = (
 
 const parseProviderStreamEvent = (
   data: string,
-): { data: string; model?: string; usage: UsageTokens } | null => {
+): {
+  data: string
+  model?: string
+  type: string
+  usage: UsageTokens
+} | null => {
   try {
     const parsed = JSON.parse(data) as AnthropicStreamEventData
     if (parsed.type === "message_start") {
       return {
         data: JSON.stringify(parsed),
         model: parsed.message.model,
+        type: parsed.type,
         usage: normalizeAnthropicUsage(parsed.message.usage),
       }
     }
     if (parsed.type === "message_delta") {
       return {
         data: JSON.stringify(parsed),
+        type: parsed.type,
         usage: normalizeAnthropicUsage(parsed.usage),
       }
     }
-    return { data: JSON.stringify(parsed), usage: {} }
+    return { data: JSON.stringify(parsed), type: parsed.type, usage: {} }
   } catch (error) {
     logger.error("provider.messages.streaming.adjust_tokens_error", {
       error,

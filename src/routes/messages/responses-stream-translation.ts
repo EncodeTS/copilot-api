@@ -15,6 +15,8 @@ import {
   type ResponseReasoningSummaryPartAddedEvent,
   type ResponseReasoningSummaryTextDeltaEvent,
   type ResponseReasoningSummaryTextDoneEvent,
+  type ResponseRefusalDeltaEvent,
+  type ResponseRefusalDoneEvent,
   type ResponsesResult,
   type ResponseStreamEvent,
   type ResponseTextDeltaEvent,
@@ -38,6 +40,40 @@ class FunctionCallArgumentsValidationError extends Error {
   constructor(message: string) {
     super(message)
     this.name = "FunctionCallArgumentsValidationError"
+  }
+}
+
+class CanonicalStreamValueValidationError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "CanonicalStreamValueValidationError"
+  }
+}
+
+const getCanonicalMissingSuffix = (
+  accumulated: string,
+  canonical: string,
+  label: string,
+): string => {
+  if (!canonical.startsWith(accumulated)) {
+    throw new CanonicalStreamValueValidationError(
+      `${label} done value diverged from streamed deltas.`,
+    )
+  }
+
+  return canonical.slice(accumulated.length)
+}
+
+const isValidFunctionArguments = (argumentsText: string): boolean => {
+  if (argumentsText.length === 0) {
+    return true
+  }
+
+  try {
+    const value: unknown = JSON.parse(argumentsText)
+    return typeof value === "object" && value !== null && !Array.isArray(value)
+  } catch {
+    return false
   }
 }
 
@@ -74,7 +110,9 @@ export interface ResponsesStreamState {
   blockIndexByKey: Map<string, number>
   openBlocks: Set<number>
   blockHasDelta: Set<number>
+  textByBlockKey: Map<string, string>
   reasoningSummaryHasDelta: Set<string>
+  reasoningSummaryTextByKey: Map<string, string>
   functionCallStateByOutputIndex: Map<number, FunctionCallStreamState>
   toolSearchName: string
   hasToolCall: boolean
@@ -82,6 +120,7 @@ export interface ResponsesStreamState {
 }
 
 type FunctionCallStreamState = {
+  argumentsText: string
   blockIndex: number
   toolCallId: string
   name: string
@@ -98,7 +137,9 @@ export const createResponsesStreamState = (options?: {
   blockIndexByKey: new Map(),
   openBlocks: new Set(),
   blockHasDelta: new Set(),
+  textByBlockKey: new Map(),
   reasoningSummaryHasDelta: new Set(),
+  reasoningSummaryTextByKey: new Map(),
   functionCallStateByOutputIndex: new Map(),
   toolSearchName: options?.toolSearchName ?? BRIDGE_TOOL_SEARCH_NAME,
   hasToolCall: false,
@@ -137,6 +178,15 @@ export const translateResponsesStreamEvent = (
 
     case "response.output_text.done": {
       return handleOutputTextDone(rawEvent, state)
+    }
+    case "response.content_part.done": {
+      return handleContentPartDone(rawEvent, state)
+    }
+    case "response.refusal.delta": {
+      return handleRefusalDelta(rawEvent, state)
+    }
+    case "response.refusal.done": {
+      return handleRefusalDone(rawEvent, state)
     }
     case "response.output_item.done": {
       return handleOutputItemDone(rawEvent, state)
@@ -206,6 +256,11 @@ const handleOutputItemAdded = (
       },
     })
     state.blockHasDelta.add(blockIndex)
+    const functionCallState =
+      state.functionCallStateByOutputIndex.get(outputIndex)
+    if (functionCallState) {
+      functionCallState.argumentsText += initialArguments
+    }
   }
 
   return events
@@ -368,6 +423,7 @@ const handleFunctionCallArgumentsDelta = (
     )
   }
   functionCallState.consecutiveWhitespaceCount = nextCount
+  functionCallState.argumentsText += deltaText
 
   events.push({
     type: "content_block_delta",
@@ -395,17 +451,46 @@ const handleFunctionCallArgumentsDone = (
 
   const finalArguments =
     typeof rawEvent.arguments === "string" ? rawEvent.arguments : undefined
+  const functionCallState =
+    state.functionCallStateByOutputIndex.get(outputIndex)
 
-  if (!state.blockHasDelta.has(blockIndex) && finalArguments) {
+  let missingSuffix = ""
+  if (finalArguments !== undefined) {
+    try {
+      missingSuffix = getCanonicalMissingSuffix(
+        functionCallState?.argumentsText ?? "",
+        finalArguments,
+        "Responses function arguments",
+      )
+    } catch (error) {
+      return handleCanonicalStreamValueValidationError(error, state, events)
+    }
+
+    if (!isValidFunctionArguments(finalArguments)) {
+      return handleCanonicalStreamValueValidationError(
+        new CanonicalStreamValueValidationError(
+          "Responses function arguments done value is not a valid JSON object.",
+        ),
+        state,
+        events,
+      )
+    }
+  }
+
+  if (missingSuffix) {
     events.push({
       type: "content_block_delta",
       index: blockIndex,
       delta: {
         type: "input_json_delta",
-        partial_json: finalArguments,
+        partial_json: missingSuffix,
       },
     })
     state.blockHasDelta.add(blockIndex)
+  }
+
+  if (functionCallState && finalArguments !== undefined) {
+    functionCallState.argumentsText = finalArguments
   }
 
   state.functionCallStateByOutputIndex.delete(outputIndex)
@@ -440,6 +525,11 @@ const handleOutputTextDelta = (
     },
   })
   state.blockHasDelta.add(blockIndex)
+  const key = getBlockKey(outputIndex, contentIndex)
+  state.textByBlockKey.set(
+    key,
+    (state.textByBlockKey.get(key) ?? "") + deltaText,
+  )
 
   return events
 }
@@ -472,7 +562,12 @@ const handleReasoningSummaryTextDelta = (
     },
   })
   state.blockHasDelta.add(blockIndex)
-  state.reasoningSummaryHasDelta.add(getBlockKey(outputIndex, summaryIndex))
+  const summaryKey = getBlockKey(outputIndex, summaryIndex)
+  state.reasoningSummaryHasDelta.add(summaryKey)
+  state.reasoningSummaryTextByKey.set(
+    summaryKey,
+    (state.reasoningSummaryTextByKey.get(summaryKey) ?? "") + deltaText,
+  )
 
   return events
 }
@@ -523,18 +618,30 @@ const handleReasoningSummaryTextDone = (
   const events = new Array<AnthropicStreamEventData>()
   const blockIndex = openThinkingBlockIfNeeded(state, outputIndex, events)
   const summaryKey = getBlockKey(outputIndex, summaryIndex)
+  const accumulated = state.reasoningSummaryTextByKey.get(summaryKey) ?? ""
+  let missingSuffix: string
+  try {
+    missingSuffix = getCanonicalMissingSuffix(
+      accumulated,
+      text,
+      "Responses reasoning summary",
+    )
+  } catch (error) {
+    return handleCanonicalStreamValueValidationError(error, state, events)
+  }
 
-  if (text && !state.reasoningSummaryHasDelta.has(summaryKey)) {
+  if (missingSuffix) {
     events.push({
       type: "content_block_delta",
       index: blockIndex,
       delta: {
         type: "thinking_delta",
-        thinking: text,
+        thinking: missingSuffix,
       },
     })
     state.blockHasDelta.add(blockIndex)
   }
+  state.reasoningSummaryTextByKey.set(summaryKey, text)
 
   return events
 }
@@ -547,6 +654,7 @@ const handleOutputTextDone = (
   const outputIndex = rawEvent.output_index
   const contentIndex = rawEvent.content_index
   const text = rawEvent.text
+  const key = getBlockKey(outputIndex, contentIndex)
 
   const blockIndex = openTextBlockIfNeeded(state, {
     outputIndex,
@@ -554,18 +662,81 @@ const handleOutputTextDone = (
     events,
   })
 
-  if (text && !state.blockHasDelta.has(blockIndex)) {
+  const accumulated = state.textByBlockKey.get(key) ?? ""
+  let missingSuffix: string
+  try {
+    missingSuffix = getCanonicalMissingSuffix(
+      accumulated,
+      text,
+      "Responses output text",
+    )
+  } catch (error) {
+    return handleCanonicalStreamValueValidationError(error, state, events)
+  }
+
+  if (missingSuffix) {
     events.push({
       type: "content_block_delta",
       index: blockIndex,
       delta: {
         type: "text_delta",
-        text,
+        text: missingSuffix,
       },
     })
   }
+  state.textByBlockKey.set(key, text)
 
   return events
+}
+
+const handleRefusalDelta = (
+  rawEvent: ResponseRefusalDeltaEvent,
+  state: ResponsesStreamState,
+): Array<AnthropicStreamEventData> =>
+  handleOutputTextDelta(
+    {
+      ...rawEvent,
+      type: "response.output_text.delta",
+    },
+    state,
+  )
+
+const handleRefusalDone = (
+  rawEvent: ResponseRefusalDoneEvent,
+  state: ResponsesStreamState,
+): Array<AnthropicStreamEventData> =>
+  handleOutputTextDone(
+    {
+      ...rawEvent,
+      text: rawEvent.refusal,
+      type: "response.output_text.done",
+    },
+    state,
+  )
+
+const handleContentPartDone = (
+  rawEvent: Extract<
+    ResponseStreamEvent,
+    { type: "response.content_part.done" }
+  >,
+  state: ResponsesStreamState,
+): Array<AnthropicStreamEventData> => {
+  const part = rawEvent.part as { refusal?: unknown; type?: unknown }
+  if (part.type !== "refusal" || typeof part.refusal !== "string") {
+    return []
+  }
+
+  return handleOutputTextDone(
+    {
+      content_index: rawEvent.content_index,
+      item_id: rawEvent.item_id,
+      output_index: rawEvent.output_index,
+      sequence_number: rawEvent.sequence_number,
+      text: part.refusal,
+      type: "response.output_text.done",
+    },
+    state,
+  )
 }
 
 const handleResponseCompleted = (
@@ -638,6 +809,21 @@ const handleFunctionCallArgumentsValidationError = (
 
   events.push(buildErrorEvent(reason))
 
+  return events
+}
+
+const handleCanonicalStreamValueValidationError = (
+  error: unknown,
+  state: ResponsesStreamState,
+  events: Array<AnthropicStreamEventData> = [],
+): Array<AnthropicStreamEventData> => {
+  abortAllOpenBlocks(state)
+  state.messageCompleted = true
+  events.push(
+    buildErrorEvent(
+      error instanceof Error ? error.message : "Responses stream diverged",
+    ),
+  )
   return events
 }
 
@@ -764,6 +950,17 @@ const closeAllOpenBlocks = (
 
   state.functionCallStateByOutputIndex.clear()
   state.reasoningSummaryHasDelta.clear()
+  state.reasoningSummaryTextByKey.clear()
+  state.textByBlockKey.clear()
+}
+
+const abortAllOpenBlocks = (state: ResponsesStreamState): void => {
+  state.openBlocks.clear()
+  state.blockHasDelta.clear()
+  state.functionCallStateByOutputIndex.clear()
+  state.reasoningSummaryHasDelta.clear()
+  state.reasoningSummaryTextByKey.clear()
+  state.textByBlockKey.clear()
 }
 
 export const buildErrorEvent = (message: string): AnthropicStreamEventData => ({
@@ -800,6 +997,7 @@ const openFunctionCallBlock = (
     const resolvedName = name ?? "function"
 
     functionCallState = {
+      argumentsText: "",
       blockIndex,
       toolCallId: resolvedToolCallId,
       name: resolvedName,

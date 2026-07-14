@@ -13,6 +13,10 @@ import {
 import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
+import {
+  fetchWithUpstreamLifecycle,
+  type UpstreamLifecycleTimeouts,
+} from "~/lib/upstream-lifecycle"
 
 export const createChatCompletions = async (
   payload: ChatCompletionsPayload,
@@ -20,6 +24,8 @@ export const createChatCompletions = async (
     subagentMarker?: SubagentMarker | null
     requestId: string
     sessionId?: string
+    signal?: AbortSignal
+    timeouts?: UpstreamLifecycleTimeouts
     compactType?: CompactType
   },
 ) => {
@@ -58,11 +64,18 @@ export const createChatCompletions = async (
 
   consola.log(`<-- model: ${payload.model}`)
 
-  const response = await fetch(`${copilotBaseUrl(state)}/chat/completions`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-  })
+  const response = await fetchWithUpstreamLifecycle(
+    `${copilotBaseUrl(state)}/chat/completions`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    },
+    {
+      headersTimeoutMs: options.timeouts?.httpHeadersMs,
+      signal: options.signal,
+    },
+  )
 
   logCopilotRateLimits(response.headers)
 

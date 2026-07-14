@@ -61,6 +61,9 @@ describe('desktop provider auth', () => {
       {
         getEnabledProviders: () => ['custom_deepseek'],
         getRawProviderConfig: () => ({
+          capabilities: {
+            responsesContextManagement: true,
+          },
           models: {
             'deepseek-v4-pro': {
               temperature: 0.2,
@@ -85,6 +88,9 @@ describe('desktop provider auth', () => {
     expect(writtenProviderConfig).toEqual({
       apiKey: 'custom-key',
       baseUrl: 'https://custom.example/api',
+      capabilities: {
+        responsesContextManagement: true,
+      },
       enabled: true,
       models: {
         'deepseek-v4-pro': {

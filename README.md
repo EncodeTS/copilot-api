@@ -19,10 +19,8 @@ The `npx @jeffreycao/copilot-api@latest` examples below use the upstream npm pac
 > [!IMPORTANT]
 > **Before using, please be aware of the following:**
 >
-> 1. **Claude Code configuration:** When using with Claude Code, please configure the model ID as `claude-opus-4-8`. Example claude `settings.json` see [Manual Configuration with `settings.json`](#manual-configuration-with-settingsjson). 
->
+> 1. **Claude Code configuration:** When using with Claude Code, please configure the model ID as `claude-opus-4-8`. Example claude `settings.json` see [Manual Configuration with `settings.json`](#manual-configuration-with-settingsjson).
 > 2. **Built-in `copilot`, `codex` and third-party providers:** Run `npx @jeffreycao/copilot-api@latest auth` and choose `copilot`, `codex`, `deepseek`, `custom`, or other providers.
->
 > 3. **Note:** See [GitHub Copilot Security Notice](./NOTICE.md#github-copilot-security-notice) for the warning removed from the README header.
 
 ---
@@ -202,14 +200,12 @@ Here is an example `.claude/settings.json` file:
     "CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0"
   },
   "permissions": {
-    "deny": [
-      "mcp__ide__executeCode"
-    ]
+    "deny": ["mcp__ide__executeCode"]
   }
 }
 ```
 
-- Replace `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL` according to your needs. After configuration, please install the claude code plugin [Plugin Integrations](#plugin-integrations).  
+- Replace `ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL` according to your needs. After configuration, please install the claude code plugin [Plugin Integrations](#plugin-integrations).
 - Setting CLAUDE_CODE_ATTRIBUTION_HEADER to 0 can prevent Claude code from adding billing and version information in system prompts, thereby avoiding prompt cache invalidation.
 - Turning off CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION and CLAUDE_CODE_ENABLE_AWAY_SUMMARY can prevent quota from being consumed unnecessarily.
 - Claude Code WebSearch is supported for pure search requests. For Copilot, keep the global `messageApiWebSearchModel` set to a Responses-capable GPT model or a `provider/model` alias. For provider routes, use a native Anthropic provider or an `openai-responses` provider. Add `WebSearch` to `permissions.deny` only if you want to forbid this traffic.
@@ -267,7 +263,7 @@ Example `~/.config/opencode/opencode.json`:
           "modalities": {
             "input": ["text", "image"],
             "output": ["text"]
-          },          
+          },
           "limit": {
             "context": 200000,
             "output": 32000
@@ -342,8 +338,7 @@ timeout_ms = 5000
 refresh_interval_ms = 300000
 ```
 
-Use `pwsh.exe` instead of `powershell.exe` if you specifically want PowerShell
-7.
+Use `pwsh.exe` instead of `powershell.exe` if you specifically want PowerShell 7.
 
 > [!NOTE]
 > This configuration is specific to Codex and the GitHub Copilot provider. `name` must be set to `"OpenAI"`. The command-backed auth is intentional: current Codex versions refresh a custom provider's `/models` endpoint only for command auth (`/v1/models` when the configured base URL includes `/v1`). It prints `GITHUB_COPILOT_API_KEY` when set, or the placeholder `dummy` for a gateway without API-key protection. Command auth is mutually exclusive with `env_key`, `experimental_bearer_token`, and `requires_openai_auth`; remove those fields instead of combining auth methods. Do not hardcode `model_context_window` or `model_auto_compact_token_limit`: the gateway reads the bundled catalog from the matching local Codex version before overlaying the live Copilot context limits. If the matching Codex executable cannot be found, the gateway returns an empty remote catalog so Codex safely keeps its own bundled metadata. Set `COPILOT_API_CODEX_CLI_PATH` only when the executable is outside the standard locations.
@@ -498,32 +493,32 @@ Copilot API now uses a subcommand structure with these main commands:
 
 The following options can be used with any subcommand. When passing them before the subcommand, use the `--key=value` form:
 
-| Option            | Description                                            | Default | Alias |
-| ----------------- | ------------------------------------------------------ | ------- | ----- |
-| --api-home        | Path to the API home directory (sets COPILOT_API_HOME) | none    | none  |
-| --oauth-app       | OAuth app identifier (sets COPILOT_API_OAUTH_APP)      | none    | none  |
-| --enterprise-url  | Enterprise URL for GitHub (sets COPILOT_API_ENTERPRISE_URL) | none | none |
+| Option           | Description                                                 | Default | Alias |
+| ---------------- | ----------------------------------------------------------- | ------- | ----- |
+| --api-home       | Path to the API home directory (sets COPILOT_API_HOME)      | none    | none  |
+| --oauth-app      | OAuth app identifier (sets COPILOT_API_OAUTH_APP)           | none    | none  |
+| --enterprise-url | Enterprise URL for GitHub (sets COPILOT_API_ENTERPRISE_URL) | none    | none  |
 
 ### Start Command Options
 
 The following command line options are available for the `start` command:
 
-| Option         | Description                                                                   | Default    | Alias |
-| -------------- | ----------------------------------------------------------------------------- | ---------- | ----- |
-| --port         | Port to listen on                                                             | 4141       | -p    |
-| --verbose      | Enable verbose logging                                                        | false      | -v    |
-| --github-token | Provide GitHub token directly (must be generated using the `auth` subcommand) | none       | -g    |
-| --claude-code  | Generate a command to launch Claude Code with Copilot API config              | false      | -c    |
-| --show-token   | Show GitHub and Copilot tokens on fetch and refresh                           | false      | none  |
-| --proxy-env    | Initialize proxy from environment variables                                   | false      | none  |
+| Option         | Description                                                                   | Default | Alias |
+| -------------- | ----------------------------------------------------------------------------- | ------- | ----- |
+| --port         | Port to listen on                                                             | 4141    | -p    |
+| --verbose      | Enable verbose logging                                                        | false   | -v    |
+| --github-token | Provide GitHub token directly (must be generated using the `auth` subcommand) | none    | -g    |
+| --claude-code  | Generate a command to launch Claude Code with Copilot API config              | false   | -c    |
+| --show-token   | Show GitHub and Copilot tokens on fetch and refresh                           | false   | none  |
+| --proxy-env    | Initialize proxy from environment variables                                   | false   | none  |
 
 ### Auth Command Options
 
-| Option       | Description               | Default | Alias |
-| ------------ | ------------------------- | ------- | ----- |
-| --provider   | Provider to log in with or configure (`copilot`, `codex`, `opencode-go`, `deepseek`, `dashscope`, `openrouter`, or `custom`) | prompt | none |
-| --verbose    | Enable verbose logging    | false   | -v    |
-| --show-token | Show GitHub token on auth | false   | none  |
+| Option       | Description                                                                                                                  | Default | Alias |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------- | ------- | ----- |
+| --provider   | Provider to log in with or configure (`copilot`, `codex`, `opencode-go`, `deepseek`, `dashscope`, `openrouter`, or `custom`) | prompt  | none  |
+| --verbose    | Enable verbose logging                                                                                                       | false   | -v    |
+| --show-token | Show GitHub token on auth                                                                                                    | false   | none  |
 
 Use `copilot-api auth login --provider copilot` only when you want to enable the GitHub Copilot provider. Copilot is not required for `codex` or third-party provider-only usage.
 
@@ -553,7 +548,7 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
       "gpt-5-mini": "<built-in exploration prompt>"
     },
     "contextManagement": {
-      "messages": true,
+      "messages": false,
       "responses": false
     },
     "modelReasoningEfforts": {
@@ -574,6 +569,7 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
   - `baseUrl` should be provider API base URL without the final endpoint. For Anthropic providers, omit `/v1/messages`; for OpenAI-compatible providers, omit `/v1/chat/completions`; for OpenAI Responses providers, omit `/v1/responses`.
   - `apiKey` is used as the upstream credential value and is required for regular providers.
   - `authType` (optional): Controls how `apiKey` is sent upstream. Supports `x-api-key` and `authorization` for regular providers. Anthropic providers default to `x-api-key`; OpenAI-compatible and OpenAI Responses providers default to `authorization`. When set to `authorization`, the proxy sends `Authorization: Bearer <apiKey>`. `oauth2` is reserved for the built-in `codex` provider and is written automatically by `auth login --provider codex`.
+  - `capabilities.responsesContextManagement` (optional): Set to `true` only when an OpenAI Responses provider accepts the `context_management` compaction extension. Generic providers default to `false`; the built-in Copilot and Codex providers are treated as known-capable.
   - `pricingCurrency` (optional): Provider-level currency used for token cost calculation, for example `USD` or `CNY`. Quick providers default to `CNY` for DashScope and DeepSeek, and `USD` for Codex/OpenRouter. Costs are grouped by currency and are not exchange-rate converted.
   - `models` (optional): Per-model configuration map. Each key is a model ID (matching the model name in requests), and the value is:
     - `temperature` (optional): Default temperature value used when the request does not specify one.
@@ -582,11 +578,13 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
     - `extraBody` (optional): Dynamic fields merged into the upstream request body for that model. Request body fields with the same name take precedence. OpenAI-compatible providers can use this for fields such as `enable_thinking`, `preserve_thinking`, `reasoning_effort`. `thinking_budget` is a special OpenAI-compatible provider override: when configured in `extraBody`, it is forced after Anthropic `thinking.budget_tokens` translation and overrides the request-derived budget. For providers whose name is `dashscope` or whose `baseUrl` contains `aliyuncs.com`, the request-derived `thinking_budget` (from Anthropic `thinking.budget_tokens`) is forwarded upstream; for other OpenAI-compatible providers the request-derived `thinking_budget` is stripped, while an `extraBody` `thinking_budget` is still honored. For DashScope providers, `preserve_thinking` defaults to `true` when not explicitly set in `extraBody` or the request body.
     - `pricing` (optional): Per-model token prices, in the provider `pricingCurrency`, per 1M tokens. Supported fields are `input`, `output`, `cachedInput` (implicit cache read), `explicitCachedInput` (explicit cache read), and `cacheCreationInput`. Use `tiers` with `maxInputTokens` for input-size tiered pricing.
     - `contextCache` (optional): Defaults to `true` for providers whose name is `dashscope` or whose `baseUrl` contains `aliyuncs.com`; defaults to `false` for other OpenAI-compatible providers. This enables Alibaba Cloud Model Studio/DashScope explicit context cache by injecting `cache_control: { "type": "ephemeral" }` on up to 4 content blocks using the Context Cache format. The cache breakpoint strategy matches opencode's main provider flow: the first 2 system messages plus the last 2 non-system messages. Marked string content is converted to text content part arrays for `system` / `user` / `assistant` / `tool` messages; existing array content is marked on the last part. Set this to `false` when the model already supports implicit caching, or when the upstream does not accept this explicit-cache extension field. Set this to `true` for non-DashScope providers that support the same explicit-cache extension. Applied on both `/v1/messages` and `/v1/chat/completions` routes.
+    - `responsesContextManagement` (optional): Per-model opt-in for the Responses `context_management` extension. It enables the capability only for this model and takes precedence over an absent provider-level capability; sibling models remain disabled.
     - `supportPdf` (optional): Controls whether the model supports PDF/document content. Defaults to `false`; unsupported PDFs are converted to a text notice. Set it to `true` to send PDF/document blocks as OpenAI Chat Completions file parts.
     - `toolContentSupportType` (optional): Tool result content capabilities for that model, as an array of `array`, `image`, and `pdf`. Provider routes default to string-only tool content when omitted. If `supportPdf` is `true` but this list does not include `pdf`, file parts in tool results are moved to user role messages. This provider default does not change the Copilot main flow, which continues to support array + image and not PDF.
     - `type` (optional): Per-model override of the provider protocol type. Supports `anthropic`, `openai-compatible`, and `openai-responses`. When set, the provider's `/v1/messages` route uses this model's type instead of the provider-level type for request routing, auth header resolution, and upstream endpoint selection. This is useful for providers like OpenCode Go whose upstream supports both OpenAI-compatible and Anthropic Messages APIs for different models. When the type is overridden, the auth header is resolved from the overridden type's default (Anthropic defaults to `x-api-key`; OpenAI-compatible/Responses default to `authorization`).
 
   Example DashScope model settings:
+
   ```json
   {
     "providers": {
@@ -638,8 +636,10 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
     }
   }
   ```
+
   Built-in token prices cover Codex GPT models in USD, DashScope `qwen3.7-max`, `qwen3.7-plus`, `glm-5.1`, `glm-5.2` in CNY, DeepSeek `deepseek-v4-flash`, `deepseek-v4-pro`, `deepseek-chat`, `deepseek-reasoner` in CNY, and OpenCode Go models (`glm-5.2`, `deepseek-v4-flash`, `deepseek-v4-pro`, `kimi-k2.7-code`, `mimo-v2.5`, `mimo-v2.5-pro`, `qwen3.7-plus`, `qwen3.7-max`, `minimax-m2.5`, `minimax-m3`) in USD. User `pricing` entries override built-ins. For DashScope, cached tokens are charged as explicit cache reads when the upstream usage includes `cache_creation_input_tokens`; otherwise `cachedInput` is used as the implicit cache read price. For DeepSeek, `prompt_cache_hit_tokens` map to cached input and `prompt_cache_miss_tokens` map to regular input.
-- **contextManagement:** Controls whether the proxy adds Responses API `context_management` compaction instructions. `messages` applies when Anthropic-style `/v1/messages` requests are translated to Responses API, including `openai-responses` provider message routes; `responses` applies to native `/v1/responses` traffic, including `provider/model` aliases and the built-in `codex` provider. Both default to `false`, so client-owned compaction is preserved unless gateway compaction is explicitly enabled. When enabled, the request includes `context_management` in the body and the gateway keeps only the latest compaction carrier on follow-up turns.
+
+- **contextManagement:** Controls whether the proxy adds Responses API `context_management` compaction instructions. `messages` applies when Anthropic-style `/v1/messages` requests are translated to Responses API; `responses` applies to native `/v1/responses` traffic. Both default to `false`, so client-owned compaction is preserved unless gateway compaction is explicitly enabled. Generic `openai-responses` providers are mutated only when `capabilities.responsesContextManagement` or the model-level `responsesContextManagement` is `true`. When an unversioned legacy config contains `messages: true`, the value is preserved on disk but temporarily disabled at runtime with a `migrationState.contextManagementMessages` warning; remove that marker only after explicitly choosing gateway-managed compaction.
 - **modelResponsesApiCompactThresholds:** Optional per-model Responses API `compact_threshold` overrides used when the proxy adds `context_management`. Explicit values take precedence over dynamic calculation. Without an override, the proxy uses live model limits: Messages bridges compact at 90% of `max_prompt_tokens` while retaining at least 32,000 input-growth tokens; if `max_prompt_tokens` is absent it uses `max_context_window_tokens - max_output_tokens`. Native Responses compaction remains disabled by default and retains its explicit 80% policy when enabled. Legacy auto-written `gpt-5.4` / `gpt-5.5` values of `217600` and `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna` values of `231200` are removed from config during migration.
 - **modelReasoningEfforts:** Per-model fallback reasoning effort for `/v1/messages` requests. It is used only when the request does not provide `output_config.effort`.
   - **Priority:** request `output_config.effort` > `modelReasoningEfforts[model]` > built-in default (`xhigh` for GPT-5.3+ models, otherwise `high`).
@@ -686,22 +686,22 @@ The server exposes several OpenAI- and Anthropic-compatible endpoints. Requests 
 
 These endpoints mimic the OpenAI API structure.
 
-| Endpoint                    | Method | Description                                                      |
-| --------------------------- | ------ | ---------------------------------------------------------------- |
-| `POST /v1/responses`        | `POST` | OpenAI Most advanced interface for generating model responses. Supports `provider/model` aliases for `openai-responses` providers. |
-| `POST /v1/chat/completions` | `POST` | Creates a model response for the given chat conversation. Supports `provider/model` aliases for `openai-compatible` providers and can be used without Copilot when the target provider is configured. |
+| Endpoint                    | Method | Description                                                                                                                                                                                                                                                                |
+| --------------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /v1/responses`        | `POST` | OpenAI Most advanced interface for generating model responses. Supports `provider/model` aliases for `openai-responses` providers.                                                                                                                                         |
+| `POST /v1/chat/completions` | `POST` | Creates a model response for the given chat conversation. Supports `provider/model` aliases for `openai-compatible` providers and can be used without Copilot when the target provider is configured.                                                                      |
 | `GET /v1/models`            | `GET`  | Lists Copilot models plus enabled provider models using `provider/model-id` IDs. Codex clients receive their own version-matched bundled descriptors with live Copilot context limits; unavailable or mismatched client catalogs safely fall back to an empty remote list. |
-| `POST /v1/embeddings`       | `POST` | Creates an embedding vector representing the input text.         |
+| `POST /v1/embeddings`       | `POST` | Creates an embedding vector representing the input text.                                                                                                                                                                                                                   |
 
 ### Codex Backend Proxy Endpoints
 
 These endpoints require an active Codex login. Each endpoint is available both without a version prefix and under `/v1`.
 
-| Endpoint | Method | Description |
-| --- | --- | --- |
-| `POST /alpha/search`<br>`POST /v1/alpha/search` | `POST` | Transparently forwards the JSON body and query parameters to the Codex Alpha Search upstream. |
-| `POST /images/generations`<br>`POST /v1/images/generations` | `POST` | Forwards a JSON image generation request to the Codex Images upstream. When the request omits `Content-Type`, the gateway defaults it to `application/json`. |
-| `POST /images/edits`<br>`POST /v1/images/edits` | `POST` | Forwards an image edit request to the Codex Images upstream. Send this request as `multipart/form-data` and let the HTTP client generate the `boundary`; the gateway preserves the incoming content type and streams the upload body. |
+| Endpoint                                                    | Method | Description                                                                                                                                                                                                                           |
+| ----------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /alpha/search`<br>`POST /v1/alpha/search`             | `POST` | Transparently forwards the JSON body and query parameters to the Codex Alpha Search upstream.                                                                                                                                         |
+| `POST /images/generations`<br>`POST /v1/images/generations` | `POST` | Forwards a JSON image generation request to the Codex Images upstream. When the request omits `Content-Type`, the gateway defaults it to `application/json`.                                                                          |
+| `POST /images/edits`<br>`POST /v1/images/edits`             | `POST` | Forwards an image edit request to the Codex Images upstream. Send this request as `multipart/form-data` and let the HTTP client generate the `boundary`; the gateway preserves the incoming content type and streams the upload body. |
 
 For every endpoint above, the gateway replaces client authorization and account headers with the active Codex login, preserves query parameters and compatible request headers, and returns the upstream status, headers, and body.
 
@@ -709,13 +709,13 @@ For every endpoint above, the gateway replaces client authorization and account 
 
 These endpoints are designed to be compatible with the Anthropic Messages API.
 
-| Endpoint                         | Method | Description                                                  |
-| -------------------------------- | ------ | ------------------------------------------------------------ |
-| `POST /v1/messages`              | `POST` | Creates a model response for a given conversation. Supports `provider/model` aliases for configured providers, including translation through `openai-compatible` providers. |
-| `POST /v1/messages/count_tokens` | `POST` | Calculates the number of tokens for a given set of messages. Supports `provider/model` aliases for configured providers. |
-| `POST /:provider/v1/messages`       | `POST` | Proxies Anthropic Messages requests to the configured Anthropic provider, translates them through an OpenAI-compatible provider, or translates them through an OpenAI Responses provider. |
-| `GET /:provider/v1/models`          | `GET`  | Proxies model listing requests to the configured provider.   |
-| `POST /:provider/v1/messages/count_tokens` | `POST` | Calculates tokens locally for provider route requests. |
+| Endpoint                                   | Method | Description                                                                                                                                                                               |
+| ------------------------------------------ | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /v1/messages`                        | `POST` | Creates a model response for a given conversation. Supports `provider/model` aliases for configured providers, including translation through `openai-compatible` providers.               |
+| `POST /v1/messages/count_tokens`           | `POST` | Calculates the number of tokens for a given set of messages. Supports `provider/model` aliases for configured providers.                                                                  |
+| `POST /:provider/v1/messages`              | `POST` | Proxies Anthropic Messages requests to the configured Anthropic provider, translates them through an OpenAI-compatible provider, or translates them through an OpenAI Responses provider. |
+| `GET /:provider/v1/models`                 | `GET`  | Proxies model listing requests to the configured provider.                                                                                                                                |
+| `POST /:provider/v1/messages/count_tokens` | `POST` | Calculates tokens locally for provider route requests.                                                                                                                                    |
 
 ### Usage Monitoring Endpoints
 
@@ -730,10 +730,10 @@ New endpoints for monitoring your Copilot usage and quotas.
 
 These endpoints are reserved for local administrative actions and only accept `auth.adminApiKey`.
 
-| Endpoint                              | Method | Description                                                                 |
-| ------------------------------------- | ------ | --------------------------------------------------------------------------- |
-| `GET /admin/config/model-mappings`    | `GET`  | Returns the current `config.json` path and the active `modelMappings` map.  |
-| `POST /admin/config/model-mappings`   | `POST` | Updates only the `modelMappings` field in `config.json` and returns it back. |
+| Endpoint                            | Method | Description                                                                  |
+| ----------------------------------- | ------ | ---------------------------------------------------------------------------- |
+| `GET /admin/config/model-mappings`  | `GET`  | Returns the current `config.json` path and the active `modelMappings` map.   |
+| `POST /admin/config/model-mappings` | `POST` | Updates only the `modelMappings` field in `config.json` and returns it back. |
 
 ## Example Usage
 

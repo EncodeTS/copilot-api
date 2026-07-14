@@ -38,6 +38,86 @@ afterEach(() => {
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
 })
 
+test("aborts an in-flight HTTP request when the caller disconnects", async () => {
+  fetchMock.mockImplementationOnce(
+    ((_url: string, init: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener(
+          "abort",
+          () =>
+            reject(
+              init.signal?.reason instanceof Error ?
+                init.signal.reason
+              : new Error("request aborted"),
+            ),
+          { once: true },
+        )
+      })) as never,
+  )
+  const controller = new AbortController()
+  const request = createChatCompletions(
+    {
+      messages: [{ role: "user", content: "hello" }],
+      model: "gpt-test",
+    },
+    {
+      requestId: "request-1",
+      signal: controller.signal,
+    },
+  )
+
+  controller.abort(new Error("client disconnected"))
+
+  const outcome = await Promise.race([
+    request.then(
+      () => "resolved",
+      (error: unknown) =>
+        error instanceof Error ? error.message : String(error),
+    ),
+    new Promise<string>((resolve) =>
+      setTimeout(() => resolve("request remained pending"), 20),
+    ),
+  ])
+  expect(outcome).toBe("client disconnected")
+})
+
+test("applies the configured HTTP headers deadline", async () => {
+  fetchMock.mockImplementationOnce(
+    ((_url: string, init: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener(
+          "abort",
+          () =>
+            reject(
+              init.signal?.reason instanceof Error ?
+                init.signal.reason
+              : new Error("request aborted"),
+            ),
+          { once: true },
+        )
+      })) as never,
+  )
+
+  const request = createChatCompletions(
+    {
+      messages: [{ role: "user", content: "hello" }],
+      model: "gpt-test",
+    },
+    {
+      requestId: "request-1",
+      timeouts: { httpHeadersMs: 5 },
+    },
+  )
+
+  expect(
+    await request.then(
+      () => "resolved",
+      (error: unknown) =>
+        error instanceof Error ? error.message : "unknown error",
+    ),
+  ).toBe("Upstream HTTP headers timed out after 5ms")
+})
+
 test("sets x-initiator to agent if tool/assistant present", async () => {
   const payload: ChatCompletionsPayload = {
     messages: [

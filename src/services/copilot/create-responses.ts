@@ -19,10 +19,15 @@ import {
   type CopilotQuotaSnapshot,
 } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
+import {
+  fetchWithUpstreamLifecycle,
+  type UpstreamLifecycleTimeouts,
+} from "~/lib/upstream-lifecycle"
 import { state } from "~/lib/state"
 import {
   createPooledWebSocketStream,
   createWebSocketUrl,
+  isWebSocketNotSentError,
 } from "~/services/responses-websocket"
 
 const ENCRYPTED_REASONING_INCLUDE: ResponseIncludable =
@@ -406,6 +411,8 @@ export type ResponseStreamEvent =
   | ResponseReasoningSummaryPartDoneEvent
   | ResponseReasoningSummaryTextDeltaEvent
   | ResponseReasoningSummaryTextDoneEvent
+  | ResponseRefusalDeltaEvent
+  | ResponseRefusalDoneEvent
   | ResponseTextDeltaEvent
   | ResponseTextDoneEvent
 
@@ -574,6 +581,24 @@ export interface ResponseReasoningSummaryTextDoneEvent {
   type: "response.reasoning_summary_text.done"
 }
 
+export interface ResponseRefusalDeltaEvent {
+  content_index: number
+  delta: string
+  item_id: string
+  output_index: number
+  sequence_number: number
+  type: "response.refusal.delta"
+}
+
+export interface ResponseRefusalDoneEvent {
+  content_index: number
+  item_id: string
+  output_index: number
+  refusal: string
+  sequence_number: number
+  type: "response.refusal.done"
+}
+
 export interface ResponseTextDeltaEvent {
   content_index: number
   delta: string
@@ -603,11 +628,14 @@ type ResponsesStreamChunk = {
 }
 
 interface ResponsesRequestOptions {
+  allowHttpFallback?: boolean
   vision: boolean
   initiator: "agent" | "user"
   subagentMarker?: SubagentMarker | null
   requestId: string
   sessionId?: string
+  signal?: AbortSignal
+  timeouts?: UpstreamLifecycleTimeouts
   compactType?: CompactType
   transport?: ResponsesTransport
 }
@@ -616,10 +644,13 @@ export const createResponses = async (
   payload: ResponsesPayload,
   {
     vision,
+    allowHttpFallback = false,
     initiator,
     subagentMarker,
     requestId,
     sessionId,
+    signal,
+    timeouts,
     compactType,
     transport = "http",
   }: ResponsesRequestOptions,
@@ -651,14 +682,27 @@ export const createResponses = async (
       headers,
       {
         requestId,
+        signal,
         subagentMarker,
+        timeouts,
       },
     )
-    const stream = createPooledResponsesWebSocketStream(websocketRequest)
-    return stream
+    const websocketStream =
+      createPooledResponsesWebSocketStream(websocketRequest)
+    const transportStream = createResponsesStreamWithHttpFallback(
+      websocketStream,
+      {
+        allowHttpFallback,
+        headers,
+        payload,
+        signal,
+        timeouts,
+      },
+    )
+    return createResponsesSafeStream(transportStream)
   }
 
-  return await createHttpResponses(payload, headers)
+  return await createHttpResponses(payload, headers, { signal, timeouts })
 }
 
 const normalizeResponsesToolSchemas = (payload: ResponsesPayload): void => {
@@ -738,12 +782,23 @@ export const ensureEncryptedReasoningIncluded = (
 const createHttpResponses = async (
   payload: ResponsesPayload,
   headers: Record<string, string>,
+  options: {
+    signal?: AbortSignal
+    timeouts?: UpstreamLifecycleTimeouts
+  } = {},
 ): Promise<CreateResponsesReturn> => {
-  const response = await fetch(`${copilotBaseUrl(state)}/responses`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-  })
+  const response = await fetchWithUpstreamLifecycle(
+    `${copilotBaseUrl(state)}/responses`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    },
+    {
+      headersTimeoutMs: options.timeouts?.httpHeadersMs,
+      signal: options.signal,
+    },
+  )
 
   logCopilotRateLimits(response.headers)
 
@@ -772,7 +827,9 @@ export const prepareResponsesWebSocketRequest = (
   preparedHeaders: Record<string, string>,
   options: {
     requestId: string
+    signal?: AbortSignal
     subagentMarker?: SubagentMarker | null
+    timeouts?: UpstreamLifecycleTimeouts
   },
 ): ResponsesWebSocketRequest => {
   const initiator = getResponsesWebSocketInitiator(preparedHeaders)
@@ -780,6 +837,8 @@ export const prepareResponsesWebSocketRequest = (
   return {
     headers: copilotWebSocketHeaders(preparedHeaders),
     poolKey: buildResponsesWebSocketPoolKey(payload, options),
+    signal: options.signal,
+    timeouts: options.timeouts,
     payload: buildResponsesWebSocketPayload(payload, initiator),
     url: buildResponsesWebSocketUrl(copilotBaseUrl(state)),
   }
@@ -822,17 +881,48 @@ export const getResponsesWebSocketInitiator = (
 
 const createPooledResponsesWebSocketStream = (
   request: ResponsesWebSocketRequest,
-): ResponsesStream =>
-  createResponsesSafeStream(
-    createPooledWebSocketStream(request, {
-      createChunk: createResponsesWebSocketStreamChunk,
-      isTerminalChunk: isTerminalResponsesStreamChunk,
-      openErrorMessage: "Failed to create responses websocket",
-      streamErrorMessage: "Responses websocket stream error",
-      terminalChunkMissingMessage:
-        "Responses websocket ended without a terminal response",
-    }),
-  )
+): AsyncIterable<ResponsesStreamChunk> =>
+  createPooledWebSocketStream(request, {
+    createChunk: createResponsesWebSocketStreamChunk,
+    isTerminalChunk: isTerminalResponsesStreamChunk,
+    openErrorMessage: "Failed to create responses websocket",
+    streamErrorMessage: "Responses websocket stream error",
+    terminalChunkMissingMessage:
+      "Responses websocket ended without a terminal response",
+  })
+
+const createResponsesStreamWithHttpFallback = async function* (
+  websocketStream: AsyncIterable<ResponsesStreamChunk>,
+  options: {
+    allowHttpFallback: boolean
+    headers: Record<string, string>
+    payload: ResponsesPayload
+    signal?: AbortSignal
+    timeouts?: UpstreamLifecycleTimeouts
+  },
+): AsyncGenerator<ResponsesStreamChunk, void, unknown> {
+  try {
+    yield* websocketStream
+    return
+  } catch (error) {
+    if (
+      !options.allowHttpFallback
+      || options.signal?.aborted
+      || !isWebSocketNotSentError(error)
+    ) {
+      throw error
+    }
+  }
+
+  const fallback = await createHttpResponses(options.payload, options.headers, {
+    signal: options.signal,
+    timeouts: options.timeouts,
+  })
+  if (!isResponsesStream(fallback)) {
+    throw new Error("Streaming HTTP fallback returned a non-streaming response")
+  }
+  yield* fallback
+}
 
 const createResponsesSafeStream = async function* (
   source: AsyncIterable<ResponsesStreamChunk>,
@@ -843,6 +933,10 @@ const createResponsesSafeStream = async function* (
     yield createResponsesErrorServerSentEventChunk(getErrorMessage(error))
   }
 }
+
+const isResponsesStream = (value: unknown): value is ResponsesStream =>
+  Boolean(value)
+  && typeof (value as ResponsesStream)[Symbol.asyncIterator] === "function"
 
 export const buildResponsesWebSocketPayload = (
   payload: ResponsesPayload,

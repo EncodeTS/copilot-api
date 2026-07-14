@@ -13,6 +13,7 @@ import {
 } from "~/lib/config"
 import { HTTPError } from "~/lib/error"
 import { findEndpointModel } from "~/lib/models"
+import { getResponsesEndpointCapabilities } from "~/lib/responses-capabilities"
 import {
   parseProviderModelAlias,
   type ProviderModelAlias,
@@ -66,6 +67,7 @@ import { debugJson } from "~/lib/logger"
 
 export const webSearchFlowDependencies = {
   createResponses: createCopilotResponses,
+  findEndpointModel,
   createUsageRecorder: (
     payload: AnthropicMessagesPayload,
     sessionId?: string,
@@ -86,6 +88,7 @@ export interface WebSearchFlowOptions {
   webSearchModel: string
   requestId: string
   sessionId?: string
+  signal?: AbortSignal
   compactType?: CompactType
 }
 
@@ -435,6 +438,7 @@ export const tryHandleWebSearch = async (
       webSearchModel: route.model,
       requestId,
       sessionId,
+      signal: c.req.raw.signal,
       compactType: 0,
       logger: options.logger,
     })
@@ -468,7 +472,9 @@ export const handleWebSearchViaResponses = async (
     subagentAgentId: options.subagentMarker?.agent_id,
   })
 
-  const selectedModel: Model | undefined = findEndpointModel(webSearchModel)
+  const selectedModel: Model | undefined =
+    webSearchFlowDependencies.findEndpointModel(webSearchModel)
+  const endpointCapabilities = getResponsesEndpointCapabilities(selectedModel)
   const { vision, initiator } = getResponsesRequestOptions(responsesPayload)
   const transport =
     getResponsesTransportForModel(selectedModel, {
@@ -487,12 +493,15 @@ export const handleWebSearchViaResponses = async (
       createResponses: webSearchFlowDependencies.createResponses,
       logger,
       requestOptions: {
+        allowHttpFallback:
+          endpointCapabilities.http && endpointCapabilities.websocket,
         vision,
         initiator,
         transport,
         subagentMarker: options.subagentMarker,
         requestId: options.requestId,
         sessionId: options.sessionId,
+        signal: options.signal,
         compactType: options.compactType,
       },
       selectedModel,
