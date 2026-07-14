@@ -12,8 +12,8 @@ import {
   createCodexModelsResponse,
   getCodexClientVersion,
   isCodexClientUserAgent,
-  type CodexModelsResponse,
 } from "~/services/codex/client-models"
+import type { CodexModelsResponse } from "~/services/codex/installed-catalog"
 import {
   forwardCodexModels,
   getModels as getCodexModels,
