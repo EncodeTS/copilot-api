@@ -38,10 +38,15 @@ export interface ResponsesPayload {
   temperature?: number | null
   top_p?: number | null
   max_output_tokens?: number | null
+  max_tool_calls?: number | null
   metadata?: Metadata | null
   stream?: boolean | null
   safety_identifier?: string | null
   prompt_cache_key?: string | null
+  prompt_cache_options?: {
+    mode: "implicit" | "explicit"
+    ttl?: "30m" | null
+  } | null
   prompt_cache_retention?: "in_memory" | "24h" | null
   parallel_tool_calls?: boolean | null
   store?: boolean | null
@@ -173,11 +178,9 @@ export interface ResponseToolSearchOutputItem {
 export interface ResponseInputReasoning {
   id?: string
   type: "reasoning"
-  summary: Array<{
-    type: "summary_text"
-    text: string
-  }>
+  summary?: Array<ResponseReasoningBlock>
   encrypted_content: string
+  [key: string]: unknown
 }
 
 export interface ResponseInputCompaction {
@@ -218,6 +221,7 @@ export type ResponseInputContent =
 export interface ResponseInputText {
   type: "input_text" | "output_text"
   text: string
+  prompt_cache_breakpoint?: { mode: "explicit" } | null
 }
 
 export interface ResponseInputImage {
@@ -225,6 +229,7 @@ export interface ResponseInputImage {
   image_url?: string | null
   file_id?: string | null
   detail: "low" | "high" | "auto"
+  prompt_cache_breakpoint?: { mode: "explicit" } | null
 }
 
 export interface ResponseInputFile {
@@ -232,6 +237,8 @@ export interface ResponseInputFile {
   file_data?: string | null
   file_id?: string | null
   filename?: string | null
+  file_url?: string | null
+  prompt_cache_breakpoint?: { mode: "explicit" } | null
 }
 
 export interface ResponsesResult {
@@ -293,6 +300,7 @@ export interface ResponseOutputReasoning {
   summary?: Array<ResponseReasoningBlock>
   encrypted_content?: string
   status?: "completed" | "in_progress" | "incomplete"
+  [key: string]: unknown
 }
 
 export interface ResponseReasoningBlock {

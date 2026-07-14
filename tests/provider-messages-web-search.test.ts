@@ -524,6 +524,106 @@ describe("provider messages web_search", () => {
     })
   })
 
+  test("marks dynamic web_search provider requests as direct fallback", async () => {
+    const app = createApp()
+    const response = await app.request("/search/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "What is the Node.js LTS?" }],
+        model: "gpt-search",
+        tools: [
+          {
+            type: "web_search_20260318",
+            name: "web_search",
+            max_uses: 2,
+            response_inclusion: "excluded",
+          },
+        ],
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get("x-copilot-api-web-search-mode")).toBe(
+      "direct-fallback",
+    )
+    expect(response.headers.get("x-copilot-api-web-search-downgrade")).toBe(
+      "dynamic-filtering,response-inclusion",
+    )
+
+    const [, init] = fetchMock.mock.calls[0]
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      max_tool_calls?: number
+    }
+    expect(upstreamBody.max_tool_calls).toBe(2)
+  })
+
+  test("rejects invalid max_uses on the top-level Copilot fallback", async () => {
+    messageApiWebSearchModel = "gpt-5-mini"
+    const app = createApp()
+    const response = await app.request("/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "Search now" }],
+        model: "claude-opus-4-8",
+        tools: [
+          {
+            type: "web_search_20260318",
+            name: "web_search",
+            max_uses: 0,
+            allowed_callers: ["direct"],
+          },
+        ],
+      }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        message: "web_search max_uses must be a positive integer",
+      },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("rejects invalid max_uses on openai-responses providers", async () => {
+    const app = createApp()
+    const response = await app.request("/search/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "Search now" }],
+        model: "gpt-search",
+        tools: [
+          {
+            type: "web_search_20260318",
+            name: "web_search",
+            max_uses: -1,
+            allowed_callers: ["direct"],
+          },
+        ],
+      }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        message: "web_search max_uses must be a positive integer",
+      },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   test("runs codex web_search through streaming Responses", async () => {
     configureCodexProvider()
 

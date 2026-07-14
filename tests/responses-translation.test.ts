@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { Buffer } from "node:buffer"
 
 import { requestContext } from "~/lib/request-context"
 import { createMcpToolSearchSentinel } from "~/lib/tool-search"
@@ -92,7 +93,7 @@ const translateThinking = (thinking: string): ResponseInputReasoning => {
           {
             type: "thinking",
             thinking,
-            signature: "encrypted-content@reasoning-id",
+            signature: `${"A".repeat(64)}@rs_reasoning-id`,
           },
         ],
       },
@@ -144,6 +145,77 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
     expect([
       translateSignature("@reasoning-id"),
       translateSignature("opaque-cipher@"),
+      translateSignature("native-anthropic@sig"),
+    ]).toEqual([[], [], []])
+  })
+
+  it("restores legacy long opaque Copilot reasoning carriers", () => {
+    const encryptedContent = "A".repeat(96)
+    const id = "B".repeat(96)
+    const result = translateAnthropicMessagesToResponsesPayload({
+      model: "gpt-5.6-sol",
+      max_tokens: 128,
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "thinking",
+              thinking: "Historical summary",
+              signature: `${encryptedContent}@${id}`,
+            },
+          ],
+        },
+      ],
+    })
+
+    expect(result.input).toEqual([
+      {
+        id,
+        type: "reasoning",
+        summary: [{ type: "summary_text", text: "Historical summary" }],
+        encrypted_content: encryptedContent,
+      },
+    ])
+  })
+
+  it("does not restore malformed versioned reasoning carriers", () => {
+    const translateCarrier = (value: unknown) =>
+      translateAnthropicMessagesToResponsesPayload({
+        model: "gpt-5.6-sol",
+        max_tokens: 128,
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "thinking",
+                thinking: "Historical summary",
+                signature:
+                  "copilot-api-openai-reasoning-v1:"
+                  + Buffer.from(JSON.stringify(value), "utf8").toString(
+                    "base64url",
+                  ),
+              },
+            ],
+          },
+        ],
+      }).input
+
+    expect([
+      translateCarrier({
+        id: "reason_invalid_summary",
+        type: "reasoning",
+        summary: [1],
+        encrypted_content: "opaque",
+      }),
+      translateCarrier({
+        id: "reason_invalid_status",
+        type: "reasoning",
+        summary: [],
+        status: "done-ish",
+        encrypted_content: "opaque",
+      }),
     ]).toEqual([[], []])
   })
 
@@ -183,7 +255,7 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
         type: "auto",
         disable_parallel_tool_use: true,
       },
-    } as unknown as AnthropicMessagesPayload)
+    })
 
     expect(result).toMatchObject({
       max_output_tokens: 100,
@@ -367,10 +439,11 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
     expect(result.prompt_cache_key).toBeNull()
   })
 
-  it("omits prompt_cache_key when tools are missing", () => {
+  it("keeps a stable prompt_cache_key when tools are missing", () => {
     const result = translateAnthropicMessagesToResponsesPayload(
       {
         ...samplePayload,
+        model: "gpt-5.6-sol",
         metadata: {
           user_id: jsonStyleUserId,
         },
@@ -378,13 +451,16 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
       subagentAgentId,
     )
 
-    expect(result).not.toHaveProperty("prompt_cache_key")
+    expect(result.prompt_cache_key).toBe(
+      "2c4e1cf0-7a67-4d2e-9a4b-1d16d3f44752:agent:agent-123",
+    )
   })
 
-  it("omits prompt_cache_key when tools are empty", () => {
+  it("keeps a stable prompt_cache_key when tools are empty", () => {
     const result = translateAnthropicMessagesToResponsesPayload(
       {
         ...samplePayload,
+        model: "gpt-5.6-sol",
         metadata: {
           user_id: jsonStyleUserId,
         },
@@ -393,7 +469,69 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
       subagentAgentId,
     )
 
+    expect(result.prompt_cache_key).toBe(
+      "2c4e1cf0-7a67-4d2e-9a4b-1d16d3f44752:agent:agent-123",
+    )
+  })
+
+  it("maps the latest three caller cache markers to GPT-5.6 breakpoints", () => {
+    const result = translateAnthropicMessagesToResponsesPayload({
+      model: "gpt-5.6-sol",
+      max_tokens: 128,
+      metadata: {
+        user_id: jsonStyleUserId,
+      },
+      messages: ["one", "two", "three", "four"].map((text) => ({
+        role: "user" as const,
+        content: [
+          {
+            type: "text" as const,
+            text,
+            cache_control: { type: "ephemeral" as const },
+          },
+        ],
+      })),
+    })
+
+    const input = result.input as Array<ResponseInputMessage>
+    const content = input.map(
+      (message) => (message.content as Array<Record<string, unknown>>)[0],
+    )
+
+    expect(content[0]).not.toHaveProperty("prompt_cache_breakpoint")
+    for (const block of content.slice(1)) {
+      expect(block.prompt_cache_breakpoint).toEqual({ mode: "explicit" })
+    }
+    expect(result.prompt_cache_options).toEqual({
+      mode: "implicit",
+      ttl: "30m",
+    })
+    expect(result.prompt_cache_key).toBe("2c4e1cf0-7a67-4d2e-9a4b-1d16d3f44752")
+  })
+
+  it("keeps old-model no-tool cache behavior without GPT-5.6 fields", () => {
+    const result = translateAnthropicMessagesToResponsesPayload({
+      model: "gpt-5.5",
+      max_tokens: 128,
+      metadata: { user_id: jsonStyleUserId },
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "stable prefix",
+              cache_control: { type: "ephemeral" },
+            },
+          ],
+        },
+      ],
+    })
+
     expect(result).not.toHaveProperty("prompt_cache_key")
+    expect(result).not.toHaveProperty("prompt_cache_options")
+    const input = result.input as Array<ResponseInputMessage>
+    expect(input[0]?.content?.[0]).not.toHaveProperty("prompt_cache_breakpoint")
   })
 
   it("maps tool_reference tool results into function_call_output text", () => {
@@ -478,6 +616,161 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
         status: "completed",
       },
     ])
+  })
+
+  it("preserves Anthropic URL image and document sources", () => {
+    const result = translateAnthropicMessagesToResponsesPayload({
+      model: "gpt-5.6-sol",
+      max_tokens: 128,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: {
+                type: "url",
+                url: "https://example.com/image.png",
+              },
+            },
+            {
+              type: "document",
+              title: "remote.pdf",
+              source: {
+                type: "url",
+                url: "https://example.com/document.pdf",
+              },
+            },
+          ],
+        },
+      ],
+    })
+
+    const input = result.input as Array<ResponseInputMessage>
+    expect(input[0]?.content).toEqual([
+      {
+        type: "input_image",
+        image_url: "https://example.com/image.png",
+        detail: "auto",
+      },
+      {
+        type: "input_file",
+        file_url: "https://example.com/document.pdf",
+      },
+    ])
+  })
+
+  it("keeps unknown tool-result blocks as JSON text", () => {
+    const result = translateAnthropicMessagesToResponsesPayload({
+      model: "gpt-5.6-sol",
+      max_tokens: 128,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "call_future",
+              content: [
+                {
+                  type: "future_result",
+                  score: 0.75,
+                  payload: { ok: true },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    })
+
+    expect(result.input).toEqual([
+      {
+        type: "function_call_output",
+        call_id: "call_future",
+        output: [
+          {
+            type: "input_text",
+            text: '{"type":"future_result","score":0.75,"payload":{"ok":true}}',
+          },
+        ],
+        status: "completed",
+      },
+    ])
+  })
+
+  it("maps a tool-result cache marker onto its Responses output content", () => {
+    const result = translateAnthropicMessagesToResponsesPayload({
+      model: "gpt-5.6-sol",
+      max_tokens: 128,
+      metadata: { user_id: jsonStyleUserId },
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "call_cached",
+              content: "stable tool output",
+              cache_control: { type: "ephemeral" },
+            },
+          ],
+        },
+      ],
+    })
+
+    expect(result.input).toEqual([
+      {
+        type: "function_call_output",
+        call_id: "call_cached",
+        output: [
+          {
+            type: "input_text",
+            text: "stable tool output",
+            prompt_cache_breakpoint: { mode: "explicit" },
+          },
+        ],
+        status: "completed",
+      },
+    ])
+    expect(result.prompt_cache_options).toEqual({
+      mode: "implicit",
+      ttl: "30m",
+    })
+  })
+
+  it("preserves cache markers nested inside tool-result content", () => {
+    const result = translateAnthropicMessagesToResponsesPayload({
+      model: "gpt-5.6-sol",
+      max_tokens: 128,
+      metadata: { user_id: jsonStyleUserId },
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "call_nested_cache",
+              content: [
+                {
+                  type: "text",
+                  text: "stable nested output",
+                  cache_control: { type: "ephemeral" },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    })
+
+    const output = (result.input as Array<ResponseFunctionCallOutputItem>)[0]
+      ?.output as Array<Record<string, unknown>>
+    expect(output[0]?.prompt_cache_breakpoint).toEqual({ mode: "explicit" })
+    expect(result.prompt_cache_options).toEqual({
+      mode: "implicit",
+      ttl: "30m",
+    })
   })
 
   it("converts bridge and deferred tools into Responses tool_search and namespaces", () => {
@@ -1012,7 +1305,7 @@ describe("translateResponsesResultToAnthropic", () => {
   })
 
   it("round-trips a real encrypted reasoning carrier into the next Responses input", () => {
-    const firstTurn: ResponsesResult = {
+    const firstTurn = {
       id: "resp_carrier",
       object: "response",
       created_at: 0,
@@ -1024,6 +1317,9 @@ describe("translateResponsesResultToAnthropic", () => {
           summary: [{ type: "summary_text", text: "Checked the request." }],
           encrypted_content: "opaque-encrypted-carrier",
           status: "completed",
+          provider_extension: {
+            opaque_state: "preserve-me",
+          },
         },
       ],
       output_text: "",
@@ -1038,20 +1334,21 @@ describe("translateResponsesResultToAnthropic", () => {
       tool_choice: null,
       tools: [],
       top_p: null,
-    }
+    } as unknown as ResponsesResult
 
     const anthropic = translateResponsesResultToAnthropic(firstTurn)
-    expect(anthropic.content).toEqual([
-      {
-        type: "thinking",
-        thinking: "Checked the request.",
-        signature: "opaque-encrypted-carrier@reason_carrier",
-      },
-    ])
+    expect(anthropic.content).toHaveLength(1)
+    expect(anthropic.content[0]).toMatchObject({
+      type: "thinking",
+      thinking: "Checked the request.",
+    })
     const reasoningBlock = anthropic.content[0]
     if (reasoningBlock?.type !== "thinking") {
       throw new Error("Expected translated encrypted reasoning")
     }
+    expect(reasoningBlock.signature).toStartWith(
+      "copilot-api-openai-reasoning-v1:",
+    )
 
     const nextTurn = translateAnthropicMessagesToResponsesPayload({
       model: "gpt-5.6-sol",
@@ -1079,6 +1376,10 @@ describe("translateResponsesResultToAnthropic", () => {
           },
         ],
         encrypted_content: "opaque-encrypted-carrier",
+        status: "completed",
+        provider_extension: {
+          opaque_state: "preserve-me",
+        },
       },
       {
         type: "message",

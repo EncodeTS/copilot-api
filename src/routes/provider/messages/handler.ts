@@ -64,12 +64,14 @@ import {
   translateResponsesStreamEvent,
 } from "~/routes/messages/responses-stream-translation"
 import { collectResponsesStreamResult } from "~/routes/messages/responses-stream-collection"
+import { getResponsesResultFailureMessage } from "~/routes/messages/responses-result"
 import {
   hasTrailingAssistantPrefill,
   translateAnthropicMessagesToResponsesPayload,
   translateResponsesResultToAnthropic,
 } from "~/routes/messages/responses-translation"
 import {
+  applyWebSearchFallbackHeaders,
   buildSyntheticStreamEvents,
   hasWebSearchServerTool,
   isWebSearchOnlyRequest,
@@ -251,6 +253,7 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
   },
 ): Promise<Response> => {
   const { modelConfig, payload, provider, providerConfig } = options
+  applyWebSearchFallbackHeaders(c, payload, logger)
   const responsesPayload = prepareWebSearchResponsesPayload(payload)
 
   debugJson(logger, "provider.messages.responses.web_search.request", {
@@ -1244,15 +1247,14 @@ const respondResponsesProviderMessagesJson = (
   )
   recordUsage(normalizeResponsesUsage(body.usage))
 
-  if (body.status === "failed" || body.status === "cancelled") {
+  const failureMessage = getResponsesResultFailureMessage(body)
+  if (failureMessage) {
     return c.json(
       {
         type: "error",
         error: {
           type: "api_error",
-          message:
-            body.error?.message
-            ?? `Responses provider ended with status=${body.status}`,
+          message: failureMessage,
         },
       },
       502,

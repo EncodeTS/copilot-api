@@ -13,6 +13,11 @@ import {
 } from "~/services/copilot/create-chat-completions"
 
 import {
+  isAnthropicDocumentBlock,
+  isAnthropicCustomTool,
+  isAnthropicImageBlock,
+  isAnthropicTextBlock,
+  isAnthropicToolReferenceBlock,
   type AnthropicAssistantContentBlock,
   type AnthropicAssistantMessage,
   type AnthropicDocumentBlock,
@@ -457,19 +462,34 @@ function mapContent(
   for (const block of content) {
     switch (block.type) {
       case "text": {
-        contentParts.push({ type: "text", text: block.text })
+        contentParts.push(
+          isAnthropicTextBlock(block) ?
+            { type: "text", text: block.text }
+          : createUnknownContentTextPart(block),
+        )
         break
       }
       case "image": {
+        if (!isAnthropicImageBlock(block)) {
+          contentParts.push(createUnknownContentTextPart(block))
+          break
+        }
         contentParts.push({
           type: "image_url",
           image_url: {
-            url: `data:${block.source.media_type};base64,${block.source.data}`,
+            url:
+              block.source.type === "url" ?
+                block.source.url
+              : `data:${block.source.media_type};base64,${block.source.data}`,
           },
         })
         break
       }
       case "document": {
+        if (!isAnthropicDocumentBlock(block)) {
+          contentParts.push(createUnknownContentTextPart(block))
+          break
+        }
         contentParts.push(
           options.supportPdf ?
             createDocumentFilePart(block)
@@ -478,13 +498,19 @@ function mapContent(
         break
       }
       case "tool_reference": {
+        if (!isAnthropicToolReferenceBlock(block)) {
+          contentParts.push(createUnknownContentTextPart(block))
+          break
+        }
         contentParts.push({
           type: "text",
           text: `Tool ${block.tool_name} loaded`,
         })
         break
       }
-      // No default
+      default: {
+        break
+      }
     }
   }
   if (contentParts.length === 0) {
@@ -492,6 +518,13 @@ function mapContent(
   }
   return contentParts
 }
+
+const createUnknownContentTextPart = (
+  block: MappableContentBlock,
+): TextPart => ({
+  type: "text",
+  text: JSON.stringify(block),
+})
 
 function createDocumentTextPart(): TextPart {
   return {
@@ -501,6 +534,10 @@ function createDocumentTextPart(): TextPart {
 }
 
 function createDocumentFilePart(block: AnthropicDocumentBlock): ContentPart {
+  if (block.source.type === "url") {
+    return createDocumentTextPart()
+  }
+
   return {
     type: "file",
     file: {
@@ -516,7 +553,7 @@ function translateAnthropicToolsToOpenAI(
   if (!anthropicTools) {
     return undefined
   }
-  return anthropicTools.map((tool) => ({
+  return anthropicTools.filter(isAnthropicCustomTool).map((tool) => ({
     type: "function",
     function: {
       name: tool.name,
