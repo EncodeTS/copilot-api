@@ -836,7 +836,7 @@ describe("responses handler token usage", () => {
     }
   })
 
-  test("omits oversized older input images before forwarding to Copilot Responses", async () => {
+  test("ignores stale model image byte limits when the request is within the configured budget", async () => {
     state.models = {
       object: "list",
       data: [
@@ -858,6 +858,9 @@ describe("responses handler token usage", () => {
       Promise.resolve(createResponsesResult(payload.model)),
     )
 
+    const olderImageUrl = `data:image/png;base64,${"A".repeat(16)}`
+    const latestImageUrl = `data:image/png;base64,${"B".repeat(4)}`
+
     const app = createApp()
     const response = await app.request("/v1/responses", {
       body: JSON.stringify({
@@ -866,7 +869,7 @@ describe("responses handler token usage", () => {
             content: [
               { text: "old", type: "input_text" },
               {
-                image_url: `data:image/png;base64,${"A".repeat(16)}`,
+                image_url: olderImageUrl,
                 type: "input_image",
               },
             ],
@@ -877,7 +880,7 @@ describe("responses handler token usage", () => {
               { text: "latest", type: "input_text" },
               {
                 detail: "low",
-                image_url: `data:image/png;base64,${"B".repeat(4)}`,
+                image_url: latestImageUrl,
                 type: "input_image",
               },
             ],
@@ -894,25 +897,18 @@ describe("responses handler token usage", () => {
 
     expect(response.status).toBe(200)
     expect(createResponses).toHaveBeenCalledTimes(1)
-    const content = (
-      createResponses.mock.calls[0][0].input as Array<{
-        content: Array<{
-          detail?: string
-          image_url?: string
-          text?: string
-          type: string
-        }>
-      }>
-    )[0].content
-    const image = content[1]
-    expect(image.type).toBe("input_image")
-    expect(image.detail).toBe("low")
-    expect(image.image_url?.startsWith("data:image/png;base64,")).toBe(true)
-    expect(image.text).toBeUndefined()
-    expect(JSON.stringify(content)).toContain("Local proxy omitted")
+    expect(JSON.stringify(createResponses.mock.calls[0][0].input)).toContain(
+      olderImageUrl,
+    )
+    expect(JSON.stringify(createResponses.mock.calls[0][0].input)).toContain(
+      latestImageUrl,
+    )
+    expect(
+      JSON.stringify(createResponses.mock.calls[0][0].input),
+    ).not.toContain("Local proxy omitted")
   })
 
-  test("fails closed when only the latest visual input exceeds image limits", async () => {
+  test("forwards a latest image above the stale model byte limit when the request is within budget", async () => {
     state.models = {
       object: "list",
       data: [
@@ -957,14 +953,11 @@ describe("responses handler token usage", () => {
       method: "POST",
     })
 
-    expect(response.status).toBe(413)
-    expect(createResponses).not.toHaveBeenCalled()
-    expect(await response.json()).toMatchObject({
-      error: {
-        code: "responses_payload_too_large",
-        type: "payload_too_large",
-      },
-    })
+    expect(response.status).toBe(200)
+    expect(createResponses).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(createResponses.mock.calls[0][0].input)).toContain(
+      `data:image/png;base64,${"A".repeat(16)}`,
+    )
   })
 
   test("preserves multiple input images before forwarding to Copilot Responses", async () => {
@@ -1036,7 +1029,7 @@ describe("responses handler token usage", () => {
     ])
   })
 
-  test("retries HTTP responses once after upstream payload-too-large", async () => {
+  test("does not retry upstream payload-too-large when no safe reduction remains", async () => {
     state.models = {
       object: "list",
       data: [
@@ -1103,11 +1096,10 @@ describe("responses handler token usage", () => {
       method: "POST",
     })
 
-    expect(response.status).toBe(200)
-    expect(createResponses).toHaveBeenCalledTimes(2)
+    expect(response.status).toBe(413)
+    expect(createResponses).toHaveBeenCalledTimes(1)
     expect(createResponses.mock.calls[0][1]?.transport).toBe("http")
-    expect(createResponses.mock.calls[1][1]?.transport).toBe("http")
-    expect(JSON.stringify(createResponses.mock.calls[1][0])).not.toContain(
+    expect(JSON.stringify(createResponses.mock.calls[0][0])).toContain(
       olderImageUrl,
     )
   })

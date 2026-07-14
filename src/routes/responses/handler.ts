@@ -137,8 +137,6 @@ export const handleResponses = async (c: Context) => {
   const response = await createOptimizedCopilotResponses(payload, {
     createResponses: responsesHandlerDependencies.createResponses,
     logger,
-    maxPromptImageSize:
-      selectedModel?.capabilities.limits.vision?.max_prompt_image_size,
     requestOptions: {
       vision,
       initiator,

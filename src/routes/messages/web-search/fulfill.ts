@@ -486,8 +486,6 @@ export const handleWebSearchViaResponses = async (
     {
       createResponses: webSearchFlowDependencies.createResponses,
       logger,
-      maxPromptImageSize:
-        selectedModel?.capabilities?.limits.vision?.max_prompt_image_size,
       requestOptions: {
         vision,
         initiator,
