@@ -11,7 +11,9 @@ on:
 
 jobs:
   release:
-    if: ${{ !contains(github.ref_name, '-r') }}
+    # This fork does not own the legacy @jeffreycao/copilot-api npm identity.
+    # Keep npm publishing opt-in until package ownership is migrated explicitly.
+    if: ${{ vars.ENABLE_NPM_PUBLISH == 'true' && !contains(github.ref_name, '-r') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
