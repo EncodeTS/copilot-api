@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process"
-import { existsSync } from "node:fs"
+import { existsSync, readdirSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { delimiter, extname, join } from "node:path"
 import { promisify } from "node:util"
@@ -17,6 +17,8 @@ const CODEX_CATALOG_CACHE_MS = 30 * 60 * 1000
 const CODEX_CATALOG_NEGATIVE_CACHE_MS = 60 * 1000
 const CODEX_CATALOG_CACHE_MAX_ENTRIES = 64
 const CODEX_EXECUTABLE_DISCOVERY_CACHE_MS = 60 * 1000
+const CODEX_APP_VERSIONED_EXECUTABLE_LIMIT = 8
+const CODEX_APP_VERSION_DIRECTORY_PATTERN = /^[0-9a-f]{16}$/iu
 const WINDOWS_CMD_UNSAFE_PATTERN = /[\r\n"&|<>^%!]/u
 const WINDOWS_CMD_ARGUMENT_PATTERN = /^[0-9A-Za-z-]+$/u
 
@@ -91,6 +93,31 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+function getVersionedCodexAppExecutables(binDirectory: string): Array<string> {
+  try {
+    return readdirSync(binDirectory, { withFileTypes: true })
+      .filter(
+        (entry) =>
+          entry.isDirectory()
+          && CODEX_APP_VERSION_DIRECTORY_PATTERN.test(entry.name),
+      )
+      .flatMap((entry) => {
+        const executable = join(binDirectory, entry.name, "codex.exe")
+        try {
+          const modifiedAt = statSync(executable).mtimeMs
+          return [{ executable, modifiedAt }]
+        } catch {
+          return []
+        }
+      })
+      .sort((left, right) => right.modifiedAt - left.modifiedAt)
+      .slice(0, CODEX_APP_VERSIONED_EXECUTABLE_LIMIT)
+      .map(({ executable }) => executable)
+  } catch {
+    return []
+  }
+}
+
 function getCodexExecutableCandidates(): Array<string> {
   const home = homedir()
   const candidates: Array<string | undefined> = [
@@ -113,6 +140,8 @@ function getCodexExecutableCandidates(): Array<string> {
     const appData = process.env.APPDATA?.trim()
     const localAppData = process.env.LOCALAPPDATA?.trim()
     const pnpmHome = process.env.PNPM_HOME?.trim()
+    const codexAppBin =
+      localAppData ? join(localAppData, "OpenAI", "Codex", "bin") : undefined
     const platformPackages = [
       ["codex-win32-x64", "x86_64-pc-windows-msvc"],
       ["codex-win32-arm64", "aarch64-pc-windows-msvc"],
@@ -122,6 +151,8 @@ function getCodexExecutableCandidates(): Array<string> {
       localAppData ?
         join(localAppData, "Programs", "OpenAI", "Codex", "bin", "codex.exe")
       : undefined,
+      codexAppBin ? join(codexAppBin, "codex.exe") : undefined,
+      ...(codexAppBin ? getVersionedCodexAppExecutables(codexAppBin) : []),
       appData ? join(appData, "npm", "codex.exe") : undefined,
       appData ? join(appData, "npm", "codex.cmd") : undefined,
       pnpmHome ? join(pnpmHome, "codex.exe") : undefined,
