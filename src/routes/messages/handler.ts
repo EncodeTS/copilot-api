@@ -2,17 +2,10 @@ import type { Context } from "hono"
 
 import type { Model } from "~/services/copilot/get-models"
 
-import { COMPACT_REQUEST } from "~/lib/compact"
-import {
-  getSmallModel,
-  isParityFirstEnabled,
-  isMessagesApiEnabled,
-  resolveMappedModel,
-} from "~/lib/config"
+import { isMessagesApiEnabled, resolveMappedModel } from "~/lib/config"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { findEndpointModel } from "~/lib/models"
 import { parseProviderModelAlias } from "~/lib/provider-model"
-import { state } from "~/lib/state"
 import {
   generateRequestIdFromPayload,
   getRootSessionId,
@@ -29,13 +22,9 @@ import {
   handleWithResponsesApi,
 } from "./api-flows"
 import {
-  applyLastMessageCacheControl,
   getCompactType,
-  getLastMessageContentCacheControl,
-  mergeToolResultForClaude,
   normalizeSystemMessages,
   sanitizeIdeTools,
-  stripToolReferenceTurnBoundary,
 } from "./preprocess"
 import { parseSubagentMarkerFromFirstUser } from "./subagent-marker"
 import { tryHandleWebSearch } from "./web-search/fulfill"
@@ -89,39 +78,11 @@ export async function handleCompletion(c: Context) {
 
   // claude code and opencode compact / auto-continue detection
   const compactType = getCompactType(anthropicPayload)
-  const parityFirst = isParityFirstEnabled()
 
   const anthropicBeta = c.req.header("anthropic-beta")
   logger.debug("Anthropic Beta header:", anthropicBeta)
-  if (!parityFirst) {
-    // Legacy request-saving behavior: route warmup requests without tools to
-    // the configured small model.
-    const noTools =
-      !anthropicPayload.tools || anthropicPayload.tools.length === 0
-    if (anthropicBeta && noTools && compactType === 0) {
-      anthropicPayload.model = getSmallModel()
-    }
-  }
-
   if (compactType) {
     logger.debug("Compact request type:", compactType)
-  }
-
-  const lastMessageCacheControl =
-    parityFirst ? undefined : (
-      getLastMessageContentCacheControl(anthropicPayload.messages.at(-1))
-    )
-
-  if (!parityFirst) {
-    if (!state.tokenBasedBilling) {
-      // Legacy request-saving behavior: merge tool_result and text blocks into
-      // tool_result to reduce extra model calls from tool reminders.
-      stripToolReferenceTurnBoundary(anthropicPayload)
-      mergeToolResultForClaude(anthropicPayload, {
-        skipLastMessage: compactType === COMPACT_REQUEST,
-      })
-      applyLastMessageCacheControl(anthropicPayload, lastMessageCacheControl)
-    }
   }
 
   const selectedModel = findEndpointModel(anthropicPayload.model)
