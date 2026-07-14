@@ -302,19 +302,22 @@ Add the following `[model_providers.copilot_api]` section to your Codex `~/.code
 ```toml
 model_provider = "copilot_api"
 model_reasoning_summary = "auto"
-model_context_window = 272000
-model_auto_compact_token_limit = 244800
 
 [model_providers.copilot_api]
 name = "OpenAI"
 base_url = "http://localhost:4141"
-env_key = "GITHUB_COPILOT_API_KEY"
-requires_openai_auth = true
+requires_openai_auth = false
 supports_websockets = false
 wire_api = "responses"
 request_max_retries = 3
 stream_max_retries = 1
 stream_idle_timeout_ms = 300000
+
+[model_providers.copilot_api.auth]
+command = "node"
+args = ["-e", "process.stdout.write(process.env.GITHUB_COPILOT_API_KEY || 'dummy')"]
+timeout_ms = 5000
+refresh_interval_ms = 300000
 
 [features]
 remote_compaction_v2 = true
@@ -324,7 +327,7 @@ enabled = false
 ```
 
 > [!NOTE]
-> This configuration is specific to Codex and the GitHub Copilot provider. `name` must be set to `"OpenAI"`. It can help mitigate Codex local compact cache miss issues. 
+> This configuration is specific to Codex and the GitHub Copilot provider. `name` must be set to `"OpenAI"`. The command-backed auth is intentional: current Codex versions refresh custom-provider `/v1/models` only for command auth. It prints `GITHUB_COPILOT_API_KEY` when set, or the placeholder `dummy` for a gateway without API-key protection. Do not hardcode `model_context_window` or `model_auto_compact_token_limit`: the gateway reads the bundled catalog from the matching local Codex version before overlaying the live Copilot context limits. If the matching Codex executable cannot be found, the gateway returns an empty remote catalog so Codex safely keeps its own bundled metadata. Set `COPILOT_API_CODEX_CLI_PATH` only when the executable is outside the standard locations.
 
 ## GPT Tool Search
 
@@ -672,7 +675,7 @@ These endpoints mimic the OpenAI API structure.
 | --------------------------- | ------ | ---------------------------------------------------------------- |
 | `POST /v1/responses`        | `POST` | OpenAI Most advanced interface for generating model responses. Supports `provider/model` aliases for `openai-responses` providers. |
 | `POST /v1/chat/completions` | `POST` | Creates a model response for the given chat conversation. Supports `provider/model` aliases for `openai-compatible` providers and can be used without Copilot when the target provider is configured. |
-| `GET /v1/models`            | `GET`  | Lists Copilot models plus enabled provider models using `provider/model-id` IDs. Requests from Codex clients (`User-Agent` beginning with `codex`) are forwarded to the Codex Models upstream. |
+| `GET /v1/models`            | `GET`  | Lists Copilot models plus enabled provider models using `provider/model-id` IDs. Codex clients receive their own version-matched bundled descriptors with live Copilot context limits; unavailable or mismatched client catalogs safely fall back to an empty remote list. |
 | `POST /v1/embeddings`       | `POST` | Creates an embedding vector representing the input text.         |
 
 ### Codex Backend Proxy Endpoints
