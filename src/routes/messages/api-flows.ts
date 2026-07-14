@@ -25,6 +25,7 @@ import {
   createResponsesStreamState,
   translateResponsesStreamEvent,
 } from "~/routes/messages/responses-stream-translation"
+import { getResponsesResultFailureMessage } from "~/routes/messages/responses-result"
 import {
   hasTrailingAssistantPrefill,
   translateAnthropicMessagesToResponsesPayload,
@@ -412,17 +413,9 @@ export const handleWithResponsesApi = async (
       responsesResult.copilot_usage?.total_nano_aiu,
     ),
   })
-  if (
-    responsesResult.status === "failed"
-    || responsesResult.status === "cancelled"
-  ) {
-    return c.json(
-      createAnthropicErrorBody(
-        responsesResult.error?.message
-          ?? `Responses upstream ended with status=${responsesResult.status}`,
-      ),
-      502,
-    )
+  const failureMessage = getResponsesResultFailureMessage(responsesResult)
+  if (failureMessage) {
+    return c.json(createAnthropicErrorBody(failureMessage), 502)
   }
 
   const anthropicResponse = translateResponsesResultToAnthropic(

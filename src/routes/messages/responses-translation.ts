@@ -1,3 +1,5 @@
+import { Buffer } from "node:buffer"
+
 import {
   BRIDGE_TOOL_SEARCH_NAME,
   formatToolSearchBridgeArguments,
@@ -48,6 +50,10 @@ import {
 } from "~/services/copilot/create-responses"
 
 import {
+  isAnthropicDocumentBlock,
+  isAnthropicImageBlock,
+  isAnthropicTextBlock,
+  isAnthropicToolReferenceBlock,
   type AnthropicAssistantContentBlock,
   type AnthropicAssistantMessage,
   type AnthropicDocumentBlock,
@@ -65,11 +71,13 @@ import {
   type AnthropicUserMessage,
 } from "./anthropic-types"
 import { normalizeToolSchema } from "./non-stream-translation"
+import { assertResponsesResultUsable } from "./responses-result"
 import { parseFunctionCallArguments } from "./tool-arguments"
 
 const MESSAGE_TYPE = "message"
 const COMPACTION_SIGNATURE_PREFIX = "cm1#"
 const COMPACTION_SIGNATURE_SEPARATOR = "@"
+const REASONING_SIGNATURE_PREFIX = "copilot-api-openai-reasoning-v1:"
 
 export const THINKING_TEXT = "Thinking..."
 export const REASONING_SUMMARY_SEPARATOR = "\u2063\n\n"
@@ -135,6 +143,11 @@ export const translateAnthropicMessagesToResponsesPayload = (
     )
   }
 
+  const hasExplicitCacheBreakpoints = retainLatestPromptCacheBreakpoints(
+    input,
+    isGpt56OrAbove(payload.model) ? 3 : 0,
+  )
+
   const hasOriginalTools =
     Array.isArray(payload.tools) && payload.tools.length > 0
   const translatedTools = convertAnthropicTools(
@@ -170,6 +183,14 @@ export const translateAnthropicMessagesToResponsesPayload = (
     tools: translatedTools,
     ...(hasOriginalTools ? { tool_choice: toolChoice } : {}),
     metadata: payload.metadata ? { ...payload.metadata } : null,
+    ...(hasExplicitCacheBreakpoints ?
+      {
+        prompt_cache_options: {
+          mode: "implicit" as const,
+          ttl: "30m" as const,
+        },
+      }
+    : {}),
     //prompt_cache_retention: "24h",  not work in gpt-5.4
     stream: payload.stream ?? null,
     store: false,
@@ -197,11 +218,46 @@ export const translateAnthropicMessagesToResponsesPayload = (
     : {}),
   }
 
-  if (hasOriginalTools) {
+  if (hasOriginalTools || (isGpt56OrAbove(payload.model) && promptCacheKey)) {
     responsesPayload.prompt_cache_key = promptCacheKey
   }
 
   return responsesPayload
+}
+
+const retainLatestPromptCacheBreakpoints = (
+  input: Array<ResponseInputItem>,
+  limit: number,
+): boolean => {
+  const markedBlocks: Array<Record<string, unknown>> = []
+
+  for (const item of input) {
+    if (!isRecord(item)) continue
+
+    const content =
+      Array.isArray(item.content) ? item.content
+      : Array.isArray(item.output) ? item.output
+      : []
+
+    for (const block of content) {
+      if (
+        isRecord(block)
+        && isRecord(block.prompt_cache_breakpoint)
+        && block.prompt_cache_breakpoint.mode === "explicit"
+      ) {
+        markedBlocks.push(block)
+      }
+    }
+  }
+
+  for (const block of markedBlocks.slice(
+    0,
+    Math.max(0, markedBlocks.length - limit),
+  )) {
+    delete block.prompt_cache_breakpoint
+  }
+
+  return markedBlocks.length > 0 && limit > 0
 }
 
 interface TranslationState {
@@ -249,13 +305,16 @@ export const decodeCompactionCarrierSignature = (
 }
 
 export const encodeReasoningCarrierSignature = (
-  reasoning: Pick<ResponseOutputReasoning, "encrypted_content" | "id">,
+  reasoning: ResponseOutputReasoning,
 ): string | undefined => {
   if (!reasoning.encrypted_content || !reasoning.id) {
     return undefined
   }
 
-  return `${reasoning.encrypted_content}@${reasoning.id}`
+  return `${REASONING_SIGNATURE_PREFIX}${Buffer.from(
+    JSON.stringify(reasoning),
+    "utf8",
+  ).toString("base64url")}`
 }
 
 const translateMessage = (
@@ -349,16 +408,14 @@ const translateAssistantMessage = (
         continue
       }
 
-      if (block.signature.includes("@")) {
-        const reasoningContent = createReasoningContent(block)
-        if (reasoningContent) {
-          flushPendingContent(pendingContent, items, {
-            role: "assistant",
-            phase: assistantPhase,
-          })
-          items.push(reasoningContent)
-          continue
-        }
+      const reasoningContent = createReasoningContent(block)
+      if (reasoningContent) {
+        flushPendingContent(pendingContent, items, {
+          role: "assistant",
+          phase: assistantPhase,
+        })
+        items.push(reasoningContent)
+        continue
       }
     }
 
@@ -381,13 +438,13 @@ const translateUserContentBlock = (
 ): Array<ResponseInputContent> => {
   switch (block.type) {
     case "text": {
-      return [createTextContent(block.text)]
+      return [createTextContent(block.text, Boolean(block.cache_control))]
     }
     case "image": {
-      return [createImageContent(block)]
+      return [createImageContent(block, Boolean(block.cache_control))]
     }
     case "document": {
-      return [createFileContent(block)]
+      return [createFileContent(block, Boolean(block.cache_control))]
     }
     default: {
       return []
@@ -464,9 +521,15 @@ const shouldApplyPhase = (_model: string): boolean => {
   return true
 }
 
-const createTextContent = (text: string): ResponseInputText => ({
+const createTextContent = (
+  text: string,
+  cacheBreakpoint = false,
+): ResponseInputText => ({
   type: "input_text",
   text,
+  ...(cacheBreakpoint ?
+    { prompt_cache_breakpoint: { mode: "explicit" as const } }
+  : {}),
 })
 
 const createOutPutTextContent = (text: string): ResponseInputText => ({
@@ -476,26 +539,59 @@ const createOutPutTextContent = (text: string): ResponseInputText => ({
 
 const createImageContent = (
   block: AnthropicImageBlock,
-): ResponseInputImage => ({
-  type: "input_image",
-  image_url: `data:${block.source.media_type};base64,${block.source.data}`,
-  detail: "auto",
-})
+  cacheBreakpoint = false,
+): ResponseInputImage => {
+  const imageUrl =
+    block.source.type === "url" ?
+      block.source.url
+    : `data:${block.source.media_type};base64,${block.source.data}`
+
+  return {
+    type: "input_image",
+    image_url: imageUrl,
+    detail: "auto",
+    ...(cacheBreakpoint ?
+      { prompt_cache_breakpoint: { mode: "explicit" as const } }
+    : {}),
+  }
+}
 
 const createFileContent = (
   block: AnthropicDocumentBlock,
-): ResponseInputFile => ({
-  type: "input_file",
-  file_data: `data:${block.source.media_type};base64,${block.source.data}`,
-  filename: block.title ?? "document.pdf",
-})
+  cacheBreakpoint = false,
+): ResponseInputFile => {
+  const cache =
+    cacheBreakpoint ?
+      { prompt_cache_breakpoint: { mode: "explicit" as const } }
+    : {}
+
+  if (block.source.type === "url") {
+    return {
+      type: "input_file",
+      file_url: block.source.url,
+      ...cache,
+    }
+  }
+
+  return {
+    type: "input_file",
+    file_data: `data:${block.source.media_type};base64,${block.source.data}`,
+    filename: block.title ?? "document.pdf",
+    ...cache,
+  }
+}
 
 const createReasoningContent = (
   block: AnthropicThinkingBlock,
 ): ResponseInputReasoning | undefined => {
+  const versionedCarrier = decodeReasoningCarrierSignature(block.signature)
+  if (versionedCarrier) {
+    return versionedCarrier
+  }
+
   // align with vscode-copilot-chat extractThinkingData, should add id
   // https://github.com/microsoft/vscode/blob/1.128.0/extensions/copilot/src/platform/endpoint/node/responsesApi.ts#L651
-  const carrier = parseReasoningSignature(block.signature)
+  const carrier = parseLegacyReasoningSignature(block.signature)
   if (!carrier) {
     return undefined
   }
@@ -543,7 +639,59 @@ const createCompactionContent = (
   }
 }
 
-const parseReasoningSignature = (
+const decodeReasoningCarrierSignature = (
+  signature: string,
+): ResponseInputReasoning | undefined => {
+  if (!signature.startsWith(REASONING_SIGNATURE_PREFIX)) {
+    return undefined
+  }
+
+  const encoded = signature.slice(REASONING_SIGNATURE_PREFIX.length)
+  if (!encoded) {
+    return undefined
+  }
+
+  try {
+    const value: unknown = JSON.parse(
+      Buffer.from(encoded, "base64url").toString("utf8"),
+    )
+    if (
+      !isRecord(value)
+      || value.type !== "reasoning"
+      || typeof value.id !== "string"
+      || value.id.length === 0
+      || typeof value.encrypted_content !== "string"
+      || value.encrypted_content.length === 0
+      || !isValidReasoningSummary(value.summary)
+      || !isValidReasoningStatus(value.status)
+    ) {
+      return undefined
+    }
+
+    return value as ResponseInputReasoning
+  } catch {
+    return undefined
+  }
+}
+
+const isValidReasoningSummary = (summary: unknown): boolean =>
+  summary === undefined
+  || (Array.isArray(summary)
+    && summary.every(
+      (block) =>
+        isRecord(block)
+        && typeof block.type === "string"
+        && block.type.length > 0
+        && (block.text === undefined || typeof block.text === "string"),
+    ))
+
+const isValidReasoningStatus = (status: unknown): boolean =>
+  status === undefined
+  || status === "completed"
+  || status === "in_progress"
+  || status === "incomplete"
+
+const parseLegacyReasoningSignature = (
   signature: string,
 ): { encryptedContent: string; id: string } | undefined => {
   const splitIndex = signature.lastIndexOf("@")
@@ -552,10 +700,21 @@ const parseReasoningSignature = (
     return undefined
   }
 
-  return {
-    encryptedContent: signature.slice(0, splitIndex),
-    id: signature.slice(splitIndex + 1),
+  const encryptedContent = signature.slice(0, splitIndex)
+  const id = signature.slice(splitIndex + 1)
+  const legacyAlphabet = /^[A-Za-z0-9+/_=-]+$/u
+  const idLooksLikeReasoning =
+    /^rs(?:_|$)/u.test(id) || (id.length >= 64 && legacyAlphabet.test(id))
+
+  if (
+    encryptedContent.length < 64
+    || !legacyAlphabet.test(encryptedContent)
+    || !idLooksLikeReasoning
+  ) {
+    return undefined
   }
+
+  return { encryptedContent, id }
 }
 
 const createFunctionToolCall = (
@@ -598,7 +757,7 @@ const createFunctionCallOutput = (
 ): ResponseFunctionCallOutputItem => ({
   type: "function_call_output",
   call_id: block.tool_use_id,
-  output: convertToolResultContent(block.content),
+  output: convertToolResultContent(block.content, Boolean(block.cache_control)),
   status: block.is_error ? "incomplete" : "completed",
 })
 
@@ -663,7 +822,7 @@ const extractToolReferenceNames = (
   }
 
   return content.flatMap((block) =>
-    block.type === "tool_reference" ? [block.tool_name] : [],
+    isAnthropicToolReferenceBlock(block) ? [block.tool_name] : [],
   )
 }
 
@@ -675,7 +834,7 @@ const extractMcpToolSearchSentinel = (
   }
 
   for (const block of content) {
-    if (block.type !== "text") {
+    if (!isAnthropicTextBlock(block)) {
       continue
     }
 
@@ -876,6 +1035,7 @@ export const translateResponsesResultToAnthropic = (
   response: ResponsesResult,
   options?: ResponsesToAnthropicOptions,
 ): AnthropicResponse => {
+  assertResponsesResultUsable(response)
   const contentBlocks = mapOutputToAnthropicContent(response.output, options)
   const usage = mapResponsesUsageToAnthropic(response.usage)
   let anthropicContent = fallbackContentBlocks(response.output_text)
@@ -1191,9 +1351,10 @@ const isResponseOutputRefusal = (
 
 const convertToolResultContent = (
   content: string | Array<AnthropicToolResultContentBlock>,
+  cacheBreakpoint = false,
 ): string | Array<ResponseInputContent> => {
   if (typeof content === "string") {
-    return content
+    return cacheBreakpoint ? [createTextContent(content, true)] : content
   }
 
   if (Array.isArray(content)) {
@@ -1201,24 +1362,65 @@ const convertToolResultContent = (
     for (const block of content) {
       switch (block.type) {
         case "text": {
-          result.push(createTextContent(block.text))
+          if (!isAnthropicTextBlock(block)) {
+            result.push(createTextContent(JSON.stringify(block)))
+            break
+          }
+          result.push(
+            createTextContent(block.text, Boolean(block.cache_control)),
+          )
           break
         }
         case "image": {
-          result.push(createImageContent(block))
+          if (!isAnthropicImageBlock(block)) {
+            result.push(createTextContent(JSON.stringify(block)))
+            break
+          }
+          result.push(createImageContent(block, Boolean(block.cache_control)))
           break
         }
         case "document": {
-          result.push(createFileContent(block))
+          if (!isAnthropicDocumentBlock(block)) {
+            result.push(createTextContent(JSON.stringify(block)))
+            break
+          }
+          result.push(createFileContent(block, Boolean(block.cache_control)))
           break
         }
         case "tool_reference": {
-          result.push(createTextContent(`Tool ${block.tool_name} loaded`))
+          if (!isAnthropicToolReferenceBlock(block)) {
+            result.push(createTextContent(JSON.stringify(block)))
+            break
+          }
+          result.push(
+            createTextContent(
+              `Tool ${block.tool_name} loaded`,
+              Boolean(block.cache_control),
+            ),
+          )
           break
         }
         default: {
+          result.push(
+            createTextContent(
+              JSON.stringify(block),
+              Boolean((block as { cache_control?: unknown }).cache_control),
+            ),
+          )
           break
         }
+      }
+    }
+
+    if (cacheBreakpoint) {
+      const lastCacheableBlock = result.findLast(
+        (block) =>
+          block.type === "input_text"
+          || block.type === "input_image"
+          || block.type === "input_file",
+      )
+      if (lastCacheableBlock) {
+        lastCacheableBlock.prompt_cache_breakpoint = { mode: "explicit" }
       }
     }
     return result

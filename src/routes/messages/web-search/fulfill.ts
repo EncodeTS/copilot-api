@@ -47,6 +47,7 @@ import type {
 } from "../anthropic-types"
 import { normalizeSystemMessages } from "../preprocess"
 import { collectResponsesStreamResult } from "../responses-stream-collection"
+import { assertResponsesResultUsable } from "../responses-result"
 import { translateAnthropicMessagesToResponsesPayload } from "../responses-translation"
 import {
   getResponsesRequestOptions,
@@ -245,6 +246,7 @@ export const reconstructWebSearchResponse = (
     AnthropicTextBlock | AnthropicWebSearchContentBlock
   >
 } => {
+  assertResponsesResultUsable(result)
   const extract = extractWebSearchResult(result)
   const response: AnthropicResponse<
     AnthropicTextBlock | AnthropicWebSearchContentBlock
@@ -408,16 +410,6 @@ export const handleWebSearchViaResponses = async (
       })
     : upstreamResult
 
-  const { extract, response } = reconstructWebSearchResponse(payload, result, {
-    requestId: options.requestId,
-  })
-
-  debugJson(
-    logger,
-    `Web search via responses: ${extract.queries.length} quer(y/ies), ${extract.sources.length} source(s)`,
-    result,
-  )
-
   const recordUsage = createUsageRecorder(
     payload,
     options.sessionId,
@@ -429,6 +421,16 @@ export const handleWebSearchViaResponses = async (
       result.copilot_usage?.total_nano_aiu,
     ),
   })
+
+  const { extract, response } = reconstructWebSearchResponse(payload, result, {
+    requestId: options.requestId,
+  })
+
+  debugJson(
+    logger,
+    `Web search via responses: ${extract.queries.length} quer(y/ies), ${extract.sources.length} source(s)`,
+    result,
+  )
 
   if (!wantsStream) {
     return c.json(response)

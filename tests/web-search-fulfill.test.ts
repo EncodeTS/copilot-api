@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import consola from "consola"
 
+import { HTTPError } from "~/lib/error"
 import type {
   AnthropicMessagesPayload,
   AnthropicResponse,
@@ -460,6 +461,45 @@ describe("handleWebSearchViaResponses", () => {
 
     const response = captured.json as AnthropicResponse
     expect(response.content.map((b) => b.type as string)).toEqual(["text"])
+  })
+
+  it("rejects a failed Responses result instead of returning empty success", async () => {
+    let recordedUsage: unknown
+    webSearchFlowDependencies.createResponses = (() =>
+      Promise.resolve(
+        makeResponsesResult({
+          status: "failed",
+          error: { code: "server_error", message: "backend down" },
+          output: [],
+          output_text: "",
+        }),
+      )) as never
+    webSearchFlowDependencies.createUsageRecorder = (() => (usage: unknown) => {
+      recordedUsage = usage
+    }) as never
+
+    const { c } = makeContext()
+    let caught: unknown
+    try {
+      await handleWebSearchViaResponses(c, makePayload(), baseOptions)
+    } catch (error) {
+      caught = error
+    }
+
+    expect(caught).toBeInstanceOf(HTTPError)
+    const response = (caught as HTTPError).response
+    expect(response.status).toBe(502)
+    expect(await response.json()).toEqual({
+      type: "error",
+      error: {
+        type: "api_error",
+        message: "backend down",
+      },
+    })
+    expect(recordedUsage).toMatchObject({
+      input_tokens: 100,
+      output_tokens: 50,
+    })
   })
 })
 
