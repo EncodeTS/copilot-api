@@ -64,6 +64,7 @@ import {
   translateResponsesStreamEvent,
 } from "~/routes/messages/responses-stream-translation"
 import { collectResponsesStreamResult } from "~/routes/messages/responses-stream-collection"
+import { getResponsesResultFailureMessage } from "~/routes/messages/responses-result"
 import {
   hasTrailingAssistantPrefill,
   translateAnthropicMessagesToResponsesPayload,
@@ -1244,15 +1245,14 @@ const respondResponsesProviderMessagesJson = (
   )
   recordUsage(normalizeResponsesUsage(body.usage))
 
-  if (body.status === "failed" || body.status === "cancelled") {
+  const failureMessage = getResponsesResultFailureMessage(body)
+  if (failureMessage) {
     return c.json(
       {
         type: "error",
         error: {
           type: "api_error",
-          message:
-            body.error?.message
-            ?? `Responses provider ended with status=${body.status}`,
+          message: failureMessage,
         },
       },
       502,

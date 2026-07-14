@@ -27,6 +27,7 @@ import type {
   AnthropicUserContentBlock,
   AnthropicUserMessage,
 } from "./anthropic-types"
+import { isAnthropicTextBlock } from "./anthropic-types"
 
 export const TOOL_REFERENCE_TURN_BOUNDARY = "Tool loaded."
 const SYSTEM_REMINDER_START = "<system-reminder>"
@@ -553,7 +554,7 @@ const startsWithPdfFileRead = (
   }
 
   const firstBlock = toolResult.content[0]
-  if (firstBlock.type !== "text") {
+  if (!isAnthropicTextBlock(firstBlock)) {
     return false
   }
 

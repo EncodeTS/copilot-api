@@ -64,21 +64,31 @@ export interface AnthropicTextBlock {
 
 export interface AnthropicImageBlock {
   type: "image"
-  source: {
-    type: "base64"
-    media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp"
-    data: string
-  }
+  source:
+    | {
+        type: "base64"
+        media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp"
+        data: string
+      }
+    | {
+        type: "url"
+        url: string
+      }
   cache_control?: AnthropicCacheControl | null
 }
 
 export interface AnthropicDocumentBlock {
   type: "document"
-  source: {
-    type: "base64"
-    media_type: "application/pdf"
-    data: string
-  }
+  source:
+    | {
+        type: "base64"
+        media_type: "application/pdf"
+        data: string
+      }
+    | {
+        type: "url"
+        url: string
+      }
   title?: string | null
   cache_control?: AnthropicCacheControl | null
 }
@@ -89,11 +99,59 @@ export interface AnthropicToolReferenceBlock {
   cache_control?: AnthropicCacheControl | null
 }
 
+export interface AnthropicUnknownToolResultContentBlock {
+  type: string
+  cache_control?: AnthropicCacheControl | null
+  [key: string]: unknown
+}
+
 export type AnthropicToolResultContentBlock =
   | AnthropicTextBlock
   | AnthropicImageBlock
   | AnthropicDocumentBlock
   | AnthropicToolReferenceBlock
+  | AnthropicUnknownToolResultContentBlock
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+
+export const isAnthropicTextBlock = (
+  block: AnthropicToolResultContentBlock,
+): block is AnthropicTextBlock =>
+  block.type === "text" && typeof block.text === "string"
+
+export const isAnthropicImageBlock = (
+  block: AnthropicToolResultContentBlock,
+): block is AnthropicImageBlock => {
+  if (block.type !== "image" || !isRecord(block.source)) {
+    return false
+  }
+
+  return block.source.type === "url" ?
+      typeof block.source.url === "string"
+    : block.source.type === "base64"
+        && typeof block.source.media_type === "string"
+        && typeof block.source.data === "string"
+}
+
+export const isAnthropicDocumentBlock = (
+  block: AnthropicToolResultContentBlock,
+): block is AnthropicDocumentBlock => {
+  if (block.type !== "document" || !isRecord(block.source)) {
+    return false
+  }
+
+  return block.source.type === "url" ?
+      typeof block.source.url === "string"
+    : block.source.type === "base64"
+        && block.source.media_type === "application/pdf"
+        && typeof block.source.data === "string"
+}
+
+export const isAnthropicToolReferenceBlock = (
+  block: AnthropicToolResultContentBlock,
+): block is AnthropicToolReferenceBlock =>
+  block.type === "tool_reference" && typeof block.tool_name === "string"
 
 export interface AnthropicToolResultBlock {
   type: "tool_result"
