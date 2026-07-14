@@ -1,39 +1,5 @@
 // Anthropic API Types
 
-export const OPENAI_REASONING_CARRIER_SIGNATURE_PREFIX =
-  "copilot-api-openai-reasoning-v1:"
-
-const LEGACY_OPENAI_REASONING_CARRIER_ALPHABET = /^[A-Za-z0-9+/_=-]+$/u
-
-export const parseLegacyOpenAIReasoningCarrierSignature = (
-  signature: string,
-): { encryptedContent: string; id: string } | undefined => {
-  const splitIndex = signature.lastIndexOf("@")
-  if (splitIndex <= 0 || splitIndex === signature.length - 1) {
-    return undefined
-  }
-
-  const encryptedContent = signature.slice(0, splitIndex)
-  const id = signature.slice(splitIndex + 1)
-  const idLooksLikeReasoning =
-    /^rs(?:_|$)/u.test(id)
-    || (id.length >= 64 && LEGACY_OPENAI_REASONING_CARRIER_ALPHABET.test(id))
-
-  if (
-    encryptedContent.length < 64
-    || !LEGACY_OPENAI_REASONING_CARRIER_ALPHABET.test(encryptedContent)
-    || !idLooksLikeReasoning
-  ) {
-    return undefined
-  }
-
-  return { encryptedContent, id }
-}
-
-export const isOpenAIReasoningCarrierSignature = (signature: string): boolean =>
-  signature.startsWith(OPENAI_REASONING_CARRIER_SIGNATURE_PREFIX)
-  || parseLegacyOpenAIReasoningCarrierSignature(signature) !== undefined
-
 export interface AnthropicMessagesPayload {
   model: string
   messages: Array<AnthropicInputMessage>

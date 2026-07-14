@@ -6,6 +6,7 @@ import type {
   ResponseCreatedEvent,
   ResponseOutputItemAddedEvent,
   ResponseOutputItemDoneEvent,
+  ResponseOutputItem,
   ResponseFunctionCallArgumentsDeltaEvent,
   ResponseFunctionCallArgumentsDoneEvent,
   ResponseReasoningSummaryPartAddedEvent,
@@ -34,6 +35,32 @@ const createFunctionCallAddedEvent = (): ResponseOutputItemAddedEvent => ({
     name: "TodoWrite",
     arguments: "",
     status: "in_progress",
+  },
+})
+
+const createCompletedEvent = (
+  output: Array<ResponseOutputItem>,
+): ResponseCompletedEvent => ({
+  type: "response.completed",
+  sequence_number: 100,
+  response: {
+    id: "resp-terminal",
+    object: "response",
+    created_at: 0,
+    model: "gpt-5.6-sol",
+    output,
+    output_text: "",
+    status: "completed",
+    usage: null,
+    error: null,
+    incomplete_details: null,
+    instructions: null,
+    metadata: null,
+    parallel_tool_calls: false,
+    temperature: null,
+    tool_choice: null,
+    tools: [],
+    top_p: null,
   },
 })
 
@@ -965,5 +992,96 @@ describe("translateResponsesStreamEvent canonical done values", () => {
         : [],
       ),
     ).toEqual(["I cannot comply."])
+  })
+
+  test("backfills refusal text that exists only in the terminal response", () => {
+    const state = createResponsesStreamState()
+    const events = translateResponsesStreamEvent(
+      createCompletedEvent([
+        {
+          id: "message-1",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [{ type: "refusal", refusal: "I cannot comply." }],
+        },
+      ]),
+      state,
+    )
+
+    expect(
+      events.flatMap((event) =>
+        (
+          event.type === "content_block_delta"
+          && event.delta.type === "text_delta"
+        ) ?
+          [event.delta.text]
+        : [],
+      ),
+    ).toEqual(["I cannot comply."])
+  })
+
+  test("backfills text that exists only in the terminal response", () => {
+    const state = createResponsesStreamState()
+    const events = translateResponsesStreamEvent(
+      createCompletedEvent([
+        {
+          id: "message-1",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [
+            { type: "output_text", text: "terminal text", annotations: [] },
+          ],
+        },
+      ]),
+      state,
+    )
+
+    expect(
+      events.flatMap((event) =>
+        (
+          event.type === "content_block_delta"
+          && event.delta.type === "text_delta"
+        ) ?
+          [event.delta.text]
+        : [],
+      ),
+    ).toEqual(["terminal text"])
+  })
+
+  test("backfills a function call that exists only in the terminal response", () => {
+    const state = createResponsesStreamState()
+    const events = translateResponsesStreamEvent(
+      createCompletedEvent([
+        {
+          type: "function_call",
+          call_id: "call-terminal",
+          name: "lookup",
+          arguments: '{"query":"terminal"}',
+          status: "completed",
+        },
+      ]),
+      state,
+    )
+
+    expect(events).toContainEqual({
+      type: "content_block_start",
+      index: 0,
+      content_block: {
+        type: "tool_use",
+        id: "call-terminal",
+        name: "lookup",
+        input: {},
+      },
+    })
+    expect(events).toContainEqual({
+      type: "content_block_delta",
+      index: 0,
+      delta: {
+        type: "input_json_delta",
+        partial_json: '{"query":"terminal"}',
+      },
+    })
   })
 })

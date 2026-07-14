@@ -16,6 +16,10 @@ import type {
 
 import { isResponsesApiWebSocketEnabled as isConfiguredResponsesApiWebSocketEnabled } from "~/lib/config"
 import { HTTPError } from "~/lib/error"
+import {
+  fetchWithUpstreamLifecycle,
+  type UpstreamLifecycleTimeouts,
+} from "~/lib/upstream-lifecycle"
 import { state } from "~/lib/state"
 import {
   createPooledWebSocketStream,
@@ -216,6 +220,10 @@ export function prepareCodexResponsesWebSocketRequest(
   payload: ResponsesPayload,
   requestHeaders: Headers,
   baseUrl: string = CODEX_API_BASE_URL,
+  options: {
+    signal?: AbortSignal
+    timeouts?: UpstreamLifecycleTimeouts
+  } = {},
 ): CodexResponsesWebSocketRequest {
   const headers = buildCodexResponsesWebSocketHeaders(requestHeaders)
 
@@ -223,6 +231,8 @@ export function prepareCodexResponsesWebSocketRequest(
     headers,
     payload: buildCodexResponsesWebSocketPayload(payload),
     poolKey: buildCodexResponsesWebSocketPoolKey(payload, headers, baseUrl),
+    signal: options.signal,
+    timeouts: options.timeouts,
     url: buildCodexResponsesWebSocketUrl(baseUrl),
   }
 }
@@ -232,24 +242,38 @@ export async function forwardCodexResponses(
   requestHeaders: Headers,
   baseUrl: string = CODEX_API_BASE_URL,
   options: {
+    signal?: AbortSignal
+    timeouts?: UpstreamLifecycleTimeouts
     transport?: ResponsesTransport
   } = {},
 ): Promise<CreateResponsesReturn> {
   consola.log(`<-- model: ${payload.model}`)
   const transport = resolveCodexResponsesTransport(options.transport)
   if (payload.stream && transport === "websocket") {
-    return forwardCodexResponsesOverWebSocket(payload, requestHeaders, baseUrl)
+    return forwardCodexResponsesOverWebSocket(
+      payload,
+      requestHeaders,
+      baseUrl,
+      options,
+    )
   }
 
   const normalizedPayload = normalizeCodexResponsesPayload(payload)
 
-  const response = await fetch(resolveCodexResponsesUrl(baseUrl), {
-    method: "POST",
-    headers: buildCodexResponsesHeaders(requestHeaders, {
-      stream: normalizedPayload.stream,
-    }),
-    body: JSON.stringify(normalizedPayload),
-  })
+  const response = await fetchWithUpstreamLifecycle(
+    resolveCodexResponsesUrl(baseUrl),
+    {
+      method: "POST",
+      headers: buildCodexResponsesHeaders(requestHeaders, {
+        stream: normalizedPayload.stream,
+      }),
+      body: JSON.stringify(normalizedPayload),
+    },
+    {
+      signal: options.signal,
+      timeouts: options.timeouts,
+    },
+  )
 
   if (!response.ok) {
     throw new HTTPError("Failed to create codex responses", response)
@@ -429,11 +453,16 @@ const forwardCodexResponsesOverWebSocket = (
   payload: ResponsesPayload,
   requestHeaders: Headers,
   baseUrl: string,
+  options: {
+    signal?: AbortSignal
+    timeouts?: UpstreamLifecycleTimeouts
+  },
 ): ResponsesStream => {
   const websocketRequest = prepareCodexResponsesWebSocketRequest(
     payload,
     requestHeaders,
     baseUrl,
+    options,
   )
 
   return createCodexResponsesWebSocketStream(websocketRequest)

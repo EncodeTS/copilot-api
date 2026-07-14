@@ -100,6 +100,30 @@ afterEach(() => {
 })
 
 describe("provider/model aliases on top-level chat completions route", () => {
+  test("keeps provider HTTP fetch cancellable after response headers", async () => {
+    const controller = new AbortController()
+    const response = await createApp().request(
+      new Request("http://localhost/v1/chat/completions", {
+        body: JSON.stringify({
+          messages: [{ content: "hello", role: "user" }],
+          model: "dash/qwen-plus",
+        }),
+        headers: {
+          "content-type": "application/json",
+        },
+        method: "POST",
+        signal: controller.signal,
+      }),
+    )
+
+    expect(response.status).toBe(200)
+    const upstreamSignal = (fetchMock.mock.calls[0][1] as RequestInit).signal
+    expect(upstreamSignal?.aborted).toBe(false)
+
+    controller.abort(new Error("client disconnected"))
+    expect(upstreamSignal?.aborted).toBe(true)
+  })
+
   test("routes mapped models to provider chat completions before rate limiting", async () => {
     modelMappings = {
       "gpt-provider": "dash/qwen-plus",

@@ -48,7 +48,10 @@ interface PooledWebSocketRequestTarget {
   pooled: boolean
 }
 
-export type WebSocketRequestSendState = "not-sent" | "sent-unknown"
+export type WebSocketRequestSendState =
+  | "not-sent"
+  | "sent-unknown"
+  | "frame-seen"
 
 export class PooledWebSocketRequestError extends Error {
   readonly sendState: WebSocketRequestSendState
@@ -88,6 +91,7 @@ const runPooledWebSocketRequest = async function* <TPayload, TChunk>(
 ): AsyncIterable<TChunk> {
   const { entry, pooled } = getPooledWebSocketRequestTarget(request, options)
   let reachedTerminal = false
+  let frameSeen = false
   let sendAttempted = false
   const release = acquirePooledWebSocketEntry(
     request.poolKey,
@@ -110,6 +114,7 @@ const runPooledWebSocketRequest = async function* <TPayload, TChunk>(
       signal: request.signal,
       timeouts: request.timeouts,
     })) {
+      frameSeen = true
       const chunk = options.createChunk(data)
       yield chunk
 
@@ -124,7 +129,9 @@ const runPooledWebSocketRequest = async function* <TPayload, TChunk>(
   } catch (error) {
     removePooledWebSocketEntry(request.poolKey, entry)
     throw new PooledWebSocketRequestError(
-      sendAttempted ? "sent-unknown" : "not-sent",
+      frameSeen ? "frame-seen"
+      : sendAttempted ? "sent-unknown"
+      : "not-sent",
       toError(error),
     )
   } finally {

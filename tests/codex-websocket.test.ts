@@ -251,6 +251,28 @@ test("forwardCodexResponses falls back to HTTP for non-streaming responses", asy
   })
 })
 
+test("forwardCodexResponses keeps HTTP body cancellation connected", async () => {
+  mockFetchJsonResponse(createResponsesResult("gpt-5.4", "resp-abort"))
+  const controller = new AbortController()
+
+  const response = await forwardCodexResponses(
+    {
+      input: "hello",
+      model: "gpt-5.4",
+    },
+    new Headers({ "content-type": "application/json" }),
+    undefined,
+    { signal: controller.signal },
+  )
+
+  expect(response).toMatchObject({ id: "resp-abort" })
+  const upstreamSignal = fetchMock.mock.calls[0]?.[1]?.signal
+  expect(upstreamSignal?.aborted).toBe(false)
+
+  controller.abort(new Error("client disconnected"))
+  expect(upstreamSignal?.aborted).toBe(true)
+})
+
 test("forwardCodexResponses moves system input messages into instructions for HTTP requests", async () => {
   mockFetchJsonResponse(createResponsesResult("gpt-5.4", "resp-http-system"))
 
