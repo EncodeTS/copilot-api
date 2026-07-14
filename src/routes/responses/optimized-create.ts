@@ -9,6 +9,7 @@ import {
   getResponsesImageCompressionMaxActionsPerRequest,
   getResponsesImageCompressionTimeoutMs,
   getResponsesImageDecodeSafetyLimits,
+  getResponsesImageMaxInputImageBytes,
   getResponsesPayloadBudgetBytes,
   getResponsesPayloadRetryBudgetBytes,
   getResponsesPayloadSendHardLimitBytes,
@@ -50,7 +51,7 @@ const imageCompressionAdapters = new Map<string, ImageCompressionAdapter>()
 export interface OptimizedResponsesCreateOptions {
   createResponses: CreateResponses
   logger?: Pick<ConsolaInstance, "debug" | "info" | "warn">
-  maxPromptImageSize?: number
+  maxInputImageBytesOverride?: number
   requestOptions: CreateResponsesOptions
   selectedModel?: {
     supported_endpoints?: Array<string>
@@ -101,7 +102,7 @@ export const createOptimizedCopilotResponses = async (
 
     if (
       !retryPrepare.imageBudget.changed
-      && retryPrepare.imageBudget.finalPayloadBytes
+      || retryPrepare.imageBudget.finalPayloadBytes
         >= firstPrepare.imageBudget.finalPayloadBytes
     ) {
       throw error
@@ -152,7 +153,9 @@ export const prepareCopilotResponsesPayloadForSend = async (
     compressionEnabled: isResponsesImageCompressionEnabled(),
     enabled: isResponsesImageOptimizationEnabled(),
     maxCompressionActions: getResponsesImageCompressionMaxActionsPerRequest(),
-    maxPromptImageSize: options.maxPromptImageSize,
+    maxPromptImageSize:
+      options.maxInputImageBytesOverride
+      ?? getResponsesImageMaxInputImageBytes(),
     nearBudgetRatio: getResponsesImageNearBudgetRatio(),
     preserveLatestUserImageGroup: shouldPreserveLatestUserImageGroup(),
     sendHardLimitBytes,
