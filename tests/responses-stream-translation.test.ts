@@ -1084,4 +1084,130 @@ describe("translateResponsesStreamEvent canonical done values", () => {
       },
     })
   })
+
+  test("does not reopen completed tool blocks during terminal backfill", () => {
+    const state = createResponsesStreamState()
+    const terminalCalls = [
+      {
+        type: "function_call" as const,
+        call_id: "call-0",
+        name: "lookup",
+        arguments: '{"query":"zero"}',
+        status: "completed" as const,
+      },
+      {
+        type: "function_call" as const,
+        call_id: "call-1",
+        name: "lookup",
+        arguments: '{"query":"one"}',
+        status: "completed" as const,
+      },
+    ]
+    const streamedEvents = terminalCalls.flatMap((item, outputIndex) => [
+      ...translateResponsesStreamEvent(
+        {
+          type: "response.output_item.added",
+          item,
+          output_index: outputIndex,
+          sequence_number: outputIndex * 2,
+        },
+        state,
+      ),
+      ...translateResponsesStreamEvent(
+        {
+          type: "response.function_call_arguments.done",
+          arguments: item.arguments,
+          item_id: item.call_id,
+          name: item.name,
+          output_index: outputIndex,
+          sequence_number: outputIndex * 2 + 1,
+        },
+        state,
+      ),
+    ])
+    const terminalEvents = translateResponsesStreamEvent(
+      createCompletedEvent(terminalCalls),
+      state,
+    )
+    const starts = [...streamedEvents, ...terminalEvents].filter(
+      (event) => event.type === "content_block_start",
+    )
+
+    expect(starts).toHaveLength(2)
+    expect(starts.map((event) => event.index)).toEqual([0, 1])
+  })
+
+  test("does not reopen completed text during mixed terminal backfill", () => {
+    const state = createResponsesStreamState()
+    const functionCall = {
+      type: "function_call" as const,
+      call_id: "call-1",
+      name: "lookup",
+      arguments: '{"query":"one"}',
+      status: "completed" as const,
+    }
+    const streamedEvents = [
+      ...translateResponsesStreamEvent(
+        {
+          type: "response.output_text.delta",
+          content_index: 0,
+          delta: "answer",
+          item_id: "message-0",
+          output_index: 0,
+          sequence_number: 1,
+        },
+        state,
+      ),
+      ...translateResponsesStreamEvent(
+        {
+          type: "response.output_text.done",
+          content_index: 0,
+          item_id: "message-0",
+          output_index: 0,
+          sequence_number: 2,
+          text: "answer",
+        },
+        state,
+      ),
+      ...translateResponsesStreamEvent(
+        {
+          type: "response.output_item.added",
+          item: functionCall,
+          output_index: 1,
+          sequence_number: 3,
+        },
+        state,
+      ),
+      ...translateResponsesStreamEvent(
+        {
+          type: "response.function_call_arguments.done",
+          arguments: functionCall.arguments,
+          item_id: functionCall.call_id,
+          name: functionCall.name,
+          output_index: 1,
+          sequence_number: 4,
+        },
+        state,
+      ),
+    ]
+    const terminalEvents = translateResponsesStreamEvent(
+      createCompletedEvent([
+        {
+          id: "message-0",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [{ type: "output_text", text: "answer", annotations: [] }],
+        },
+        functionCall,
+      ]),
+      state,
+    )
+    const starts = [...streamedEvents, ...terminalEvents].filter(
+      (event) => event.type === "content_block_start",
+    )
+
+    expect(starts).toHaveLength(2)
+    expect(starts.map((event) => event.index)).toEqual([0, 1])
+  })
 })

@@ -643,7 +643,6 @@ const handleReasoningSummaryTextDone = (
   const summaryIndex = rawEvent.summary_index
   const text = rawEvent.text
   const events = new Array<AnthropicStreamEventData>()
-  const blockIndex = openThinkingBlockIfNeeded(state, outputIndex, events)
   const summaryKey = getBlockKey(outputIndex, summaryIndex)
   const accumulated = state.reasoningSummaryTextByKey.get(summaryKey) ?? ""
   let missingSuffix: string
@@ -657,17 +656,37 @@ const handleReasoningSummaryTextDone = (
     return handleCanonicalStreamValueValidationError(error, state, events)
   }
 
-  if (missingSuffix) {
-    events.push({
-      type: "content_block_delta",
-      index: blockIndex,
-      delta: {
-        type: "thinking_delta",
-        thinking: missingSuffix,
-      },
-    })
-    state.blockHasDelta.add(blockIndex)
+  if (!missingSuffix) {
+    state.reasoningSummaryTextByKey.set(summaryKey, text)
+    return events
   }
+
+  const existingBlockIndex = state.blockIndexByKey.get(
+    getBlockKey(outputIndex, 0),
+  )
+  if (
+    existingBlockIndex !== undefined
+    && !state.openBlocks.has(existingBlockIndex)
+  ) {
+    return handleCanonicalStreamValueValidationError(
+      new CanonicalStreamValueValidationError(
+        "Responses reasoning summary terminal value arrived after its content block closed.",
+      ),
+      state,
+      events,
+    )
+  }
+
+  const blockIndex = openThinkingBlockIfNeeded(state, outputIndex, events)
+  events.push({
+    type: "content_block_delta",
+    index: blockIndex,
+    delta: {
+      type: "thinking_delta",
+      thinking: missingSuffix,
+    },
+  })
+  state.blockHasDelta.add(blockIndex)
   state.reasoningSummaryTextByKey.set(summaryKey, text)
 
   return events
@@ -683,12 +702,6 @@ const handleOutputTextDone = (
   const text = rawEvent.text
   const key = getBlockKey(outputIndex, contentIndex)
 
-  const blockIndex = openTextBlockIfNeeded(state, {
-    outputIndex,
-    contentIndex,
-    events,
-  })
-
   const accumulated = state.textByBlockKey.get(key) ?? ""
   let missingSuffix: string
   try {
@@ -701,16 +714,38 @@ const handleOutputTextDone = (
     return handleCanonicalStreamValueValidationError(error, state, events)
   }
 
-  if (missingSuffix) {
-    events.push({
-      type: "content_block_delta",
-      index: blockIndex,
-      delta: {
-        type: "text_delta",
-        text: missingSuffix,
-      },
-    })
+  if (!missingSuffix) {
+    state.textByBlockKey.set(key, text)
+    return events
   }
+
+  const existingBlockIndex = state.blockIndexByKey.get(key)
+  if (
+    existingBlockIndex !== undefined
+    && !state.openBlocks.has(existingBlockIndex)
+  ) {
+    return handleCanonicalStreamValueValidationError(
+      new CanonicalStreamValueValidationError(
+        "Responses output text terminal value arrived after its content block closed.",
+      ),
+      state,
+      events,
+    )
+  }
+
+  const blockIndex = openTextBlockIfNeeded(state, {
+    outputIndex,
+    contentIndex,
+    events,
+  })
+  events.push({
+    type: "content_block_delta",
+    index: blockIndex,
+    delta: {
+      type: "text_delta",
+      text: missingSuffix,
+    },
+  })
   state.textByBlockKey.set(key, text)
 
   return events
@@ -849,6 +884,44 @@ const backfillTerminalOutput = (
       const completedFunctionCall =
         state.completedFunctionCallStateByOutputIndex.get(outputIndex)
       if (completedFunctionCall) {
+        let missingSuffix: string
+        try {
+          missingSuffix = getCanonicalMissingSuffix(
+            completedFunctionCall.argumentsText,
+            item.arguments,
+            "Responses function arguments",
+          )
+        } catch (error) {
+          events.push(
+            ...handleCanonicalStreamValueValidationError(error, state),
+          )
+          return
+        }
+        if (!isValidFunctionArguments(item.arguments)) {
+          events.push(
+            ...handleCanonicalStreamValueValidationError(
+              new CanonicalStreamValueValidationError(
+                "Responses function arguments done value is not a valid JSON object.",
+              ),
+              state,
+            ),
+          )
+          return
+        }
+        if (!missingSuffix) {
+          continue
+        }
+        if (!state.openBlocks.has(completedFunctionCall.blockIndex)) {
+          events.push(
+            ...handleCanonicalStreamValueValidationError(
+              new CanonicalStreamValueValidationError(
+                "Responses function arguments terminal value arrived after its content block closed.",
+              ),
+              state,
+            ),
+          )
+          return
+        }
         state.functionCallStateByOutputIndex.set(
           outputIndex,
           completedFunctionCall,

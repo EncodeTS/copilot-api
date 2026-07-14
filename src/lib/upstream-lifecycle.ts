@@ -104,7 +104,7 @@ export const fetchWithUpstreamLifecycle = async (
     requestController.signal,
     init.signal,
     options.signal,
-  ].filter((signal): signal is AbortSignal => signal !== undefined)
+  ].filter((signal): signal is AbortSignal => signal != null)
   const signal = AbortSignal.any(signals)
 
   let response: Response
