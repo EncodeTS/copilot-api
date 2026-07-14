@@ -1,7 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "@jeffreycao/copilot-api",
-  "version": "1.14.7",
+  "version": "2.0.0-rc.1",
+  "private": true,
   "description": "GitHub Copilot, OpenAI Codex, and third-party AI provider gateway with OpenAI and Anthropic API compatibility.",
   "keywords": [
     "github-copilot",
@@ -9,14 +10,14 @@
     "ai-gateway",
     "multi-provider"
   ],
-  "homepage": "https://github.com/caozhiyuan/copilot-api",
-  "bugs": "https://github.com/caozhiyuan/copilot-api/issues",
+  "homepage": "https://github.com/EncodeTS/copilot-api",
+  "bugs": "https://github.com/EncodeTS/copilot-api/issues",
   "repository": {
     "type": "git",
-    "url": "https://github.com/caozhiyuan/copilot-api"
+    "url": "https://github.com/EncodeTS/copilot-api"
   },
   "license": "MIT",
-  "author": "caozhiyuan",
+  "author": "EncodeTS",
   "type": "module",
   "bin": {
     "copilot-api": "./dist/main.js"
@@ -34,7 +35,7 @@
     "lint:all": "eslint --cache .",
     "prepack": "bun run build",
     "prepare": "simple-git-hooks",
-    "release": "bumpp && bun publish --access public",
+    "release": "node -e \"throw new Error('npm publishing is disabled until the package identity is migrated')\"",
     "start": "NODE_USE_SYSTEM_CA=1 NODE_ENV=production bun run ./src/main.ts",
     "typecheck": "tsc"
   },
