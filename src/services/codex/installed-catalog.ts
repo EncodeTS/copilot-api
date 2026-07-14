@@ -51,6 +51,12 @@ interface CodexCommandInvocation {
   windowsVerbatimArguments: boolean
 }
 
+interface CodexExecutableCandidateOptions {
+  environment?: NodeJS.ProcessEnv
+  home?: string
+  platform?: NodeJS.Platform
+}
+
 class CodexCatalogCache {
   readonly #entries = new Map<string, CachedCatalog>()
 
@@ -118,16 +124,24 @@ function getVersionedCodexAppExecutables(binDirectory: string): Array<string> {
   }
 }
 
-function getCodexExecutableCandidates(): Array<string> {
-  const home = homedir()
+function getCodexExecutableCandidates({
+  environment = process.env,
+  home = homedir(),
+  platform = process.platform,
+}: CodexExecutableCandidateOptions = {}): Array<string> {
   const candidates: Array<string | undefined> = [
-    process.env.COPILOT_API_CODEX_CLI_PATH?.trim(),
-    "codex",
-    join(home, ".local", "bin", "codex"),
-    join(home, ".bun", "bin", "codex"),
+    environment.COPILOT_API_CODEX_CLI_PATH?.trim(),
   ]
 
-  if (process.platform === "darwin") {
+  if (platform !== "win32") {
+    candidates.push(
+      "codex",
+      join(home, ".local", "bin", "codex"),
+      join(home, ".bun", "bin", "codex"),
+    )
+  }
+
+  if (platform === "darwin") {
     candidates.push(
       "/opt/homebrew/bin/codex",
       "/usr/local/bin/codex",
@@ -136,30 +150,27 @@ function getCodexExecutableCandidates(): Array<string> {
     )
   }
 
-  if (process.platform === "win32") {
-    const appData = process.env.APPDATA?.trim()
-    const localAppData = process.env.LOCALAPPDATA?.trim()
-    const pnpmHome = process.env.PNPM_HOME?.trim()
+  if (platform === "win32") {
+    const appData = environment.APPDATA?.trim()
+    const localAppData = environment.LOCALAPPDATA?.trim()
+    const pnpmHome = environment.PNPM_HOME?.trim()
     const codexAppBin =
       localAppData ? join(localAppData, "OpenAI", "Codex", "bin") : undefined
     const platformPackages = [
       ["codex-win32-x64", "x86_64-pc-windows-msvc"],
       ["codex-win32-arm64", "aarch64-pc-windows-msvc"],
     ] as const
-
-    candidates.push(
+    const nativeCandidates: Array<string | undefined> = [
+      "codex.exe",
       localAppData ?
         join(localAppData, "Programs", "OpenAI", "Codex", "bin", "codex.exe")
       : undefined,
       codexAppBin ? join(codexAppBin, "codex.exe") : undefined,
       ...(codexAppBin ? getVersionedCodexAppExecutables(codexAppBin) : []),
       appData ? join(appData, "npm", "codex.exe") : undefined,
-      appData ? join(appData, "npm", "codex.cmd") : undefined,
       pnpmHome ? join(pnpmHome, "codex.exe") : undefined,
-      pnpmHome ? join(pnpmHome, "codex.cmd") : undefined,
       join(home, ".bun", "bin", "codex.exe"),
-      join(home, ".bun", "bin", "codex.cmd"),
-    )
+    ]
 
     if (appData) {
       for (const [packageName, target] of platformPackages) {
@@ -171,7 +182,7 @@ function getCodexExecutableCandidates(): Array<string> {
           "bin",
           "codex.exe",
         ]
-        candidates.push(
+        nativeCandidates.push(
           join(
             appData,
             "npm",
@@ -185,6 +196,17 @@ function getCodexExecutableCandidates(): Array<string> {
         )
       }
     }
+
+    candidates.push(
+      ...nativeCandidates,
+      "codex.cmd",
+      appData ? join(appData, "npm", "codex.cmd") : undefined,
+      pnpmHome ? join(pnpmHome, "codex.cmd") : undefined,
+      join(home, ".bun", "bin", "codex.cmd"),
+      "codex",
+      join(home, ".local", "bin", "codex"),
+      join(home, ".bun", "bin", "codex"),
+    )
   }
 
   return [
@@ -292,13 +314,18 @@ function parseCodexModelsOutput(output: string): CodexModelsResponse | null {
     return null
   }
 
-  const models = value.models.filter(
-    (model): model is CodexModelInfo =>
-      isRecord(model)
-      && typeof model.slug === "string"
-      && model.slug.trim().length > 0
-      && typeof model.base_instructions === "string",
-  )
+  const models: Array<CodexModelInfo> = []
+  for (const model of value.models) {
+    if (
+      !isRecord(model)
+      || typeof model.slug !== "string"
+      || model.slug.trim().length === 0
+      || typeof model.base_instructions !== "string"
+    ) {
+      return null
+    }
+    models.push(model as CodexModelInfo)
+  }
 
   return models.length > 0 ? { models } : null
 }
@@ -350,6 +377,15 @@ async function readInstalledCodexCatalog(
     }
 
     try {
+      const currentVersion = parseInstalledCodexVersion(
+        await codexCatalogLoaderDependencies.runCommand(executable, [
+          "--version",
+        ]),
+      )
+      if (currentVersion !== requestedVersion) {
+        continue
+      }
+
       const catalog = parseCodexModelsOutput(
         await codexCatalogLoaderDependencies.runCommand(executable, [
           "debug",
