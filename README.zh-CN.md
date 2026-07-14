@@ -304,19 +304,22 @@ npx @jeffreycao/copilot-api@latest start
 ```toml
 model_provider = "copilot_api"
 model_reasoning_summary = "auto"
-model_context_window = 272000
-model_auto_compact_token_limit = 244800
 
 [model_providers.copilot_api]
 name = "OpenAI"
 base_url = "http://localhost:4141"
-env_key = "GITHUB_COPILOT_API_KEY"
-requires_openai_auth = true
+requires_openai_auth = false
 supports_websockets = false
 wire_api = "responses"
 request_max_retries = 3
 stream_max_retries = 1
 stream_idle_timeout_ms = 300000
+
+[model_providers.copilot_api.auth]
+command = "node"
+args = ["-e", "process.stdout.write(process.env.GITHUB_COPILOT_API_KEY || 'dummy')"]
+timeout_ms = 5000
+refresh_interval_ms = 300000
 
 [features]
 remote_compaction_v2 = true
@@ -326,7 +329,7 @@ enabled = false
 ```
 
 > [!NOTE]
-> 此配置仅限于 Codex 与 GitHub Copilot provider。`name` 一定要配置为 `"OpenAI"`。它可以缓解 Codex local compact 不命中缓存的问题。
+> 此配置仅限于 Codex 与 GitHub Copilot provider。`name` 一定要配置为 `"OpenAI"`。这里有意使用 command auth：当前 Codex 只会为 command auth 的自定义 provider 刷新 `/v1/models`。命令会优先输出 `GITHUB_COPILOT_API_KEY`；若 gateway 没启用 API Key 鉴权，则输出占位值 `dummy`。不要再硬编码 `model_context_window` 或 `model_auto_compact_token_limit`：gateway 会读取本机同版本 Codex 的 bundled catalog，再只覆盖 Copilot 官方实时返回的上下文能力。若找不到同版本 Codex 可执行文件，gateway 会返回空的远端 catalog，让 Codex 安全保留自己的内置模型定义。只有可执行文件不在常见位置时，才需要设置 `COPILOT_API_CODEX_CLI_PATH`。
 
 ## GPT Tool Search
 
@@ -678,7 +681,7 @@ curl http://localhost:4141/admin/config/model-mappings \
 | --- | --- | --- |
 | `POST /v1/responses` | `POST` | OpenAI 中用于生成模型响应的高级接口。支持 `openai-responses` provider 的 `provider/model` 别名。 |
 | `POST /v1/chat/completions` | `POST` | 为给定聊天对话创建模型响应。支持 `openai-compatible` provider 的 `provider/model` 别名；目标 provider 已配置时可在没有 Copilot 的情况下使用。 |
-| `GET /v1/models` | `GET` | 列出 Copilot 模型以及已启用 provider 的 `provider/model-id` 模型。来自 Codex 客户端（`User-Agent` 以 `codex` 开头）的请求会转发到 Codex Models 上游。 |
+| `GET /v1/models` | `GET` | 列出 Copilot 模型以及已启用 provider 的 `provider/model-id` 模型。Codex 客户端会收到与自身版本匹配的 bundled descriptor，并叠加 Copilot 官方实时上下文能力；无法匹配时安全回退为空的远端列表。 |
 | `POST /v1/embeddings` | `POST` | 创建表示输入文本的向量嵌入。 |
 
 ### Codex 后端代理端点
