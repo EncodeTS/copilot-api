@@ -12,7 +12,6 @@ export interface AppConfig {
   providers?: Record<string, ProviderConfig>
   modelMappings?: Record<string, string>
   extraPrompts?: Record<string, string>
-  smallModel?: string
   contextManagement?: ContextManagementConfig
   modelResponsesApiCompactThresholds?: Record<string, number>
   modelReasoningEfforts?: Record<
@@ -31,7 +30,6 @@ export interface AppConfig {
   // Mixing web_search with other tools is not supported.
   messageApiWebSearchModel?: string
   claudeTokenMultiplier?: number
-  parityFirst?: boolean
   responsesImageOptimization?: boolean
   responsesPayloadBudgetBytes?: number
   responsesPayloadRetryBudgetBytes?: number
@@ -221,7 +219,6 @@ const defaultConfig: AppConfig = {
   extraPrompts: {
     "gpt-5-mini": gpt5ExplorationPrompt,
   },
-  smallModel: "gpt-5-mini",
   contextManagement: defaultContextManagement,
   modelReasoningEfforts: {
     "gpt-5-mini": "low",
@@ -230,7 +227,6 @@ const defaultConfig: AppConfig = {
   useResponsesApiWebSocket: true,
   useResponsesApiWebSearch: true,
   messageApiWebSearchModel: "gpt-5-mini",
-  parityFirst: true,
   ...responsesImageConfigDefaults,
 }
 
@@ -330,10 +326,20 @@ function writeConfigToDisk(config: AppConfig): void {
   )
 }
 
-function mergeDefaultConfig(config: AppConfig): {
+export function mergeDefaultConfig(config: AppConfig): {
   mergedConfig: AppConfig
   changed: boolean
 } {
+  const normalizedConfig = { ...config } as AppConfig & {
+    parityFirst?: unknown
+    smallModel?: unknown
+  }
+  const hasDeprecatedRequestRewriteConfig =
+    Object.hasOwn(normalizedConfig, "parityFirst")
+    || Object.hasOwn(normalizedConfig, "smallModel")
+  delete normalizedConfig.parityFirst
+  delete normalizedConfig.smallModel
+
   const extraPrompts = config.extraPrompts ?? {}
   const defaultExtraPrompts = defaultConfig.extraPrompts ?? {}
   const responsesApiCompactThresholds =
@@ -368,7 +374,6 @@ function mergeDefaultConfig(config: AppConfig): {
   const hasExtraPromptChanges = missingExtraPromptModels.length > 0
   const hasReasoningEffortChanges = missingReasoningEffortModels.length > 0
   const hasContextManagementChanges = missingContextManagementKeys.length > 0
-  const hasParityFirstChange = config.parityFirst === undefined
   const missingResponsesImageConfigKeys = Object.keys(
     responsesImageConfigDefaults,
   ).filter((key) => !Object.hasOwn(config, key))
@@ -380,7 +385,7 @@ function mergeDefaultConfig(config: AppConfig): {
     && !hasReasoningEffortChanges
     && !hasLegacyResponsesApiCompactThresholds
     && !hasContextManagementChanges
-    && !hasParityFirstChange
+    && !hasDeprecatedRequestRewriteConfig
     && !hasResponsesImageConfigChanges
   ) {
     return { mergedConfig: config, changed: false }
@@ -388,7 +393,7 @@ function mergeDefaultConfig(config: AppConfig): {
 
   return {
     mergedConfig: {
-      ...config,
+      ...normalizedConfig,
       contextManagement: {
         ...defaultContextManagementConfig,
         ...contextManagement,
@@ -405,7 +410,6 @@ function mergeDefaultConfig(config: AppConfig): {
         ...defaultModelReasoningEfforts,
         ...modelReasoningEfforts,
       },
-      parityFirst: config.parityFirst ?? defaultConfig.parityFirst,
       ...Object.fromEntries(
         Object.entries(responsesImageConfigDefaults).map(([key, value]) => [
           key,
@@ -567,16 +571,6 @@ export function setModelMappings(
 
 export function resolveMappedModel(model: string): string {
   return getModelMappings()[model] ?? model
-}
-
-export function getSmallModel(): string {
-  const config = getConfig()
-  return config.smallModel ?? "gpt-5-mini"
-}
-
-export function isParityFirstEnabled(): boolean {
-  const config = getConfig()
-  return config.parityFirst ?? true
 }
 
 export function isContextManagementEnabledForMessages(): boolean {

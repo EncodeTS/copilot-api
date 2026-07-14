@@ -8,7 +8,6 @@ import {
   compactTextOnlyGuard,
 } from "../src/lib/compact"
 
-const actualStateModule = await import("../src/lib/state")
 const actualConfigModule = await import("../src/lib/config")
 const actualModelsModule = await import("../src/lib/models")
 const actualUtilsModule = await import("../src/lib/utils")
@@ -16,15 +15,8 @@ const { responsesUtilsDependencies } = await import(
   "../src/routes/responses/utils"
 )
 
-const state = {
-  ...actualStateModule.state,
-  tokenBasedBilling: false,
-  verbose: false,
-}
-
 let messagesApiEnabled = true
 let responsesApiWebSocketEnabled = true
-let parityFirstEnabled = true
 let modelMappings: Record<string, string> = {}
 type SelectedModel = {
   id: string
@@ -64,14 +56,8 @@ const handleWithChatCompletions = mock(
   ) => Promise.resolve(new Response("chat")),
 )
 
-await mock.module("~/lib/state", () => ({
-  ...actualStateModule,
-  state,
-}))
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
-  getSmallModel: () => "small-model",
-  isParityFirstEnabled: () => parityFirstEnabled,
   isMessagesApiEnabled: () => messagesApiEnabled,
   isResponsesApiWebSocketEnabled: () => responsesApiWebSocketEnabled,
   resolveMappedModel: (model: string) => modelMappings[model] ?? model,
@@ -106,11 +92,8 @@ const createPayload = (
 })
 
 beforeEach(() => {
-  state.verbose = false
-  state.tokenBasedBilling = false
   messagesApiEnabled = true
   responsesApiWebSocketEnabled = true
-  parityFirstEnabled = true
   modelMappings = {}
   selectedModel = undefined
 
@@ -458,165 +441,6 @@ describe("messages handler orchestration", () => {
     expect(forwardedPayload.messages[0]).toEqual(payload.messages[0])
   })
 
-  test("adds cache_control to the last content block after legacy tool_result merging", async () => {
-    parityFirstEnabled = false
-    selectedModel = {
-      id: "messages-model",
-      supported_endpoints: ["/v1/messages"],
-    }
-
-    const payload: AnthropicMessagesPayload = {
-      model: "original-model",
-      max_tokens: 128,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "tool_result",
-              tool_use_id: "tool-1",
-              content: "Launching skill: foo",
-            },
-            {
-              type: "text",
-              text: "[Pasted ~4 lines]",
-            },
-          ],
-        },
-      ],
-    }
-
-    const app = createApp()
-    const response = await app.request("/", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    })
-
-    expect(response.status).toBe(200)
-    expect(await response.text()).toBe("messages")
-
-    const [, forwardedPayload] = handleWithMessagesApi.mock.calls[0]
-    expect(forwardedPayload.messages[0]).toEqual({
-      role: "user",
-      content: [
-        {
-          type: "tool_result",
-          tool_use_id: "tool-1",
-          content: "Launching skill: foo\n\n[Pasted ~4 lines]",
-          cache_control: {
-            type: "ephemeral",
-          },
-        },
-      ],
-    })
-  })
-
-  test("does not add cache_control in legacy mode for token-based billing", async () => {
-    parityFirstEnabled = false
-    state.tokenBasedBilling = true
-    selectedModel = {
-      id: "messages-model",
-      supported_endpoints: ["/v1/messages"],
-    }
-    const payload = createPayload({
-      messages: [
-        {
-          role: "user",
-          content: [{ type: "text", text: "hello" }],
-        },
-      ],
-    })
-
-    const response = await createApp().request("/", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    })
-
-    expect(response.status).toBe(200)
-    const [, forwardedPayload] = handleWithMessagesApi.mock.calls[0]
-    expect(forwardedPayload.messages[0]).toEqual({
-      role: "user",
-      content: [{ type: "text", text: "hello" }],
-    })
-  })
-
-  test("preserves cache_control captured before Tool loaded is stripped in legacy mode", async () => {
-    parityFirstEnabled = false
-    selectedModel = {
-      id: "messages-model",
-      supported_endpoints: ["/v1/messages"],
-    }
-
-    const payload: AnthropicMessagesPayload = {
-      model: "original-model",
-      max_tokens: 128,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "tool_result",
-              tool_use_id: "tool-1",
-              content: [
-                {
-                  type: "tool_reference",
-                  tool_name: "AskUserQuestion",
-                },
-              ],
-            },
-            {
-              type: "text",
-              text: "Tool loaded.",
-              cache_control: {
-                type: "ephemeral",
-                scope: "user",
-              },
-            },
-          ],
-        },
-      ],
-    }
-
-    const app = createApp()
-    const response = await app.request("/", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    })
-
-    expect(response.status).toBe(200)
-    expect(await response.text()).toBe("messages")
-
-    const [, forwardedPayload] = handleWithMessagesApi.mock.calls[0]
-    expect(forwardedPayload.messages[0]).toEqual({
-      role: "user",
-      content: [
-        {
-          type: "tool_result",
-          tool_use_id: "tool-1",
-          content: [
-            {
-              type: "tool_reference",
-              tool_name: "AskUserQuestion",
-            },
-          ],
-          cache_control: {
-            type: "ephemeral",
-            scope: "user",
-          },
-        },
-      ],
-    })
-  })
-
   test("delegates to the Messages API flow when the model supports /v1/messages", async () => {
     selectedModel = {
       id: "messages-model",
@@ -887,29 +711,7 @@ describe("messages handler orchestration", () => {
     ])
   })
 
-  test("preserves requested model for warmup requests by default", async () => {
-    selectedModel = {
-      id: "messages-model",
-      supported_endpoints: ["/v1/messages"],
-    }
-
-    const app = createApp()
-    const response = await app.request("/", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "anthropic-beta": "warmup-beta",
-      },
-      body: JSON.stringify(createPayload()),
-    })
-
-    expect(response.status).toBe(200)
-    expect(await response.text()).toBe("messages")
-    expect(findEndpointModel).toHaveBeenCalledWith("original-model")
-  })
-
-  test("applies legacy warmup model override and passes request metadata to the selected flow", async () => {
-    parityFirstEnabled = false
+  test("passes warmup request metadata without overriding the requested model", async () => {
     selectedModel = {
       id: "messages-model",
       supported_endpoints: ["/v1/messages"],
@@ -946,7 +748,7 @@ describe("messages handler orchestration", () => {
 
     expect(response.status).toBe(200)
     expect(await response.text()).toBe("messages")
-    expect(findEndpointModel).toHaveBeenCalledWith("small-model")
+    expect(findEndpointModel).toHaveBeenCalledWith("original-model")
 
     const expectedSessionId = actualUtilsModule.getUUID("session-123")
     const expectedRequestId = actualUtilsModule.generateRequestIdFromPayload(

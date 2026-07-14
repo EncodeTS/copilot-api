@@ -4,12 +4,12 @@ English | [简体中文](./README.zh-CN.md)
 
 ## EncodeTS Fork Notice
 
-This repository is an EncodeTS fork of [caozhiyuan/copilot-api](https://github.com/caozhiyuan/copilot-api). It tracks upstream closely; most of this README still describes upstream behavior.
+This repository is independently maintained by EncodeTS and originated as a fork of [caozhiyuan/copilot-api](https://github.com/caozhiyuan/copilot-api). Upstream parity is no longer a project goal; behavior may diverge intentionally.
 
 Fork-specific builds and defaults:
 
 - Desktop releases are published in [this fork's GitHub Releases](https://github.com/EncodeTS/copilot-api/releases).
-- `parityFirst` defaults to `true`, so warmup/no-tools Messages API requests stay on the client-requested model instead of falling back to `smallModel` (`gpt-5-mini` by default), and `tool_result` boundaries are preserved.
+- Messages API requests preserve the client-requested model and `tool_result` boundaries; warmup/no-tools requests are not silently rewritten to a fallback model.
 - Client `thinking` / `effort` payloads are preserved and normalized where compatible, and provider stream error handling has small robustness fixes.
 
 The `npx @jeffreycao/copilot-api@latest` examples below use the upstream npm package. To use this fork's patches, run from this source tree or install the desktop app from this fork's Releases.
@@ -552,7 +552,6 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
     "extraPrompts": {
       "gpt-5-mini": "<built-in exploration prompt>"
     },
-    "smallModel": "gpt-5-mini",
     "contextManagement": {
       "messages": true,
       "responses": false
@@ -563,8 +562,7 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
     "useMessagesApi": true,
     "useResponsesApiWebSocket": true,
     "useResponsesApiWebSearch": true,
-    "messageApiWebSearchModel": "gpt-5-mini",
-    "parityFirst": true
+    "messageApiWebSearchModel": "gpt-5-mini"
   }
   ```
 - **auth.apiKeys:** API keys used for request authentication on non-admin routes. Supports multiple keys for rotation. Requests can authenticate with either `x-api-key: <key>` or `Authorization: Bearer <key>`. If empty or omitted, authentication for non-admin routes is disabled.
@@ -641,8 +639,6 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
   }
   ```
   Built-in token prices cover Codex GPT models in USD, DashScope `qwen3.7-max`, `qwen3.7-plus`, `glm-5.1`, `glm-5.2` in CNY, DeepSeek `deepseek-v4-flash`, `deepseek-v4-pro`, `deepseek-chat`, `deepseek-reasoner` in CNY, and OpenCode Go models (`glm-5.2`, `deepseek-v4-flash`, `deepseek-v4-pro`, `kimi-k2.7-code`, `mimo-v2.5`, `mimo-v2.5-pro`, `qwen3.7-plus`, `qwen3.7-max`, `minimax-m2.5`, `minimax-m3`) in USD. User `pricing` entries override built-ins. For DashScope, cached tokens are charged as explicit cache reads when the upstream usage includes `cache_creation_input_tokens`; otherwise `cachedInput` is used as the implicit cache read price. For DeepSeek, `prompt_cache_hit_tokens` map to cached input and `prompt_cache_miss_tokens` map to regular input.
-- **smallModel:** Fallback model used for tool-less warmup messages (e.g., Claude Code probe requests) only when `parityFirst` is `false`; defaults to `gpt-5-mini`.
-- **parityFirst:** When `true` (default), the proxy avoids request-saving rewrites: warmup/no-tools requests keep their requested model instead of falling back to `smallModel`, and `tool_result` boundaries are preserved. Explicit `modelMappings`, provider aliases, endpoint model normalization, and schema-compatibility fixes still apply. Set to `false` to restore the legacy warmup-to-`smallModel` override and `tool_result` content merging behavior.
 - **contextManagement:** Controls whether the proxy adds Responses API `context_management` compaction instructions. `messages` applies when Anthropic-style `/v1/messages` requests are translated to Responses API, including `openai-responses` provider message routes; `responses` applies to native `/v1/responses` traffic, including `provider/model` aliases and the built-in `codex` provider. Both default to `false`, so client-owned compaction is preserved unless gateway compaction is explicitly enabled. When enabled, the request includes `context_management` in the body and the gateway keeps only the latest compaction carrier on follow-up turns.
 - **modelResponsesApiCompactThresholds:** Optional per-model Responses API `compact_threshold` overrides used when the proxy adds `context_management`. Explicit values take precedence over dynamic calculation. Without an override, the proxy uses live model limits: Messages bridges compact at 90% of `max_prompt_tokens` while retaining at least 32,000 input-growth tokens; if `max_prompt_tokens` is absent it uses `max_context_window_tokens - max_output_tokens`. Native Responses compaction remains disabled by default and retains its explicit 80% policy when enabled. Legacy auto-written `gpt-5.4` / `gpt-5.5` values of `217600` and `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna` values of `231200` are removed from config during migration.
 - **modelReasoningEfforts:** Per-model fallback reasoning effort for `/v1/messages` requests. It is used only when the request does not provide `output_config.effort`.

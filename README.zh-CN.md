@@ -4,12 +4,12 @@
 
 ## EncodeTS Fork 说明
 
-本仓库是 [caozhiyuan/copilot-api](https://github.com/caozhiyuan/copilot-api) 的 EncodeTS fork，并尽量贴近上游；README 大部分仍描述上游通用行为。
+本仓库由 EncodeTS 独立维护，最初 fork 自 [caozhiyuan/copilot-api](https://github.com/caozhiyuan/copilot-api)。项目不再以上游一致性为目标，后续会按自身需求主动演进。
 
 本 fork 的差异：
 
 - 桌面安装包发布在 [本 fork 的 GitHub Releases](https://github.com/EncodeTS/copilot-api/releases)。
-- `parityFirst` 默认 `true`，无工具预热的 Messages API 请求会保留客户端请求的模型，不再自动回退到 `smallModel`（默认 `gpt-5-mini`），并保留 `tool_result` 边界。
+- Messages API 请求会保留客户端指定的模型和 `tool_result` 边界；无工具预热请求不会再被静默改写到回退模型。
 - 在兼容前提下保留并规范化客户端传入的 `thinking` / `effort`，并对 provider stream error 做了小幅健壮性修正。
 
 下面的 `npx @jeffreycao/copilot-api@latest` 示例使用的是上游 npm 包。要使用本 fork 的 patch，请从本仓库源码运行，或安装本 fork Releases 中的桌面应用。
@@ -557,7 +557,6 @@ Copilot API 现在使用子命令结构，主要命令包括：
     "extraPrompts": {
       "gpt-5-mini": "<built-in exploration prompt>"
     },
-    "smallModel": "gpt-5-mini",
     "contextManagement": {
       "messages": true,
       "responses": false
@@ -568,8 +567,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
     "useMessagesApi": true,
     "useResponsesApiWebSocket": true,
     "useResponsesApiWebSearch": true,
-    "messageApiWebSearchModel": "gpt-5-mini",
-    "parityFirst": true
+    "messageApiWebSearchModel": "gpt-5-mini"
   }
   ```
 - **auth.apiKeys：** 用于普通非 admin 路由的 API key。支持多个 key 轮换使用。请求可通过 `x-api-key: <key>` 或 `Authorization: Bearer <key>` 进行认证。若为空或省略，则普通路由的认证会被禁用。
@@ -646,8 +644,6 @@ Copilot API 现在使用子命令结构，主要命令包括：
   }
   ```
   内置 token 价格覆盖 Codex GPT 模型（USD）、DashScope `qwen3.7-max`、`qwen3.7-plus`、`glm-5.1`、`glm-5.2`（CNY），DeepSeek `deepseek-v4-flash`、`deepseek-v4-pro`、`deepseek-chat`、`deepseek-reasoner`（CNY），以及 OpenCode Go 模型（`glm-5.2`、`deepseek-v4-flash`、`deepseek-v4-pro`、`kimi-k2.7-code`、`mimo-v2.5`、`mimo-v2.5-pro`、`qwen3.7-plus`、`qwen3.7-max`、`minimax-m2.5`、`minimax-m3`，USD）。用户配置的 `pricing` 优先于内置价格。DashScope 若上游 usage 中出现 `cache_creation_input_tokens` 字段，cached tokens 按显式缓存读价计费；否则 `cachedInput` 作为隐式缓存读价。DeepSeek 的 `prompt_cache_hit_tokens` 会归入 cached input，`prompt_cache_miss_tokens` 会归入普通 input。
-- **smallModel：** 仅在 `parityFirst` 为 `false` 时用于无工具预热消息（例如 Claude Code 的探测请求）的回退模型；默认是 `gpt-5-mini`。
-- **parityFirst：** 当为 `true`（默认）时，代理会避免省请求改写：无工具预热请求继续使用客户端请求的模型，不回退到 `smallModel`，并保留 `tool_result` 边界。显式 `modelMappings`、provider alias、endpoint 模型规范化以及 schema 兼容性修正仍会生效。设为 `false` 可恢复旧的预热请求改用 `smallModel`、合并 `tool_result` 内容等行为。
 - **contextManagement：** 控制代理是否为 Responses API 附加 `context_management` 压缩指令。`messages` 作用于被翻译成 Responses API 的 Anthropic 风格 `/v1/messages` 请求，包括 `openai-responses` provider 的 Messages 路由；`responses` 作用于 native `/v1/responses` 流量，包括 `provider/model` 别名和内置 `codex` provider。两者默认均为 `false`，因此除非显式开启网关压缩，否则会保留客户端自己的压缩控制。启用后，请求体会带上 `context_management`，并由网关在后续轮次中仅保留最新的压缩承载内容。
 - **modelResponsesApiCompactThresholds：** 可选的按模型 Responses API `compact_threshold` 覆盖，仅在代理自动附加 `context_management` 时使用。显式值优先于动态计算。未配置时使用实时模型 limits：Messages bridge 按 `max_prompt_tokens` 的 90% 触发，并至少保留 32,000 个输入增长 token；缺少 `max_prompt_tokens` 时使用 `max_context_window_tokens - max_output_tokens`。原生 Responses 默认仍关闭中转压缩，显式启用时保留 80% 策略。历史版本自动写入的 `gpt-5.4` / `gpt-5.5 = 217600`，以及 `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna = 231200` 会在配置迁移时删除。
 - **modelReasoningEfforts：** `/v1/messages` 请求的模型级默认推理强度。仅当请求没有传入 `output_config.effort` 时，该配置才会生效。
