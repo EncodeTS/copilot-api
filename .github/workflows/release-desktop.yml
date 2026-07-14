@@ -163,10 +163,15 @@ jobs:
           # attach assets; otherwise create a minimal release with auto notes.
           if ! gh release view "$tag" >/dev/null 2>&1; then
             echo "Release $tag not found — creating it."
+            release_flags=()
+            if [[ "$tag" == *"-"* ]]; then
+              release_flags+=(--prerelease)
+            fi
             gh release create "$tag" \
               --title "$tag" \
               --generate-notes \
-              --verify-tag
+              --verify-tag \
+              "${release_flags[@]}"
           else
             echo "Release $tag exists — keeping its notes, attaching assets."
           fi
