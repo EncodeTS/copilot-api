@@ -64,21 +64,31 @@ export interface AnthropicTextBlock {
 
 export interface AnthropicImageBlock {
   type: "image"
-  source: {
-    type: "base64"
-    media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp"
-    data: string
-  }
+  source:
+    | {
+        type: "base64"
+        media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp"
+        data: string
+      }
+    | {
+        type: "url"
+        url: string
+      }
   cache_control?: AnthropicCacheControl | null
 }
 
 export interface AnthropicDocumentBlock {
   type: "document"
-  source: {
-    type: "base64"
-    media_type: "application/pdf"
-    data: string
-  }
+  source:
+    | {
+        type: "base64"
+        media_type: "application/pdf"
+        data: string
+      }
+    | {
+        type: "url"
+        url: string
+      }
   title?: string | null
   cache_control?: AnthropicCacheControl | null
 }
@@ -89,11 +99,59 @@ export interface AnthropicToolReferenceBlock {
   cache_control?: AnthropicCacheControl | null
 }
 
+export interface AnthropicUnknownToolResultContentBlock {
+  type: string
+  cache_control?: AnthropicCacheControl | null
+  [key: string]: unknown
+}
+
 export type AnthropicToolResultContentBlock =
   | AnthropicTextBlock
   | AnthropicImageBlock
   | AnthropicDocumentBlock
   | AnthropicToolReferenceBlock
+  | AnthropicUnknownToolResultContentBlock
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+
+export const isAnthropicTextBlock = (
+  block: AnthropicToolResultContentBlock,
+): block is AnthropicTextBlock =>
+  block.type === "text" && typeof block.text === "string"
+
+export const isAnthropicImageBlock = (
+  block: AnthropicToolResultContentBlock,
+): block is AnthropicImageBlock => {
+  if (block.type !== "image" || !isRecord(block.source)) {
+    return false
+  }
+
+  return block.source.type === "url" ?
+      typeof block.source.url === "string"
+    : block.source.type === "base64"
+        && typeof block.source.media_type === "string"
+        && typeof block.source.data === "string"
+}
+
+export const isAnthropicDocumentBlock = (
+  block: AnthropicToolResultContentBlock,
+): block is AnthropicDocumentBlock => {
+  if (block.type !== "document" || !isRecord(block.source)) {
+    return false
+  }
+
+  return block.source.type === "url" ?
+      typeof block.source.url === "string"
+    : block.source.type === "base64"
+        && block.source.media_type === "application/pdf"
+        && typeof block.source.data === "string"
+}
+
+export const isAnthropicToolReferenceBlock = (
+  block: AnthropicToolResultContentBlock,
+): block is AnthropicToolReferenceBlock =>
+  block.type === "tool_reference" && typeof block.tool_name === "string"
 
 export interface AnthropicToolResultBlock {
   type: "tool_result"
@@ -146,21 +204,43 @@ export interface AnthropicSystemMessage {
 export type AnthropicMessage = AnthropicUserMessage | AnthropicAssistantMessage
 export type AnthropicInputMessage = AnthropicMessage | AnthropicSystemMessage
 
-export interface AnthropicTool {
+export interface AnthropicCustomTool {
   name: string
   description?: string
   input_schema: Record<string, unknown>
   defer_loading?: boolean
   cache_control?: AnthropicCacheControl | null
-  // Server-side tool fields (e.g. web_search_20250305). Server tools carry a
-  // `type` and omit `input_schema`; these stay optional so the same interface
-  // can describe both custom and server tools without rippling type changes.
-  type?: string
+  type?: never
+  max_uses?: never
+  allowed_callers?: never
+  response_inclusion?: never
+  allowed_domains?: never
+  blocked_domains?: never
+  user_location?: never
+}
+
+export type AnthropicWebSearchCaller = "direct" | `code_execution_${number}`
+
+export interface AnthropicWebSearchTool {
+  name: "web_search"
+  type: `web_search_${number}`
+  description?: never
+  input_schema?: never
+  defer_loading?: never
+  cache_control?: never
   max_uses?: number
+  allowed_callers?: Array<AnthropicWebSearchCaller>
+  response_inclusion?: "full" | "excluded"
   allowed_domains?: Array<string>
   blocked_domains?: Array<string>
   user_location?: Record<string, unknown>
 }
+
+export type AnthropicTool = AnthropicCustomTool | AnthropicWebSearchTool
+
+export const isAnthropicCustomTool = (
+  tool: AnthropicTool,
+): tool is AnthropicCustomTool => tool.input_schema !== undefined
 
 // --- Web search result blocks (Anthropic server tool shape) ---------------
 // Emitted in the assistant response when the proxy fulfills a web_search tool.

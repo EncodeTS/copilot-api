@@ -19,6 +19,7 @@ export interface WebSearchExtract {
 }
 
 export interface WebSearchToolConfig {
+  maxUses?: number
   allowedDomains?: Array<string>
   blockedDomains?: Array<string>
   userLocation?: Record<string, unknown>

@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import consola from "consola"
 
+import { HTTPError } from "~/lib/error"
 import type {
   AnthropicMessagesPayload,
   AnthropicResponse,
+  AnthropicWebSearchTool,
 } from "~/routes/messages/anthropic-types"
 import type {
   ResponsesPayload,
@@ -15,6 +17,7 @@ import {
   handleWebSearchViaResponses,
   hasWebSearchServerTool,
   isWebSearchOnlyRequest,
+  prepareWebSearchResponsesPayload,
   resolveWebSearchRoute,
   stripWebSearchServerTool,
   webSearchFlowDependencies,
@@ -24,7 +27,7 @@ const webSearchTool = {
   type: "web_search_20250305",
   name: "web_search",
   max_uses: 3,
-}
+} satisfies AnthropicWebSearchTool
 
 const makePayload = (
   overrides: Partial<AnthropicMessagesPayload> = {},
@@ -38,8 +41,13 @@ const makePayload = (
   }) as unknown as AnthropicMessagesPayload
 
 const makeContext = () => {
-  const captured: { json?: unknown } = {}
+  const captured: { headers: Record<string, string>; json?: unknown } = {
+    headers: {},
+  }
   const c = {
+    header: (name: string, value: string) => {
+      captured.headers[name.toLowerCase()] = value
+    },
     json: (value: unknown) => {
       captured.json = value
       return { __json: value }
@@ -315,7 +323,7 @@ describe("web search tool detection", () => {
       tools: [
         webSearchTool,
         { name: "get_weather", input_schema: { type: "object" } },
-      ] as never,
+      ],
     })
     expect(hasWebSearchServerTool(payload)).toBe(true)
     expect(isWebSearchOnlyRequest(payload)).toBe(false)
@@ -334,7 +342,7 @@ describe("web search tool detection", () => {
       tools: [
         webSearchTool,
         { name: "get_weather", input_schema: { type: "object" } },
-      ] as never,
+      ],
     })
     stripWebSearchServerTool(payload)
     expect(payload.tools).toHaveLength(1)
@@ -368,7 +376,7 @@ describe("resolveWebSearchRoute", () => {
       tools: [
         webSearchTool,
         { name: "get_weather", input_schema: { type: "object" } },
-      ] as never,
+      ],
     })
     expect(resolveWebSearchRoute(payload, opts).kind).toBe("strip")
   })
@@ -392,7 +400,98 @@ describe("resolveWebSearchRoute", () => {
   })
 })
 
+describe("prepareWebSearchResponsesPayload", () => {
+  it("maps Anthropic max_uses to the native Responses tool-call limit", () => {
+    const payload = makePayload({
+      tools: [
+        {
+          type: "web_search_20260318",
+          name: "web_search",
+          max_uses: 2,
+          allowed_callers: ["direct"],
+          response_inclusion: "full",
+        },
+      ],
+    })
+
+    const responses = prepareWebSearchResponsesPayload(payload, {
+      model: "gpt-5.5",
+    })
+
+    expect(responses.max_tool_calls).toBe(2)
+    expect(responses.tools).toEqual([{ type: "web_search" }])
+  })
+})
+
 describe("handleWebSearchViaResponses", () => {
+  it("marks newer dynamic web search as an explicit direct fallback", async () => {
+    let sentPayload: ResponsesPayload | undefined
+    webSearchFlowDependencies.createResponses = ((
+      payload: ResponsesPayload,
+    ) => {
+      sentPayload = payload
+      return Promise.resolve(makeResponsesResult())
+    }) as never
+    webSearchFlowDependencies.createUsageRecorder = (() => () => {}) as never
+
+    const payload = makePayload({
+      tools: [
+        {
+          type: "web_search_20260318",
+          name: "web_search",
+          max_uses: 1,
+          response_inclusion: "excluded",
+        },
+      ],
+    })
+    const { c, captured } = makeContext()
+    await handleWebSearchViaResponses(c, payload, baseOptions)
+
+    expect(sentPayload?.max_tool_calls).toBe(1)
+    expect(captured.headers["x-copilot-api-web-search-mode"]).toBe(
+      "direct-fallback",
+    )
+    expect(captured.headers["x-copilot-api-web-search-downgrade"]).toBe(
+      "dynamic-filtering,response-inclusion",
+    )
+    const response = captured.json as AnthropicResponse
+    expect(response.content.map((block) => block.type)).toEqual([
+      "server_tool_use",
+      "web_search_tool_result",
+      "text",
+    ])
+  })
+
+  it("keeps direct callers and direct response-inclusion semantics", async () => {
+    webSearchFlowDependencies.createResponses = (() =>
+      Promise.resolve(makeResponsesResult())) as never
+    webSearchFlowDependencies.createUsageRecorder = (() => () => {}) as never
+
+    const payload = makePayload({
+      tools: [
+        {
+          type: "web_search_20260318",
+          name: "web_search",
+          allowed_callers: ["direct"],
+          response_inclusion: "excluded",
+        },
+      ],
+    })
+    const { c, captured } = makeContext()
+    await handleWebSearchViaResponses(c, payload, baseOptions)
+
+    expect(captured.headers["x-copilot-api-web-search-mode"]).toBe("direct")
+    expect(
+      captured.headers["x-copilot-api-web-search-downgrade"],
+    ).toBeUndefined()
+    const response = captured.json as AnthropicResponse
+    expect(response.content.map((block) => block.type)).toEqual([
+      "server_tool_use",
+      "web_search_tool_result",
+      "text",
+    ])
+  })
+
   it("switches model, runs Responses web_search, and reconstructs blocks", async () => {
     let sentPayload: ResponsesPayload | undefined
     webSearchFlowDependencies.createResponses = ((
@@ -410,6 +509,7 @@ describe("handleWebSearchViaResponses", () => {
     expect(sentPayload?.model).toBe("gpt-5-mini")
     expect(sentPayload?.stream).toBe(true)
     expect(sentPayload?.tools).toEqual([{ type: "web_search" }])
+    expect(captured.headers["x-copilot-api-web-search-mode"]).toBe("direct")
 
     const response = captured.json as AnthropicResponse
     const types = response.content.map((b) => b.type as string)
@@ -460,6 +560,45 @@ describe("handleWebSearchViaResponses", () => {
 
     const response = captured.json as AnthropicResponse
     expect(response.content.map((b) => b.type as string)).toEqual(["text"])
+  })
+
+  it("rejects a failed Responses result instead of returning empty success", async () => {
+    let recordedUsage: unknown
+    webSearchFlowDependencies.createResponses = (() =>
+      Promise.resolve(
+        makeResponsesResult({
+          status: "failed",
+          error: { code: "server_error", message: "backend down" },
+          output: [],
+          output_text: "",
+        }),
+      )) as never
+    webSearchFlowDependencies.createUsageRecorder = (() => (usage: unknown) => {
+      recordedUsage = usage
+    }) as never
+
+    const { c } = makeContext()
+    let caught: unknown
+    try {
+      await handleWebSearchViaResponses(c, makePayload(), baseOptions)
+    } catch (error) {
+      caught = error
+    }
+
+    expect(caught).toBeInstanceOf(HTTPError)
+    const response = (caught as HTTPError).response
+    expect(response.status).toBe(502)
+    expect(await response.json()).toEqual({
+      type: "error",
+      error: {
+        type: "api_error",
+        message: "backend down",
+      },
+    })
+    expect(recordedUsage).toMatchObject({
+      input_tokens: 100,
+      output_tokens: 50,
+    })
   })
 })
 
