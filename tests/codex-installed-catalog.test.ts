@@ -311,6 +311,55 @@ describe("installed Codex catalog", () => {
     }
   })
 
+  test("discovers bounded versioned Codex App executables", () => {
+    if (process.platform !== "win32") {
+      return
+    }
+
+    const originalLocalAppData = process.env.LOCALAPPDATA
+    const tempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "copilot-api-codex-app-"),
+    )
+    const binDir = path.join(tempDir, "OpenAI", "Codex", "bin")
+    const hashes = Array.from({ length: 10 }, (_, index) =>
+      index.toString(16).padStart(16, "0"),
+    )
+
+    try {
+      fs.mkdirSync(binDir, { recursive: true })
+      fs.writeFileSync(path.join(binDir, "codex.exe"), "")
+      for (const [index, hash] of hashes.entries()) {
+        const directory = path.join(binDir, hash)
+        const executable = path.join(directory, "codex.exe")
+        fs.mkdirSync(directory)
+        fs.writeFileSync(executable, "")
+        const modified = new Date(Date.UTC(2026, 0, 1, 0, index))
+        fs.utimesSync(executable, modified, modified)
+      }
+      const ignoredDirectory = path.join(binDir, "not-a-version")
+      fs.mkdirSync(ignoredDirectory)
+      fs.writeFileSync(path.join(ignoredDirectory, "codex.exe"), "")
+      process.env.LOCALAPPDATA = tempDir
+
+      const candidates = originalGetExecutableCandidates()
+      const versionedCandidates = candidates.filter(
+        (candidate) =>
+          candidate.startsWith(`${binDir}${path.sep}`)
+          && candidate !== path.join(binDir, "codex.exe"),
+      )
+
+      expect(versionedCandidates).toHaveLength(8)
+      expect(versionedCandidates[0]).toBe(
+        path.join(binDir, hashes.at(-1) ?? "", "codex.exe"),
+      )
+      expect(candidates).toContain(path.join(binDir, "codex.exe"))
+      expect(candidates).not.toContain(path.join(ignoredDirectory, "codex.exe"))
+    } finally {
+      process.env.LOCALAPPDATA = originalLocalAppData
+      fs.rmSync(tempDir, { force: true, recursive: true })
+    }
+  })
+
   test("rejects a JSON response that is not a Codex model catalog", async () => {
     codexCatalogLoaderDependencies.runCommand = (_executable, args) =>
       Promise.resolve(
