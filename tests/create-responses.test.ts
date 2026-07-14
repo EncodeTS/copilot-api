@@ -104,6 +104,90 @@ afterEach(() => {
 })
 
 describe("createResponses", () => {
+  test("aborts an in-flight HTTP request when the caller disconnects", async () => {
+    fetchMock.mockImplementationOnce(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () =>
+              reject(
+                init.signal?.reason instanceof Error ?
+                  init.signal.reason
+                : new Error("request aborted"),
+              ),
+            { once: true },
+          )
+        }),
+    )
+    const controller = new AbortController()
+
+    const request = createResponses(
+      {
+        input: "hello",
+        model: "gpt-test",
+      },
+      {
+        initiator: "user",
+        requestId: "request-1",
+        signal: controller.signal,
+        vision: false,
+      },
+    )
+    controller.abort(new Error("client disconnected"))
+
+    const outcome = await Promise.race([
+      request.then(
+        () => "resolved",
+        (error: unknown) =>
+          error instanceof Error ? error.message : String(error),
+      ),
+      new Promise<string>((resolve) =>
+        setTimeout(() => resolve("request remained pending"), 20),
+      ),
+    ])
+    expect(outcome).toBe("client disconnected")
+  })
+
+  test("applies the configured HTTP headers deadline", async () => {
+    fetchMock.mockImplementationOnce(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () =>
+              reject(
+                init.signal?.reason instanceof Error ?
+                  init.signal.reason
+                : new Error("request aborted"),
+              ),
+            { once: true },
+          )
+        }),
+    )
+
+    const request = createResponses(
+      {
+        input: "hello",
+        model: "gpt-test",
+      },
+      {
+        initiator: "user",
+        requestId: "request-1",
+        timeouts: { httpHeadersMs: 5 },
+        vision: false,
+      },
+    )
+
+    expect(
+      await request.then(
+        () => "resolved",
+        (error: unknown) =>
+          error instanceof Error ? error.message : "unknown error",
+      ),
+    ).toBe("Upstream HTTP headers timed out after 5ms")
+  })
+
   test("keeps HTTP responses requests using x-initiator header", async () => {
     const payload: ResponsesPayload = {
       input: "hello",

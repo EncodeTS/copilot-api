@@ -227,6 +227,126 @@ describe("provider/model aliases on top-level chat completions route", () => {
       },
     })
   })
+
+  test("emits an error when a provider stream ends without finish_reason", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          [
+            'data: {"id":"chatcmpl-partial","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[{"index":0,"delta":{"role":"assistant","content":"partial"},"finish_reason":null}]}',
+            "",
+            "data: [DONE]",
+            "",
+          ].join("\n"),
+          {
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/v1/chat/completions", {
+      body: JSON.stringify({
+        messages: [{ content: "hello", role: "user" }],
+        model: "dash/qwen-plus",
+        stream: true,
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain('"content":"partial"')
+    expect(body).toContain("event: error")
+    expect(body).toContain("Provider chat stream ended without finish_reason")
+  })
+
+  test("translates streaming finish_reason error into an SSE error", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          [
+            'data: {"id":"chatcmpl-error","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[{"index":0,"delta":{},"finish_reason":"error"}]}',
+            "",
+            "data: [DONE]",
+            "",
+          ].join("\n"),
+          {
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/v1/chat/completions", {
+      body: JSON.stringify({
+        messages: [{ content: "hello", role: "user" }],
+        model: "dash/qwen-plus",
+        stream: true,
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("event: error")
+    expect(body).toContain("Provider upstream ended with finish_reason=error")
+  })
+
+  test("emits an SSE error when a provider chat stream throws", async () => {
+    const encoder = new TextEncoder()
+    let pullCount = 0
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pullCount === 0) {
+          pullCount += 1
+          controller.enqueue(
+            encoder.encode(
+              'data: {"id":"chatcmpl-partial","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}\n\n',
+            ),
+          )
+          return
+        }
+        controller.error(new Error("provider chat socket reset"))
+      },
+    })
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(upstreamBody, {
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        }),
+      ),
+    )
+
+    const response = await createApp().request("/v1/chat/completions", {
+      body: JSON.stringify({
+        messages: [{ content: "hello", role: "user" }],
+        model: "dash/qwen-plus",
+        stream: true,
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("event: error")
+    expect(body).toContain("provider chat socket reset")
+  })
 })
 
 describe("context cache on provider chat completions route", () => {

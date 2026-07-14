@@ -132,6 +132,12 @@ export const prepareCopilotResponsesPayloadForSend = async (
   payload: ResponsesPayload,
   options: PrepareOptions,
 ): Promise<{ imageBudget: ImagePayloadBudgetResult }> => {
+  if (payload.service_tier !== undefined) {
+    options.logger?.debug?.(
+      "Removed unsupported Copilot Responses service_tier",
+      payload.service_tier,
+    )
+  }
   payload.service_tier = undefined
   ensureEncryptedReasoningIncluded(payload)
   const sendHardLimitBytes = getResponsesSendHardLimitForTransport(

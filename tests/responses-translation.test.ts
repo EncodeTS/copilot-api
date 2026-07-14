@@ -279,6 +279,47 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
     expect(result).not.toHaveProperty("tool_choice")
   })
 
+  it("preserves forced executeCode as a Responses function tool", () => {
+    const result = translateAnthropicMessagesToResponsesPayload({
+      model: "gpt-5.6-sol",
+      max_tokens: 128,
+      messages: [{ role: "user", content: "Run 1+1" }],
+      tools: [
+        {
+          name: "mcp__ide__executeCode",
+          description: "Execute code in the IDE",
+          input_schema: {
+            type: "object",
+            properties: { code: { type: "string" } },
+            required: ["code"],
+          },
+        },
+      ],
+      tool_choice: {
+        type: "tool",
+        name: "mcp__ide__executeCode",
+      },
+    })
+
+    expect(result.tools).toEqual([
+      {
+        type: "function",
+        name: "mcp__ide__executeCode",
+        description: "Execute code in the IDE",
+        parameters: {
+          type: "object",
+          properties: { code: { type: "string" } },
+          required: ["code"],
+        },
+        strict: false,
+      },
+    ])
+    expect(result.tool_choice).toEqual({
+      type: "function",
+      name: "mcp__ide__executeCode",
+    })
+  })
+
   it("converts anthropic text blocks into response input messages", () => {
     const result = translateAnthropicMessagesToResponsesPayload(samplePayload)
 

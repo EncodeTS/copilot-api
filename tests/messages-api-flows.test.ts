@@ -27,16 +27,24 @@ import {
 const DB_PATH_ENV = "COPILOT_API_SQLITE_DB_PATH"
 
 let capturedPayload: ChatCompletionsPayload | null = null
+let capturedChatSignal: AbortSignal | undefined
 let capturedMessagesPayload: AnthropicMessagesPayload | null = null
+let capturedMessagesSignal: AbortSignal | undefined
 let capturedResponsesPayload: ResponsesPayload | null = null
 let capturedResponsesOptions: {
+  allowHttpFallback?: boolean
+  signal?: AbortSignal
   transport?: ResponsesTransport
 } | null = null
 let responsesApiWebSocketEnabled = true
 
 const createChatCompletions = mock(
-  (payload: ChatCompletionsPayload): Promise<ChatCompletionResponse> => {
+  (
+    payload: ChatCompletionsPayload,
+    options: { signal?: AbortSignal },
+  ): Promise<ChatCompletionResponse> => {
     capturedPayload = payload
+    capturedChatSignal = options.signal
     return Promise.resolve({
       id: "chatcmpl-test",
       object: "chat.completion",
@@ -57,8 +65,13 @@ const createChatCompletions = mock(
   },
 )
 const createMessages = mock(
-  (payload: AnthropicMessagesPayload): Promise<CreateMessagesReturn> => {
+  (
+    payload: AnthropicMessagesPayload,
+    _anthropicBeta: string | undefined,
+    options: { signal?: AbortSignal },
+  ): Promise<CreateMessagesReturn> => {
     capturedMessagesPayload = payload
+    capturedMessagesSignal = options.signal
     return Promise.resolve(createMessagesResult(payload.model))
   },
 )
@@ -66,6 +79,8 @@ const createResponses = mock(
   (
     payload: ResponsesPayload,
     options: {
+      allowHttpFallback?: boolean
+      signal?: AbortSignal
       transport?: ResponsesTransport
     },
   ): Promise<CreateResponsesReturn> => {
@@ -101,11 +116,49 @@ const createContext = () =>
       Response.json(body, { status: status ?? 200 }),
   }) as Parameters<typeof handleWithChatCompletions>[0]
 
+test("messages Chat flow forwards the caller abort signal", async () => {
+  const controller = new AbortController()
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+  }
+
+  const response = await handleWithChatCompletions(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+    signal: controller.signal,
+  })
+
+  expect(response.status).toBe(200)
+  expect(capturedChatSignal).toBe(controller.signal)
+})
+
+test("messages native flow forwards the caller abort signal", async () => {
+  const controller = new AbortController()
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "claude-test",
+  }
+
+  const response = await handleWithMessagesApi(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+    signal: controller.signal,
+  })
+
+  expect(response.status).toBe(200)
+  expect(capturedMessagesSignal).toBe(controller.signal)
+})
+
 beforeEach(async () => {
   process.env[DB_PATH_ENV] = ":memory:"
   await closeUsageStore()
   capturedPayload = null
+  capturedChatSignal = undefined
   capturedMessagesPayload = null
+  capturedMessagesSignal = undefined
   capturedResponsesPayload = null
   capturedResponsesOptions = null
   responsesApiWebSocketEnabled = true
@@ -820,6 +873,7 @@ test("messages Responses flow uses websocket transport by default for dual-endpo
   expect(response.status).toBe(200)
   expect(createResponses).toHaveBeenCalledTimes(1)
   expect(capturedResponsesOptions?.transport).toBe("websocket")
+  expect(capturedResponsesOptions?.allowHttpFallback).toBe(true)
 })
 
 test("messages Responses flow maps disabled thinking to effort none", async () => {

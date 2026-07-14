@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 
 interface ConfigFileShape {
   builtinProviders?: Record<string, unknown>
+  configSchemaVersion?: number
   contextManagement?: {
     messages?: boolean
     responses?: boolean
@@ -13,6 +14,9 @@ interface ConfigFileShape {
   extraPrompts?: Record<string, string>
   modelReasoningEfforts?: Record<string, string>
   modelResponsesApiCompactThresholds?: Record<string, number>
+  migrationState?: {
+    contextManagementMessages?: string
+  }
   responsesImageCompression?: boolean
   responsesImageCompressionCacheBytes?: number
   responsesImageCompressionConcurrency?: number
@@ -23,6 +27,8 @@ interface ConfigFileShape {
   responsesPayloadBudgetBytes?: number
   responsesPayloadRetryBudgetBytes?: number
   responsesPayloadSendHardLimitBytes?: number
+  responsesApiContextManagementModels?: Array<string>
+  useFunctionApplyPatch?: boolean
   providers?: Record<
     string,
     {
@@ -31,6 +37,9 @@ interface ConfigFileShape {
       baseUrl?: string
       apiKey?: string
       authType?: string
+      capabilities?: {
+        responsesContextManagement?: boolean
+      }
     }
   >
 }
@@ -57,7 +66,10 @@ function readConfigFile(configPath: string): ConfigFileShape {
   return JSON.parse(fs.readFileSync(configPath, "utf8")) as ConfigFileShape
 }
 
-function runScript(tempDir: string, script: string): string {
+function runScriptWithOutput(
+  tempDir: string,
+  script: string,
+): { stderr: string; stdout: string } {
   const result = Bun.spawnSync({
     cmd: [process.execPath, "--eval", script],
     cwd,
@@ -75,7 +87,14 @@ function runScript(tempDir: string, script: string): string {
     )
   }
 
-  return decoder.decode(result.stdout).trim()
+  return {
+    stderr: decoder.decode(result.stderr).trim(),
+    stdout: decoder.decode(result.stdout).trim(),
+  }
+}
+
+function runScript(tempDir: string, script: string): string {
+  return runScriptWithOutput(tempDir, script).stdout
 }
 
 afterEach(() => {
@@ -227,6 +246,7 @@ describe("builtin provider config", () => {
   test("allows overriding context management per endpoint", () => {
     const tempDir = createTempConfigDir()
     writeConfigFile(tempDir, {
+      configSchemaVersion: 1,
       contextManagement: {
         messages: true,
         responses: true,
@@ -242,6 +262,82 @@ describe("builtin provider config", () => {
       messages: true,
       responses: true,
     })
+  })
+
+  test("marks an unversioned legacy messages=true config for an explicit ownership decision", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {
+      contextManagement: {
+        messages: true,
+        responses: false,
+      },
+    })
+
+    const output = runScriptWithOutput(
+      tempDir,
+      'const config = await import("./src/lib/config"); config.mergeConfigWithDefaults(); console.log(JSON.stringify({ enabled: config.isContextManagementEnabledForMessages() }));',
+    )
+
+    expect(readConfigFile(configPath)).toMatchObject({
+      configSchemaVersion: 1,
+      contextManagement: {
+        messages: true,
+        responses: false,
+      },
+      migrationState: {
+        contextManagementMessages: "pending_user_decision",
+      },
+    })
+    expect(output.stderr).toContain(
+      "contextManagement.messages is temporarily disabled while this decision is pending",
+    )
+    expect(JSON.parse(output.stdout)).toEqual({ enabled: false })
+  })
+
+  test("preserves a versioned explicit messages=true choice while removing inert legacy fields", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {
+      configSchemaVersion: 1,
+      contextManagement: {
+        messages: true,
+        responses: false,
+      },
+      responsesApiContextManagementModels: ["gpt-5.6-sol"],
+      useFunctionApplyPatch: true,
+    })
+
+    const output = runScript(
+      tempDir,
+      'const config = await import("./src/lib/config"); config.mergeConfigWithDefaults(); console.log(JSON.stringify({ enabled: config.isContextManagementEnabledForMessages() }));',
+    )
+
+    const migrated = readConfigFile(configPath)
+    expect(migrated.contextManagement?.messages).toBe(true)
+    expect(migrated.migrationState).toBeUndefined()
+    expect(migrated.responsesApiContextManagementModels).toBeUndefined()
+    expect(migrated.useFunctionApplyPatch).toBeUndefined()
+    expect(JSON.parse(output)).toEqual({ enabled: true })
+  })
+
+  test("does not downgrade a config written by a future schema", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {
+      configSchemaVersion: 99,
+      contextManagement: {
+        messages: true,
+        responses: false,
+      },
+    })
+
+    runScript(
+      tempDir,
+      'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
+    )
+
+    const migrated = readConfigFile(configPath)
+    expect(migrated.configSchemaVersion).toBe(99)
+    expect(migrated.contextManagement?.messages).toBe(true)
+    expect(migrated.migrationState).toBeUndefined()
   })
 
   test("does not persist static model Responses API compact thresholds", () => {
@@ -418,6 +514,34 @@ describe("builtin provider config", () => {
       authType: "oauth2",
       baseUrl: "https://chatgpt.com/backend-api",
       apiKey: "",
+    })
+  })
+
+  test("keeps Responses context management explicit for builtin and generic providers", () => {
+    const tempDir = createTempConfigDir()
+    writeConfigFile(tempDir, {
+      providers: {
+        custom: {
+          apiKey: "custom-key",
+          baseUrl: "https://custom.example",
+          capabilities: {
+            responsesContextManagement: true,
+          },
+          type: "openai-responses",
+        },
+      },
+    })
+
+    const output = runScript(
+      tempDir,
+      'const config = await import("./src/lib/config"); const custom = config.getProviderConfig("custom"); const base = { apiKey: "", authType: "oauth2", baseUrl: "https://example.test", type: "openai-responses" }; console.log(JSON.stringify({ codex: config.supportsProviderResponsesContextManagement({ ...base, name: "codex" }), copilot: config.supportsProviderResponsesContextManagement({ ...base, name: "copilot" }), custom: custom && config.supportsProviderResponsesContextManagement(custom), unknown: config.supportsProviderResponsesContextManagement({ ...base, name: "unknown" }) }));',
+    )
+
+    expect(JSON.parse(output)).toEqual({
+      codex: true,
+      copilot: true,
+      custom: true,
+      unknown: false,
     })
   })
 

@@ -20,9 +20,7 @@
 > **使用前请先注意以下几点：**
 >
 > 1. **Claude Code 配置：** 与 Claude Code 搭配使用时，请将模型 ID 配置为 `claude-opus-4-8`。示例 claude `settings.json` 见 [通过 `settings.json` 手动配置](#manual-configuration-with-settingsjson)。
->
 > 2. **内置 `copilot`、`codex` 与第三方 provider：** 执行 `npx @jeffreycao/copilot-api@latest auth`，可选择 `copilot`、`codex`、`deepseek`、`custom` 等 provider。
->
 > 3. **注意事项：** README 顶部移除的 GitHub Copilot warning 见 [GitHub Copilot 安全提示](./NOTICE.md#github-copilot-security-notice)。
 
 ---
@@ -204,9 +202,7 @@ npx @jeffreycao/copilot-api@latest start --claude-code
     "CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0"
   },
   "permissions": {
-    "deny": [
-      "mcp__ide__executeCode"
-    ]
+    "deny": ["mcp__ide__executeCode"]
   }
 }
 ```
@@ -501,32 +497,32 @@ Copilot API 现在使用子命令结构，主要命令包括：
 
 以下选项可用于任意子命令。若在子命令之前传入，请使用 `--key=value` 形式：
 
-| 选项 | 说明 | 默认值 | 别名 |
-| --- | --- | --- | --- |
-| --api-home | API home 目录路径（设置 `COPILOT_API_HOME`） | 无 | 无 |
-| --oauth-app | OAuth app 标识符（设置 `COPILOT_API_OAUTH_APP`） | 无 | 无 |
-| --enterprise-url | GitHub Enterprise URL（设置 `COPILOT_API_ENTERPRISE_URL`） | 无 | 无 |
+| 选项             | 说明                                                       | 默认值 | 别名 |
+| ---------------- | ---------------------------------------------------------- | ------ | ---- |
+| --api-home       | API home 目录路径（设置 `COPILOT_API_HOME`）               | 无     | 无   |
+| --oauth-app      | OAuth app 标识符（设置 `COPILOT_API_OAUTH_APP`）           | 无     | 无   |
+| --enterprise-url | GitHub Enterprise URL（设置 `COPILOT_API_ENTERPRISE_URL`） | 无     | 无   |
 
 ### Start 命令选项
 
 以下是 `start` 命令可用的命令行选项：
 
-| 选项 | 说明 | 默认值 | 别名 |
-| --- | --- | --- | --- |
-| --port | 监听端口 | 4141 | -p |
-| --verbose | 启用详细日志 | false | -v |
-| --github-token | 直接提供 GitHub token（必须通过 `auth` 子命令生成） | 无 | -g |
-| --claude-code | 生成一个使用 Copilot API 配置启动 Claude Code 的命令 | false | -c |
-| --show-token | 在获取和刷新时显示 GitHub 与 Copilot token | false | 无 |
-| --proxy-env | 从环境变量初始化代理 | false | 无 |
+| 选项           | 说明                                                 | 默认值 | 别名 |
+| -------------- | ---------------------------------------------------- | ------ | ---- |
+| --port         | 监听端口                                             | 4141   | -p   |
+| --verbose      | 启用详细日志                                         | false  | -v   |
+| --github-token | 直接提供 GitHub token（必须通过 `auth` 子命令生成）  | 无     | -g   |
+| --claude-code  | 生成一个使用 Copilot API 配置启动 Claude Code 的命令 | false  | -c   |
+| --show-token   | 在获取和刷新时显示 GitHub 与 Copilot token           | false  | 无   |
+| --proxy-env    | 从环境变量初始化代理                                 | false  | 无   |
 
 ### Auth 命令选项
 
-| 选项 | 说明 | 默认值 | 别名 |
-| --- | --- | --- | --- |
-| --provider | 要登录或配置的 provider（`copilot`、`codex`、`opencode-go`、`deepseek`、`dashscope`、`openrouter` 或 `custom`） | 交互选择 | 无 |
-| --verbose | 启用详细日志 | false | -v |
-| --show-token | 认证时显示 GitHub token | false | 无 |
+| 选项         | 说明                                                                                                            | 默认值   | 别名 |
+| ------------ | --------------------------------------------------------------------------------------------------------------- | -------- | ---- |
+| --provider   | 要登录或配置的 provider（`copilot`、`codex`、`opencode-go`、`deepseek`、`dashscope`、`openrouter` 或 `custom`） | 交互选择 | 无   |
+| --verbose    | 启用详细日志                                                                                                    | false    | -v   |
+| --show-token | 认证时显示 GitHub token                                                                                         | false    | 无   |
 
 只有在需要启用 GitHub Copilot provider 时，才需要执行 `copilot-api auth login --provider copilot`。使用 `codex` 或第三方 provider-only 模式不要求配置 Copilot。
 
@@ -536,9 +532,9 @@ Copilot API 现在使用子命令结构，主要命令包括：
 
 ### Debug 命令选项
 
-| 选项 | 说明 | 默认值 | 别名 |
-| --- | --- | --- | --- |
-| --json | 以 JSON 输出调试信息 | false | 无 |
+| 选项   | 说明                 | 默认值 | 别名 |
+| ------ | -------------------- | ------ | ---- |
+| --json | 以 JSON 输出调试信息 | false  | 无   |
 
 <a id="configuration-configjson"></a>
 
@@ -558,7 +554,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
       "gpt-5-mini": "<built-in exploration prompt>"
     },
     "contextManagement": {
-      "messages": true,
+      "messages": false,
       "responses": false
     },
     "modelReasoningEfforts": {
@@ -579,6 +575,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
   - `baseUrl`：provider API 的基础 URL，不要带结尾的 endpoint。Anthropic provider 不要带 `/v1/messages`；OpenAI 兼容 provider 不要带 `/v1/chat/completions`；OpenAI Responses provider 不要带 `/v1/responses`。
   - `apiKey`：作为上游凭据值使用；普通 provider 必须配置。
   - `authType`：可选，控制 `apiKey` 如何发送到上游。普通 provider 支持 `x-api-key` 和 `authorization`。Anthropic provider 默认 `x-api-key`；OpenAI 兼容和 OpenAI Responses provider 默认 `authorization`。当设置为 `authorization` 时，代理会发送 `Authorization: Bearer <apiKey>`。`oauth2` 仅保留给内置 `codex` provider，并由 `auth login --provider codex` 自动写入。
+  - `capabilities.responsesContextManagement`：可选。只有确认 OpenAI Responses provider 支持 `context_management` 压缩扩展时才设为 `true`。普通第三方 provider 默认关闭；内置 Copilot 和 Codex 视为已知支持。
   - `pricingCurrency`：可选，provider 维度的 token 费用币种，例如 `USD` 或 `CNY`。快捷 provider 默认 DashScope、DeepSeek 为 `CNY`，Codex/OpenRouter 为 `USD`。费用按币种分别汇总，不做汇率换算。
   - `models`：可选，按模型 ID 配置的映射。每个键为请求中的模型名，值支持：
     - `temperature`：可选，当请求未指定时使用的默认温度。
@@ -587,11 +584,13 @@ Copilot API 现在使用子命令结构，主要命令包括：
     - `extraBody`：可选，按模型合入上游请求体的动态字段；请求体显式同名字段优先。OpenAI 兼容 provider 可用它配置 `enable_thinking`、`preserve_thinking`、`reasoning_effort` 等字段。`thinking_budget` 是 OpenAI 兼容 provider 的特殊覆盖项：配置在 `extraBody` 后，会在 Anthropic `thinking.budget_tokens` 翻译之后强制写入，并覆盖请求派生出的预算值。对于 provider name 为 `dashscope` 或 `baseUrl` 包含 `aliyuncs.com` 的 provider，请求派生的 `thinking_budget`（来自 Anthropic `thinking.budget_tokens`）会转发给上游；其他 OpenAI 兼容 provider 会移除请求派生的 `thinking_budget`，但 `extraBody` 中的 `thinking_budget` 仍然生效。对于 DashScope provider，当 `preserve_thinking` 未在 `extraBody` 或请求体中显式设置时，默认为 `true`。
     - `pricing`：可选，按模型配置 token 单价，币种使用 provider 的 `pricingCurrency`，单位为每 100 万 tokens。支持 `input`、`output`、`cachedInput`（隐式缓存读）、`explicitCachedInput`（显式缓存读）和 `cacheCreationInput`。如需按输入 token 总量分档，可用带 `maxInputTokens` 的 `tiers`。
     - `contextCache`：可选，provider name 为 `dashscope` 或 `baseUrl` 包含 `aliyuncs.com` 时默认 `true`，其他 OpenAI 兼容 provider 默认 `false`。用于启用阿里云百炼/DashScope 的显式缓存（explicit context cache），会按其 Context Cache 格式在最多 4 个 content block 上注入 `cache_control: { "type": "ephemeral" }`。缓存断点策略与 opencode 主链路保持一致：前 2 条 system 消息 + 最后 2 条非 system 消息。标记字符串 content 时会把 `system` / `user` / `assistant` / `tool` 消息转换为 text content part 数组；已有数组 content 则标记最后一个 part。如果模型本身已经支持隐式缓存，或上游不支持该显式缓存扩展字段，可在模型配置中设为 `false`。支持相同显式缓存扩展的非 DashScope provider 可设为 `true`。同时适用于 `/v1/messages` 和 `/v1/chat/completions` 路由。
+    - `responsesContextManagement`：可选，按模型开启 Responses `context_management` 扩展。只影响当前模型；同一 provider 的其他模型保持关闭。
     - `supportPdf`：可选，控制该模型是否支持 PDF/document content。默认 `false`，不支持时会把 PDF 转成提示文本；设为 `true` 时会把 PDF/document 转成 OpenAI Chat Completions 的 file part。
     - `toolContentSupportType`：可选，配置该模型的 tool result content 支持能力，值为 `array`、`image`、`pdf` 的数组。provider 侧未配置时默认只发送 string tool content。若 `supportPdf` 为 `true` 但这里不包含 `pdf`，tool result 里的 file part 会被转成 user role 消息。Copilot 主链路不使用这个 provider 默认，仍按 array + image 且不支持 PDF 的能力处理。
     - `type`：可选，按模型覆盖 provider 的协议类型。支持 `anthropic`、`openai-compatible` 和 `openai-responses`。设置后，provider 的 `/v1/messages` 路由会使用该模型的 type 替代 provider 级别的 type 进行请求路由、认证头解析和上游端点选择。适用于 OpenCode Go 等上游对不同模型同时支持 OpenAI 兼容和 Anthropic Messages API 的 provider。覆盖 type 时，认证头按覆盖后 type 的默认值解析（Anthropic 默认 `x-api-key`；OpenAI 兼容/Responses 默认 `authorization`）。
 
   DashScope 模型配置示例：
+
   ```json
   {
     "providers": {
@@ -643,8 +642,10 @@ Copilot API 现在使用子命令结构，主要命令包括：
     }
   }
   ```
+
   内置 token 价格覆盖 Codex GPT 模型（USD）、DashScope `qwen3.7-max`、`qwen3.7-plus`、`glm-5.1`、`glm-5.2`（CNY），DeepSeek `deepseek-v4-flash`、`deepseek-v4-pro`、`deepseek-chat`、`deepseek-reasoner`（CNY），以及 OpenCode Go 模型（`glm-5.2`、`deepseek-v4-flash`、`deepseek-v4-pro`、`kimi-k2.7-code`、`mimo-v2.5`、`mimo-v2.5-pro`、`qwen3.7-plus`、`qwen3.7-max`、`minimax-m2.5`、`minimax-m3`，USD）。用户配置的 `pricing` 优先于内置价格。DashScope 若上游 usage 中出现 `cache_creation_input_tokens` 字段，cached tokens 按显式缓存读价计费；否则 `cachedInput` 作为隐式缓存读价。DeepSeek 的 `prompt_cache_hit_tokens` 会归入 cached input，`prompt_cache_miss_tokens` 会归入普通 input。
-- **contextManagement：** 控制代理是否为 Responses API 附加 `context_management` 压缩指令。`messages` 作用于被翻译成 Responses API 的 Anthropic 风格 `/v1/messages` 请求，包括 `openai-responses` provider 的 Messages 路由；`responses` 作用于 native `/v1/responses` 流量，包括 `provider/model` 别名和内置 `codex` provider。两者默认均为 `false`，因此除非显式开启网关压缩，否则会保留客户端自己的压缩控制。启用后，请求体会带上 `context_management`，并由网关在后续轮次中仅保留最新的压缩承载内容。
+
+- **contextManagement：** 控制代理是否为 Responses API 附加 `context_management` 压缩指令。`messages` 作用于被翻译成 Responses API 的 Anthropic 风格 `/v1/messages` 请求，`responses` 作用于 native `/v1/responses` 流量。两者默认均为 `false`，因此除非显式开启网关压缩，否则会保留客户端自己的压缩控制。普通 `openai-responses` provider 只有在 provider 级 `capabilities.responsesContextManagement` 或模型级 `responsesContextManagement` 为 `true` 时才允许注入和裁剪。无版本旧配置若含 `messages: true`，磁盘值会保留，但运行时会暂时关闭并写入 `migrationState.contextManagementMessages` 警告；只有明确选择 gateway-managed compaction 后才应移除该 marker。
 - **modelResponsesApiCompactThresholds：** 可选的按模型 Responses API `compact_threshold` 覆盖，仅在代理自动附加 `context_management` 时使用。显式值优先于动态计算。未配置时使用实时模型 limits：Messages bridge 按 `max_prompt_tokens` 的 90% 触发，并至少保留 32,000 个输入增长 token；缺少 `max_prompt_tokens` 时使用 `max_context_window_tokens - max_output_tokens`。原生 Responses 默认仍关闭中转压缩，显式启用时保留 80% 策略。历史版本自动写入的 `gpt-5.4` / `gpt-5.5 = 217600`，以及 `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna = 231200` 会在配置迁移时删除。
 - **modelReasoningEfforts：** `/v1/messages` 请求的模型级默认推理强度。仅当请求没有传入 `output_config.effort` 时，该配置才会生效。
   - **优先级：** 请求中的 `output_config.effort` > `modelReasoningEfforts[model]` > 内置默认值（GPT-5.3+ 模型为 `xhigh`，其他模型为 `high`）。
@@ -691,22 +692,22 @@ curl http://localhost:4141/admin/config/model-mappings \
 
 这些端点模拟 OpenAI API 结构。
 
-| 端点 | 方法 | 说明 |
-| --- | --- | --- |
-| `POST /v1/responses` | `POST` | OpenAI 中用于生成模型响应的高级接口。支持 `openai-responses` provider 的 `provider/model` 别名。 |
-| `POST /v1/chat/completions` | `POST` | 为给定聊天对话创建模型响应。支持 `openai-compatible` provider 的 `provider/model` 别名；目标 provider 已配置时可在没有 Copilot 的情况下使用。 |
-| `GET /v1/models` | `GET` | 列出 Copilot 模型以及已启用 provider 的 `provider/model-id` 模型。Codex 客户端会收到与自身版本匹配的 bundled descriptor，并叠加 Copilot 官方实时上下文能力；无法匹配时安全回退为空的远端列表。 |
-| `POST /v1/embeddings` | `POST` | 创建表示输入文本的向量嵌入。 |
+| 端点                        | 方法   | 说明                                                                                                                                                                                           |
+| --------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /v1/responses`        | `POST` | OpenAI 中用于生成模型响应的高级接口。支持 `openai-responses` provider 的 `provider/model` 别名。                                                                                               |
+| `POST /v1/chat/completions` | `POST` | 为给定聊天对话创建模型响应。支持 `openai-compatible` provider 的 `provider/model` 别名；目标 provider 已配置时可在没有 Copilot 的情况下使用。                                                  |
+| `GET /v1/models`            | `GET`  | 列出 Copilot 模型以及已启用 provider 的 `provider/model-id` 模型。Codex 客户端会收到与自身版本匹配的 bundled descriptor，并叠加 Copilot 官方实时上下文能力；无法匹配时安全回退为空的远端列表。 |
+| `POST /v1/embeddings`       | `POST` | 创建表示输入文本的向量嵌入。                                                                                                                                                                   |
 
 ### Codex 后端代理端点
 
 这些端点要求已有可用的 Codex 登录态。每个端点同时提供无版本前缀和 `/v1` 两种路径。
 
-| 端点 | 方法 | 说明 |
-| --- | --- | --- |
-| `POST /alpha/search`<br>`POST /v1/alpha/search` | `POST` | 将 JSON 请求体和查询参数透明转发到 Codex Alpha Search 上游。 |
-| `POST /images/generations`<br>`POST /v1/images/generations` | `POST` | 将 JSON 图片生成请求转发到 Codex Images 上游。请求未携带 `Content-Type` 时，网关默认补充 `application/json`。 |
-| `POST /images/edits`<br>`POST /v1/images/edits` | `POST` | 将图片编辑请求转发到 Codex Images 上游。请使用 `multipart/form-data`，并让 HTTP 客户端自动生成 `boundary`；网关会保留传入的 content type，并以流式方式转发上传请求体。 |
+| 端点                                                        | 方法   | 说明                                                                                                                                                                   |
+| ----------------------------------------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /alpha/search`<br>`POST /v1/alpha/search`             | `POST` | 将 JSON 请求体和查询参数透明转发到 Codex Alpha Search 上游。                                                                                                           |
+| `POST /images/generations`<br>`POST /v1/images/generations` | `POST` | 将 JSON 图片生成请求转发到 Codex Images 上游。请求未携带 `Content-Type` 时，网关默认补充 `application/json`。                                                          |
+| `POST /images/edits`<br>`POST /v1/images/edits`             | `POST` | 将图片编辑请求转发到 Codex Images 上游。请使用 `multipart/form-data`，并让 HTTP 客户端自动生成 `boundary`；网关会保留传入的 content type，并以流式方式转发上传请求体。 |
 
 对于以上所有端点，网关都会使用当前 Codex 登录态覆盖客户端的 authorization 和 account header，保留查询参数及兼容的请求头，并返回上游状态码、响应头和响应体。
 
@@ -714,20 +715,20 @@ curl http://localhost:4141/admin/config/model-mappings \
 
 这些端点设计为兼容 Anthropic Messages API。
 
-| 端点 | 方法 | 说明 |
-| --- | --- | --- |
-| `POST /v1/messages` | `POST` | 为给定对话创建模型响应。支持已配置 provider 的 `provider/model` 别名，包括通过 `openai-compatible` provider 做翻译。 |
-| `POST /v1/messages/count_tokens` | `POST` | 计算一组消息的 token 数。支持已配置 provider 的 `provider/model` 别名。 |
-| `POST /:provider/v1/messages` | `POST` | 将 Anthropic Messages 请求代理到已配置的 Anthropic provider，或翻译到 OpenAI 兼容 / OpenAI Responses provider。 |
-| `GET /:provider/v1/models` | `GET` | 将模型列表请求代理到已配置的 provider。 |
-| `POST /:provider/v1/messages/count_tokens` | `POST` | 为 provider 路由请求在本地计算 token 数。 |
+| 端点                                       | 方法   | 说明                                                                                                                 |
+| ------------------------------------------ | ------ | -------------------------------------------------------------------------------------------------------------------- |
+| `POST /v1/messages`                        | `POST` | 为给定对话创建模型响应。支持已配置 provider 的 `provider/model` 别名，包括通过 `openai-compatible` provider 做翻译。 |
+| `POST /v1/messages/count_tokens`           | `POST` | 计算一组消息的 token 数。支持已配置 provider 的 `provider/model` 别名。                                              |
+| `POST /:provider/v1/messages`              | `POST` | 将 Anthropic Messages 请求代理到已配置的 Anthropic provider，或翻译到 OpenAI 兼容 / OpenAI Responses provider。      |
+| `GET /:provider/v1/models`                 | `GET`  | 将模型列表请求代理到已配置的 provider。                                                                              |
+| `POST /:provider/v1/messages/count_tokens` | `POST` | 为 provider 路由请求在本地计算 token 数。                                                                            |
 
 ### 使用量监控端点
 
 用于监控 Copilot 用量与额度的新端点。
 
-| 端点 | 方法 | 说明 |
-| --- | --- | --- |
+| 端点         | 方法  | 说明                                    |
+| ------------ | ----- | --------------------------------------- |
 | `GET /usage` | `GET` | 获取详细的 Copilot 使用统计与额度信息。 |
 | `GET /token` | `GET` | 获取当前 API 正在使用的 Copilot token。 |
 
@@ -735,9 +736,9 @@ curl http://localhost:4141/admin/config/model-mappings \
 
 这些端点用于本地管理操作，只接受 `auth.adminApiKey`。
 
-| 端点 | 方法 | 说明 |
-| --- | --- | --- |
-| `GET /admin/config/model-mappings` | `GET` | 返回当前 `config.json` 路径以及生效中的 `modelMappings` 映射。 |
+| 端点                                | 方法   | 说明                                                                 |
+| ----------------------------------- | ------ | -------------------------------------------------------------------- |
+| `GET /admin/config/model-mappings`  | `GET`  | 返回当前 `config.json` 路径以及生效中的 `modelMappings` 映射。       |
 | `POST /admin/config/model-mappings` | `POST` | 只更新 `config.json` 里的 `modelMappings` 字段，并回传更新后的结果。 |
 
 ## 使用示例
