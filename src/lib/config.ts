@@ -34,6 +34,7 @@ export interface AppConfig {
   responsesPayloadBudgetBytes?: number
   responsesPayloadRetryBudgetBytes?: number
   responsesPayloadSendHardLimitBytes?: number
+  responsesImageMaxInputImageBytes?: number
   responsesImageNearBudgetRatio?: number
   responsesImagePreserveLatestUserGroup?: boolean
   responsesImageCompression?: boolean
@@ -186,11 +187,35 @@ const defaultContextManagement = {
   responses: false,
 } satisfies Required<ContextManagementConfig>
 
-const responsesImageConfigDefaults = {
-  responsesImageOptimization: true,
+const legacyResponsesPayloadConfigDefaults = {
   responsesPayloadBudgetBytes: 4_980_736,
   responsesPayloadRetryBudgetBytes: 4_718_592,
   responsesPayloadSendHardLimitBytes: 5_226_496,
+} as const
+
+const MEBIBYTE_BYTES = 1_048_576
+const RESPONSES_SIZE_GUARD_BYTES = 16_384
+
+export const DEFAULT_RESPONSES_PAYLOAD_BUDGET_BYTES = 30 * MEBIBYTE_BYTES
+export const DEFAULT_RESPONSES_PAYLOAD_RETRY_BUDGET_BYTES = 28 * MEBIBYTE_BYTES
+// Direct HTTP and WebSocket probes accept exactly 32 MiB and reject the next
+// four-byte base64 increment. Keep the send cap one guard block below it.
+export const DEFAULT_RESPONSES_PAYLOAD_SEND_HARD_LIMIT_BYTES =
+  32 * MEBIBYTE_BYTES - RESPONSES_SIZE_GUARD_BYTES
+// A single-image probe accepts almost 24 MiB of decoded image data. This keeps
+// the same guard block while the serialized payload budget remains authoritative.
+export const DEFAULT_RESPONSES_IMAGE_MAX_INPUT_IMAGE_BYTES =
+  24 * MEBIBYTE_BYTES - RESPONSES_SIZE_GUARD_BYTES
+
+const responsesImageConfigDefaults = {
+  responsesImageOptimization: true,
+  responsesPayloadBudgetBytes: DEFAULT_RESPONSES_PAYLOAD_BUDGET_BYTES,
+  responsesPayloadRetryBudgetBytes:
+    DEFAULT_RESPONSES_PAYLOAD_RETRY_BUDGET_BYTES,
+  responsesPayloadSendHardLimitBytes:
+    DEFAULT_RESPONSES_PAYLOAD_SEND_HARD_LIMIT_BYTES,
+  responsesImageMaxInputImageBytes:
+    DEFAULT_RESPONSES_IMAGE_MAX_INPUT_IMAGE_BYTES,
   responsesImageNearBudgetRatio: 0.92,
   responsesImagePreserveLatestUserGroup: true,
   responsesImageCompression: true,
@@ -377,8 +402,12 @@ export function mergeDefaultConfig(config: AppConfig): {
   const missingResponsesImageConfigKeys = Object.keys(
     responsesImageConfigDefaults,
   ).filter((key) => !Object.hasOwn(config, key))
+  const hasLegacyResponsesPayloadConfigDefaults = Object.entries(
+    legacyResponsesPayloadConfigDefaults,
+  ).every(([key, value]) => (config as Record<string, unknown>)[key] === value)
   const hasResponsesImageConfigChanges =
     missingResponsesImageConfigKeys.length > 0
+    || hasLegacyResponsesPayloadConfigDefaults
 
   if (
     !hasExtraPromptChanges
@@ -413,7 +442,12 @@ export function mergeDefaultConfig(config: AppConfig): {
       ...Object.fromEntries(
         Object.entries(responsesImageConfigDefaults).map(([key, value]) => [
           key,
-          (config as Record<string, unknown>)[key] ?? value,
+          (
+            hasLegacyResponsesPayloadConfigDefaults
+            && Object.hasOwn(legacyResponsesPayloadConfigDefaults, key)
+          ) ?
+            value
+          : ((config as Record<string, unknown>)[key] ?? value),
         ]),
       ),
     },
@@ -863,6 +897,14 @@ export function getResponsesPayloadSendHardLimitBytes(): number {
   return getIntegerConfig(
     "responsesPayloadSendHardLimitBytes",
     responsesImageConfigDefaults.responsesPayloadSendHardLimitBytes,
+    { min: 1_048_576 },
+  )
+}
+
+export function getResponsesImageMaxInputImageBytes(): number {
+  return getIntegerConfig(
+    "responsesImageMaxInputImageBytes",
+    responsesImageConfigDefaults.responsesImageMaxInputImageBytes,
     { min: 1_048_576 },
   )
 }

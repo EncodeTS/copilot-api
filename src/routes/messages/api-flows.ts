@@ -312,8 +312,6 @@ export const handleWithResponsesApi = async (
   const response = await createOptimizedCopilotResponses(responsesPayload, {
     createResponses: messagesApiFlowDependencies.createResponses,
     logger,
-    maxPromptImageSize:
-      selectedModel?.capabilities?.limits.vision?.max_prompt_image_size,
     requestOptions: {
       vision,
       initiator,

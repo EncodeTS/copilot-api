@@ -57,7 +57,7 @@ describe("sanitizeOversizedInputImages", () => {
     expect(image.text).toBeUndefined()
   })
 
-  test("keeps input images within the estimated data URL size limit", () => {
+  test("keeps input images within the decoded byte limit", () => {
     const imageUrl = imageDataUrl(8)
     const payload = makePayload(imageUrl)
 
@@ -106,12 +106,20 @@ describe("sanitizeOversizedInputImages", () => {
     expect(JSON.stringify(payload)).toContain("data:image/png;base64")
   })
 
-  test("estimates image size from the full data URL string", () => {
+  test("calculates decoded image bytes without counting the data URL prefix", () => {
     const payload = makePayload(imageDataUrl(4))
 
     const sanitized = sanitizeOversizedInputImages(payload, 10)
 
-    expect(sanitized).toBe(1)
+    expect(sanitized).toBe(0)
+  })
+
+  test("uses exact base64 padding when enforcing the image byte limit", () => {
+    const exactPayload = makePayload("data:image/png;base64,AQIDBA==")
+    const oversizedPayload = structuredClone(exactPayload)
+
+    expect(sanitizeOversizedInputImages(exactPayload, 4)).toBe(0)
+    expect(sanitizeOversizedInputImages(oversizedPayload, 3)).toBe(1)
   })
 
   test("sanitizes images inside function call outputs", () => {
