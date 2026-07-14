@@ -16,9 +16,8 @@ import {
   isContextManagementEnabledForResponses as isConfiguredContextManagementEnabledForResponses,
   isResponsesApiWebSocketEnabled as isConfiguredResponsesApiWebSocketEnabled,
 } from "~/lib/config"
+import { getResponsesEndpointCapabilities } from "~/lib/responses-capabilities"
 
-export const RESPONSES_ENDPOINT = "/responses"
-export const RESPONSES_WS_ENDPOINT = "ws:/responses"
 export const DEFAULT_RESPONSES_COMPACT_THRESHOLD_RATIO = 0.9
 export const MIN_RESPONSES_COMPACT_HEADROOM_TOKENS = 32_000
 const DEFAULT_RESPONSES_PROMPT_LIMIT_TOKENS = 200_000
@@ -59,19 +58,19 @@ export const getResponsesTransportForModel = (
     compactType?: CompactType
   } = {},
 ): ResponsesTransport | null => {
-  const supportedEndpoints = selectedModel?.supported_endpoints ?? []
+  const capabilities = getResponsesEndpointCapabilities(selectedModel)
   const useWebSocket =
     responsesUtilsDependencies.isResponsesApiWebSocketEnabled()
 
   if (
     options.compactType !== COMPACT_REQUEST
     && useWebSocket
-    && supportedEndpoints.includes(RESPONSES_WS_ENDPOINT)
+    && capabilities.websocket
   ) {
     return "websocket"
   }
 
-  if (supportedEndpoints.includes(RESPONSES_ENDPOINT)) {
+  if (capabilities.http) {
     return "http"
   }
 

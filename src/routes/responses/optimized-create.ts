@@ -21,6 +21,7 @@ import {
   shouldResponsesImageRetryRequireHttp,
 } from "~/lib/config"
 import { HTTPError, LocalPayloadTooLargeError } from "~/lib/error"
+import { getResponsesEndpointCapabilities } from "~/lib/responses-capabilities"
 import { state } from "~/lib/state"
 import type {
   createResponses as createCopilotResponses,
@@ -275,8 +276,7 @@ const resolveEffectiveTransport = (
 
 const canUseHttpResponses = (
   selectedModel: { supported_endpoints?: Array<string> } | undefined,
-): boolean =>
-  selectedModel?.supported_endpoints?.includes("/responses") ?? false
+): boolean => getResponsesEndpointCapabilities(selectedModel).http
 
 const shouldRetryAfterPayloadTooLarge = (
   error: unknown,
