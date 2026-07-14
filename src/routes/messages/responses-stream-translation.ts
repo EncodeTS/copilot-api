@@ -881,13 +881,14 @@ const backfillTerminalOutput = (
     }
 
     if (item.type === "function_call") {
-      const completedFunctionCall =
-        state.completedFunctionCallStateByOutputIndex.get(outputIndex)
-      if (completedFunctionCall) {
+      const existingFunctionCall =
+        state.functionCallStateByOutputIndex.get(outputIndex)
+        ?? state.completedFunctionCallStateByOutputIndex.get(outputIndex)
+      if (existingFunctionCall) {
         let missingSuffix: string
         try {
           missingSuffix = getCanonicalMissingSuffix(
-            completedFunctionCall.argumentsText,
+            existingFunctionCall.argumentsText,
             item.arguments,
             "Responses function arguments",
           )
@@ -911,7 +912,7 @@ const backfillTerminalOutput = (
         if (!missingSuffix) {
           continue
         }
-        if (!state.openBlocks.has(completedFunctionCall.blockIndex)) {
+        if (!state.openBlocks.has(existingFunctionCall.blockIndex)) {
           events.push(
             ...handleCanonicalStreamValueValidationError(
               new CanonicalStreamValueValidationError(
@@ -924,7 +925,7 @@ const backfillTerminalOutput = (
         }
         state.functionCallStateByOutputIndex.set(
           outputIndex,
-          completedFunctionCall,
+          existingFunctionCall,
         )
       }
       openFunctionCallBlock(state, {
