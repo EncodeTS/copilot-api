@@ -11,6 +11,8 @@ import type {
 
 import { COMPACT_REQUEST, type CompactType } from "~/lib/compact"
 import {
+  DEFAULT_RESPONSES_PAYLOAD_BUDGET_BYTES,
+  DEFAULT_RESPONSES_PAYLOAD_SEND_HARD_LIMIT_BYTES,
   getModelResponsesApiCompactThreshold as getConfiguredModelResponsesApiCompactThreshold,
   isContextManagementEnabledForMessages as isConfiguredContextManagementEnabledForMessages,
   isContextManagementEnabledForResponses as isConfiguredContextManagementEnabledForResponses,
@@ -96,7 +98,6 @@ export const hasVisionInput = (payload: ResponsesPayload): boolean => {
   return values.some((item) => containsVisionContent(item))
 }
 
-const DATA_URL_PREFIX = "data:"
 // Static 96x32 PNG reading "Image too large / Redacted".
 const REDACTED_IMAGE_PLACEHOLDER_DATA_URL =
   "data:image/png;base64,"
@@ -349,8 +350,6 @@ interface PayloadMediaStats {
   unoptimizableMediaBytes: number
 }
 
-const DEFAULT_RESPONSES_PAYLOAD_BUDGET_BYTES = 4_980_736
-const DEFAULT_RESPONSES_PAYLOAD_SEND_HARD_LIMIT_BYTES = 5_226_496
 const DEFAULT_RESPONSES_IMAGE_NEAR_BUDGET_RATIO = 0.92
 
 const IMAGE_DATA_URL_PATTERN =
@@ -831,21 +830,15 @@ const getInputImageDataUrl = (
     return null
   }
 
-  const imageUrl = content.image_url
-  if (!imageUrl.startsWith(DATA_URL_PREFIX)) {
+  const parsed = parseImageDataUrl(content.image_url)
+  if (!parsed) {
     return null
   }
 
-  const decodedBytes = estimateDataUrlByteLength(imageUrl)
-
   return {
-    decodedBytes,
+    decodedBytes: parsed.decodedBytes,
     record: content,
   }
-}
-
-const estimateDataUrlByteLength = (value: string): number => {
-  return Math.max(0, Math.floor((value.length * 3) / 4))
 }
 
 const replaceInputImageWithPlaceholder = (image: InputImageDataUrl): void => {
