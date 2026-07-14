@@ -13,7 +13,6 @@ interface ConfigFileShape {
   extraPrompts?: Record<string, string>
   modelReasoningEfforts?: Record<string, string>
   modelResponsesApiCompactThresholds?: Record<string, number>
-  parityFirst?: boolean
   responsesImageCompression?: boolean
   responsesImageCompressionCacheBytes?: number
   responsesImageCompressionConcurrency?: number
@@ -115,19 +114,6 @@ describe("builtin provider config", () => {
       messages: false,
       responses: false,
     })
-  })
-
-  test("persists parity-first mode by default", () => {
-    const tempDir = createTempConfigDir()
-    const configPath = path.join(tempDir, "config.json")
-
-    const output = runScript(
-      tempDir,
-      'const { isParityFirstEnabled } = await import("./src/lib/config"); console.log(JSON.stringify({ enabled: isParityFirstEnabled() }));',
-    )
-
-    expect(JSON.parse(output)).toEqual({ enabled: true })
-    expect(readConfigFile(configPath).parityFirst).toBe(true)
   })
 
   test("adds Responses image budget defaults", () => {
