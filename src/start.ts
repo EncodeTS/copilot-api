@@ -10,7 +10,8 @@ import { runProviderSetup } from "./auth"
 import { listEnabledProviders, mergeConfigWithDefaults } from "./lib/config"
 import { readGitHubToken } from "./lib/credential-store"
 import { initOpencodeVersion } from "./lib/opencode"
-import { ensurePaths } from "./lib/paths"
+import { ensurePaths, PATHS } from "./lib/paths"
+import { registerProcessCleanup } from "./lib/process-cleanup"
 import { initProxyFromEnv } from "./lib/proxy"
 import { generateEnvScript } from "./lib/shell"
 import { state } from "./lib/state"
@@ -22,6 +23,7 @@ import {
   cacheVsCodeSessionId,
   cacheVsCodeDeviceId,
 } from "./lib/utils"
+import { responsesReasoningRecoveryRegistry } from "./services/copilot/responses-reasoning-recovery-registry"
 
 interface RunServerOptions {
   port: number
@@ -167,6 +169,10 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   state.showToken = options.showToken
 
   await ensurePaths()
+  await responsesReasoningRecoveryRegistry.initialize(
+    PATHS.REASONING_RECOVERY_PATH,
+  )
+  registerProcessCleanup(() => responsesReasoningRecoveryRegistry.flush())
 
   const serverUrl = `http://localhost:${options.port}`
 
