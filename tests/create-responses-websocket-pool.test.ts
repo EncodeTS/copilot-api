@@ -5,6 +5,7 @@ import type {
   ResponseInputItem,
   ResponsesResult,
 } from "../src/services/copilot/create-responses"
+import { streamLifecycleDependencies } from "../src/lib/stream-lifecycle"
 import { UpstreamLifecycleTimeoutError } from "../src/lib/upstream-lifecycle"
 
 type ListenerEvent = {
@@ -25,6 +26,8 @@ const originalConsolaDebug = consola.debug
 const originalConsolaWarn = consola.warn
 const originalFetch = globalThis.fetch
 const originalSetTimeout = globalThis.setTimeout
+const originalStreamLifecycleReporter =
+  streamLifecycleDependencies.reportTermination
 const proxyEnvKeys = [
   "http_proxy",
   "HTTP_PROXY",
@@ -316,6 +319,8 @@ afterEach(() => {
   responsesReasoningRecoveryRegistry.clear()
   consola.debug = originalConsolaDebug
   consola.warn = originalConsolaWarn
+  streamLifecycleDependencies.reportTermination =
+    originalStreamLifecycleReporter
   ;(
     globalThis as unknown as { clearTimeout: typeof clearTimeout }
   ).clearTimeout = originalClearTimeout
@@ -407,8 +412,10 @@ test("Responses websocket falls back to HTTP when opening fails before send", as
   expect(chunks[0]?.data).toContain('"id":"resp-http-fallback"')
 })
 
-test("Responses websocket falls back to HTTP when it closes before the first event", async () => {
+test("Responses websocket does not fall back after sending without seeing a frame", async () => {
   MockWebSocket.autoComplete = false
+  const reportTermination = mock(originalStreamLifecycleReporter)
+  streamLifecycleDependencies.reportTermination = reportTermination
   const fetchMock = mock(() =>
     Promise.resolve(
       new Response(
@@ -453,10 +460,19 @@ test("Responses websocket falls back to HTTP when it closes before the first eve
   MockWebSocket.instances[0]?.close()
   const chunks = await chunksPromise
 
-  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(fetchMock).not.toHaveBeenCalled()
+  expect(reportTermination).toHaveBeenCalledTimes(1)
+  expect(reportTermination.mock.calls[0]?.[0].diagnostics).toMatchObject({
+    eventCount: 0,
+    retryCount: 0,
+    terminalSeen: false,
+    transport: "websocket",
+  })
   expect(chunks).toHaveLength(1)
-  expect(chunks[0]?.event).toBe("response.completed")
-  expect(chunks[0]?.data).toContain('"id":"resp-http-zero-event-fallback"')
+  expect(chunks[0]?.event).toBe("error")
+  expect(chunks[0]?.data).toContain(
+    '"message":"Responses websocket ended without a terminal response"',
+  )
 })
 
 test("Responses websocket recovers incompatible reasoning history over HTTP", async () => {
@@ -636,7 +652,7 @@ test("Responses websocket recovers incompatible reasoning history over HTTP", as
   expect(chunks[0]?.data).toContain('"id":"resp-reasoning-recovery"')
 })
 
-test("Responses websocket recovery retries an HTTP body reset with the recovery payload", async () => {
+test("Responses websocket recovery does not retry an HTTP body reset", async () => {
   MockWebSocket.autoComplete = false
   let attempt = 0
   const reasoningByRequest: Array<Array<string>> = []
@@ -715,14 +731,14 @@ test("Responses websocket recovery retries an HTTP body reset with the recovery 
 
   const chunks = await chunksPromise
 
-  expect(fetchMock).toHaveBeenCalledTimes(2)
-  expect(reasoningByRequest).toEqual([[], []])
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(reasoningByRequest).toEqual([[]])
   expect(chunks).toHaveLength(1)
-  expect(chunks[0]?.event).toBe("response.completed")
-  expect(chunks[0]?.data).toContain('"id":"resp-recovery-body-reset"')
+  expect(chunks[0]?.event).toBe("error")
+  expect(chunks[0]?.data).toContain('"message":"terminated"')
 })
 
-test("Responses HTTP retries once when the stream ends before the first event", async () => {
+test("Responses HTTP does not retry when the stream ends before the first event", async () => {
   let attempt = 0
   const fetchMock = mock(() => {
     attempt += 1
@@ -769,13 +785,15 @@ test("Responses HTTP retries once when the stream ends before the first event", 
   )
   const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
 
-  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
   expect(chunks).toHaveLength(1)
-  expect(chunks[0]?.event).toBe("response.completed")
-  expect(chunks[0]?.data).toContain('"id":"resp-http-retry"')
+  expect(chunks[0]?.event).toBe("error")
+  expect(chunks[0]?.data).toContain(
+    '"message":"http stream ended without a terminal event"',
+  )
 })
 
-test("Responses HTTP retries once when the connection resets before the first event", async () => {
+test("Responses HTTP does not retry when the connection resets before the first event", async () => {
   let attempt = 0
   const fetchMock = mock(() => {
     attempt += 1
@@ -833,13 +851,13 @@ test("Responses HTTP retries once when the connection resets before the first ev
   )
   const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
 
-  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
   expect(chunks).toHaveLength(1)
-  expect(chunks[0]?.event).toBe("response.completed")
-  expect(chunks[0]?.data).toContain('"id":"resp-http-reset-retry"')
+  expect(chunks[0]?.event).toBe("error")
+  expect(chunks[0]?.data).toContain('"message":"terminated"')
 })
 
-test("Responses HTTP retries once when the connection resets before headers", async () => {
+test("Responses HTTP does not retry when the connection resets before headers", async () => {
   let attempt = 0
   const fetchMock = mock(() => {
     attempt += 1
@@ -890,13 +908,13 @@ test("Responses HTTP retries once when the connection resets before headers", as
   )
   const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
 
-  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
   expect(chunks).toHaveLength(1)
-  expect(chunks[0]?.event).toBe("response.completed")
-  expect(chunks[0]?.data).toContain('"id":"resp-http-headers-retry"')
+  expect(chunks[0]?.event).toBe("error")
+  expect(chunks[0]?.data).toContain('"message":"fetch failed"')
 })
 
-test("Responses HTTP emits a protocol error after two pre-header resets", async () => {
+test("Responses HTTP emits a terminal error after one pre-header reset", async () => {
   const fetchMock = mock(() => {
     const socketError = Object.assign(new Error("socket closed"), {
       code: "UND_ERR_SOCKET",
@@ -917,28 +935,32 @@ test("Responses HTTP emits a protocol error after two pre-header resets", async 
   )
   const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
 
-  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
   expect(chunks).toHaveLength(1)
   expect(chunks[0]?.event).toBe("error")
   expect(chunks[0]?.data).toContain("fetch failed")
 })
 
-test("Responses HTTP shares one retry budget across headers and body", async () => {
-  let attempt = 0
+test("Responses HTTP disconnect diagnostics keep retry count at zero", async () => {
+  const reportTermination = mock(originalStreamLifecycleReporter)
+  streamLifecycleDependencies.reportTermination = reportTermination
   const fetchMock = mock(() => {
-    attempt += 1
-    if (attempt === 1) {
-      const socketError = Object.assign(new Error("socket closed"), {
-        code: "UND_ERR_SOCKET",
-      })
-      return Promise.reject(
-        new TypeError("fetch failed", { cause: socketError }),
-      )
-    }
+    const socketError = Object.assign(new Error("socket closed"), {
+      code: "UND_ERR_SOCKET",
+    })
     return Promise.resolve(
-      new Response("", {
-        headers: { "content-type": "text/event-stream" },
-      }),
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.error(
+              new TypeError("terminated", { cause: socketError }),
+            )
+          },
+        }),
+        {
+          headers: { "content-type": "text/event-stream" },
+        },
+      ),
     )
   })
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
@@ -952,19 +974,24 @@ test("Responses HTTP shares one retry budget across headers and body", async () 
     },
     {
       initiator: "user",
-      requestId: "http-shared-retry-budget",
+      requestId: "http-zero-retry-diagnostics",
       transport: "http",
       vision: false,
     },
   )
   const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
 
-  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(reportTermination).toHaveBeenCalledTimes(1)
+  expect(reportTermination.mock.calls[0]?.[0].diagnostics).toMatchObject({
+    eventCount: 0,
+    retryCount: 0,
+    terminalSeen: false,
+    transport: "http",
+  })
   expect(chunks).toHaveLength(1)
   expect(chunks[0]?.event).toBe("error")
-  expect(chunks[0]?.data).toContain(
-    '"message":"http stream ended without a terminal event"',
-  )
+  expect(chunks[0]?.data).toContain('"message":"terminated"')
 })
 
 test("Responses HTTP does not retry after forwarding the first event", async () => {
@@ -1877,6 +1904,60 @@ test("Responses websocket pool separates different request IDs", async () => {
   expect(MockWebSocket.instances[1]?.sent).toHaveLength(1)
 })
 
+test("Responses websocket pool reuses a stable session across request IDs", async () => {
+  await collectResponsesStream("request-1", {
+    reasoningRecoverySessionId: "stable-session",
+  })
+  await collectResponsesStream("request-2", {
+    reasoningRecoverySessionId: "stable-session",
+  })
+
+  expect(MockWebSocket.instances).toHaveLength(1)
+  expect(MockWebSocket.instances[0]?.sent).toHaveLength(2)
+})
+
+test("Responses websocket pool isolates different stable sessions", async () => {
+  await collectResponsesStream("request-1", {
+    reasoningRecoverySessionId: "stable-session-1",
+  })
+  await collectResponsesStream("request-2", {
+    reasoningRecoverySessionId: "stable-session-2",
+  })
+
+  expect(MockWebSocket.instances).toHaveLength(2)
+  expect(MockWebSocket.instances[0]?.sent).toHaveLength(1)
+  expect(MockWebSocket.instances[1]?.sent).toHaveLength(1)
+})
+
+test("Responses websocket pool isolates token, model, and subagent identity", async () => {
+  const sessionId = "stable-session"
+  await collectResponsesStream("request-1", {
+    reasoningRecoverySessionId: sessionId,
+  })
+
+  state.copilotToken = "other-token"
+  await collectResponsesStream("request-2", {
+    reasoningRecoverySessionId: sessionId,
+  })
+  await collectResponsesStream("request-3", {
+    model: "gpt-other",
+    reasoningRecoverySessionId: sessionId,
+  })
+  await collectResponsesStream("request-4", {
+    reasoningRecoverySessionId: sessionId,
+    subagentMarker: {
+      agent_id: "agent-1",
+      agent_type: "review",
+      session_id: "subagent-thread",
+    },
+  })
+
+  expect(MockWebSocket.instances).toHaveLength(4)
+  for (const websocket of MockWebSocket.instances) {
+    expect(websocket.sent).toHaveLength(1)
+  }
+})
+
 test("Responses websocket does not open until the stream is consumed", async () => {
   MockWebSocket.autoComplete = false
 
@@ -1946,7 +2027,7 @@ test("Responses websocket closes a pooled connection when the consumer returns b
   expect(MockWebSocket.instances).toHaveLength(2)
 })
 
-test("Responses websocket delayed concurrent streams still use dedicated connections", async () => {
+test("Responses websocket concurrent stable-session streams use dedicated connections", async () => {
   MockWebSocket.autoComplete = false
 
   const firstResponse = await createResponses(
@@ -1957,6 +2038,7 @@ test("Responses websocket delayed concurrent streams still use dedicated connect
     },
     {
       initiator: "user",
+      reasoningRecoverySessionId: "stable-session",
       requestId: "request-1",
       transport: "websocket",
       vision: false,
@@ -1970,7 +2052,8 @@ test("Responses websocket delayed concurrent streams still use dedicated connect
     },
     {
       initiator: "user",
-      requestId: "request-1",
+      reasoningRecoverySessionId: "stable-session",
+      requestId: "request-2",
       transport: "websocket",
       vision: false,
     },
@@ -2241,16 +2324,29 @@ test("Responses websocket honors NO_PROXY when resolving Bun websocket proxy", a
   }
 })
 
-const collectResponsesStream = async (requestId: string): Promise<void> => {
+const collectResponsesStream = async (
+  requestId: string,
+  options: {
+    model?: string
+    reasoningRecoverySessionId?: string
+    subagentMarker?: {
+      agent_id: string
+      agent_type: string
+      session_id: string
+    } | null
+  } = {},
+): Promise<void> => {
   const response = await createResponses(
     {
       input: "hello",
-      model: "gpt-test",
+      model: options.model ?? "gpt-test",
       stream: true,
     },
     {
       initiator: "user",
+      reasoningRecoverySessionId: options.reasoningRecoverySessionId,
       requestId,
+      subagentMarker: options.subagentMarker,
       transport: "websocket",
       vision: false,
     },
