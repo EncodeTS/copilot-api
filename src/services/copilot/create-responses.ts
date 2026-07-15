@@ -1,9 +1,12 @@
 import consola from "consola"
-import { events } from "fetch-event-stream"
+import { events, type ServerSentEventMessage } from "fetch-event-stream"
 import { createHash } from "node:crypto"
 
 import type { SubagentMarker } from "~/lib/subagent"
-import type { PooledWebSocketRequest } from "~/services/responses-websocket"
+import {
+  PooledWebSocketRequestError,
+  type PooledWebSocketRequest,
+} from "~/services/responses-websocket"
 
 import {
   copilotBaseUrl,
@@ -20,15 +23,23 @@ import {
 } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
 import {
+  createStreamRetryBudget,
+  reportStreamTermination,
+  RetryableStreamTransportError,
+  StreamLifecycleError,
+  superviseStream,
+  type StreamRetryBudget,
+} from "~/lib/stream-lifecycle"
+import {
   fetchWithUpstreamLifecycle,
   UpstreamLifecycleTimeoutError,
+  type UpstreamFetch,
   type UpstreamLifecycleTimeouts,
 } from "~/lib/upstream-lifecycle"
 import { state } from "~/lib/state"
 import {
   createPooledWebSocketStream,
   createWebSocketUrl,
-  isWebSocketNotSentError,
 } from "~/services/responses-websocket"
 import {
   createReasoningRecoveryScope,
@@ -625,7 +636,7 @@ export interface ResponseTextDoneEvent {
   type: "response.output_text.done"
 }
 
-export type ResponsesStream = ReturnType<typeof events>
+export type ResponsesStream = AsyncIterable<ServerSentEventMessage>
 export type CreateResponsesReturn = ResponsesResult | ResponsesStream
 export type ResponsesTransport = "http" | "websocket"
 
@@ -637,6 +648,7 @@ type ResponsesStreamChunk = {
 
 interface ResponsesRequestOptions {
   allowHttpFallback?: boolean
+  fetcher?: UpstreamFetch
   vision: boolean
   initiator: "agent" | "user"
   subagentMarker?: SubagentMarker | null
@@ -654,6 +666,7 @@ export const createResponses = async (
   {
     vision,
     allowHttpFallback = false,
+    fetcher,
     initiator,
     subagentMarker,
     requestId,
@@ -673,6 +686,8 @@ export const createResponses = async (
     model: payload.model,
     sessionId: reasoningRecoverySessionId ?? subagentMarker?.session_id,
   })
+  const transportRetryBudget =
+    payload.stream === true ? createStreamRetryBudget() : undefined
   const knownReasoning = responsesReasoningRecoveryRegistry.filterKnown(
     reasoningRecoveryScope,
     payload.input,
@@ -723,17 +738,48 @@ export const createResponses = async (
       websocketStream,
       {
         allowHttpFallback,
+        fetcher,
         headers,
         payload,
         reasoningRecoveryScope,
+        retryBudget: transportRetryBudget,
         signal,
         timeouts,
       },
     )
-    return createResponsesSafeStream(transportStream)
+    return createResponsesSafeStream(transportStream, signal)
+  }
+
+  if (payload.stream === true) {
+    const httpOptions = {
+      fetcher,
+      headers,
+      payload,
+      reasoningRecoveryScope,
+      retryBudget: transportRetryBudget,
+      signal,
+      timeouts,
+    }
+    let primaryStream: AsyncIterable<ResponsesStreamChunk>
+    try {
+      primaryStream = await createHttpResponsesStream(httpOptions)
+    } catch (error) {
+      if (error instanceof StreamLifecycleError) {
+        return createResponsesSafeStream(
+          createFailedResponsesStream(error),
+          signal,
+        )
+      }
+      throw error
+    }
+    return createResponsesSafeStream(
+      createSupervisedHttpResponsesStream(httpOptions, primaryStream),
+      signal,
+    )
   }
 
   return await createHttpResponses(payload, headers, {
+    fetcher,
     reasoningRecoveryScope,
     signal,
     timeouts,
@@ -815,10 +861,21 @@ export const ensureEncryptedReasoningIncluded = (
 }
 
 interface HttpResponsesOptions {
+  fetcher?: UpstreamFetch
   reasoningRecoveryAttempted?: boolean
   reasoningRecoveryScope?: ReasoningRecoveryScope | null
+  retryBudget?: StreamRetryBudget
   signal?: AbortSignal
   timeouts?: UpstreamLifecycleTimeouts
+}
+
+interface HttpResponsesStreamOptions extends HttpResponsesOptions {
+  headers: Record<string, string>
+  payload: ResponsesPayload
+}
+
+interface WebSocketResponsesStreamOptions extends HttpResponsesStreamOptions {
+  allowHttpFallback: boolean
 }
 
 interface ResponsesUpstreamFailure {
@@ -842,18 +899,50 @@ const createHttpResponses = async (
   headers: Record<string, string>,
   options: HttpResponsesOptions = {},
 ): Promise<CreateResponsesReturn> => {
-  const response = await fetchWithUpstreamLifecycle(
-    `${copilotBaseUrl(state)}/responses`,
-    {
-      method: "POST",
-      headers,
-      body: JSON.stringify(payload),
-    },
-    {
-      signal: options.signal,
-      timeouts: options.timeouts,
-    },
-  )
+  let response: Response
+  try {
+    response = await fetchWithUpstreamLifecycle(
+      `${copilotBaseUrl(state)}/responses`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+      },
+      {
+        fetcher: options.fetcher,
+        signal: options.signal,
+        timeouts: options.timeouts,
+      },
+    )
+  } catch (error) {
+    const retryableDisconnect = isRetryableHttpStreamDisconnect(error)
+    if (
+      payload.stream === true
+      && options.retryBudget
+      && !options.retryBudget.attempted
+      && !options.signal?.aborted
+      && retryableDisconnect
+    ) {
+      options.retryBudget.attempted = true
+      return await createHttpResponses(payload, headers, options)
+    }
+    if (payload.stream === true && options.retryBudget) {
+      throw reportStreamTermination({
+        diagnostics: {
+          elapsedMs: Date.now() - options.retryBudget.startedAt,
+          eventCount: 0,
+          flow: "responses",
+          lastEventType: null,
+          retryCount: options.retryBudget.attempted ? 1 : 0,
+          terminalSeen: false,
+          transport: "http",
+        },
+        error,
+        signal: options.signal,
+      })
+    }
+    throw error
+  }
 
   logCopilotRateLimits(response.headers)
 
@@ -973,16 +1062,33 @@ const createPooledResponsesWebSocketStream = (
       "Responses websocket ended without a terminal response",
   })
 
-const createResponsesStreamWithHttpFallback = async function* (
+const createResponsesStreamWithHttpFallback = (
   websocketStream: AsyncIterable<ResponsesStreamChunk>,
-  options: {
-    allowHttpFallback: boolean
-    headers: Record<string, string>
-    payload: ResponsesPayload
-    reasoningRecoveryScope?: ReasoningRecoveryScope | null
-    signal?: AbortSignal
-    timeouts?: UpstreamLifecycleTimeouts
-  },
+  options: WebSocketResponsesStreamOptions,
+): AsyncIterable<ResponsesStreamChunk> =>
+  superviseStream({
+    flow: "responses",
+    getEventType: (chunk) => chunk.event ?? null,
+    isTerminalEvent: isTerminalResponsesStreamChunk,
+    primary: {
+      open: () =>
+        createRetryableResponsesWebSocketStream(websocketStream, options),
+      transport: "websocket",
+    },
+    retry:
+      options.allowHttpFallback ?
+        {
+          open: () => createHttpResponsesStream(options),
+          transport: "http",
+        }
+      : undefined,
+    retryBudget: options.retryBudget,
+    signal: options.signal,
+  })
+
+const createRetryableResponsesWebSocketStream = async function* (
+  websocketStream: AsyncIterable<ResponsesStreamChunk>,
+  options: WebSocketResponsesStreamOptions,
 ): AsyncGenerator<ResponsesStreamChunk, void, unknown> {
   try {
     let forwardedChunk = false
@@ -1004,6 +1110,7 @@ const createResponsesStreamWithHttpFallback = async function* (
             options.headers,
             {
               reasoningRecoveryScope: options.reasoningRecoveryScope,
+              retryBudget: options.retryBudget,
               signal: options.signal,
               timeouts: options.timeouts,
             },
@@ -1023,27 +1130,91 @@ const createResponsesStreamWithHttpFallback = async function* (
       forwardedChunk = true
       yield chunk
     }
-    return
   } catch (error) {
     if (
-      !options.allowHttpFallback
-      || options.signal?.aborted
-      || !isWebSocketNotSentError(error)
+      error instanceof PooledWebSocketRequestError
+      && error.sendState !== "frame-seen"
     ) {
-      throw error
+      throw new RetryableStreamTransportError(error.message, error)
     }
+    throw error
   }
+}
 
-  const fallback = await createHttpResponses(options.payload, options.headers, {
+const createHttpResponsesStream = async (
+  options: HttpResponsesStreamOptions,
+): Promise<AsyncIterable<ResponsesStreamChunk>> => {
+  const response = await createHttpResponses(options.payload, options.headers, {
+    reasoningRecoveryAttempted: options.reasoningRecoveryAttempted,
     reasoningRecoveryScope: options.reasoningRecoveryScope,
+    retryBudget: options.retryBudget,
     signal: options.signal,
     timeouts: options.timeouts,
   })
-  if (!isResponsesStream(fallback)) {
-    throw new Error("Streaming HTTP fallback returned a non-streaming response")
+  if (!isResponsesStream(response)) {
+    throw new Error("Streaming HTTP attempt returned a non-streaming response")
   }
-  yield* fallback
+  return createRetryableHttpResponsesStream(response)
 }
+
+const createRetryableHttpResponsesStream = async function* (
+  source: AsyncIterable<ResponsesStreamChunk>,
+): AsyncGenerator<ResponsesStreamChunk, void, unknown> {
+  try {
+    yield* source
+  } catch (error) {
+    if (isRetryableHttpStreamDisconnect(error)) {
+      throw new RetryableStreamTransportError(getErrorMessage(error), error)
+    }
+    throw error
+  }
+}
+
+const retryableHttpStreamErrorCodes = new Set([
+  "ECONNRESET",
+  "EPIPE",
+  "UND_ERR_SOCKET",
+])
+
+const isRetryableHttpStreamDisconnect = (error: unknown): boolean => {
+  let current = error
+  const seen = new Set<unknown>()
+  while (current instanceof Error && !seen.has(current)) {
+    seen.add(current)
+    const code = (current as Error & { code?: unknown }).code
+    if (typeof code === "string" && retryableHttpStreamErrorCodes.has(code)) {
+      return true
+    }
+    if (
+      current instanceof TypeError
+      && /(?:connection reset|socket closed|terminated)/iu.test(current.message)
+    ) {
+      return true
+    }
+    current = current.cause
+  }
+  return false
+}
+
+const createSupervisedHttpResponsesStream = (
+  options: HttpResponsesStreamOptions,
+  primaryStream?: AsyncIterable<ResponsesStreamChunk>,
+): AsyncIterable<ResponsesStreamChunk> =>
+  superviseStream({
+    flow: "responses",
+    getEventType: (chunk) => chunk.event ?? null,
+    isTerminalEvent: isTerminalResponsesStreamChunk,
+    primary: {
+      open: () => primaryStream ?? createHttpResponsesStream(options),
+      transport: "http",
+    },
+    retry: {
+      open: () => createHttpResponsesStream(options),
+      transport: "http",
+    },
+    retryBudget: options.retryBudget,
+    signal: options.signal,
+  })
 
 const parseResponsesStreamFailure = (
   chunk: ResponsesStreamChunk,
@@ -1156,11 +1327,29 @@ const executeResponsesReasoningHistoryRecovery = async (
     retryTransport: "http",
     sourceTransport: plan.sourceTransport,
   })
-  return await createHttpResponses(plan.payload, headers, {
+  const recoveryOptions: HttpResponsesStreamOptions = {
     ...options,
+    headers,
+    payload: plan.payload,
     reasoningRecoveryAttempted: true,
-  })
+  }
+  if (plan.payload.stream === true) {
+    if (plan.sourceTransport === "http") {
+      const primaryStream = await createHttpResponsesStream(recoveryOptions)
+      return createSupervisedHttpResponsesStream(recoveryOptions, primaryStream)
+    }
+    return createSupervisedHttpResponsesStream(recoveryOptions)
+  }
+  return await createHttpResponses(plan.payload, headers, recoveryOptions)
 }
+
+const createFailedResponsesStream = (
+  error: StreamLifecycleError,
+): AsyncIterable<ResponsesStreamChunk> => ({
+  [Symbol.asyncIterator]: () => ({
+    next: () => Promise.reject(error),
+  }),
+})
 
 const withoutHistoricalReasoning = (
   payload: ResponsesPayload,
@@ -1181,10 +1370,18 @@ const withoutHistoricalReasoning = (
 
 const createResponsesSafeStream = async function* (
   source: AsyncIterable<ResponsesStreamChunk>,
+  signal?: AbortSignal,
 ): AsyncGenerator<ResponsesStreamChunk, void, unknown> {
   try {
     yield* source
   } catch (error) {
+    if (
+      signal?.aborted
+      || (error instanceof StreamLifecycleError
+        && error.kind === "client_abort")
+    ) {
+      return
+    }
     yield createResponsesErrorServerSentEventChunk(getErrorMessage(error))
   }
 }

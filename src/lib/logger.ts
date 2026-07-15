@@ -14,7 +14,8 @@ export { redactLogString, redactPayloadForDebug } from "./log-redaction"
 const LOG_RETENTION_DAYS = 7
 const LOG_RETENTION_MS = LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000
 const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000
-const LOG_DIR = path.join(PATHS.APP_DIR, "logs")
+const DEFAULT_LOG_DIR = path.join(PATHS.APP_DIR, "logs")
+const LOG_DIR = process.env.COPILOT_API_LOG_DIR?.trim() || DEFAULT_LOG_DIR
 const FLUSH_INTERVAL_MS = 1000
 const MAX_BUFFER_SIZE = 100
 
@@ -24,6 +25,8 @@ const logBuffers = new Map<string, Array<string>>()
 let runtimeInitialized = false
 let flushInterval: ReturnType<typeof setInterval> | undefined
 let cleanupInterval: ReturnType<typeof setInterval> | undefined
+
+export const getHandlerLogDirectory = (): string => LOG_DIR
 
 const ensureLogDirectory = () => {
   if (!fs.existsSync(LOG_DIR)) {
@@ -229,14 +232,19 @@ export const debugJsonTail = (
   ])
 }
 
-export const createHandlerLogger = (name: string): ConsolaInstance => {
+export const createHandlerLogger = (
+  name: string,
+  options: { mirrorToConsole?: boolean } = {},
+): ConsolaInstance => {
   const sanitizedName = sanitizeName(name)
   const instance = consola.withTag(name)
 
   if (state.verbose) {
     instance.level = 5
   }
-  instance.setReporters([])
+  if (!options.mirrorToConsole) {
+    instance.setReporters([])
+  }
 
   instance.addReporter({
     log(logObj) {

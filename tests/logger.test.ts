@@ -1,16 +1,95 @@
 import { afterEach, expect, mock, test } from "bun:test"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 
 import {
   debugJson,
   debugJsonAsync,
   debugJsonTail,
   debugLazy,
+  getHandlerLogDirectory,
   redactLogString,
 } from "../src/lib/logger"
+import { PATHS } from "../src/lib/paths"
 import { state } from "../src/lib/state"
 
 afterEach(() => {
   state.verbose = false
+})
+
+test("Bun tests route handler logs to a temporary directory", () => {
+  const configuredLogDir = process.env.COPILOT_API_LOG_DIR
+
+  expect(configuredLogDir).toBeString()
+  if (!configuredLogDir) throw new Error("Expected test log directory")
+  expect(path.resolve(configuredLogDir)).toStartWith(path.resolve(os.tmpdir()))
+  expect(getHandlerLogDirectory()).toBe(configuredLogDir)
+})
+
+test("production logger keeps the App log directory without a test override", () => {
+  const env = { ...process.env }
+  delete env.COPILOT_API_LOG_DIR
+  const result = Bun.spawnSync({
+    cmd: [
+      process.execPath,
+      "--eval",
+      'const { getHandlerLogDirectory } = await import("./src/lib/logger"); console.log(getHandlerLogDirectory());',
+    ],
+    cwd: path.resolve(import.meta.dir, ".."),
+    env,
+  })
+
+  expect(result.exitCode).toBe(0)
+  expect(new TextDecoder().decode(result.stdout).trim()).toBe(
+    path.join(PATHS.APP_DIR, "logs"),
+  )
+})
+
+test("lifecycle fixture stays out of real App logs and remains console-visible", () => {
+  const testLogDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "copilot-api-logger-fixture-"),
+  )
+  const realLogDir = path.join(PATHS.APP_DIR, "logs")
+  const loggerName = `stream-lifecycle-fixture-${process.pid}-${Date.now()}`
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    COPILOT_API_LOG_DIR: testLogDir,
+  }
+  delete env.COPILOT_API_TEST_MODE
+
+  try {
+    const result = Bun.spawnSync({
+      cmd: [
+        process.execPath,
+        "--eval",
+        `const { createHandlerLogger } = await import("./src/lib/logger"); createHandlerLogger(${JSON.stringify(loggerName)}, { mirrorToConsole: true }).warn("stream.lifecycle", { kind: "timeout" });`,
+      ],
+      cwd: path.resolve(import.meta.dir, ".."),
+      env,
+    })
+    const output =
+      new TextDecoder().decode(result.stdout)
+      + new TextDecoder().decode(result.stderr)
+
+    expect(result.exitCode).toBe(0)
+    expect(output).toContain("stream.lifecycle")
+    expect(
+      fs.readdirSync(testLogDir).some((entry) => entry.startsWith(loggerName)),
+    ).toBeTrue()
+    expect(
+      fs.existsSync(realLogDir)
+        && fs
+          .readdirSync(realLogDir)
+          .some((entry) => entry.startsWith(loggerName)),
+    ).toBeFalse()
+  } finally {
+    const resolvedTestLogDir = path.resolve(testLogDir)
+    const resolvedTempDir = path.resolve(os.tmpdir())
+    if (resolvedTestLogDir.startsWith(`${resolvedTempDir}${path.sep}`)) {
+      fs.rmSync(resolvedTestLogDir, { force: true, recursive: true })
+    }
+  }
 })
 
 test("debugJson skips serialization when verbose logging is disabled", () => {

@@ -116,10 +116,13 @@ const runPooledWebSocketRequest = async function* <TPayload, TChunk>(
     })) {
       frameSeen = true
       const chunk = options.createChunk(data)
+      const isTerminal = options.isTerminalChunk(chunk)
+      if (isTerminal) {
+        reachedTerminal = true
+      }
       yield chunk
 
-      if (options.isTerminalChunk(chunk)) {
-        reachedTerminal = true
+      if (isTerminal) {
         return
       }
     }
@@ -441,8 +444,8 @@ const createWebSocketMessageStream = async function* <TChunk>(
   }
 
   const onError = (event: WebSocketErrorEvent) => {
-    consola.error("WebSocket error:", event, event.error)
     error = createWebSocketError(options.streamErrorMessage, event)
+    consola.debug("WebSocket transport error:", error.message)
     wake()
   }
 

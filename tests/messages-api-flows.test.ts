@@ -552,6 +552,51 @@ test("messages Chat Completions flow emits error event when upstream stream thro
   )
 })
 
+test("messages Chat Completions flow emits one error event for streaming finish_reason error", async () => {
+  createChatCompletions.mockResolvedValueOnce(
+    createMessagesStream([
+      {
+        data: JSON.stringify({
+          choices: [
+            {
+              delta: {},
+              finish_reason: "error",
+              index: 0,
+              logprobs: null,
+            },
+          ],
+          created: 0,
+          id: "chatcmpl-stream-error",
+          model: "gpt-test",
+          object: "chat.completion.chunk",
+        }),
+        event: "message",
+      },
+    ]) as unknown as ChatCompletionResponse,
+  )
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithChatCompletions(c, payload, {
+      logger,
+      requestId: "request-stream-error",
+    }),
+  )
+
+  const body = await (await app.request("/", { method: "POST" })).text()
+
+  expect(body).toContain("event: error")
+  expect(body).toContain(
+    "Chat Completions upstream ended with finish_reason=error",
+  )
+  expect(body.match(/event: error/gu)).toHaveLength(1)
+})
+
 test("messages Responses flow emits error event when upstream stream throws", async () => {
   createResponses.mockImplementationOnce(
     (

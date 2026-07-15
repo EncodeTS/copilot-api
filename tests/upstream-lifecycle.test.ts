@@ -1,6 +1,19 @@
-import { expect, mock, test } from "bun:test"
+import { afterEach, beforeEach, expect, mock, test } from "bun:test"
 
-import { fetchWithUpstreamLifecycle } from "../src/lib/upstream-lifecycle"
+import {
+  fetchWithUpstreamLifecycle,
+  upstreamLifecycleDependencies,
+} from "../src/lib/upstream-lifecycle"
+
+const originalUnrefTimer = upstreamLifecycleDependencies.unrefTimer
+
+beforeEach(() => {
+  upstreamLifecycleDependencies.unrefTimer = () => {}
+})
+
+afterEach(() => {
+  upstreamLifecycleDependencies.unrefTimer = originalUnrefTimer
+})
 
 test("upstream HTTP request stops when the caller aborts", async () => {
   let observedSignal: AbortSignal | undefined

@@ -171,7 +171,10 @@ export const handleResponses = async (c: Context) => {
     logger.debug("Forwarding native Responses stream")
     return streamSSE(c, async (stream) => {
       const idTracker = createStreamIdTracker()
+      const streamStartedAt = Date.now()
       let usage: UsageTokens = {}
+      let eventCount = 0
+      let lastEventType: string | null = null
       let terminalSeen = false
 
       try {
@@ -209,6 +212,11 @@ export const handleResponses = async (c: Context) => {
             event: (chunk as { event?: string }).event,
             data: processedData,
           })
+          eventCount += 1
+          lastEventType =
+            parsedEvent?.type
+            ?? (chunk as { event?: string }).event
+            ?? lastEventType
 
           if (isTerminal) {
             break
@@ -216,17 +224,40 @@ export const handleResponses = async (c: Context) => {
         }
       } catch (error) {
         if (!terminalSeen) {
-          await emitResponsesStreamError(stream, logger, error)
+          await emitResponsesStreamError(stream, logger, error, {
+            diagnostics: {
+              elapsedMs: Date.now() - streamStartedAt,
+              eventCount,
+              flow: "responses",
+              lastEventType,
+              retryCount: 0,
+              terminalSeen,
+              transport: responsesTransport,
+            },
+            signal: c.req.raw.signal,
+          })
         }
         recordUsage(usage)
         return
       }
 
-      if (!terminalSeen) {
+      if (!terminalSeen && !c.req.raw.signal.aborted) {
         await emitResponsesStreamError(
           stream,
           logger,
           new Error("Responses stream ended without a terminal event"),
+          {
+            diagnostics: {
+              elapsedMs: Date.now() - streamStartedAt,
+              eventCount,
+              flow: "responses",
+              lastEventType,
+              retryCount: 0,
+              terminalSeen,
+              transport: responsesTransport,
+            },
+            signal: c.req.raw.signal,
+          },
         )
       }
 
