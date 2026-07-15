@@ -303,6 +303,7 @@ afterEach(() => {
 const baseOptions = {
   logger: consola,
   webSearchModel: "gpt-5-mini",
+  reasoningRecoverySessionId: "stable-sess-1",
   requestId: "req-1",
   sessionId: "sess-1",
 }
@@ -427,6 +428,7 @@ describe("prepareWebSearchResponsesPayload", () => {
 describe("handleWebSearchViaResponses", () => {
   it("enables HTTP fallback for a dual-endpoint search model", async () => {
     let allowHttpFallback: boolean | undefined
+    let reasoningRecoverySessionId: string | undefined
     webSearchFlowDependencies.findEndpointModel = (() => ({
       capabilities: { limits: {}, supports: {} },
       id: "gpt-5-mini",
@@ -434,9 +436,13 @@ describe("handleWebSearchViaResponses", () => {
     })) as never
     webSearchFlowDependencies.createResponses = ((
       _payload: ResponsesPayload,
-      options: { allowHttpFallback?: boolean },
+      options: {
+        allowHttpFallback?: boolean
+        reasoningRecoverySessionId?: string
+      },
     ) => {
       allowHttpFallback = options.allowHttpFallback
+      reasoningRecoverySessionId = options.reasoningRecoverySessionId
       return Promise.resolve(makeResponsesResult())
     }) as never
     webSearchFlowDependencies.createUsageRecorder = (() => () => {}) as never
@@ -445,6 +451,7 @@ describe("handleWebSearchViaResponses", () => {
     await handleWebSearchViaResponses(c, makePayload(), baseOptions)
 
     expect(allowHttpFallback).toBe(true)
+    expect(reasoningRecoverySessionId).toBe("stable-sess-1")
   })
 
   it("forwards the caller abort signal to the Responses search", async () => {

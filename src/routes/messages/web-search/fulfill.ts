@@ -83,6 +83,7 @@ export const webSearchFlowDependencies = {
 
 export interface WebSearchFlowOptions {
   logger: ConsolaInstance
+  reasoningRecoverySessionId?: string
   subagentMarker?: SubagentMarker | null
   /** GPT (Responses-capable) model the web search request is switched to. */
   webSearchModel: string
@@ -428,14 +429,19 @@ export const tryHandleWebSearch = async (
   }
 
   if (route.kind === "responses") {
-    let sessionId = getRootSessionId(payload, c)
-    const requestId = generateRequestIdFromPayload(payload, sessionId)
+    const reasoningRecoverySessionId = getRootSessionId(payload, c)
+    let sessionId = reasoningRecoverySessionId
+    const requestId = generateRequestIdFromPayload(
+      payload,
+      reasoningRecoverySessionId,
+    )
     if (!sessionId) {
       sessionId = getUUID(requestId)
     }
     return await handleWebSearchViaResponses(c, payload, {
       subagentMarker: null,
       webSearchModel: route.model,
+      reasoningRecoverySessionId,
       requestId,
       sessionId,
       signal: c.req.raw.signal,
@@ -497,6 +503,7 @@ export const handleWebSearchViaResponses = async (
           endpointCapabilities.http && endpointCapabilities.websocket,
         vision,
         initiator,
+        reasoningRecoverySessionId: options.reasoningRecoverySessionId,
         transport,
         subagentMarker: options.subagentMarker,
         requestId: options.requestId,

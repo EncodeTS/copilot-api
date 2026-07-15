@@ -30,6 +30,11 @@ import {
   createWebSocketUrl,
   isWebSocketNotSentError,
 } from "~/services/responses-websocket"
+import {
+  createReasoningRecoveryScope,
+  responsesReasoningRecoveryRegistry,
+  type ReasoningRecoveryScope,
+} from "~/services/copilot/responses-reasoning-recovery-registry"
 
 const ENCRYPTED_REASONING_INCLUDE: ResponseIncludable =
   "reasoning.encrypted_content"
@@ -636,6 +641,7 @@ interface ResponsesRequestOptions {
   initiator: "agent" | "user"
   subagentMarker?: SubagentMarker | null
   requestId: string
+  reasoningRecoverySessionId?: string
   sessionId?: string
   signal?: AbortSignal
   timeouts?: UpstreamLifecycleTimeouts
@@ -651,6 +657,7 @@ export const createResponses = async (
     initiator,
     subagentMarker,
     requestId,
+    reasoningRecoverySessionId,
     sessionId,
     signal,
     timeouts,
@@ -659,6 +666,26 @@ export const createResponses = async (
   }: ResponsesRequestOptions,
 ): Promise<CreateResponsesReturn> => {
   if (!state.copilotToken) throw new Error("Copilot token not found")
+
+  const reasoningRecoveryScope = createReasoningRecoveryScope({
+    agentId: subagentMarker?.agent_id,
+    agentType: subagentMarker?.agent_type,
+    model: payload.model,
+    sessionId: reasoningRecoverySessionId ?? subagentMarker?.session_id,
+  })
+  const knownReasoning = responsesReasoningRecoveryRegistry.filterKnown(
+    reasoningRecoveryScope,
+    payload.input,
+  )
+  if (knownReasoning.removedCount > 0) {
+    payload = { ...payload, input: knownReasoning.input }
+    consola.warn("responses.reasoning_history_prefilter", {
+      model: payload.model,
+      reason: "known_incompatible_reasoning_history",
+      removedReasoningItems: knownReasoning.removedCount,
+      subagent: Boolean(subagentMarker),
+    })
+  }
 
   const headers: Record<string, string> = {
     ...copilotHeaders(state, requestId, vision),
@@ -698,6 +725,7 @@ export const createResponses = async (
         allowHttpFallback,
         headers,
         payload,
+        reasoningRecoveryScope,
         signal,
         timeouts,
       },
@@ -705,7 +733,11 @@ export const createResponses = async (
     return createResponsesSafeStream(transportStream)
   }
 
-  return await createHttpResponses(payload, headers, { signal, timeouts })
+  return await createHttpResponses(payload, headers, {
+    reasoningRecoveryScope,
+    signal,
+    timeouts,
+  })
 }
 
 const normalizeResponsesToolSchemas = (payload: ResponsesPayload): void => {
@@ -784,6 +816,7 @@ export const ensureEncryptedReasoningIncluded = (
 
 interface HttpResponsesOptions {
   reasoningRecoveryAttempted?: boolean
+  reasoningRecoveryScope?: ReasoningRecoveryScope | null
   signal?: AbortSignal
   timeouts?: UpstreamLifecycleTimeouts
 }
@@ -799,6 +832,7 @@ type ResponsesRecoveryReason = "incompatible_reasoning_history"
 interface ResponsesReasoningRecoveryPlan {
   payload: ResponsesPayload
   reason: ResponsesRecoveryReason
+  rejectedInput: Array<ResponseInputItem>
   removedReasoningItems: number
   sourceTransport: ResponsesTransport
 }
@@ -945,6 +979,7 @@ const createResponsesStreamWithHttpFallback = async function* (
     allowHttpFallback: boolean
     headers: Record<string, string>
     payload: ResponsesPayload
+    reasoningRecoveryScope?: ReasoningRecoveryScope | null
     signal?: AbortSignal
     timeouts?: UpstreamLifecycleTimeouts
   },
@@ -968,6 +1003,7 @@ const createResponsesStreamWithHttpFallback = async function* (
             recoveryPlan,
             options.headers,
             {
+              reasoningRecoveryScope: options.reasoningRecoveryScope,
               signal: options.signal,
               timeouts: options.timeouts,
             },
@@ -999,6 +1035,7 @@ const createResponsesStreamWithHttpFallback = async function* (
   }
 
   const fallback = await createHttpResponses(options.payload, options.headers, {
+    reasoningRecoveryScope: options.reasoningRecoveryScope,
     signal: options.signal,
     timeouts: options.timeouts,
   })
@@ -1098,6 +1135,7 @@ const planResponsesReasoningHistoryRecovery = ({
   return {
     payload: recoveryPayload,
     reason: "incompatible_reasoning_history",
+    rejectedInput: payload.input,
     removedReasoningItems: payload.input.length - recoveryPayload.input.length,
     sourceTransport,
   }
@@ -1108,6 +1146,10 @@ const executeResponsesReasoningHistoryRecovery = async (
   headers: Record<string, string>,
   options: HttpResponsesOptions,
 ): Promise<CreateResponsesReturn> => {
+  responsesReasoningRecoveryRegistry.rememberRejected(
+    options.reasoningRecoveryScope ?? null,
+    plan.rejectedInput,
+  )
   consola.warn("responses.reasoning_history_recovery", {
     reason: plan.reason,
     removedReasoningItems: plan.removedReasoningItems,
