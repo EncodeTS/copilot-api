@@ -143,6 +143,12 @@ If you prefer a GUI, this repository also includes an Electron desktop app in `d
 
 The settings screen also exposes `OAuth App`, `API Home`, `Enterprise URL`, verbose logging, and minimize-to-tray. Desktop packages for this fork are published in GitHub Releases:
 
+Handler logs use private permissions (`0700` for the directory and `0600` for opened files). Verbose mode records content-free structured summaries by default, including event type, model, item counts, payload byte size, and error code where available; it omits prompts, message text, tool input/output, reasoning, encrypted content, and signatures. RC9-managed logs use a daily `*.part-N.log` name, are retained for 7 days, rotate at 10 MiB per file, and are pruned oldest-first to a 100 MiB managed-log budget. The byte limits can be changed with `COPILOT_API_LOG_MAX_FILE_BYTES` and `COPILOT_API_LOG_MAX_TOTAL_BYTES`.
+
+Pre-RC9 handler logs (the old `*-YYYY-MM-DD.log` form) and unrelated archive or private-audit files are deliberately left untouched and excluded from automatic retention/budget cleanup. Preserve or remove those legacy files manually after any evidence you need has been copied elsewhere.
+
+For short-lived local diagnosis only, setting `COPILOT_API_LOG_FULL_PAYLOADS=1` together with verbose mode opts into payload content. Credential fields, authorization/cookie values, bearer tokens, signed query credentials, and media bodies/locators remain redacted. Full payload logs can still contain private prompts and model/tool output, so disable the opt-in immediately after diagnosis.
+
 https://github.com/EncodeTS/copilot-api/releases
 
 Choose `*-arm64.dmg` for Apple Silicon Macs and `*-x64.dmg` for Intel Macs. These fork desktop builds are unsigned/ad-hoc signed and not notarized.
@@ -523,7 +529,7 @@ The following command line options are available for the `start` command:
 | Option         | Description                                                                   | Default | Alias |
 | -------------- | ----------------------------------------------------------------------------- | ------- | ----- |
 | --port         | Port to listen on                                                             | 4141    | -p    |
-| --verbose      | Enable verbose logging                                                        | false   | -v    |
+| --verbose      | Enable structured diagnostic logging (payload content omitted by default)     | false   | -v    |
 | --github-token | Provide GitHub token directly (must be generated using the `auth` subcommand) | none    | -g    |
 | --claude-code  | Generate a command to launch Claude Code with Copilot API config              | false   | -c    |
 | --show-token   | Show GitHub and Copilot tokens on fetch and refresh                           | false   | none  |
@@ -534,7 +540,7 @@ The following command line options are available for the `start` command:
 | Option       | Description                                                                                                                  | Default | Alias |
 | ------------ | ---------------------------------------------------------------------------------------------------------------------------- | ------- | ----- |
 | --provider   | Provider to log in with or configure (`copilot`, `codex`, `opencode-go`, `deepseek`, `dashscope`, `openrouter`, or `custom`) | prompt  | none  |
-| --verbose    | Enable verbose logging                                                                                                       | false   | -v    |
+| --verbose    | Enable structured diagnostic logging (payload content omitted by default)                                                    | false   | -v    |
 | --show-token | Show GitHub token on auth                                                                                                    | false   | none  |
 
 Use `copilot-api auth login --provider copilot` only when you want to enable the GitHub Copilot provider. Copilot is not required for `codex` or third-party provider-only usage.

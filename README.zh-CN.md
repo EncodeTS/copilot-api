@@ -143,6 +143,12 @@ docker run -p 4141:4141 -e GH_TOKEN=your_github_token_here copilot-api
 
 设置页还可以配置 `OAuth App`、`API Home`、`Enterprise URL`、详细日志以及最小化到托盘。本 fork 的桌面安装包发布在 GitHub Releases：
 
+handler 日志使用私有权限（目录 `0700`，所有新建或已打开的文件 `0600`）。详细日志默认只记录不含内容的结构化摘要；在数据存在时保留事件类型、模型、条目数量、payload 字节数和错误码，但不写入提示词、消息文本、工具输入/输出、推理、加密内容或签名。RC9 管理的新日志按天使用 `*.part-N.log` 命名，保留 7 天，单文件达到 10 MiB 时轮转，并按最旧优先将受管日志总量限制在 100 MiB。可通过 `COPILOT_API_LOG_MAX_FILE_BYTES` 和 `COPILOT_API_LOG_MAX_TOTAL_BYTES` 调整字节上限。
+
+RC9 之前生成的旧格式 handler 日志（`*-YYYY-MM-DD.log`）以及无关的 archive/private-audit 文件会原样保留，也不会计入自动保留期和总量清理。待需要保存的排障证据另行备份后，再手动决定是否删除这些旧文件。
+
+仅在短时本地排障确有需要时，可在开启详细日志的同时显式设置 `COPILOT_API_LOG_FULL_PAYLOADS=1`，以记录 payload 内容。即使开启该选项，credential 字段、Authorization/Cookie、Bearer token、URL 签名参数以及媒体正文/地址仍会脱敏。完整 payload 日志仍可能包含私人提示词和模型/工具输出，排障结束后应立即关闭该选项。
+
 https://github.com/EncodeTS/copilot-api/releases
 
 Apple Silicon Mac 请选择 `*-arm64.dmg`，Intel Mac 请选择 `*-x64.dmg`。本 fork 的桌面构建是 unsigned/ad-hoc signed，未经过 notarization。
@@ -510,7 +516,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
 | 选项           | 说明                                                 | 默认值 | 别名 |
 | -------------- | ---------------------------------------------------- | ------ | ---- |
 | --port         | 监听端口                                             | 4141   | -p   |
-| --verbose      | 启用详细日志                                         | false  | -v   |
+| --verbose      | 启用结构化诊断日志（默认省略 payload 内容）          | false  | -v   |
 | --github-token | 直接提供 GitHub token（必须通过 `auth` 子命令生成）  | 无     | -g   |
 | --claude-code  | 生成一个使用 Copilot API 配置启动 Claude Code 的命令 | false  | -c   |
 | --show-token   | 在获取和刷新时显示 GitHub 与 Copilot token           | false  | 无   |
@@ -521,7 +527,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
 | 选项         | 说明                                                                                                            | 默认值   | 别名 |
 | ------------ | --------------------------------------------------------------------------------------------------------------- | -------- | ---- |
 | --provider   | 要登录或配置的 provider（`copilot`、`codex`、`opencode-go`、`deepseek`、`dashscope`、`openrouter` 或 `custom`） | 交互选择 | 无   |
-| --verbose    | 启用详细日志                                                                                                    | false    | -v   |
+| --verbose    | 启用结构化诊断日志（默认省略 payload 内容）                                                                     | false    | -v   |
 | --show-token | 认证时显示 GitHub token                                                                                         | false    | 无   |
 
 只有在需要启用 GitHub Copilot provider 时，才需要执行 `copilot-api auth login --provider copilot`。使用 `codex` 或第三方 provider-only 模式不要求配置 Copilot。
