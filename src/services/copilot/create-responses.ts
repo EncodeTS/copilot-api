@@ -21,6 +21,7 @@ import {
 import { HTTPError } from "~/lib/error"
 import {
   fetchWithUpstreamLifecycle,
+  UpstreamLifecycleTimeoutError,
   type UpstreamLifecycleTimeouts,
 } from "~/lib/upstream-lifecycle"
 import { state } from "~/lib/state"
@@ -32,6 +33,8 @@ import {
 
 const ENCRYPTED_REASONING_INCLUDE: ResponseIncludable =
   "reasoning.encrypted_content"
+const CONNECTION_OWNERSHIP_ERROR =
+  "input item does not belong to this connection"
 const MAX_RESPONSES_TOOL_GRAPH_ENTRIES = 10_000
 
 export interface ResponsesPayload {
@@ -779,13 +782,31 @@ export const ensureEncryptedReasoningIncluded = (
   payload.include = [...include, ENCRYPTED_REASONING_INCLUDE]
 }
 
+interface HttpResponsesOptions {
+  reasoningRecoveryAttempted?: boolean
+  signal?: AbortSignal
+  timeouts?: UpstreamLifecycleTimeouts
+}
+
+interface ResponsesUpstreamFailure {
+  code: string | null
+  message: string
+  status?: number
+}
+
+type ResponsesRecoveryReason = "incompatible_reasoning_history"
+
+interface ResponsesReasoningRecoveryPlan {
+  payload: ResponsesPayload
+  reason: ResponsesRecoveryReason
+  removedReasoningItems: number
+  sourceTransport: ResponsesTransport
+}
+
 const createHttpResponses = async (
   payload: ResponsesPayload,
   headers: Record<string, string>,
-  options: {
-    signal?: AbortSignal
-    timeouts?: UpstreamLifecycleTimeouts
-  } = {},
+  options: HttpResponsesOptions = {},
 ): Promise<CreateResponsesReturn> => {
   const response = await fetchWithUpstreamLifecycle(
     `${copilotBaseUrl(state)}/responses`,
@@ -803,8 +824,35 @@ const createHttpResponses = async (
   logCopilotRateLimits(response.headers)
 
   if (!response.ok) {
+    const failure = await readResponsesHttpFailure(response)
+    const recoveryPlan = planResponsesReasoningHistoryRecovery({
+      attempted: options.reasoningRecoveryAttempted ?? false,
+      canRetryHttp: true,
+      failure,
+      forwardedChunk: false,
+      payload,
+      signalAborted: options.signal?.aborted ?? false,
+      sourceTransport: "http",
+    })
+    const recovery =
+      recoveryPlan ?
+        await executeResponsesReasoningHistoryRecovery(
+          recoveryPlan,
+          headers,
+          options,
+        )
+      : null
+    if (recovery) {
+      return recovery
+    }
+
     consola.error("Failed to create responses", response)
-    throw new HTTPError("Failed to create responses", response)
+    throw new HTTPError(
+      failure?.message ?
+        `Failed to create responses: ${failure.message}`
+      : "Failed to create responses",
+      response,
+    )
   }
 
   if (payload.stream) {
@@ -902,7 +950,43 @@ const createResponsesStreamWithHttpFallback = async function* (
   },
 ): AsyncGenerator<ResponsesStreamChunk, void, unknown> {
   try {
-    yield* websocketStream
+    let forwardedChunk = false
+    for await (const chunk of websocketStream) {
+      const failure = parseResponsesStreamFailure(chunk)
+      const recoveryPlan = planResponsesReasoningHistoryRecovery({
+        attempted: false,
+        canRetryHttp: options.allowHttpFallback,
+        failure,
+        forwardedChunk,
+        payload: options.payload,
+        signalAborted: options.signal?.aborted ?? false,
+        sourceTransport: "websocket",
+      })
+      const recovery =
+        recoveryPlan ?
+          await executeResponsesReasoningHistoryRecovery(
+            recoveryPlan,
+            options.headers,
+            {
+              signal: options.signal,
+              timeouts: options.timeouts,
+            },
+          )
+        : null
+
+      if (recovery) {
+        if (!isResponsesStream(recovery)) {
+          throw new Error(
+            "Streaming reasoning recovery returned a non-streaming response",
+          )
+        }
+        yield* recovery
+        return
+      }
+
+      forwardedChunk = true
+      yield chunk
+    }
     return
   } catch (error) {
     if (
@@ -922,6 +1006,135 @@ const createResponsesStreamWithHttpFallback = async function* (
     throw new Error("Streaming HTTP fallback returned a non-streaming response")
   }
   yield* fallback
+}
+
+const parseResponsesStreamFailure = (
+  chunk: ResponsesStreamChunk,
+): ResponsesUpstreamFailure | null => {
+  if (!chunk.data || chunk.data === "[DONE]") {
+    return null
+  }
+
+  try {
+    return normalizeResponsesUpstreamFailure(JSON.parse(chunk.data))
+  } catch {
+    return null
+  }
+}
+
+const readResponsesHttpFailure = async (
+  response: Response,
+): Promise<ResponsesUpstreamFailure | null> => {
+  try {
+    const failure = normalizeResponsesUpstreamFailure(
+      JSON.parse(await response.clone().text()),
+    )
+    return failure ? { ...failure, status: response.status } : null
+  } catch (error) {
+    if (
+      error instanceof UpstreamLifecycleTimeoutError
+      || (error instanceof Error && error.name === "AbortError")
+    ) {
+      throw error
+    }
+    return null
+  }
+}
+
+const normalizeResponsesUpstreamFailure = (
+  value: unknown,
+): ResponsesUpstreamFailure | null => {
+  if (!isRecord(value)) {
+    return null
+  }
+
+  const error = isRecord(value.error) ? value.error : value
+  if (typeof error.message !== "string" || error.message.length === 0) {
+    return null
+  }
+
+  return {
+    code: typeof error.code === "string" ? error.code : null,
+    message: error.message,
+  }
+}
+
+const planResponsesReasoningHistoryRecovery = ({
+  attempted,
+  canRetryHttp,
+  failure,
+  forwardedChunk,
+  payload,
+  signalAborted,
+  sourceTransport,
+}: {
+  attempted: boolean
+  canRetryHttp: boolean
+  failure: ResponsesUpstreamFailure | null
+  forwardedChunk: boolean
+  payload: ResponsesPayload
+  signalAborted: boolean
+  sourceTransport: ResponsesTransport
+}): ResponsesReasoningRecoveryPlan | null => {
+  if (
+    attempted
+    || !canRetryHttp
+    || forwardedChunk
+    || signalAborted
+    || failure?.message !== CONNECTION_OWNERSHIP_ERROR
+  ) {
+    return null
+  }
+
+  const recoveryPayload = withoutHistoricalReasoning(payload)
+  if (
+    !recoveryPayload
+    || !Array.isArray(payload.input)
+    || !Array.isArray(recoveryPayload.input)
+  ) {
+    return null
+  }
+
+  return {
+    payload: recoveryPayload,
+    reason: "incompatible_reasoning_history",
+    removedReasoningItems: payload.input.length - recoveryPayload.input.length,
+    sourceTransport,
+  }
+}
+
+const executeResponsesReasoningHistoryRecovery = async (
+  plan: ResponsesReasoningRecoveryPlan,
+  headers: Record<string, string>,
+  options: HttpResponsesOptions,
+): Promise<CreateResponsesReturn> => {
+  consola.warn("responses.reasoning_history_recovery", {
+    reason: plan.reason,
+    removedReasoningItems: plan.removedReasoningItems,
+    retryTransport: "http",
+    sourceTransport: plan.sourceTransport,
+  })
+  return await createHttpResponses(plan.payload, headers, {
+    ...options,
+    reasoningRecoveryAttempted: true,
+  })
+}
+
+const withoutHistoricalReasoning = (
+  payload: ResponsesPayload,
+): ResponsesPayload | null => {
+  if (!Array.isArray(payload.input)) {
+    return null
+  }
+
+  const input = payload.input.filter(
+    (item) => !isRecord(item) || item.type !== "reasoning",
+  )
+  if (input.length === payload.input.length) {
+    return null
+  }
+
+  return { ...payload, input }
 }
 
 const createResponsesSafeStream = async function* (
