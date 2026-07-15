@@ -12,6 +12,7 @@ interface ConfigFileShape {
   builtinProviders?: Record<string, unknown>
   configSchemaVersion?: number
   contextManagement?: {
+    futureMode?: string
     messages?: boolean
     responses?: boolean
   }
@@ -171,6 +172,26 @@ describe("builtin provider config", () => {
 
     expect(readConfigFile(configPath).contextManagement).toEqual({
       responses: false,
+    })
+  })
+
+  test("preserves unknown nested fields after sparse config migration", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {
+      configSchemaVersion: 1,
+      contextManagement: {
+        futureMode: "adaptive",
+        responses: false,
+      },
+    })
+
+    runScript(
+      tempDir,
+      'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
+    )
+
+    expect(readConfigFile(configPath).contextManagement).toEqual({
+      futureMode: "adaptive",
     })
   })
 

@@ -66,6 +66,19 @@ export interface ContextManagementConfig {
   responses?: boolean
 }
 
+const DEPRECATED_REQUEST_REWRITE_CONFIG_KEYS = [
+  "parityFirst",
+  "responsesApiContextManagementModels",
+  "smallModel",
+  "useFunctionApplyPatch",
+] as const
+
+type DeprecatedRequestRewriteConfigKey =
+  (typeof DEPRECATED_REQUEST_REWRITE_CONFIG_KEYS)[number]
+
+type ConfigWithDeprecatedRequestRewrites = AppConfig
+  & Partial<Record<DeprecatedRequestRewriteConfigKey, unknown>>
+
 export interface ModelConfig {
   temperature?: number
   topP?: number
@@ -372,19 +385,12 @@ function createPersistedConfig(
       source.configSchemaVersion
     : 0
   if (sourceSchemaVersion < SPARSE_CONFIG_SCHEMA_VERSION) {
-    return createSparsePersistedConfig(config)
+    return createSparsePersistedConfig(config, source)
   }
 
-  const persisted = { ...source } as AppConfig & {
-    parityFirst?: unknown
-    responsesApiContextManagementModels?: unknown
-    smallModel?: unknown
-    useFunctionApplyPatch?: unknown
-  }
-  delete persisted.parityFirst
-  delete persisted.responsesApiContextManagementModels
-  delete persisted.smallModel
-  delete persisted.useFunctionApplyPatch
+  const { normalizedConfig: persisted } =
+    removeDeprecatedRequestRewriteConfig(source)
+  const persistedRecord = persisted as unknown as Record<string, unknown>
   persisted.configSchemaVersion = config.configSchemaVersion
   persisted.auth = {
     ...source.auth,
@@ -394,8 +400,12 @@ function createPersistedConfig(
   const contextManagement = normalizeContextManagementConfig(
     source.contextManagement,
   )
-  if (Object.keys(contextManagement).length > 0) {
-    persisted.contextManagement = contextManagement
+  const persistedContextManagement = {
+    ...getUnknownContextManagementFields(source.contextManagement),
+    ...contextManagement,
+  }
+  if (Object.keys(persistedContextManagement).length > 0) {
+    persistedRecord.contextManagement = persistedContextManagement
   } else {
     delete persisted.contextManagement
   }
@@ -418,7 +428,10 @@ function createPersistedConfig(
   return persisted
 }
 
-function createSparsePersistedConfig(config: AppConfig): AppConfig {
+function createSparsePersistedConfig(
+  config: AppConfig,
+  source: AppConfig,
+): AppConfig {
   const persisted = { ...config } as Record<string, unknown>
   const nestedDefaultKeys = [
     "auth",
@@ -469,6 +482,18 @@ function createSparsePersistedConfig(config: AppConfig): AppConfig {
     delete persisted.modelResponsesApiCompactThresholds
   }
 
+  const unknownContextManagement = getUnknownContextManagementFields(
+    source.contextManagement,
+  )
+  if (Object.keys(unknownContextManagement).length > 0) {
+    persisted.contextManagement = {
+      ...unknownContextManagement,
+      ...(isPlainRecord(persisted.contextManagement) ?
+        persisted.contextManagement
+      : {}),
+    }
+  }
+
   return persisted as AppConfig
 }
 
@@ -476,25 +501,36 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+function getUnknownContextManagementFields(
+  value: unknown,
+): Record<string, unknown> {
+  if (!isPlainRecord(value)) return {}
+  const unknownFields = { ...value }
+  delete unknownFields.messages
+  delete unknownFields.responses
+  return unknownFields
+}
+
+function removeDeprecatedRequestRewriteConfig(config: AppConfig): {
+  changed: boolean
+  normalizedConfig: ConfigWithDeprecatedRequestRewrites
+} {
+  const normalizedConfig = { ...config } as ConfigWithDeprecatedRequestRewrites
+  const changed = DEPRECATED_REQUEST_REWRITE_CONFIG_KEYS.some((key) =>
+    Object.hasOwn(normalizedConfig, key),
+  )
+  for (const key of DEPRECATED_REQUEST_REWRITE_CONFIG_KEYS) {
+    delete normalizedConfig[key]
+  }
+  return { changed, normalizedConfig }
+}
+
 export function mergeDefaultConfig(config: AppConfig): {
   mergedConfig: AppConfig
   changed: boolean
 } {
-  const normalizedConfig = { ...config } as AppConfig & {
-    parityFirst?: unknown
-    responsesApiContextManagementModels?: unknown
-    smallModel?: unknown
-    useFunctionApplyPatch?: unknown
-  }
-  const hasDeprecatedRequestRewriteConfig =
-    Object.hasOwn(normalizedConfig, "parityFirst")
-    || Object.hasOwn(normalizedConfig, "smallModel")
-    || Object.hasOwn(normalizedConfig, "responsesApiContextManagementModels")
-    || Object.hasOwn(normalizedConfig, "useFunctionApplyPatch")
-  delete normalizedConfig.parityFirst
-  delete normalizedConfig.responsesApiContextManagementModels
-  delete normalizedConfig.smallModel
-  delete normalizedConfig.useFunctionApplyPatch
+  const { changed: hasDeprecatedRequestRewriteConfig, normalizedConfig } =
+    removeDeprecatedRequestRewriteConfig(config)
 
   const legacyContextManagementSchema =
     typeof config.configSchemaVersion !== "number"
