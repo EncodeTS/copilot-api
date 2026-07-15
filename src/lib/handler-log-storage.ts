@@ -1,4 +1,4 @@
-import fs from "node:fs"
+import * as fsPromises from "node:fs/promises"
 import path from "node:path"
 
 export const HANDLER_LOG_DEFAULTS = Object.freeze({
@@ -25,16 +25,22 @@ interface LogFileMetadata {
   size: number
 }
 
+export type HandlerLogFileSystem = Pick<
+  typeof fsPromises,
+  "chmod" | "mkdir" | "open" | "readdir" | "rm" | "stat"
+>
+
 export interface HandlerLogStorage {
   readonly logDirectory: string
   append(baseFilePath: string, line: string): void
-  cleanup(): void
-  close(): void
-  flush(): void
+  cleanup(): Promise<void>
+  close(): Promise<void>
+  flush(): Promise<void>
 }
 
 export interface HandlerLogStorageOptions {
   cleanupIntervalMs?: number
+  fileSystem?: HandlerLogFileSystem
   flushIntervalMs?: number
   logDirectory: string
   maxBufferSize?: number
@@ -42,7 +48,7 @@ export interface HandlerLogStorageOptions {
   maxTotalBytes?: number
   now?: () => number
   onError?: (message: string, error: unknown) => void
-  registerCleanup?: (cleanup: () => void) => void
+  registerCleanup?: (cleanup: () => Promise<void>) => void
   retentionDays?: number
   startTimers?: boolean
 }
@@ -59,6 +65,7 @@ export const isManagedHandlerLogFilename = (filename: string): boolean =>
 export const createHandlerLogStorage = (
   options: HandlerLogStorageOptions,
 ): HandlerLogStorage => {
+  const fileSystem = options.fileSystem ?? fsPromises
   const maxBufferSize = positiveInteger(
     options.maxBufferSize,
     HANDLER_LOG_DEFAULTS.maxBufferSize,
@@ -78,20 +85,49 @@ export const createHandlerLogStorage = (
     * 60
     * 1000
   const now = options.now ?? Date.now
-  const onError = options.onError ?? (() => {})
   const buffers = new Map<string, Array<string>>()
   const activeSegments = new Map<string, ActiveLogSegment>()
 
+  let operationQueue = Promise.resolve()
   let initialized = false
+  let initializationScheduled = false
   let cleanupRegistered = false
+  let timersStarted = false
+  let closing = false
+  let closePromise: Promise<void> | undefined
   let flushInterval: ReturnType<typeof setInterval> | undefined
   let cleanupInterval: ReturnType<typeof setInterval> | undefined
 
-  const ensureDirectory = () => {
-    if (!fs.existsSync(options.logDirectory)) {
-      fs.mkdirSync(options.logDirectory, { mode: 0o700, recursive: true })
+  const reportError = (message: string, error: unknown) => {
+    try {
+      options.onError?.(message, error)
+    } catch {
+      // Logging must not fail because an error reporter failed.
     }
-    fs.chmodSync(options.logDirectory, 0o700)
+  }
+
+  const enqueue = (
+    failureMessage: string,
+    operation: () => Promise<void>,
+  ): Promise<void> => {
+    const result = operationQueue.then(async () => {
+      try {
+        await operation()
+      } catch (error) {
+        reportError(failureMessage, error)
+      }
+    })
+    operationQueue = result
+    return result
+  }
+
+  const ensureDirectory = async () => {
+    const createdDirectory = await fileSystem.mkdir(options.logDirectory, {
+      mode: 0o700,
+      recursive: true,
+    })
+    if (createdDirectory !== undefined) activeSegments.clear()
+    await fileSystem.chmod(options.logDirectory, 0o700)
   }
 
   const getSegmentPath = (baseFilePath: string, index: number): string => {
@@ -105,34 +141,34 @@ export const createHandlerLogStorage = (
     }
   }
 
-  const removeManagedFile = (filePath: string): boolean => {
+  const removeManagedFile = async (filePath: string): Promise<boolean> => {
     try {
-      fs.rmSync(filePath)
+      await fileSystem.rm(filePath)
       forgetSegment(filePath)
       return true
     } catch (error) {
-      onError("Failed to remove handler log", error)
+      reportError("Failed to remove handler log", error)
       return false
     }
   }
 
-  const cleanupManagedLogs = () => {
+  const cleanupManagedLogs = async () => {
     const files: Array<LogFileMetadata> = []
 
-    for (const entry of fs.readdirSync(options.logDirectory)) {
+    for (const entry of await fileSystem.readdir(options.logDirectory)) {
       if (!isManagedHandlerLogFilename(entry)) continue
 
       const filePath = path.join(options.logDirectory, entry)
-      let stats: fs.Stats
+      let stats: Awaited<ReturnType<HandlerLogFileSystem["stat"]>>
       try {
-        stats = fs.statSync(filePath)
+        stats = await fileSystem.stat(filePath)
       } catch {
         continue
       }
       if (!stats.isFile()) continue
 
       if (now() - stats.mtimeMs > retentionMs) {
-        removeManagedFile(filePath)
+        await removeManagedFile(filePath)
         continue
       }
       files.push({ filePath, mtimeMs: stats.mtimeMs, size: stats.size })
@@ -148,47 +184,76 @@ export const createHandlerLogStorage = (
     )
     for (const file of files) {
       if (totalBytes <= maxTotalBytes) break
-      if (removeManagedFile(file.filePath)) totalBytes -= file.size
+      if (await removeManagedFile(file.filePath)) totalBytes -= file.size
     }
   }
 
-  const initialize = () => {
-    if (initialized) return
-    ensureDirectory()
-    initialized = true
-    cleanupManagedLogs()
+  const startRuntime = async (): Promise<boolean> => {
+    try {
+      await ensureDirectory()
+      if (initialized) return true
 
-    if (options.registerCleanup && !cleanupRegistered) {
-      options.registerCleanup(close)
-      cleanupRegistered = true
+      await cleanupManagedLogs()
+      initialized = true
+      if (options.registerCleanup && !cleanupRegistered) {
+        options.registerCleanup(close)
+        cleanupRegistered = true
+      }
+      if (options.startTimers === false || timersStarted || closing) return true
+
+      flushInterval = setInterval(
+        () => {
+          void flush().catch((error: unknown) => {
+            reportError("Failed to flush handler logs", error)
+          })
+        },
+        positiveInteger(
+          options.flushIntervalMs,
+          HANDLER_LOG_DEFAULTS.flushIntervalMs,
+        ),
+      )
+      flushInterval.unref()
+      cleanupInterval = setInterval(
+        () => {
+          void cleanup().catch((error: unknown) => {
+            reportError("Failed to clean handler logs", error)
+          })
+        },
+        positiveInteger(
+          options.cleanupIntervalMs,
+          HANDLER_LOG_DEFAULTS.cleanupIntervalMs,
+        ),
+      )
+      cleanupInterval.unref()
+      timersStarted = true
+      return true
+    } catch (error) {
+      reportError("Failed to initialize handler logs", error)
+      return false
     }
-    if (options.startTimers === false) return
-
-    flushInterval = setInterval(
-      flush,
-      positiveInteger(
-        options.flushIntervalMs,
-        HANDLER_LOG_DEFAULTS.flushIntervalMs,
-      ),
-    )
-    flushInterval.unref()
-    cleanupInterval = setInterval(
-      cleanup,
-      positiveInteger(
-        options.cleanupIntervalMs,
-        HANDLER_LOG_DEFAULTS.cleanupIntervalMs,
-      ),
-    )
-    cleanupInterval.unref()
   }
 
-  const getLatestSegmentIndex = (baseFilePath: string): number => {
+  const scheduleInitialization = () => {
+    if (initialized || initializationScheduled || closing) return
+    initializationScheduled = true
+    void enqueue("Failed to initialize handler logs", async () => {
+      try {
+        await startRuntime()
+      } finally {
+        initializationScheduled = false
+      }
+    })
+  }
+
+  const getLatestSegmentIndex = async (
+    baseFilePath: string,
+  ): Promise<number> => {
     const extension = path.extname(baseFilePath)
     const stem = path.basename(baseFilePath, extension)
     const prefix = `${stem}.part-`
     let latestIndex = -1
 
-    for (const entry of fs.readdirSync(options.logDirectory)) {
+    for (const entry of await fileSystem.readdir(options.logDirectory)) {
       if (!entry.startsWith(prefix) || !entry.endsWith(extension)) continue
       const indexText = entry.slice(prefix.length, -extension.length)
       if (!/^\d+$/u.test(indexText)) continue
@@ -197,15 +262,17 @@ export const createHandlerLogStorage = (
     return Math.max(latestIndex, 0)
   }
 
-  const getActiveSegment = (baseFilePath: string): ActiveLogSegment => {
+  const getActiveSegment = async (
+    baseFilePath: string,
+  ): Promise<ActiveLogSegment> => {
     const cached = activeSegments.get(baseFilePath)
     if (cached) return cached
 
-    let index = getLatestSegmentIndex(baseFilePath)
+    let index = await getLatestSegmentIndex(baseFilePath)
     let filePath = getSegmentPath(baseFilePath, index)
     let size = 0
     try {
-      size = fs.statSync(filePath).size
+      size = (await fileSystem.stat(filePath)).size
     } catch {
       // Created lazily on first flush.
     }
@@ -221,8 +288,10 @@ export const createHandlerLogStorage = (
     return segment
   }
 
-  const rotateSegment = (baseFilePath: string): ActiveLogSegment => {
-    const current = getActiveSegment(baseFilePath)
+  const rotateSegment = async (
+    baseFilePath: string,
+  ): Promise<ActiveLogSegment> => {
+    const current = await getActiveSegment(baseFilePath)
     const next = {
       filePath: getSegmentPath(baseFilePath, current.index + 1),
       index: current.index + 1,
@@ -244,25 +313,24 @@ export const createHandlerLogStorage = (
     return end
   }
 
-  const writeChunk = (filePath: string, chunk: Buffer) => {
-    const descriptor = fs.openSync(filePath, "a", 0o600)
+  const writeChunk = async (filePath: string, chunk: Buffer) => {
+    const handle = await fileSystem.open(filePath, "a", 0o600)
     try {
-      fs.fchmodSync(descriptor, 0o600)
-      let offset = 0
-      while (offset < chunk.length) {
-        offset += fs.writeSync(descriptor, chunk, offset)
-      }
+      await handle.chmod(0o600)
+      await handle.writeFile(chunk)
     } finally {
-      fs.closeSync(descriptor)
+      await handle.close()
     }
   }
 
-  const writeWithRotation = (baseFilePath: string, content: Buffer) => {
+  const writeWithRotation = async (baseFilePath: string, content: Buffer) => {
     let offset = 0
 
     while (offset < content.length) {
-      let segment = getActiveSegment(baseFilePath)
-      if (segment.size >= maxFileBytes) segment = rotateSegment(baseFilePath)
+      let segment = await getActiveSegment(baseFilePath)
+      if (segment.size >= maxFileBytes) {
+        segment = await rotateSegment(baseFilePath)
+      }
 
       const chunkEnd = getUtf8SafeChunkEnd(
         content,
@@ -270,60 +338,97 @@ export const createHandlerLogStorage = (
         Math.min(offset + maxFileBytes - segment.size, content.length),
       )
       if (chunkEnd === offset) {
-        rotateSegment(baseFilePath)
+        await rotateSegment(baseFilePath)
         continue
       }
 
       const chunk = content.subarray(offset, chunkEnd)
-      writeChunk(segment.filePath, chunk)
+      await writeChunk(segment.filePath, chunk)
       segment.size += chunk.length
       offset = chunkEnd
     }
   }
 
-  const flushBaseFile = (baseFilePath: string) => {
-    const buffer = buffers.get(baseFilePath)
-    if (!buffer || buffer.length === 0) return
+  const flushBaseFile = async (baseFilePath: string): Promise<boolean> => {
+    const currentBuffer = buffers.get(baseFilePath)
+    if (!currentBuffer || currentBuffer.length === 0) return false
 
-    buffers.set(baseFilePath, [])
+    const snapshot = currentBuffer.slice()
     try {
-      writeWithRotation(
+      await writeWithRotation(
         baseFilePath,
-        Buffer.from(buffer.join("\n") + "\n", "utf8"),
+        Buffer.from(snapshot.join("\n") + "\n", "utf8"),
       )
-      cleanupManagedLogs()
     } catch (error) {
-      onError("Failed to write handler log", error)
+      activeSegments.delete(baseFilePath)
+      reportError("Failed to write handler log", error)
+      return false
+    }
+
+    const latestBuffer = buffers.get(baseFilePath)
+    latestBuffer?.splice(0, snapshot.length)
+    if (!latestBuffer || latestBuffer.length === 0) buffers.delete(baseFilePath)
+    return true
+  }
+
+  const flushBatch = async () => {
+    let wrote = false
+    for (const baseFilePath of Array.from(buffers.keys())) {
+      if (await flushBaseFile(baseFilePath)) wrote = true
+    }
+    if (!wrote) return
+
+    try {
+      await cleanupManagedLogs()
+    } catch (error) {
+      reportError("Failed to clean handler logs", error)
     }
   }
 
   function append(baseFilePath: string, line: string): void {
-    initialize()
     const buffer = buffers.get(baseFilePath) ?? []
     buffer.push(line)
     buffers.set(baseFilePath, buffer)
-    if (buffer.length >= maxBufferSize) flushBaseFile(baseFilePath)
+    scheduleInitialization()
+    if (buffer.length >= maxBufferSize) {
+      void flush().catch((error: unknown) => {
+        reportError("Failed to flush handler logs", error)
+      })
+    }
   }
 
-  function flush(): void {
-    initialize()
-    for (const baseFilePath of buffers.keys()) flushBaseFile(baseFilePath)
+  function flush(): Promise<void> {
+    return enqueue("Failed to flush handler logs", async () => {
+      if (!(await startRuntime())) return
+      await flushBatch()
+    })
   }
 
-  function cleanup(): void {
-    initialize()
-    cleanupManagedLogs()
+  function cleanup(): Promise<void> {
+    return enqueue("Failed to clean handler logs", async () => {
+      if (!(await startRuntime())) return
+      try {
+        await cleanupManagedLogs()
+      } catch (error) {
+        reportError("Failed to clean handler logs", error)
+      }
+    })
   }
 
-  function close(): void {
-    if (!initialized) return
+  function close(): Promise<void> {
+    if (closePromise) return closePromise
+    closing = true
     if (flushInterval) clearInterval(flushInterval)
     if (cleanupInterval) clearInterval(cleanupInterval)
     flushInterval = undefined
     cleanupInterval = undefined
-    for (const baseFilePath of buffers.keys()) flushBaseFile(baseFilePath)
-    buffers.clear()
-    activeSegments.clear()
+
+    closePromise = enqueue("Failed to close handler logs", async () => {
+      if (buffers.size > 0 && (await startRuntime())) await flushBatch()
+      buffers.clear()
+      activeSegments.clear()
+    })
+    return closePromise
   }
 
   return {

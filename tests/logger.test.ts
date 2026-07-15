@@ -368,7 +368,7 @@ test("debugJson writes its structured summary to the handler log", () => {
   }
 })
 
-test("handler logger emits safe summaries through injected storage", () => {
+test("handler logger emits safe summaries through injected storage", async () => {
   const logDirectory = fs.mkdtempSync(
     path.join(os.tmpdir(), "copilot-api-injected-logger-"),
   )
@@ -413,7 +413,7 @@ test("handler logger emits safe summaries through injected storage", () => {
         ),
     )
     createHandlerLogger("!!!", { storage }).warn("")
-    storage.flush()
+    await storage.flush()
 
     const dateKey = new Date().toLocaleDateString("sv-SE")
     const contents = fs.readFileSync(
@@ -433,7 +433,7 @@ test("handler logger emits safe summaries through injected storage", () => {
       fs.existsSync(path.join(logDirectory, `handler-${dateKey}.part-0.log`)),
     ).toBeTrue()
   } finally {
-    storage.close()
+    await storage.close()
     fs.rmSync(logDirectory, { force: true, recursive: true })
   }
 })
