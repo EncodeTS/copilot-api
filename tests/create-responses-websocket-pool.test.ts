@@ -16,6 +16,7 @@ type MockWebSocketInit = {
 }
 
 const originalClearTimeout = globalThis.clearTimeout
+const originalFetch = globalThis.fetch
 const originalSetTimeout = globalThis.setTimeout
 const proxyEnvKeys = [
   "http_proxy",
@@ -47,6 +48,7 @@ class MockWebSocket {
   static closeAfterComplete = false
   static failOpen = false
   static failOpenEvent: ListenerEvent | null = null
+  static neverOpen = false
   static instances: Array<MockWebSocket> = []
 
   readonly sent: Array<string> = []
@@ -61,6 +63,9 @@ class MockWebSocket {
     this.url = url
     MockWebSocket.instances.push(this)
     originalSetTimeout(() => {
+      if (MockWebSocket.neverOpen) {
+        return
+      }
       if (MockWebSocket.failOpen) {
         this.readyState = MockWebSocket.CLOSED
         this.emit("error", MockWebSocket.failOpenEvent ?? {})
@@ -208,6 +213,7 @@ beforeEach(() => {
   MockWebSocket.closeAfterComplete = false
   MockWebSocket.failOpen = false
   MockWebSocket.failOpenEvent = null
+  MockWebSocket.neverOpen = false
   MockWebSocket.instances = []
   state.accountType = "individual"
   state.copilotApiUrl = "https://api.githubcopilot.com"
@@ -221,6 +227,7 @@ afterEach(() => {
   MockWebSocket.closeAfterComplete = false
   MockWebSocket.failOpen = false
   MockWebSocket.failOpenEvent = null
+  MockWebSocket.neverOpen = false
   for (const websocket of MockWebSocket.instances) {
     websocket.close()
   }
@@ -233,6 +240,7 @@ afterEach(() => {
   ;(
     globalThis as unknown as { clearTimeout: typeof clearTimeout }
   ).clearTimeout = originalClearTimeout
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
   ;(globalThis as unknown as { setTimeout: typeof setTimeout }).setTimeout =
     originalSetTimeout
 })
@@ -271,6 +279,284 @@ test("Responses websocket open failure includes the underlying reason", async ()
   expect(chunks[0]?.event).toBe("error")
   expect(chunks[0]?.data).toContain(
     '"message":"Failed to create responses websocket: tls handshake failed"',
+  )
+})
+
+test("Responses websocket falls back to HTTP when opening fails before send", async () => {
+  MockWebSocket.failOpen = true
+  const fetchMock = mock(() =>
+    Promise.resolve(
+      new Response(
+        [
+          "event: response.completed",
+          `data: ${JSON.stringify({
+            response: createResponsesResult("gpt-test", "resp-http-fallback"),
+            sequence_number: 1,
+            type: "response.completed",
+          })}`,
+          "",
+          "",
+        ].join("\n"),
+        {
+          headers: { "content-type": "text/event-stream" },
+        },
+      ),
+    ),
+  )
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const response = await createResponses(
+    {
+      input: "hello",
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      allowHttpFallback: true,
+      initiator: "user",
+      requestId: "open-fallback",
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
+
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("response.completed")
+  expect(chunks[0]?.data).toContain('"id":"resp-http-fallback"')
+})
+
+test("Responses websocket times out while connecting", async () => {
+  MockWebSocket.neverOpen = true
+
+  const response = await createResponses(
+    {
+      input: "hello",
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      initiator: "user",
+      requestId: "connect-timeout",
+      timeouts: { websocketConnectMs: 5 },
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+  await waitFor(() => MockWebSocket.instances.length === 1)
+  const websocket = MockWebSocket.instances[0]
+  const cleanupTimer = originalSetTimeout(() => {
+    websocket?.emitError({
+      error: new Error("forced test cleanup"),
+    })
+  }, 20)
+
+  const chunks = await chunksPromise
+  originalClearTimeout(cleanupTimer)
+
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("error")
+  expect(chunks[0]?.data).toContain(
+    '"message":"Upstream WebSocket connect timed out after 5ms"',
+  )
+})
+
+test("Responses websocket times out while waiting for the first frame", async () => {
+  MockWebSocket.autoComplete = false
+  const fetchMock = mock(() =>
+    Promise.resolve(new Response("unexpected HTTP fallback")),
+  )
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const response = await createResponses(
+    {
+      input: "hello",
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      allowHttpFallback: true,
+      initiator: "user",
+      requestId: "first-frame-timeout",
+      timeouts: {
+        websocketFirstFrameMs: 5,
+        websocketInactivityMs: 100,
+        websocketTotalMs: 100,
+      },
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  const websocket = MockWebSocket.instances[0]
+  const cleanupTimer = originalSetTimeout(() => {
+    websocket?.emitError({
+      error: new Error("forced test cleanup"),
+    })
+  }, 20)
+
+  const chunks = await chunksPromise
+  originalClearTimeout(cleanupTimer)
+
+  expect(chunks).toHaveLength(1)
+  expect(fetchMock).not.toHaveBeenCalled()
+  expect(chunks[0]?.event).toBe("error")
+  expect(chunks[0]?.data).toContain(
+    '"message":"Upstream WebSocket first frame timed out after 5ms"',
+  )
+})
+
+test("Responses websocket times out after an inactivity gap", async () => {
+  MockWebSocket.autoComplete = false
+
+  const response = await createResponses(
+    {
+      input: "hello",
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      initiator: "user",
+      requestId: "inactivity-timeout",
+      timeouts: {
+        websocketFirstFrameMs: 100,
+        websocketInactivityMs: 5,
+        websocketTotalMs: 100,
+      },
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  const websocket = MockWebSocket.instances[0]
+  await new Promise<void>((resolve) => originalSetTimeout(resolve, 0))
+  websocket?.emitMessage(
+    JSON.stringify({
+      response: createResponsesResult("gpt-test", "resp-partial"),
+      sequence_number: 0,
+      type: "response.created",
+    }),
+  )
+  const cleanupTimer = originalSetTimeout(() => {
+    websocket?.emitError({
+      error: new Error("forced test cleanup"),
+    })
+  }, 20)
+
+  const chunks = await chunksPromise
+  originalClearTimeout(cleanupTimer)
+
+  expect(chunks.at(-1)?.event).toBe("error")
+  expect(chunks.at(-1)?.data).toContain(
+    '"message":"Upstream WebSocket inactivity timed out after 5ms"',
+  )
+})
+
+test("Responses websocket enforces a total request deadline", async () => {
+  MockWebSocket.autoComplete = false
+
+  const response = await createResponses(
+    {
+      input: "hello",
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      initiator: "user",
+      requestId: "total-timeout",
+      timeouts: {
+        websocketFirstFrameMs: 100,
+        websocketInactivityMs: 100,
+        websocketTotalMs: 10,
+      },
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  const websocket = MockWebSocket.instances[0]
+  await new Promise<void>((resolve) => originalSetTimeout(resolve, 0))
+  const emitProgress = () => {
+    if (websocket?.readyState !== MockWebSocket.OPEN) {
+      return
+    }
+    websocket.emitMessage(
+      JSON.stringify({
+        response: createResponsesResult("gpt-test", "resp-progress"),
+        sequence_number: 0,
+        type: "response.in_progress",
+      }),
+    )
+    originalSetTimeout(emitProgress, 2)
+  }
+  emitProgress()
+  const cleanupTimer = originalSetTimeout(() => {
+    websocket?.emitError({
+      error: new Error("forced test cleanup"),
+    })
+  }, 30)
+
+  const chunks = await chunksPromise
+  originalClearTimeout(cleanupTimer)
+
+  expect(chunks.at(-1)?.event).toBe("error")
+  expect(chunks.at(-1)?.data).toContain(
+    '"message":"Upstream WebSocket total timed out after 10ms"',
+  )
+})
+
+test("Responses websocket closes after caller aborts a partial stream", async () => {
+  MockWebSocket.autoComplete = false
+  const fetchMock = mock(() =>
+    Promise.resolve(new Response("unexpected HTTP fallback")),
+  )
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+  const controller = new AbortController()
+
+  const response = await createResponses(
+    {
+      input: "hello",
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      allowHttpFallback: true,
+      initiator: "user",
+      requestId: "caller-abort",
+      signal: controller.signal,
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  const websocket = MockWebSocket.instances[0]
+  await new Promise<void>((resolve) => originalSetTimeout(resolve, 0))
+  websocket?.emitMessage(
+    JSON.stringify({
+      response: createResponsesResult("gpt-test", "resp-partial"),
+      sequence_number: 0,
+      type: "response.created",
+    }),
+  )
+  await waitFor(() => websocket?.readyState === MockWebSocket.OPEN)
+  controller.abort(new Error("client disconnected after partial response"))
+
+  const chunks = await chunksPromise
+
+  expect(fetchMock).not.toHaveBeenCalled()
+  expect(websocket?.readyState).toBe(MockWebSocket.CLOSED)
+  expect(chunks.at(-1)?.event).toBe("error")
+  expect(chunks.at(-1)?.data).toContain(
+    '"message":"client disconnected after partial response"',
   )
 })
 

@@ -270,6 +270,100 @@ describe("sanitizeIdeTools", () => {
 })
 
 describe("prepareMessagesApiPayload", () => {
+  test("removes unsupported cache scope from every native Messages marker", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4.8",
+      max_tokens: 128,
+      cache_control: {
+        type: "ephemeral",
+        scope: "global",
+      },
+      system: [
+        {
+          type: "text",
+          text: "system prompt",
+          cache_control: {
+            type: "ephemeral",
+            ttl: "1h",
+            scope: "global",
+          },
+        },
+      ],
+      tools: [
+        {
+          name: "lookup",
+          input_schema: { type: "object" },
+          cache_control: {
+            type: "ephemeral",
+            scope: "global",
+          },
+        },
+      ],
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tool-1",
+              cache_control: {
+                type: "ephemeral",
+                scope: "global",
+              },
+              content: [
+                {
+                  type: "text",
+                  text: "result",
+                  cache_control: {
+                    type: "ephemeral",
+                    scope: "global",
+                  },
+                },
+              ],
+            },
+            {
+              type: "text",
+              text: "continue",
+              cache_control: {
+                type: "ephemeral",
+                scope: "global",
+              },
+            },
+          ],
+        },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "tool-2",
+              name: "lookup",
+              input: {},
+              cache_control: {
+                type: "ephemeral",
+                scope: "global",
+              },
+            },
+          ],
+        },
+      ],
+    }
+
+    prepareMessagesApiPayload(payload)
+
+    expect(JSON.stringify(payload)).not.toContain('"scope"')
+    expect(
+      Array.isArray(payload.system) ?
+        payload.system[0].cache_control
+      : undefined,
+    ).toEqual({
+      type: "ephemeral",
+      ttl: "1h",
+    })
+    expect(payload.tools?.[0].cache_control).toEqual({ type: "ephemeral" })
+    expect(payload.cache_control).toBeUndefined()
+  })
+
   test("strips cache_control scope, filters thinking blocks, and enables adaptive thinking", () => {
     const payload: AnthropicMessagesPayload = {
       model: "gpt-5.4",
@@ -354,6 +448,68 @@ describe("prepareMessagesApiPayload", () => {
       display: "summarized",
     })
     expect(payload.output_config).toEqual({ effort: "xhigh" })
+  })
+
+  test("removes OpenAI bridge reasoning carriers before native Claude forwarding", () => {
+    const versionedCarrier =
+      "copilot-api-openai-reasoning-v1:"
+      + Buffer.from(
+        JSON.stringify({
+          id: "reasoning-1",
+          type: "reasoning",
+          summary: [{ type: "summary_text", text: "Bridge summary" }],
+          encrypted_content: "opaque-openai-carrier",
+          status: "completed",
+        }),
+        "utf8",
+      ).toString("base64url")
+    const legacyCarrier = `${"A".repeat(96)}@${"B".repeat(96)}`
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4.8",
+      max_tokens: 128,
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "thinking",
+              thinking: "Bridge summary",
+              signature: versionedCarrier,
+            },
+            {
+              type: "thinking",
+              thinking: "Legacy bridge summary",
+              signature: legacyCarrier,
+            },
+            {
+              type: "thinking",
+              thinking: "Native Claude summary",
+              signature: "native-anthropic-signature",
+            },
+          ],
+        },
+        { role: "user", content: "continue" },
+      ],
+    }
+
+    prepareMessagesApiPayload(payload, {
+      capabilities: {
+        supports: {
+          adaptive_thinking: true,
+        },
+      },
+    } as never)
+
+    expect(payload.messages[0]).toEqual({
+      role: "assistant",
+      content: [
+        {
+          type: "thinking",
+          thinking: "Native Claude summary",
+          signature: "native-anthropic-signature",
+        },
+      ],
+    })
   })
 
   test("uses adaptive thinking for Claude Opus versions at least 4.7", () => {

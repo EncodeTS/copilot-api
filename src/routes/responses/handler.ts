@@ -8,6 +8,7 @@ import {
 } from "~/lib/config"
 import { createHandlerLogger, debugJson, debugJsonTail } from "~/lib/logger"
 import { parseProviderModelAlias } from "~/lib/provider-model"
+import { getResponsesEndpointCapabilities } from "~/lib/responses-capabilities"
 import { handleProviderResponsesForProvider } from "~/routes/provider/responses/handler"
 import { state } from "~/lib/state"
 import {
@@ -62,6 +63,21 @@ export const handleResponses = async (c: Context) => {
     })
   }
 
+  const unsupportedIntent = getUnsupportedCopilotResponsesIntent(payload)
+  if (unsupportedIntent) {
+    return c.json(
+      {
+        error: {
+          code: "unsupported_value",
+          message: `GitHub Copilot Responses does not support ${unsupportedIntent.label}; the request was not modified.`,
+          param: unsupportedIntent.param,
+          type: "invalid_request_error",
+        },
+      },
+      400,
+    )
+  }
+
   debugJsonTail(logger, "Responses request payload:", {
     value: payload,
     tailLength: 2_000,
@@ -88,8 +104,6 @@ export const handleResponses = async (c: Context) => {
     model: payload.model,
   })
 
-  removeUnsupportedTools(payload)
-
   if (!responsesHandlerDependencies.isResponsesApiWebSearchEnabled()) {
     removeWebSearchTool(payload)
   }
@@ -98,6 +112,7 @@ export const handleResponses = async (c: Context) => {
     (model) => model.id === payload.model,
   )
   const responsesTransport = getResponsesTransportForModel(selectedModel)
+  const endpointCapabilities = getResponsesEndpointCapabilities(selectedModel)
 
   if (!responsesTransport) {
     return c.json(
@@ -138,11 +153,14 @@ export const handleResponses = async (c: Context) => {
     createResponses: responsesHandlerDependencies.createResponses,
     logger,
     requestOptions: {
+      allowHttpFallback:
+        responsesTransport === "websocket" && endpointCapabilities.http,
       vision,
       initiator,
       subagentMarker,
       requestId,
       sessionId: fallbackSessionId,
+      signal: c.req.raw.signal,
       transport: responsesTransport,
     },
     selectedModel,
@@ -267,23 +285,20 @@ const removeWebSearchTool = (payload: ResponsesPayload): void => {
   })
 }
 
-const COPILOT_UNSUPPORTED_TOOL_TYPES = new Set(["image_generation"])
-
-export const removeUnsupportedTools = (payload: ResponsesPayload): void => {
-  if (!Array.isArray(payload.tools) || payload.tools.length === 0) return
-
-  const dropped: Array<string> = []
-  payload.tools = payload.tools.filter((t) => {
-    const type = t.type as string
-    if (COPILOT_UNSUPPORTED_TOOL_TYPES.has(type)) {
-      dropped.push(type)
-      return false
-    }
-    return true
-  })
-  if (dropped.length > 0) {
-    logger.debug("Removed unsupported tools:", dropped)
+const getUnsupportedCopilotResponsesIntent = (
+  payload: ResponsesPayload,
+): { label: string; param: string } | undefined => {
+  if (payload.background === true) {
+    return { label: "background", param: "background" }
   }
+  if (
+    payload.tools?.some(
+      (tool) => (tool as { type?: unknown }).type === "image_generation",
+    )
+  ) {
+    return { label: "image_generation", param: "tools" }
+  }
+  return undefined
 }
 
 const getIncomingResponsesSessionId = (c: Context): string | undefined =>

@@ -2,10 +2,18 @@ import consola from "consola"
 import { getProxyForUrl } from "proxy-from-env"
 import { WebSocket } from "undici"
 
+import {
+  resolveUpstreamLifecycleTimeouts,
+  UpstreamLifecycleTimeoutError,
+  type UpstreamLifecycleTimeouts,
+} from "~/lib/upstream-lifecycle"
+
 export interface PooledWebSocketRequest<TPayload> {
   headers: Record<string, string>
   payload: TPayload
   poolKey: string
+  signal?: AbortSignal
+  timeouts?: UpstreamLifecycleTimeouts
   url: string
 }
 
@@ -40,6 +48,26 @@ interface PooledWebSocketRequestTarget {
   pooled: boolean
 }
 
+export type WebSocketRequestSendState =
+  | "not-sent"
+  | "sent-unknown"
+  | "frame-seen"
+
+export class PooledWebSocketRequestError extends Error {
+  readonly sendState: WebSocketRequestSendState
+
+  constructor(sendState: WebSocketRequestSendState, cause: Error) {
+    super(cause.message, { cause })
+    this.name = "PooledWebSocketRequestError"
+    this.sendState = sendState
+  }
+}
+
+export const isWebSocketNotSentError = (
+  error: unknown,
+): error is PooledWebSocketRequestError =>
+  error instanceof PooledWebSocketRequestError && error.sendState === "not-sent"
+
 export const createWebSocketUrl = (url: string): string => {
   const websocketUrl = new URL(url)
 
@@ -63,6 +91,8 @@ const runPooledWebSocketRequest = async function* <TPayload, TChunk>(
 ): AsyncIterable<TChunk> {
   const { entry, pooled } = getPooledWebSocketRequestTarget(request, options)
   let reachedTerminal = false
+  let frameSeen = false
+  let sendAttempted = false
   const release = acquirePooledWebSocketEntry(
     request.poolKey,
     entry,
@@ -77,9 +107,14 @@ const runPooledWebSocketRequest = async function* <TPayload, TChunk>(
       pooled,
       options,
     )
+    sendAttempted = true
     websocket.send(JSON.stringify(request.payload))
 
-    for await (const data of createWebSocketMessageStream(websocket, options)) {
+    for await (const data of createWebSocketMessageStream(websocket, options, {
+      signal: request.signal,
+      timeouts: request.timeouts,
+    })) {
+      frameSeen = true
       const chunk = options.createChunk(data)
       yield chunk
 
@@ -93,7 +128,12 @@ const runPooledWebSocketRequest = async function* <TPayload, TChunk>(
     throw new Error(options.terminalChunkMissingMessage)
   } catch (error) {
     removePooledWebSocketEntry(request.poolKey, entry)
-    throw toError(error)
+    throw new PooledWebSocketRequestError(
+      frameSeen ? "frame-seen"
+      : sendAttempted ? "sent-unknown"
+      : "not-sent",
+      toError(error),
+    )
   } finally {
     if (!reachedTerminal) {
       removePooledWebSocketEntry(request.poolKey, entry)
@@ -140,8 +180,11 @@ const createPooledWebSocketEntry = <TPayload, TChunk>(
     idleTimer: null,
     requestCount: 0,
     websocketPromise: openWebSocket({
+      connectTimeoutMs: resolveUpstreamLifecycleTimeouts(request.timeouts)
+        .websocketConnectMs,
       headers: request.headers,
       openErrorMessage: options.openErrorMessage,
+      signal: request.signal,
       url: request.url,
     }),
   }
@@ -302,22 +345,44 @@ const createWebSocketError = (
 }
 
 const openWebSocket = async ({
+  connectTimeoutMs,
   headers,
   openErrorMessage,
+  signal,
   url,
 }: {
+  connectTimeoutMs: number
   headers: Record<string, string>
   openErrorMessage: string
+  signal?: AbortSignal
   url: string
 }): Promise<InstanceType<typeof WebSocket>> =>
   await new Promise((resolve, reject) => {
     const proxy = typeof Bun === "undefined" ? undefined : getProxyUrl(url)
     const init = { headers, ...(proxy ? { proxy } : {}) }
     const websocket = new WebSocket(url, init)
+    const connectTimer = setTimeout(() => {
+      fail(
+        new UpstreamLifecycleTimeoutError(
+          "WebSocket connect",
+          connectTimeoutMs,
+        ),
+      )
+    }, connectTimeoutMs)
+    unrefTimer(connectTimer)
 
     const cleanup = () => {
+      clearTimeout(connectTimer)
       websocket.removeEventListener("open", onOpen)
       websocket.removeEventListener("error", onError)
+      websocket.removeEventListener("close", onClose)
+      signal?.removeEventListener("abort", onAbort)
+    }
+
+    const fail = (error: Error) => {
+      cleanup()
+      closeWebSocket(websocket)
+      reject(error)
     }
 
     const onOpen = () => {
@@ -326,22 +391,37 @@ const openWebSocket = async ({
     }
 
     const onError = (event: WebSocketErrorEvent) => {
-      cleanup()
-      reject(createWebSocketError(openErrorMessage, event))
+      fail(createWebSocketError(openErrorMessage, event))
     }
+
+    const onClose = () => fail(new Error(openErrorMessage))
+    const onAbort = () => fail(toAbortError(signal?.reason))
 
     websocket.addEventListener("open", onOpen)
     websocket.addEventListener("error", onError)
+    websocket.addEventListener("close", onClose)
+    if (signal?.aborted) {
+      onAbort()
+      return
+    }
+    signal?.addEventListener("abort", onAbort, { once: true })
   })
 
 const createWebSocketMessageStream = async function* <TChunk>(
   websocket: InstanceType<typeof WebSocket>,
   options: PooledWebSocketStreamOptions<TChunk>,
+  lifecycle: {
+    signal?: AbortSignal
+    timeouts?: UpstreamLifecycleTimeouts
+  },
 ): AsyncIterable<string> {
   const queue: Array<Promise<string>> = []
   let closed = false
   let error: Error | null = null
   let notify: (() => void) | null = null
+  let receivedFrame = false
+  const timeouts = resolveUpstreamLifecycleTimeouts(lifecycle.timeouts)
+  const startedAt = Date.now()
 
   const wake = () => {
     notify?.()
@@ -349,6 +429,7 @@ const createWebSocketMessageStream = async function* <TChunk>(
   }
 
   const onMessage = (event: { data: unknown }) => {
+    receivedFrame = true
     queue.push(normalizeWebSocketMessageData(event.data))
     wake()
   }
@@ -371,6 +452,14 @@ const createWebSocketMessageStream = async function* <TChunk>(
 
   try {
     while (true) {
+      const totalElapsedMs = Date.now() - startedAt
+      if (totalElapsedMs >= timeouts.websocketTotalMs) {
+        throw new UpstreamLifecycleTimeoutError(
+          "WebSocket total",
+          timeouts.websocketTotalMs,
+        )
+      }
+
       const item = queue.shift()
       if (item) {
         yield await item
@@ -385,8 +474,24 @@ const createWebSocketMessageStream = async function* <TChunk>(
         break
       }
 
-      await new Promise<void>((resolve) => {
-        notify = resolve
+      const activityPhase =
+        receivedFrame ? "WebSocket inactivity" : "WebSocket first frame"
+      const activityTimeoutMs =
+        receivedFrame ?
+          timeouts.websocketInactivityMs
+        : timeouts.websocketFirstFrameMs
+      const totalRemainingMs = timeouts.websocketTotalMs - totalElapsedMs
+      const totalExpiresFirst = totalRemainingMs <= activityTimeoutMs
+
+      await waitForWebSocketWake({
+        phase: totalExpiresFirst ? "WebSocket total" : activityPhase,
+        reportedTimeoutMs:
+          totalExpiresFirst ? timeouts.websocketTotalMs : activityTimeoutMs,
+        signal: lifecycle.signal,
+        timeoutMs: Math.min(activityTimeoutMs, totalRemainingMs),
+        setNotify: (nextNotify) => {
+          notify = nextNotify
+        },
       })
     }
   } finally {
@@ -395,6 +500,61 @@ const createWebSocketMessageStream = async function* <TChunk>(
     websocket.removeEventListener("error", onError)
   }
 }
+
+const waitForWebSocketWake = async ({
+  phase,
+  reportedTimeoutMs,
+  setNotify,
+  signal,
+  timeoutMs,
+}: {
+  phase: string
+  reportedTimeoutMs?: number
+  setNotify: (notify: () => void) => void
+  signal?: AbortSignal
+  timeoutMs?: number
+}): Promise<void> =>
+  await new Promise<void>((resolve, reject) => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const cleanup = () => {
+      if (timer) {
+        clearTimeout(timer)
+      }
+      signal?.removeEventListener("abort", onAbort)
+    }
+    const settle = (callback: () => void) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      cleanup()
+      callback()
+    }
+    const onAbort = () => settle(() => reject(toAbortError(signal?.reason)))
+
+    setNotify(() => settle(resolve))
+    if (signal?.aborted) {
+      onAbort()
+      return
+    }
+    signal?.addEventListener("abort", onAbort, { once: true })
+
+    if (timeoutMs !== undefined) {
+      timer = setTimeout(() => {
+        settle(() =>
+          reject(
+            new UpstreamLifecycleTimeoutError(
+              phase,
+              reportedTimeoutMs ?? timeoutMs,
+            ),
+          ),
+        )
+      }, timeoutMs)
+      unrefTimer(timer)
+    }
+  })
 
 const normalizeWebSocketMessageData = async (
   data: unknown,
@@ -441,6 +601,20 @@ const toError = (value: unknown): Error => {
   }
 
   return new Error(String(value))
+}
+
+const toAbortError = (reason: unknown): Error => {
+  if (reason instanceof Error) {
+    return reason
+  }
+
+  const error = new Error(
+    typeof reason === "string" ? reason
+    : typeof reason === "number" || typeof reason === "boolean" ? String(reason)
+    : "Upstream request aborted",
+  )
+  error.name = "AbortError"
+  return error
 }
 
 const closeWebSocket = (websocket: InstanceType<typeof WebSocket>): void => {

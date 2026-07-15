@@ -23,6 +23,7 @@ import {
 } from "./api-flows"
 import {
   getCompactType,
+  IDE_EXECUTE_CODE_TOOL,
   normalizeSystemMessages,
   sanitizeIdeTools,
 } from "./preprocess"
@@ -87,8 +88,29 @@ export async function handleCompletion(c: Context) {
 
   const selectedModel = findEndpointModel(anthropicPayload.model)
   const useMessagesApi = shouldUseMessagesApi(selectedModel)
+  const useResponsesApi =
+    !useMessagesApi
+    && shouldUseResponsesApi(selectedModel, compactType, anthropicPayload)
+  if (
+    !useMessagesApi
+    && !useResponsesApi
+    && anthropicPayload.tool_choice?.type === "tool"
+    && anthropicPayload.tool_choice.name === IDE_EXECUTE_CODE_TOOL
+  ) {
+    return c.json(
+      {
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message:
+            "mcp__ide__executeCode is not supported by the Chat Completions fallback.",
+        },
+      },
+      400,
+    )
+  }
   sanitizeIdeTools(anthropicPayload, {
-    preserveExecuteCode: useMessagesApi,
+    preserveExecuteCode: useMessagesApi || useResponsesApi,
   })
 
   const requestId = generateRequestIdFromPayload(anthropicPayload, sessionId)
@@ -111,13 +133,14 @@ export async function handleCompletion(c: Context) {
         selectedModel,
         requestId,
         sessionId,
+        signal: c.req.raw.signal,
         compactType,
         logger,
       },
     )
   }
 
-  if (shouldUseResponsesApi(selectedModel, compactType, anthropicPayload)) {
+  if (useResponsesApi) {
     return await messagesFlowHandlers.handleWithResponsesApi(
       c,
       anthropicPayload,
@@ -126,6 +149,7 @@ export async function handleCompletion(c: Context) {
         selectedModel,
         requestId,
         sessionId,
+        signal: c.req.raw.signal,
         compactType,
         logger,
       },
@@ -140,6 +164,7 @@ export async function handleCompletion(c: Context) {
       selectedModel,
       requestId,
       sessionId,
+      signal: c.req.raw.signal,
       compactType,
       logger,
     },

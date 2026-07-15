@@ -279,6 +279,47 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
     expect(result).not.toHaveProperty("tool_choice")
   })
 
+  it("preserves forced executeCode as a Responses function tool", () => {
+    const result = translateAnthropicMessagesToResponsesPayload({
+      model: "gpt-5.6-sol",
+      max_tokens: 128,
+      messages: [{ role: "user", content: "Run 1+1" }],
+      tools: [
+        {
+          name: "mcp__ide__executeCode",
+          description: "Execute code in the IDE",
+          input_schema: {
+            type: "object",
+            properties: { code: { type: "string" } },
+            required: ["code"],
+          },
+        },
+      ],
+      tool_choice: {
+        type: "tool",
+        name: "mcp__ide__executeCode",
+      },
+    })
+
+    expect(result.tools).toEqual([
+      {
+        type: "function",
+        name: "mcp__ide__executeCode",
+        description: "Execute code in the IDE",
+        parameters: {
+          type: "object",
+          properties: { code: { type: "string" } },
+          required: ["code"],
+        },
+        strict: false,
+      },
+    ])
+    expect(result.tool_choice).toEqual({
+      type: "function",
+      name: "mcp__ide__executeCode",
+    })
+  })
+
   it("converts anthropic text blocks into response input messages", () => {
     const result = translateAnthropicMessagesToResponsesPayload(samplePayload)
 
@@ -1347,7 +1388,7 @@ describe("translateResponsesResultToAnthropic", () => {
       throw new Error("Expected translated encrypted reasoning")
     }
     expect(reasoningBlock.signature).toStartWith(
-      "copilot-api-openai-reasoning-v1:",
+      "copilot-api-openai-reasoning-v2:",
     )
 
     const nextTurn = translateAnthropicMessagesToResponsesPayload({
@@ -1387,6 +1428,67 @@ describe("translateResponsesResultToAnthropic", () => {
         content: "continue",
       },
     ])
+  })
+
+  it("does not replay a versioned reasoning carrier across provider or model boundaries", () => {
+    const firstTurn = {
+      id: "resp_carrier_scope",
+      object: "response",
+      created_at: 0,
+      model: "gpt-5.6-sol",
+      output: [
+        {
+          id: "reason_scoped",
+          type: "reasoning",
+          summary: [{ type: "summary_text", text: "Scoped reasoning." }],
+          encrypted_content: "opaque-scoped-carrier",
+          status: "completed",
+        },
+      ],
+      output_text: "",
+      status: "completed",
+      usage: null,
+      error: null,
+      incomplete_details: null,
+      instructions: null,
+      metadata: null,
+      parallel_tool_calls: false,
+      temperature: null,
+      tool_choice: null,
+      tools: [],
+      top_p: null,
+    } as unknown as ResponsesResult
+    const anthropic = translateResponsesResultToAnthropic(firstTurn, {
+      carrierSource: { provider: "copilot", model: "gpt-5.6-sol" },
+    })
+    const reasoningBlock = anthropic.content[0]
+    if (reasoningBlock?.type !== "thinking") {
+      throw new Error("Expected translated encrypted reasoning")
+    }
+
+    const makeNextTurn = (provider: string, model: string) =>
+      translateAnthropicMessagesToResponsesPayload(
+        {
+          model,
+          max_tokens: 128,
+          messages: [
+            { role: "assistant", content: [reasoningBlock] },
+            { role: "user", content: "continue" },
+          ],
+        },
+        undefined,
+        { provider, model },
+      )
+    const hasReasoning = (provider: string, model: string) => {
+      const input = makeNextTurn(provider, model).input
+      return (
+        Array.isArray(input) && input.some((item) => item.type === "reasoning")
+      )
+    }
+
+    expect(hasReasoning("copilot", "gpt-5.6-sol")).toBe(true)
+    expect(hasReasoning("copilot", "gpt-5.6-terra")).toBe(false)
+    expect(hasReasoning("codex", "gpt-5.6-sol")).toBe(false)
   })
 
   it("handles reasoning and function call items", () => {

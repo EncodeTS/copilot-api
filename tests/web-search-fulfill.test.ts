@@ -297,9 +297,7 @@ async function* makeResponsesStream(result: ResponsesResult) {
 const originalDeps = { ...webSearchFlowDependencies }
 
 afterEach(() => {
-  webSearchFlowDependencies.createResponses = originalDeps.createResponses
-  webSearchFlowDependencies.createUsageRecorder =
-    originalDeps.createUsageRecorder
+  Object.assign(webSearchFlowDependencies, originalDeps)
 })
 
 const baseOptions = {
@@ -351,7 +349,10 @@ describe("web search tool detection", () => {
 })
 
 describe("resolveWebSearchRoute", () => {
-  const opts = { webSearchModel: "gpt-5-mini", responsesWebSearchEnabled: true }
+  const opts = {
+    webSearchModel: "gpt-5-mini",
+    responsesWebSearchEnabled: true,
+  }
 
   it("routes a Copilot model to the responses path", () => {
     expect(resolveWebSearchRoute(makePayload(), opts)).toEqual({
@@ -424,6 +425,49 @@ describe("prepareWebSearchResponsesPayload", () => {
 })
 
 describe("handleWebSearchViaResponses", () => {
+  it("enables HTTP fallback for a dual-endpoint search model", async () => {
+    let allowHttpFallback: boolean | undefined
+    webSearchFlowDependencies.findEndpointModel = (() => ({
+      capabilities: { limits: {}, supports: {} },
+      id: "gpt-5-mini",
+      supported_endpoints: ["/responses", "ws:/responses"],
+    })) as never
+    webSearchFlowDependencies.createResponses = ((
+      _payload: ResponsesPayload,
+      options: { allowHttpFallback?: boolean },
+    ) => {
+      allowHttpFallback = options.allowHttpFallback
+      return Promise.resolve(makeResponsesResult())
+    }) as never
+    webSearchFlowDependencies.createUsageRecorder = (() => () => {}) as never
+    const { c } = makeContext()
+
+    await handleWebSearchViaResponses(c, makePayload(), baseOptions)
+
+    expect(allowHttpFallback).toBe(true)
+  })
+
+  it("forwards the caller abort signal to the Responses search", async () => {
+    let sentSignal: AbortSignal | undefined
+    webSearchFlowDependencies.createResponses = ((
+      _payload: ResponsesPayload,
+      options: { signal?: AbortSignal },
+    ) => {
+      sentSignal = options.signal
+      return Promise.resolve(makeResponsesResult())
+    }) as never
+    webSearchFlowDependencies.createUsageRecorder = (() => () => {}) as never
+    const controller = new AbortController()
+    const { c } = makeContext()
+
+    await handleWebSearchViaResponses(c, makePayload(), {
+      ...baseOptions,
+      signal: controller.signal,
+    })
+
+    expect(sentSignal).toBe(controller.signal)
+  })
+
   it("marks newer dynamic web search as an explicit direct fallback", async () => {
     let sentPayload: ResponsesPayload | undefined
     webSearchFlowDependencies.createResponses = ((

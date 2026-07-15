@@ -123,6 +123,9 @@ function buildProviderConfig(
     ...(options.authType ? { authType: options.authType } : {}),
     pricingCurrency:
       options.pricingCurrency ?? existingProviderConfig.pricingCurrency,
+    ...(existingProviderConfig.capabilities ?
+      { capabilities: existingProviderConfig.capabilities }
+    : {}),
     ...(existingProviderConfig.models ?
       { models: existingProviderConfig.models }
     : {}),
@@ -241,7 +244,8 @@ export function configureDesktopProvider(
 }
 
 export interface ConfigureProviderStatusDependencies
-  extends ProviderConfigDependencies, AuthStatusDependencies {}
+  extends ProviderConfigDependencies,
+    AuthStatusDependencies {}
 
 export async function configureProviderWithAuthStatus(
   input: ProviderAuthInput,

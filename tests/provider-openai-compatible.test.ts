@@ -400,6 +400,129 @@ describe("openai-compatible provider messages", () => {
     expect(body).toContain('"type":"invalid_request_error"')
   })
 
+  test("translates streaming finish_reason error to Anthropic error", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          [
+            'data: {"id":"chatcmpl-error","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[{"index":0,"delta":{},"finish_reason":"error"}]}',
+            "data: [DONE]",
+            "",
+          ].join("\n\n"),
+          {
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("event: error")
+    expect(body).toContain(
+      '"message":"Provider upstream ended with finish_reason=error"',
+    )
+    expect(body).not.toContain("event: message_stop")
+  })
+
+  test("emits an Anthropic error when an OpenAI stream ends without finish_reason", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          'data: {"id":"chatcmpl-partial","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[{"index":0,"delta":{"role":"assistant","content":"partial"},"finish_reason":null}]}\n\n',
+          {
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain('"text":"partial"')
+    expect(body).toContain("event: error")
+    expect(body).toContain(
+      "Provider OpenAI-compatible stream ended without finish_reason",
+    )
+    expect(body).not.toContain("event: message_stop")
+  })
+
+  test("emits an Anthropic error when an OpenAI-compatible stream throws", async () => {
+    const encoder = new TextEncoder()
+    let pullCount = 0
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pullCount === 0) {
+          pullCount += 1
+          controller.enqueue(
+            encoder.encode(
+              'data: {"id":"chatcmpl-partial","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}\n\n',
+            ),
+          )
+          return
+        }
+        controller.error(new Error("provider compatible socket reset"))
+      },
+    })
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(upstreamBody, {
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        }),
+      ),
+    )
+
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("event: error")
+    expect(body).toContain("provider compatible socket reset")
+  })
+
   test("translates plain-text OpenAI-compatible stream error events", async () => {
     fetchMock.mockImplementationOnce(() =>
       Promise.resolve(
@@ -785,6 +908,153 @@ describe("openai-responses provider messages", () => {
         message: "provider failed",
       },
     })
+  })
+})
+
+describe("anthropic provider messages", () => {
+  test("treats a native Anthropic error event as the terminal", async () => {
+    providerConfig = {
+      apiKey: "provider-key",
+      authType: "x-api-key",
+      baseUrl: "https://anthropic.example",
+      models: {
+        "claude-test": {},
+      },
+      name: "anthropic",
+      type: "anthropic",
+    }
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response("event: error\ndata: upstream failed\n\n", {
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        }),
+      ),
+    )
+
+    const response = await createApp().request("/anthropic/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "claude-test",
+        stream: true,
+      }),
+    })
+
+    const body = await response.text()
+    expect(body.match(/event: error/gu)).toHaveLength(1)
+    expect(body).toContain("upstream failed")
+  })
+
+  test("emits an error when a native Anthropic stream ends without message_stop", async () => {
+    providerConfig = {
+      apiKey: "provider-key",
+      authType: "x-api-key",
+      baseUrl: "https://anthropic.example",
+      models: {
+        "claude-test": {},
+      },
+      name: "anthropic",
+      type: "anthropic",
+    }
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          [
+            'event: message_start\ndata: {"type":"message_start","message":{"id":"msg-partial","type":"message","role":"assistant","content":[],"model":"claude-test","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":4,"output_tokens":0}}}',
+            'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}',
+            "",
+          ].join("\n\n"),
+          {
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/anthropic/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "claude-test",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain('"text":"partial"')
+    expect(body).toContain("event: error")
+    expect(body).toContain(
+      "Provider Anthropic stream ended without message_stop",
+    )
+  })
+
+  test("emits an error when a native Anthropic stream throws", async () => {
+    providerConfig = {
+      apiKey: "provider-key",
+      authType: "x-api-key",
+      baseUrl: "https://anthropic.example",
+      models: {
+        "claude-test": {},
+      },
+      name: "anthropic",
+      type: "anthropic",
+    }
+    const encoder = new TextEncoder()
+    let pullCount = 0
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pullCount === 0) {
+          pullCount += 1
+          controller.enqueue(
+            encoder.encode(
+              'event: message_start\ndata: {"type":"message_start","message":{"id":"msg-partial","type":"message","role":"assistant","content":[],"model":"claude-test","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":4,"output_tokens":0}}}\n\n',
+            ),
+          )
+          return
+        }
+        controller.error(new Error("provider messages socket reset"))
+      },
+    })
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(upstreamBody, {
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        }),
+      ),
+    )
+
+    const response = await createApp().request("/anthropic/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "claude-test",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("event: error")
+    expect(body).toContain("provider messages socket reset")
   })
 })
 
