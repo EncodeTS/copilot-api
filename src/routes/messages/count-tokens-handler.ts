@@ -1,6 +1,7 @@
 import type { Context } from "hono"
 
 import consola from "consola"
+import { scheduler } from "node:timers/promises"
 
 import {
   getClaudeTokenMultiplier,
@@ -38,6 +39,7 @@ import { translateAnthropicMessagesToResponsesPayload } from "./responses-transl
 const RESPONSES_ESTIMATE_SAFETY_FACTOR = 1.07
 const RESPONSES_ESTIMATE_MAX_NODES = 10_000
 const RESPONSES_ESTIMATE_MAX_DEPTH = 128
+const RESPONSES_ESTIMATE_TEXT_CHUNK_CODE_UNITS = 16_384
 
 interface SemanticTokenStats {
   objectCount: number
@@ -49,6 +51,47 @@ interface SemanticTokenTraversal {
   nodeLimit: number
   nodesVisited: number
   signal?: AbortSignal
+}
+
+const getSafeTextChunkEnd = (
+  text: string,
+  offset: number,
+  maximumEnd: number,
+): number => {
+  if (maximumEnd >= text.length || maximumEnd <= offset) return maximumEnd
+
+  const previous = text.charCodeAt(maximumEnd - 1)
+  const next = text.charCodeAt(maximumEnd)
+  const splitsSurrogatePair =
+    previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff
+  return splitsSurrogatePair ? maximumEnd - 1 : maximumEnd
+}
+
+const countTextTokensResponsively = async (
+  text: string,
+  selectedModel: Model,
+  signal?: AbortSignal,
+): Promise<number> => {
+  let offset = 0
+  let tokens = 0
+  while (offset < text.length) {
+    signal?.throwIfAborted()
+    const chunkEnd = getSafeTextChunkEnd(
+      text,
+      offset,
+      Math.min(text.length, offset + RESPONSES_ESTIMATE_TEXT_CHUNK_CODE_UNITS),
+    )
+    tokens += await getTextTokenCount(
+      text.slice(offset, chunkEnd),
+      selectedModel,
+    )
+    offset = chunkEnd
+    if (offset < text.length) {
+      await scheduler.yield()
+    }
+  }
+  signal?.throwIfAborted()
+  return tokens
 }
 
 export class ResponsesTokenEstimateLimitError extends Error {
@@ -89,9 +132,14 @@ const countSemanticTokens = async (
     || typeof value === "number"
     || typeof value === "boolean"
   ) {
+    const text = String(value)
     return {
       objectCount: 0,
-      tokens: await getTextTokenCount(String(value), selectedModel),
+      tokens: await countTextTokensResponsively(
+        text,
+        selectedModel,
+        traversal.signal,
+      ),
     }
   }
   if (Array.isArray(value)) {
@@ -124,7 +172,11 @@ const countSemanticTokens = async (
       || key === "schema"
       || key === "tools"
     if (includeStructure) {
-      tokens += await getTextTokenCount(key, selectedModel)
+      tokens += await countTextTokensResponsively(
+        key,
+        selectedModel,
+        traversal.signal,
+      )
     }
     const childStats = await countSemanticTokens(
       child,

@@ -995,10 +995,14 @@ export const prepareResponsesWebSocketRequest = (
   },
 ): ResponsesWebSocketRequest => {
   const initiator = getResponsesWebSocketInitiator(preparedHeaders)
+  const websocketHeaders = copilotWebSocketHeaders(preparedHeaders)
 
   return {
-    headers: copilotWebSocketHeaders(preparedHeaders),
-    poolKey: buildResponsesWebSocketPoolKey(payload, options),
+    headers: websocketHeaders,
+    poolKey: buildResponsesWebSocketPoolKey(payload, {
+      ...options,
+      websocketHeaders,
+    }),
     signal: options.signal,
     timeouts: options.timeouts,
     payload: buildResponsesWebSocketPayload(payload, initiator),
@@ -1013,11 +1017,13 @@ export const buildResponsesWebSocketPoolKey = (
     requestId,
     subagentMarker,
     vision = false,
+    websocketHeaders,
   }: {
     reasoningRecoverySessionId?: string
     requestId: string
     subagentMarker?: SubagentMarker | null
     vision?: boolean
+    websocketHeaders?: Record<string, string>
   },
 ): string => {
   const tokenFingerprint =
@@ -1034,10 +1040,41 @@ export const buildResponsesWebSocketPoolKey = (
     : "main"
   const sessionKey = reasoningRecoverySessionId ?? requestId
   const visionKey = vision ? "vision" : "text-only"
+  const headerFingerprint =
+    createResponsesWebSocketHeaderFingerprint(websocketHeaders)
 
-  return [tokenFingerprint, payload.model, sessionKey, subagentKey, visionKey]
+  return [
+    tokenFingerprint,
+    payload.model,
+    sessionKey,
+    subagentKey,
+    visionKey,
+    headerFingerprint,
+  ]
     .map(encodePoolKeyPart)
     .join("|")
+}
+
+const VOLATILE_WEBSOCKET_POOL_HEADERS = new Set([
+  "authorization",
+  "x-agent-task-id",
+  "x-interaction-id",
+  "x-request-id",
+])
+
+const createResponsesWebSocketHeaderFingerprint = (
+  headers: Record<string, string> | undefined,
+): string => {
+  if (!headers) return "default-headers"
+
+  const stableHeaders = Object.entries(headers)
+    .map(([name, value]) => [name.toLowerCase(), value] as const)
+    .filter(([name]) => !VOLATILE_WEBSOCKET_POOL_HEADERS.has(name))
+    .sort(([left], [right]) => left.localeCompare(right))
+  return createHash("sha256")
+    .update(JSON.stringify(stableHeaders))
+    .digest("hex")
+    .slice(0, 16)
 }
 
 export const getResponsesWebSocketInitiator = (
