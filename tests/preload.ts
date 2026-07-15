@@ -7,4 +7,8 @@ const testLogDirectory = fs.mkdtempSync(
 )
 
 process.env.COPILOT_API_LOG_DIR = testLogDirectory
+process.env.COPILOT_API_CODEX_MODEL_CATALOG_PATH = path.join(
+  testLogDirectory,
+  "codex-model-catalog.json",
+)
 process.env.COPILOT_API_TEST_MODE = "1"
