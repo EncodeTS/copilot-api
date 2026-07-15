@@ -146,9 +146,11 @@ export const countMessagesTokens = async (
   options: {
     requestId: string
     sessionId?: string
+    signal?: AbortSignal
+    timeouts?: UpstreamLifecycleTimeouts
   },
 ): Promise<{ input_tokens: number }> => {
-  const response = await fetch(
+  const response = await fetchWithUpstreamLifecycle(
     `${copilotBaseUrl(state)}/v1/messages/count_tokens`,
     {
       method: "POST",
@@ -158,6 +160,10 @@ export const countMessagesTokens = async (
         options,
       ),
       body: JSON.stringify(payload),
+    },
+    {
+      signal: options.signal,
+      timeouts: options.timeouts,
     },
   )
 

@@ -9,6 +9,10 @@ import {
   estimateResponsesInputTokens,
 } from "../src/routes/messages/count-tokens-handler"
 import { messageRoutes } from "../src/routes/messages/route"
+import type { AnthropicMessagesPayload } from "../src/routes/messages/anthropic-types"
+import { translateAnthropicMessagesToResponsesPayload } from "../src/routes/messages/responses-translation"
+import { countMessagesTokens } from "../src/services/copilot/create-messages"
+import { UpstreamLifecycleTimeoutError } from "../src/lib/upstream-lifecycle"
 
 const originalFetch = globalThis.fetch
 const originalState = {
@@ -25,7 +29,7 @@ const originalAnthropicApiKey = process.env.ANTHROPIC_API_KEY
 const originalDependencies = { ...countTokensHandlerDependencies }
 
 const claudeModel = {
-  id: "claude-opus-4.8",
+  id: "claude-opus-4-8",
   supported_endpoints: ["/v1/messages"],
   capabilities: {
     limits: { max_prompt_tokens: 200_000 },
@@ -116,7 +120,7 @@ test("Claude count_tokens forwards the final native Messages request to Copilot"
   }
   const response = await createApp().request("/v1/messages/count_tokens", {
     body: JSON.stringify({
-      model: "claude-opus-4.8",
+      model: "claude-opus-4-8",
       max_tokens: 32_000,
       messages: [{ role: "user", content: "hello" }],
       thinking: { type: "enabled", budget_tokens: 31_999 },
@@ -151,7 +155,7 @@ test("Claude count_tokens forwards the final native Messages request to Copilot"
     "context-management-2025-06-27",
   )
   expect(JSON.parse(init?.body as string)).toMatchObject({
-    model: "claude-opus-4.8",
+    model: "claude-opus-4-8",
     max_tokens: 32_000,
     messages: [{ role: "user", content: "hello" }],
     thinking: { type: "adaptive", display: "summarized" },
@@ -168,6 +172,32 @@ test("Claude count_tokens forwards the final native Messages request to Copilot"
       },
     ],
   })
+})
+
+test("Claude count_tokens preserves the official count endpoint's accounting", async () => {
+  fetchMock.mockImplementationOnce(() =>
+    Promise.resolve(
+      new Response(JSON.stringify({ input_tokens: 59 }), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      }),
+    ),
+  )
+
+  const response = await createApp().request("/v1/messages/count_tokens", {
+    body: JSON.stringify({
+      model: "claude-opus-4-8",
+      max_tokens: 64,
+      messages: [{ role: "user", content: "hello" }],
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })
+
+  expect(response.status).toBe(200)
+  // The official count endpoint includes request construction overhead. It is
+  // not expected to equal generation usage.input_tokens for the visible text.
+  expect(await response.json()).toEqual({ input_tokens: 59 })
 })
 
 test("Claude count_tokens preserves Copilot validation errors", async () => {
@@ -189,7 +219,7 @@ test("Claude count_tokens preserves Copilot validation errors", async () => {
 
   const response = await createApp().request("/v1/messages/count_tokens", {
     body: JSON.stringify({
-      model: "claude-opus-4.8",
+      model: "claude-opus-4-8",
       max_tokens: 128,
       messages: [{ role: "user", content: "hello" }],
     }),
@@ -202,6 +232,51 @@ test("Claude count_tokens preserves Copilot validation errors", async () => {
   expect(fetchMock).toHaveBeenCalledTimes(1)
 })
 
+test("Claude count_tokens applies the upstream HTTP lifecycle", async () => {
+  fetchMock.mockImplementationOnce(
+    (_input, init) =>
+      new Promise((_resolve, reject) => {
+        const signal = init?.signal
+        if (!signal) {
+          reject(new Error("missing request signal"))
+          return
+        }
+        const rejectFromSignal = () =>
+          reject(
+            signal.reason instanceof Error ?
+              signal.reason
+            : new Error("request aborted"),
+          )
+        if (signal.aborted) {
+          rejectFromSignal()
+          return
+        }
+        signal.addEventListener("abort", rejectFromSignal, { once: true })
+      }),
+  )
+
+  let thrown: unknown
+  try {
+    await countMessagesTokens(
+      {
+        model: claudeModel.id,
+        max_tokens: 64,
+        messages: [{ role: "user", content: "hello" }],
+      },
+      undefined,
+      {
+        requestId: "request-1",
+        timeouts: { httpHeadersMs: 5 },
+      },
+    )
+  } catch (error) {
+    thrown = error
+  }
+
+  expect(thrown).toBeInstanceOf(UpstreamLifecycleTimeoutError)
+  expect((thrown as UpstreamLifecycleTimeoutError).phase).toBe("HTTP headers")
+})
+
 test("Claude count_tokens falls back only when Copilot has no count endpoint", async () => {
   fetchMock.mockImplementationOnce(() =>
     Promise.resolve(new Response("not found", { status: 404 })),
@@ -210,7 +285,7 @@ test("Claude count_tokens falls back only when Copilot has no count endpoint", a
   const app = createApp()
   const withToolResponse = await app.request("/v1/messages/count_tokens", {
     body: JSON.stringify({
-      model: "claude-opus-4.8",
+      model: "claude-opus-4-8",
       max_tokens: 128,
       messages: [{ role: "user", content: "hello" }],
       tools: [
@@ -233,7 +308,7 @@ test("Claude count_tokens falls back only when Copilot has no count endpoint", a
   )
   const withoutToolResponse = await app.request("/v1/messages/count_tokens", {
     body: JSON.stringify({
-      model: "claude-opus-4.8",
+      model: "claude-opus-4-8",
       max_tokens: 128,
       messages: [{ role: "user", content: "hello" }],
     }),
@@ -320,93 +395,209 @@ test("GPT count_tokens estimates the final Responses payload without calling Mes
   expect(estimateResponses.mock.calls[0][0]).not.toHaveProperty("tool_choice")
 })
 
-test("GPT Responses estimator stays conservative on official usage fixtures", async () => {
-  const basePayload: ResponsesPayload = {
-    model: "gpt-5.6-sol",
-    input: [
-      {
-        type: "message",
-        role: "user",
-        content:
-          "Reply with exactly SIMPLE_ENGLISH_20260713T141029768Z_OK and nothing else.",
-      },
-    ],
-    instructions: null,
-    tools: null,
-    tool_choice: "auto",
-    parallel_tool_calls: true,
-    reasoning: { effort: "none", summary: "detailed" },
-    context_management: [{ type: "compaction", compact_threshold: 829_800 }],
-  }
-  const toolPayload: ResponsesPayload = {
-    ...basePayload,
-    input: [
-      {
-        type: "message",
-        role: "user",
-        content:
-          "Reply with exactly ONE_TOOL_20260713T141029768Z_OK and nothing else.",
-      },
-    ],
-    tool_choice: "none",
-    tools: [
-      {
-        type: "function",
-        name: "protocol_lookup",
-        description:
-          "Look up one protocol record by an exact query and return metadata.",
-        strict: false,
-        parameters: {
+test("GPT Responses estimator stays within the conservative live-usage band", async () => {
+  const nonce = "20260715T000000000Z"
+  const shortText = (id: string) =>
+    `Reply with exactly ${id}_${nonce}_OK and nothing else.`
+  const toolSchema = (name: string, description: string) => ({
+    name,
+    description,
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        query: {
+          type: "string",
+          description: "The exact query to execute without rewriting.",
+        },
+        options: {
           type: "object",
           properties: {
-            query: {
-              type: "string",
-              description: "The exact query to execute without rewriting.",
-            },
-            options: {
-              type: "object",
-              properties: {
-                limit: { type: "integer", minimum: 1, maximum: 100 },
-                include_metadata: { type: "boolean" },
-                tags: {
-                  type: "array",
-                  items: { type: "string" },
-                  maxItems: 12,
-                },
-              },
-              required: ["limit"],
-              additionalProperties: false,
+            limit: { type: "integer", minimum: 1, maximum: 100 },
+            include_metadata: { type: "boolean" },
+            tags: {
+              type: "array",
+              items: { type: "string" },
+              maxItems: 12,
             },
           },
-          required: ["query"],
+          required: ["limit"],
           additionalProperties: false,
         },
       },
-    ],
-  }
-  const fixtures = [
-    { payload: basePayload, actualInputTokens: 26, maxRatio: 4 },
-    { payload: toolPayload, actualInputTokens: 112, maxRatio: 2 },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  })
+  const cases: Array<{
+    actualInputTokens: number
+    id: string
+    payload: AnthropicMessagesPayload
+  }> = [
+    {
+      id: "simple",
+      actualInputTokens: 26,
+      payload: {
+        model: gptModel.id,
+        messages: [{ role: "user", content: shortText("SIMPLE_ENGLISH") }],
+        max_tokens: 64,
+        thinking: { type: "disabled" },
+        stream: true,
+      },
+    },
+    {
+      id: "system_multiturn",
+      actualInputTokens: 484,
+      payload: {
+        model: gptModel.id,
+        system:
+          "You are a precise protocol-audit assistant. Preserve literals.",
+        messages: [
+          {
+            role: "user",
+            content: `Remember the literal alpha-${nonce}.`,
+          },
+          {
+            role: "assistant",
+            content: `I will remember alpha-${nonce}.`,
+          },
+          { role: "user", content: shortText("SYSTEM_MULTITURN") },
+        ],
+        max_tokens: 64,
+        thinking: { type: "disabled" },
+        stream: true,
+      },
+    },
+    {
+      id: "chinese_code",
+      actualInputTokens: 516,
+      payload: {
+        model: gptModel.id,
+        system: [
+          {
+            type: "text",
+            text: "严格保留代码中的标点、Unicode 字符和换行。",
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: [
+                  `这是一次 token 计数校验，标记为 ${nonce}。`,
+                  "```ts",
+                  "export const greet = (name: string) => `你好，${name}！`",
+                  "const rows = [1, 2, 3].map((value) => value ** 2)",
+                  "```",
+                  shortText("CHINESE_CODE"),
+                ].join("\n"),
+              },
+            ],
+          },
+        ],
+        max_tokens: 64,
+        thinking: { type: "disabled" },
+        stream: true,
+      },
+    },
+    {
+      id: "one_tool",
+      actualInputTokens: 112,
+      payload: {
+        model: gptModel.id,
+        messages: [{ role: "user", content: shortText("ONE_TOOL") }],
+        tools: [
+          toolSchema(
+            "protocol_lookup",
+            "Look up one protocol record by an exact query and return metadata.",
+          ),
+        ],
+        tool_choice: { type: "none" },
+        max_tokens: 64,
+        thinking: { type: "disabled" },
+        stream: true,
+      },
+    },
+    {
+      id: "large_tool_bundle",
+      actualInputTokens: 373,
+      payload: {
+        model: gptModel.id,
+        messages: [{ role: "user", content: shortText("LARGE_TOOL_BUNDLE") }],
+        tools: [
+          toolSchema(
+            "search_repository",
+            "Search repository paths, filenames, symbols, documentation, and code comments. Use an exact query and preserve case-sensitive identifiers.",
+          ),
+          toolSchema(
+            "read_document",
+            "Read a selected document and return its complete structured content, including headings, code blocks, tables, and source metadata.",
+          ),
+          toolSchema(
+            "inspect_runtime",
+            "Inspect a named runtime component without mutating it. Return status, version, resource limits, and recent non-sensitive diagnostics.",
+          ),
+          toolSchema(
+            "compare_payloads",
+            "Compare two protocol payloads field by field. Distinguish missing, null, rewritten, reordered, and semantically incompatible values.",
+          ),
+        ],
+        tool_choice: { type: "none" },
+        max_tokens: 64,
+        thinking: { type: "disabled" },
+        stream: true,
+      },
+    },
   ]
 
-  for (const fixture of fixtures) {
-    const estimate = await estimateResponsesInputTokens(
+  for (const fixture of cases) {
+    const payload = translateAnthropicMessagesToResponsesPayload(
       fixture.payload,
-      gptModel,
     )
-    expect(estimate).toBeGreaterThanOrEqual(fixture.actualInputTokens)
+    const estimate = await estimateResponsesInputTokens(payload, gptModel)
+    expect(estimate).toBeGreaterThanOrEqual(
+      Math.ceil(fixture.actualInputTokens * 1.05),
+    )
     expect(estimate).toBeLessThanOrEqual(
-      fixture.actualInputTokens * fixture.maxRatio,
+      Math.ceil(fixture.actualInputTokens * 1.15),
     )
   }
 })
 
-test("unknown models use the explicitly labeled local fallback estimator", async () => {
+test("models absent from a loaded Copilot catalog fail instead of returning a fake count", async () => {
   countTokensHandlerDependencies.findEndpointModel = () => undefined
 
   const response = await createApp().request("/v1/messages/count_tokens", {
     body: JSON.stringify({
       model: "unknown-model",
+      max_tokens: 128,
+      messages: [{ role: "user", content: "hello" }],
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })
+
+  expect(response.status).toBe(400)
+  expect(await response.json()).toEqual({
+    type: "error",
+    error: {
+      type: "invalid_request_error",
+      message:
+        "The requested model is not supported by the current Copilot model catalog: unknown-model",
+    },
+  })
+  expect(fetchMock).not.toHaveBeenCalled()
+})
+
+test("an unavailable Copilot catalog keeps the fallback explicitly labeled", async () => {
+  state.models = undefined
+  countTokensHandlerDependencies.findEndpointModel = () => undefined
+
+  const response = await createApp().request("/v1/messages/count_tokens", {
+    body: JSON.stringify({
+      model: "catalog-not-loaded-yet",
       max_tokens: 128,
       messages: [{ role: "user", content: "hello" }],
     }),
@@ -421,4 +612,5 @@ test("unknown models use the explicitly labeled local fallback estimator", async
   expect(
     typeof ((await response.json()) as { input_tokens: number }).input_tokens,
   ).toBe("number")
+  expect(fetchMock).not.toHaveBeenCalled()
 })
