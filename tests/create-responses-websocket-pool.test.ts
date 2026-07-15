@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test"
+import consola from "consola"
 
-import type { ResponsesResult } from "../src/services/copilot/create-responses"
+import type {
+  ResponseInputItem,
+  ResponsesResult,
+} from "../src/services/copilot/create-responses"
+import { UpstreamLifecycleTimeoutError } from "../src/lib/upstream-lifecycle"
 
 type ListenerEvent = {
   data?: string
@@ -16,6 +21,7 @@ type MockWebSocketInit = {
 }
 
 const originalClearTimeout = globalThis.clearTimeout
+const originalConsolaWarn = consola.warn
 const originalFetch = globalThis.fetch
 const originalSetTimeout = globalThis.setTimeout
 const proxyEnvKeys = [
@@ -208,6 +214,66 @@ const createResponsesResult = (
   usage: null,
 })
 
+const parseRequestBody = (
+  init?: RequestInit,
+): Record<string, unknown> & { input: Array<Record<string, unknown>> } => {
+  if (typeof init?.body !== "string") {
+    throw new TypeError("Expected a JSON request body")
+  }
+  return JSON.parse(init.body) as {
+    [key: string]: unknown
+    input: Array<Record<string, unknown>>
+  }
+}
+
+const userHistoryInput = (): ResponseInputItem => ({
+  content: [{ text: "continue", type: "input_text" }],
+  role: "user",
+  type: "message",
+})
+
+const reasoningHistoryInput = (): Array<ResponseInputItem> => [
+  {
+    encrypted_content: "old-reasoning",
+    type: "reasoning",
+  },
+  userHistoryInput(),
+]
+
+const connectionOwnershipErrorResponse = (): Response =>
+  Response.json(
+    {
+      error: {
+        code: "",
+        message: "input item does not belong to this connection",
+      },
+    },
+    { status: 400 },
+  )
+
+const createHttpTestResponse = (
+  input: Array<ResponseInputItem>,
+  requestId: string,
+) =>
+  createResponses(
+    { input, model: "gpt-test", stream: true },
+    {
+      initiator: "user",
+      requestId,
+      transport: "http",
+      vision: false,
+    },
+  )
+
+const captureError = async (run: () => Promise<unknown>): Promise<unknown> => {
+  try {
+    await run()
+    return null
+  } catch (error) {
+    return error
+  }
+}
+
 beforeEach(() => {
   MockWebSocket.autoComplete = true
   MockWebSocket.closeAfterComplete = false
@@ -237,6 +303,7 @@ afterEach(() => {
   state.copilotToken = originalState.copilotToken
   state.vsCodeDeviceId = originalState.vsCodeDeviceId
   state.vsCodeVersion = originalState.vsCodeVersion
+  consola.warn = originalConsolaWarn
   ;(
     globalThis as unknown as { clearTimeout: typeof clearTimeout }
   ).clearTimeout = originalClearTimeout
@@ -326,6 +393,577 @@ test("Responses websocket falls back to HTTP when opening fails before send", as
   expect(chunks).toHaveLength(1)
   expect(chunks[0]?.event).toBe("response.completed")
   expect(chunks[0]?.data).toContain('"id":"resp-http-fallback"')
+})
+
+test("Responses websocket recovers incompatible reasoning history over HTTP", async () => {
+  MockWebSocket.autoComplete = false
+  const warnMock = Object.assign(
+    mock(() => {}),
+    { raw: mock(() => {}) },
+  )
+  consola.warn = warnMock
+  const fetchMock = mock((_input: unknown, init?: RequestInit) => {
+    const body = parseRequestBody(init)
+    expect(body).toMatchObject({
+      context_management: [{ compact_threshold: 100_000, type: "compaction" }],
+      instructions: "Keep prior instructions",
+      metadata: { session: "recovery-test" },
+      prompt_cache_key: "recovery-cache",
+      tools: [
+        {
+          description: "Read one file",
+          name: "read_file",
+          parameters: { properties: {}, type: "object" },
+          strict: true,
+          type: "function",
+        },
+      ],
+    })
+    expect(body.input).toEqual([
+      {
+        content: [{ text: "previous answer", type: "output_text" }],
+        id: "message-1",
+        role: "assistant",
+        type: "message",
+      },
+      {
+        arguments: '{"path":"README.md"}',
+        call_id: "call-1",
+        name: "read_file",
+        type: "function_call",
+      },
+      {
+        call_id: "call-1",
+        output: "contents",
+        type: "function_call_output",
+      },
+      {
+        content: [
+          { text: "continue", type: "input_text" },
+          {
+            detail: "low",
+            image_url: "data:image/png;base64,AA==",
+            type: "input_image",
+          },
+        ],
+        role: "user",
+        type: "message",
+      },
+    ])
+
+    return Promise.resolve(
+      new Response(
+        [
+          "event: response.completed",
+          `data: ${JSON.stringify({
+            response: createResponsesResult(
+              "gpt-test",
+              "resp-reasoning-recovery",
+            ),
+            sequence_number: 1,
+            type: "response.completed",
+          })}`,
+          "",
+          "",
+        ].join("\n"),
+        {
+          headers: { "content-type": "text/event-stream" },
+        },
+      ),
+    )
+  })
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const response = await createResponses(
+    {
+      context_management: [{ compact_threshold: 100_000, type: "compaction" }],
+      input: [
+        {
+          encrypted_content: "old-reasoning-1",
+          id: "reasoning-1",
+          type: "reasoning",
+        },
+        {
+          encrypted_content: "old-reasoning-2",
+          id: "reasoning-2",
+          type: "reasoning",
+        },
+        {
+          content: [{ text: "previous answer", type: "output_text" }],
+          id: "message-1",
+          role: "assistant",
+          type: "message",
+        },
+        {
+          arguments: '{"path":"README.md"}',
+          call_id: "call-1",
+          name: "read_file",
+          type: "function_call",
+        },
+        {
+          call_id: "call-1",
+          output: "contents",
+          type: "function_call_output",
+        },
+        {
+          content: [
+            { text: "continue", type: "input_text" },
+            {
+              detail: "low",
+              image_url: "data:image/png;base64,AA==",
+              type: "input_image",
+            },
+          ],
+          role: "user",
+          type: "message",
+        },
+      ],
+      instructions: "Keep prior instructions",
+      metadata: { session: "recovery-test" },
+      model: "gpt-test",
+      prompt_cache_key: "recovery-cache",
+      stream: true,
+      tools: [
+        {
+          description: "Read one file",
+          name: "read_file",
+          parameters: { properties: {}, type: "object" },
+          strict: true,
+          type: "function",
+        },
+      ],
+    },
+    {
+      allowHttpFallback: true,
+      initiator: "user",
+      requestId: "reasoning-recovery",
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  MockWebSocket.instances[0]?.emitMessage(
+    JSON.stringify({
+      error: {
+        code: "bad_request",
+        message: "input item does not belong to this connection",
+      },
+      type: "error",
+    }),
+  )
+
+  const chunks = await chunksPromise
+
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(warnMock).toHaveBeenCalledWith(
+    "responses.reasoning_history_recovery",
+    {
+      reason: "incompatible_reasoning_history",
+      removedReasoningItems: 2,
+      retryTransport: "http",
+      sourceTransport: "websocket",
+    },
+  )
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("response.completed")
+  expect(chunks[0]?.data).toContain('"id":"resp-reasoning-recovery"')
+})
+
+test("Responses HTTP recovers incompatible reasoning history once", async () => {
+  const fetchMock = mock((_input: unknown, init?: RequestInit) => {
+    if (fetchMock.mock.calls.length === 1) {
+      return Promise.resolve(
+        Response.json(
+          {
+            error: {
+              code: "",
+              message: "input item does not belong to this connection",
+            },
+          },
+          { status: 400 },
+        ),
+      )
+    }
+
+    const body = parseRequestBody(init)
+    expect(body.input).toEqual([
+      {
+        content: [{ text: "continue", type: "input_text" }],
+        role: "user",
+        type: "message",
+      },
+    ])
+    return Promise.resolve(
+      new Response(
+        [
+          "event: response.completed",
+          `data: ${JSON.stringify({
+            response: createResponsesResult(
+              "gpt-test",
+              "resp-http-reasoning-recovery",
+            ),
+            sequence_number: 1,
+            type: "response.completed",
+          })}`,
+          "",
+          "",
+        ].join("\n"),
+        {
+          headers: { "content-type": "text/event-stream" },
+        },
+      ),
+    )
+  })
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const response = await createResponses(
+    {
+      input: [
+        {
+          encrypted_content: "old-reasoning",
+          id: "reasoning-1",
+          type: "reasoning",
+        },
+        {
+          content: [{ text: "continue", type: "input_text" }],
+          role: "user",
+          type: "message",
+        },
+      ],
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      initiator: "user",
+      requestId: "http-reasoning-recovery",
+      transport: "http",
+      vision: false,
+    },
+  )
+  const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
+
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("response.completed")
+  expect(chunks[0]?.data).toContain('"id":"resp-http-reasoning-recovery"')
+})
+
+test("Responses HTTP reasoning recovery runs at most once", async () => {
+  const fetchMock = mock(() =>
+    Promise.resolve(connectionOwnershipErrorResponse()),
+  )
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const caught = await captureError(() =>
+    createHttpTestResponse(
+      reasoningHistoryInput(),
+      "http-reasoning-recovery-fails",
+    ),
+  )
+
+  expect(caught).toBeInstanceOf(Error)
+  expect((caught as Error).message).toBe(
+    "Failed to create responses: input item does not belong to this connection",
+  )
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+})
+
+test("Responses HTTP does not recover without reasoning history", async () => {
+  const fetchMock = mock(() =>
+    Promise.resolve(connectionOwnershipErrorResponse()),
+  )
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const caught = await captureError(() =>
+    createHttpTestResponse(
+      [userHistoryInput()],
+      "http-recovery-without-reasoning",
+    ),
+  )
+
+  expect(caught).toBeInstanceOf(Error)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+})
+
+test("Responses HTTP does not recover unrelated validation errors", async () => {
+  const fetchMock = mock(() =>
+    Promise.resolve(
+      Response.json(
+        {
+          error: {
+            code: "invalid_request_body",
+            message: "invalid request body",
+          },
+        },
+        { status: 400 },
+      ),
+    ),
+  )
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const caught = await captureError(() =>
+    createHttpTestResponse(
+      reasoningHistoryInput(),
+      "http-recovery-unrelated-error",
+    ),
+  )
+
+  expect(caught).toBeInstanceOf(Error)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+})
+
+test("Responses HTTP does not recover a not-found response", async () => {
+  const fetchMock = mock(() =>
+    Promise.resolve(
+      Response.json(
+        { error: { code: "not_found", message: "" } },
+        { status: 404 },
+      ),
+    ),
+  )
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const caught = await captureError(() =>
+    createHttpTestResponse(reasoningHistoryInput(), "http-recovery-not-found"),
+  )
+
+  expect(caught).toBeInstanceOf(Error)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+})
+
+test("Responses HTTP preserves aborts while reading an error body", async () => {
+  const fetchMock = mock(() =>
+    Promise.resolve(
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            const error = new Error("request aborted")
+            error.name = "AbortError"
+            controller.error(error)
+          },
+        }),
+        { status: 400 },
+      ),
+    ),
+  )
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  let caught: unknown
+  try {
+    await createResponses(
+      {
+        input: [
+          {
+            encrypted_content: "old-reasoning",
+            type: "reasoning",
+          },
+          {
+            content: [{ text: "continue", type: "input_text" }],
+            role: "user",
+            type: "message",
+          },
+        ],
+        model: "gpt-test",
+        stream: true,
+      },
+      {
+        initiator: "user",
+        requestId: "http-recovery-aborted-error-body",
+        transport: "http",
+        vision: false,
+      },
+    )
+  } catch (error) {
+    caught = error
+  }
+
+  expect(caught).toBeInstanceOf(Error)
+  expect((caught as Error).name).toBe("AbortError")
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+})
+
+test("Responses HTTP preserves timeouts while reading an error body", async () => {
+  const fetchMock = mock(() =>
+    Promise.resolve(
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.error(new UpstreamLifecycleTimeoutError("HTTP body", 5))
+          },
+        }),
+        { status: 400 },
+      ),
+    ),
+  )
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  let caught: unknown
+  try {
+    await createResponses(
+      {
+        input: [
+          {
+            encrypted_content: "old-reasoning",
+            type: "reasoning",
+          },
+          {
+            content: [{ text: "continue", type: "input_text" }],
+            role: "user",
+            type: "message",
+          },
+        ],
+        model: "gpt-test",
+        stream: true,
+      },
+      {
+        initiator: "user",
+        requestId: "http-recovery-timeout-error-body",
+        transport: "http",
+        vision: false,
+      },
+    )
+  } catch (error) {
+    caught = error
+  }
+
+  expect(caught).toBeInstanceOf(UpstreamLifecycleTimeoutError)
+  expect((caught as Error).message).toContain("HTTP body timed out")
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+})
+
+test("Responses websocket does not recover after forwarding a frame", async () => {
+  MockWebSocket.autoComplete = false
+  const fetchMock = mock(() => Promise.reject(new Error("unexpected fetch")))
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const response = await createResponses(
+    {
+      input: [
+        {
+          encrypted_content: "old-reasoning",
+          type: "reasoning",
+        },
+        {
+          content: [{ text: "continue", type: "input_text" }],
+          role: "user",
+          type: "message",
+        },
+      ],
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      allowHttpFallback: true,
+      initiator: "user",
+      requestId: "reasoning-recovery-after-frame",
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  MockWebSocket.instances[0]?.emitMessage(
+    JSON.stringify({
+      content_index: 0,
+      delta: "partial output",
+      item_id: "message-1",
+      output_index: 0,
+      sequence_number: 0,
+      type: "response.output_text.delta",
+    }),
+  )
+  MockWebSocket.instances[0]?.emitMessage(
+    JSON.stringify({
+      error: {
+        code: "bad_request",
+        message: "input item does not belong to this connection",
+      },
+      type: "error",
+    }),
+  )
+
+  const chunks = await chunksPromise
+
+  expect(fetchMock).not.toHaveBeenCalled()
+  expect(chunks.map((chunk) => chunk.event)).toEqual([
+    "response.output_text.delta",
+    "error",
+  ])
+})
+
+test("Responses websocket recovery preserves an HTTP rejection message", async () => {
+  MockWebSocket.autoComplete = false
+  const fetchMock = mock(() =>
+    Promise.resolve(
+      Response.json(
+        {
+          error: {
+            code: "invalid_request_body",
+            message: "sanitized reasoning retry rejected",
+          },
+        },
+        { status: 400 },
+      ),
+    ),
+  )
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const response = await createResponses(
+    {
+      input: [
+        {
+          encrypted_content: "old-reasoning",
+          type: "reasoning",
+        },
+        {
+          content: [{ text: "continue", type: "input_text" }],
+          role: "user",
+          type: "message",
+        },
+      ],
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      allowHttpFallback: true,
+      initiator: "user",
+      requestId: "reasoning-recovery-http-rejection",
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  MockWebSocket.instances[0]?.emitMessage(
+    JSON.stringify({
+      error: {
+        code: "bad_request",
+        message: "input item does not belong to this connection",
+      },
+      type: "error",
+    }),
+  )
+
+  const chunks = await chunksPromise
+
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("error")
+  expect(chunks[0]?.data).toContain("sanitized reasoning retry rejected")
 })
 
 test("Responses websocket times out while connecting", async () => {

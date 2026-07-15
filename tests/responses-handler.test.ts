@@ -4,6 +4,7 @@ import { Hono } from "hono"
 import type { createResponses as createCopilotResponses } from "../src/services/copilot/create-responses"
 
 let responsesApiWebSocketEnabled = true
+const originalFetch = globalThis.fetch
 
 const createResponses = mock((() =>
   Promise.resolve(streamChunks([]))) as typeof createCopilotResponses)
@@ -52,6 +53,7 @@ const DB_PATH_ENV = "COPILOT_API_SQLITE_DB_PATH"
 
 const originalState = {
   accountType: state.accountType,
+  copilotApiUrl: state.copilotApiUrl,
   copilotToken: state.copilotToken,
   macMachineId: state.macMachineId,
   models: state.models,
@@ -128,12 +130,14 @@ afterEach(async () => {
 
   state.copilotToken = originalState.copilotToken
   state.accountType = originalState.accountType
+  state.copilotApiUrl = originalState.copilotApiUrl
   state.macMachineId = originalState.macMachineId
   state.verbose = originalState.verbose
   state.vsCodeDeviceId = originalState.vsCodeDeviceId
   state.vsCodeSessionId = originalState.vsCodeSessionId
   state.vsCodeVersion = originalState.vsCodeVersion
   state.models = originalState.models
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
   Object.assign(
     responsesHandlerDependencies,
     defaultResponsesHandlerDependencies,
@@ -259,6 +263,73 @@ describe("responses handler token usage", () => {
     expect(response.status).toBe(200)
     expect(createResponses).toHaveBeenCalledTimes(1)
     expect(createResponses.mock.calls[0][1]?.transport).toBe("http")
+  })
+
+  test("recovers incompatible reasoning history before returning the Responses stream", async () => {
+    const fetchMock = mock(() => {
+      if (fetchMock.mock.calls.length === 1) {
+        return Promise.resolve(
+          Response.json(
+            {
+              error: {
+                code: "",
+                message: "input item does not belong to this connection",
+              },
+            },
+            { status: 400 },
+          ),
+        )
+      }
+
+      return Promise.resolve(
+        new Response(
+          [
+            "event: response.completed",
+            `data: ${JSON.stringify({
+              response: createResponsesResult("gpt-test"),
+              sequence_number: 1,
+              type: "response.completed",
+            })}`,
+            "",
+            "",
+          ].join("\n"),
+          {
+            headers: { "content-type": "text/event-stream" },
+          },
+        ),
+      )
+    })
+    ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+      fetchMock as unknown as typeof fetch
+    responsesHandlerDependencies.createResponses =
+      defaultResponsesHandlerDependencies.createResponses
+    responsesApiWebSocketEnabled = false
+
+    const response = await createApp().request("/v1/responses", {
+      body: JSON.stringify({
+        input: [
+          {
+            encrypted_content: "old-reasoning",
+            type: "reasoning",
+          },
+          {
+            content: [{ text: "continue", type: "input_text" }],
+            role: "user",
+            type: "message",
+          },
+        ],
+        model: "gpt-test",
+        stream: true,
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+    const stream = await response.text()
+
+    expect(response.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(stream).toContain("response.completed")
+    expect(stream).not.toContain('"type":"error"')
   })
 
   test("does not add context management to native Responses API by default", async () => {
