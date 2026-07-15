@@ -46,6 +46,7 @@ export default defineConfig(
       "prettier/prettier": [
         "error",
         {
+          endOfLine: "auto",
           experimentalOperatorPosition: "start",
           experimentalTernaries: true,
           plugins: ["prettier-plugin-packagejson"],

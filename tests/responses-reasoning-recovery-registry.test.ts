@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 
 import type { ResponseInputItem } from "../src/services/copilot/create-responses"
 import {
@@ -81,4 +84,73 @@ test("reasoning recovery registry bounds fingerprints per scope", () => {
     input: [first],
     removedCount: 2,
   })
+})
+
+test("reasoning recovery registry restores hashed state after restart", async () => {
+  const tempDir = await fs.mkdtemp(
+    path.join(os.tmpdir(), "copilot-api-recovery-"),
+  )
+  const persistencePath = path.join(tempDir, "reasoning-recovery.json")
+  const recoveryScope = scope("restart-persist")
+  const rejected = reasoning("legacy-encrypted-reasoning")
+  const secondRejected = reasoning("second-legacy-encrypted-reasoning")
+  const fresh = reasoning("fresh-encrypted-reasoning")
+
+  try {
+    const firstProcess = new ReasoningRecoveryRegistry({ persistencePath })
+    firstProcess.rememberRejected(recoveryScope, [rejected])
+    await firstProcess.flush()
+    firstProcess.rememberRejected(recoveryScope, [secondRejected])
+    await firstProcess.flush()
+
+    const secondProcess = new ReasoningRecoveryRegistry({ persistencePath })
+    await secondProcess.initialize()
+
+    expect(
+      secondProcess.filterKnown(recoveryScope, [
+        rejected,
+        secondRejected,
+        fresh,
+      ]),
+    ).toEqual({
+      input: [fresh],
+      removedCount: 2,
+    })
+
+    const persisted = await fs.readFile(persistencePath, "utf8")
+    expect(persisted).not.toContain("restart-persist")
+    expect(persisted).not.toContain("gpt-test")
+    expect(persisted).not.toContain("legacy-encrypted-reasoning")
+    expect(persisted).not.toContain("second-legacy-encrypted-reasoning")
+  } finally {
+    await fs.rm(tempDir, { force: true, recursive: true })
+  }
+})
+
+test("reasoning recovery registry falls back to memory after persistence errors", async () => {
+  const tempDir = await fs.mkdtemp(
+    path.join(os.tmpdir(), "copilot-api-recovery-"),
+  )
+  const recoveryScope = scope("persistence-fallback")
+  const rejected = reasoning("rejected-after-storage-error")
+  let persistenceErrors = 0
+
+  try {
+    const registry = new ReasoningRecoveryRegistry({
+      onPersistenceError: () => {
+        persistenceErrors += 1
+      },
+      persistencePath: tempDir,
+    })
+
+    await registry.initialize()
+    registry.rememberRejected(recoveryScope, [rejected])
+    await registry.flush()
+    await registry.flush()
+
+    expect(registry.filterKnown(recoveryScope, [rejected]).removedCount).toBe(1)
+    expect(persistenceErrors).toBe(1)
+  } finally {
+    await fs.rm(tempDir, { force: true, recursive: true })
+  }
 })

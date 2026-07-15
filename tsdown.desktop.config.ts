@@ -6,13 +6,20 @@ export default defineConfig({
   format: ["esm"],
   target: "es2022",
   platform: "node",
+  fixedExtension: false,
 
   sourcemap: true,
   clean: true,
   removeNodeProtocol: false,
+  checks: {
+    pluginTimings: false,
+  },
 
-  external: ["sharp", /^@img\//u],
-  noExternal: (id: string) => id !== "sharp" && !id.startsWith("@img/"),
+  deps: {
+    alwaysBundle: [/^(?!sharp(?:$|\/)|@img\/)/u],
+    neverBundle: ["sharp", /^@img\//u],
+    onlyBundle: false,
+  },
 
   env: {
     NODE_ENV: "production",

@@ -1,6 +1,7 @@
 import consola from "consola"
 import { randomBytes } from "node:crypto"
 import fs from "node:fs"
+import { isDeepStrictEqual } from "node:util"
 
 import { PATHS } from "./paths"
 
@@ -200,7 +201,9 @@ const defaultContextManagement = {
   responses: false,
 } satisfies Required<ContextManagementConfig>
 
-export const CURRENT_CONFIG_SCHEMA_VERSION = 1
+export const CURRENT_CONFIG_SCHEMA_VERSION = 2
+const CONTEXT_MANAGEMENT_CONFIG_SCHEMA_VERSION = 1
+const SPARSE_CONFIG_SCHEMA_VERSION = 2
 
 const legacyResponsesPayloadConfigDefaults = {
   responsesPayloadBudgetBytes: 4_980_736,
@@ -309,11 +312,7 @@ function ensureConfigFile(): void {
     fs.accessSync(PATHS.CONFIG_PATH, fs.constants.R_OK | fs.constants.W_OK)
   } catch {
     fs.mkdirSync(PATHS.APP_DIR, { recursive: true })
-    fs.writeFileSync(
-      PATHS.CONFIG_PATH,
-      `${JSON.stringify(defaultConfig, null, 2)}\n`,
-      "utf8",
-    )
+    fs.writeFileSync(PATHS.CONFIG_PATH, "{}\n", "utf8")
     try {
       fs.chmodSync(PATHS.CONFIG_PATH, 0o600)
     } catch {
@@ -327,12 +326,8 @@ function readConfigFromDisk(): AppConfig {
   try {
     const raw = fs.readFileSync(PATHS.CONFIG_PATH, "utf8")
     if (!raw.trim()) {
-      fs.writeFileSync(
-        PATHS.CONFIG_PATH,
-        `${JSON.stringify(defaultConfig, null, 2)}\n`,
-        "utf8",
-      )
-      return defaultConfig
+      fs.writeFileSync(PATHS.CONFIG_PATH, "{}\n", "utf8")
+      return {}
     }
     return JSON.parse(raw) as AppConfig
   } catch (error) {
@@ -368,6 +363,119 @@ function writeConfigToDisk(config: AppConfig): void {
   )
 }
 
+function createPersistedConfig(
+  config: AppConfig,
+  source: AppConfig,
+): AppConfig {
+  const sourceSchemaVersion =
+    typeof source.configSchemaVersion === "number" ?
+      source.configSchemaVersion
+    : 0
+  if (sourceSchemaVersion < SPARSE_CONFIG_SCHEMA_VERSION) {
+    return createSparsePersistedConfig(config)
+  }
+
+  const persisted = { ...source } as AppConfig & {
+    parityFirst?: unknown
+    responsesApiContextManagementModels?: unknown
+    smallModel?: unknown
+    useFunctionApplyPatch?: unknown
+  }
+  delete persisted.parityFirst
+  delete persisted.responsesApiContextManagementModels
+  delete persisted.smallModel
+  delete persisted.useFunctionApplyPatch
+  persisted.configSchemaVersion = config.configSchemaVersion
+  persisted.auth = {
+    ...source.auth,
+    adminApiKey: config.auth?.adminApiKey,
+  }
+
+  const contextManagement = normalizeContextManagementConfig(
+    source.contextManagement,
+  )
+  if (Object.keys(contextManagement).length > 0) {
+    persisted.contextManagement = contextManagement
+  } else {
+    delete persisted.contextManagement
+  }
+
+  if (config.migrationState) {
+    persisted.migrationState = config.migrationState
+  } else {
+    delete persisted.migrationState
+  }
+
+  if (source.modelResponsesApiCompactThresholds !== undefined) {
+    const thresholds = config.modelResponsesApiCompactThresholds ?? {}
+    if (Object.keys(thresholds).length > 0) {
+      persisted.modelResponsesApiCompactThresholds = thresholds
+    } else {
+      delete persisted.modelResponsesApiCompactThresholds
+    }
+  }
+
+  return persisted
+}
+
+function createSparsePersistedConfig(config: AppConfig): AppConfig {
+  const persisted = { ...config } as Record<string, unknown>
+  const nestedDefaultKeys = [
+    "auth",
+    "contextManagement",
+    "extraPrompts",
+    "modelMappings",
+    "modelReasoningEfforts",
+    "providers",
+  ] as const satisfies ReadonlyArray<keyof AppConfig>
+
+  for (const key of nestedDefaultKeys) {
+    const value = config[key]
+    const defaults = defaultConfig[key]
+    if (!isPlainRecord(value) || !isPlainRecord(defaults)) {
+      continue
+    }
+    const defaultRecord = defaults as Record<string, unknown>
+    const overrides = Object.fromEntries(
+      Object.entries(value).filter(
+        ([entryKey, entryValue]) =>
+          !Object.hasOwn(defaultRecord, entryKey)
+          || !isDeepStrictEqual(defaultRecord[entryKey], entryValue),
+      ),
+    )
+    if (Object.keys(overrides).length === 0) {
+      delete persisted[key]
+    } else {
+      persisted[key] = overrides
+    }
+  }
+
+  for (const [key, defaultValue] of Object.entries(defaultConfig)) {
+    if (
+      key === "configSchemaVersion"
+      || nestedDefaultKeys.includes(key as (typeof nestedDefaultKeys)[number])
+    ) {
+      continue
+    }
+    if (isDeepStrictEqual(persisted[key], defaultValue)) {
+      delete persisted[key]
+    }
+  }
+
+  if (
+    isPlainRecord(persisted.modelResponsesApiCompactThresholds)
+    && Object.keys(persisted.modelResponsesApiCompactThresholds).length === 0
+  ) {
+    delete persisted.modelResponsesApiCompactThresholds
+  }
+
+  return persisted as AppConfig
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
 export function mergeDefaultConfig(config: AppConfig): {
   mergedConfig: AppConfig
   changed: boolean
@@ -388,11 +496,11 @@ export function mergeDefaultConfig(config: AppConfig): {
   delete normalizedConfig.smallModel
   delete normalizedConfig.useFunctionApplyPatch
 
-  const legacyConfigSchema =
+  const legacyContextManagementSchema =
     typeof config.configSchemaVersion !== "number"
-    || config.configSchemaVersion < CURRENT_CONFIG_SCHEMA_VERSION
+    || config.configSchemaVersion < CONTEXT_MANAGEMENT_CONFIG_SCHEMA_VERSION
   const contextManagementMessagesNeedsDecision =
-    legacyConfigSchema && config.contextManagement?.messages === true
+    legacyContextManagementSchema && config.contextManagement?.messages === true
   const migrationState = {
     ...config.migrationState,
     ...(contextManagementMessagesNeedsDecision && {
@@ -564,23 +672,27 @@ function ensureAdminApiKey(config: AppConfig): {
 
 export function mergeConfigWithDefaults(): AppConfig {
   const config = readConfigFromDisk()
-  const { mergedConfig, changed } = mergeDefaultConfig(config)
+  const { mergedConfig } = mergeDefaultConfig(config)
   const {
     mergedConfig: mergedConfigWithAdminApiKey,
     changed: adminApiKeyChanged,
   } = ensureAdminApiKey(mergedConfig)
-  const shouldPersistConfig = changed || adminApiKeyChanged
+  const persistedConfig = createPersistedConfig(
+    mergedConfigWithAdminApiKey,
+    config,
+  )
+  const shouldPersistConfig = !isDeepStrictEqual(config, persistedConfig)
 
   if (shouldPersistConfig) {
     try {
-      writeConfigToDisk(mergedConfigWithAdminApiKey)
+      writeConfigToDisk(persistedConfig)
     } catch (writeError) {
       if (adminApiKeyChanged) {
         throw writeError
       }
 
       consola.warn(
-        "Failed to write merged default config to config file",
+        "Failed to write normalized config to config file",
         writeError,
       )
     }
@@ -607,7 +719,7 @@ function warnPendingContextManagementMessagesDecision(config: AppConfig): void {
 }
 
 export function getConfig(): AppConfig {
-  cachedConfig ??= mergeDefaultConfig(readConfigFromDisk()).mergedConfig
+  cachedConfig ??= mergeConfigWithDefaults()
   return cachedConfig
 }
 
