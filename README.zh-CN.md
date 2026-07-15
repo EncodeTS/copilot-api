@@ -143,7 +143,7 @@ docker run -p 4141:4141 -e GH_TOKEN=your_github_token_here copilot-api
 
 设置页还可以配置 `OAuth App`、`API Home`、`Enterprise URL`、详细日志以及最小化到托盘。本 fork 的桌面安装包发布在 GitHub Releases：
 
-handler 日志使用私有权限（目录 `0700`，所有新建或已打开的文件 `0600`）。详细日志默认只记录不含内容的结构化摘要；在数据存在时保留事件类型、模型、条目数量、payload 字节数和错误码，但不写入提示词、消息文本、工具输入/输出、推理、加密内容或签名。RC9 管理的新日志按天使用 `*.part-N.log` 命名，保留 7 天，单文件达到 10 MiB 时轮转，并按最旧优先将受管日志总量限制在 100 MiB。可通过 `COPILOT_API_LOG_MAX_FILE_BYTES` 和 `COPILOT_API_LOG_MAX_TOTAL_BYTES` 调整字节上限。
+handler 日志使用私有权限（目录 `0700`，所有新建或已打开的文件 `0600`）。详细日志默认只记录不含内容的结构化摘要；在数据存在时保留事件类型、模型、条目数量、payload 字节数和错误码，但不写入提示词、消息文本、工具输入/输出、推理、加密内容或签名。RC9 管理的新日志按天使用 `*.part-N.log` 命名，保留 7 天，单文件达到 10 MiB 时轮转，并按最旧优先将受管日志总量限制在 100 MiB。异步内存队列最多保留 5 MiB；磁盘持续故障时会在达到边界后丢弃新的日志条目，而不是继续无限增长。可通过 `COPILOT_API_LOG_MAX_BUFFER_BYTES`、`COPILOT_API_LOG_MAX_FILE_BYTES` 和 `COPILOT_API_LOG_MAX_TOTAL_BYTES` 调整字节上限。
 
 RC9 之前生成的旧格式 handler 日志（`*-YYYY-MM-DD.log`）以及无关的 archive/private-audit 文件会原样保留，也不会计入自动保留期和总量清理。待需要保存的排障证据另行备份后，再手动决定是否删除这些旧文件。
 

@@ -229,10 +229,14 @@ test("handler log cleanup reports a permission failure and rebuilds a deleted di
 
     await storage.cleanup()
     expect(errors).toHaveLength(1)
-    expect(errors[0]?.message).toBe("Failed to initialize handler logs")
+    expect(errors[0]?.message).toBe("Failed to clean handler logs")
 
     storage.append(basePath, "after-delete")
     await storage.flush()
+    expect(errors.map(({ message }) => message)).toEqual([
+      "Failed to clean handler logs",
+      "Failed to initialize handler logs",
+    ])
     const rebuiltLog = path.join(
       logDirectory,
       "rebuild-handler-2026-07-15.part-0.log",
@@ -281,6 +285,48 @@ test("handler log flush reports a write failure and retries buffered lines", asy
       "write-error-handler-2026-07-15.part-0.log",
     )
     expect(fs.readFileSync(logPath, "utf8")).toBe("retry-this-line\n")
+  } finally {
+    await storage.close()
+    fs.rmSync(parentDirectory, { force: true, recursive: true })
+  }
+})
+
+test("handler log storage bounds its in-memory buffer during disk stalls", async () => {
+  const parentDirectory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "copilot-api-storage-buffer-limit-"),
+  )
+  const logDirectory = path.join(parentDirectory, "logs")
+  const errors: Array<string> = []
+  const storage = createHandlerLogStorage({
+    logDirectory,
+    maxBufferedBytes: 12,
+    maxBufferSize: 2,
+    onError: (message) => errors.push(message),
+    startTimers: false,
+  })
+  const basePath = path.join(
+    logDirectory,
+    "buffer-limit-handler-2026-07-15.log",
+  )
+
+  try {
+    storage.append(basePath, "first")
+    storage.append(basePath, "second")
+    storage.append(basePath, "third")
+    expect(errors).toEqual([
+      "Handler log buffer limit reached; dropping new log entries",
+    ])
+
+    await storage.flush()
+    storage.append(basePath, "fourth")
+    await storage.flush()
+
+    const logPath = path.join(
+      logDirectory,
+      "buffer-limit-handler-2026-07-15.part-0.log",
+    )
+    expect(fs.readFileSync(logPath, "utf8")).toBe("first\nthird\nfourth\n")
+    expect(errors).toHaveLength(1)
   } finally {
     await storage.close()
     fs.rmSync(parentDirectory, { force: true, recursive: true })
