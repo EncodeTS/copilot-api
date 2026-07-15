@@ -166,7 +166,8 @@ const zh: Locale = {
     enterpriseUrlDesc:
       '可选，例如 company.ghe.com。用于连接 GitHub Enterprise。',
     verbose: '详细日志',
-    verboseDesc: '输出更详细的调试信息',
+    verboseDesc:
+      '写入结构化诊断信息；默认不记录提示词、消息文本、工具数据和推理内容',
     showToken: '显示 Token',
     showTokenDesc: '在日志中打印 GitHub/Copilot Token 值',
     sectionLanguage: '语言',

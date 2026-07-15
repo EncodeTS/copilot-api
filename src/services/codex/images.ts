@@ -1,9 +1,4 @@
-import {
-  fetch as undiciFetch,
-  getGlobalDispatcher,
-  type Dispatcher,
-  type RequestInit as UndiciRequestInit,
-} from "undici"
+import type { Dispatcher, RequestInit as UndiciRequestInit } from "undici"
 
 import {
   buildCodexRequestHeaders,
@@ -14,25 +9,33 @@ export type CodexImagesOperation = "generations" | "edits"
 
 const CODEX_IMAGES_TIMEOUT_MS = 15 * 60 * 1000
 
-const codexImagesDispatcher = {
-  dispatch(
-    options: Dispatcher.DispatchOptions,
-    handler: Dispatcher.DispatchHandler,
-  ) {
-    return getGlobalDispatcher().dispatch(
-      {
-        ...options,
-        bodyTimeout: CODEX_IMAGES_TIMEOUT_MS,
-        headersTimeout: CODEX_IMAGES_TIMEOUT_MS,
-      },
-      handler,
-    )
-  },
-} as Dispatcher
+const createCodexImagesDispatcher = (
+  getGlobalDispatcher: () => Dispatcher,
+): Dispatcher =>
+  ({
+    dispatch(
+      options: Dispatcher.DispatchOptions,
+      handler: Dispatcher.DispatchHandler,
+    ) {
+      return getGlobalDispatcher().dispatch(
+        {
+          ...options,
+          bodyTimeout: CODEX_IMAGES_TIMEOUT_MS,
+          headersTimeout: CODEX_IMAGES_TIMEOUT_MS,
+        },
+        handler,
+      )
+    },
+  }) as Dispatcher
 
 type StreamingRequestInit = RequestInit & {
   duplex: "half"
 }
+
+type DispatcherFetch = (
+  input: string | URL | Request,
+  init?: UndiciRequestInit,
+) => Promise<Response>
 
 export function resolveCodexImagesUrl(
   requestUrl: string,
@@ -71,8 +74,11 @@ export async function forwardCodexImages(
 
   // Node and Undici expose separate fetch types, but their streamed request
   // and response objects are runtime-compatible here.
-  return (await undiciFetch(upstreamUrl, {
+  const { getGlobalDispatcher } = await import("undici")
+  const codexImagesDispatcher = createCodexImagesDispatcher(getGlobalDispatcher)
+  const fetchWithDispatcher = fetch as unknown as DispatcherFetch
+  return await fetchWithDispatcher(upstreamUrl, {
     ...init,
     dispatcher: codexImagesDispatcher,
-  } as unknown as UndiciRequestInit)) as unknown as Response
+  } as unknown as UndiciRequestInit)
 }
