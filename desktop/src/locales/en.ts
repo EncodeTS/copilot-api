@@ -172,7 +172,8 @@ const en: Locale = {
     enterpriseUrlDesc:
       'Optional value such as company.ghe.com for GitHub Enterprise.',
     verbose: 'Verbose logging',
-    verboseDesc: 'Output more detailed debug information',
+    verboseDesc:
+      'Write structured diagnostics; prompts, message text, tool data, and reasoning content are omitted by default',
     showToken: 'Show token',
     showTokenDesc: 'Print GitHub/Copilot token values in logs',
     sectionLanguage: 'Language',

@@ -2,6 +2,15 @@ const DATA_URL_BASE64_PATTERN =
   /data:([a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+)(?:;[^,\s"']*)?;base64,[A-Za-z0-9+/=\r\n-]+/gu
 
 const REMOTE_MEDIA_URL_PATTERN = /^(?:https?|file):\/\//iu
+const CREDENTIAL_HEADER_PATTERN =
+  /(\b(?:authorization|cookie|set-cookie|x-api-key)\s*:\s*)[^\r\n]+/giu
+const BEARER_TOKEN_PATTERN = /\bBearer\s+[a-zA-Z0-9._~+/=-]+/gu
+const JSON_CREDENTIAL_PATTERN =
+  /(["'](?:access[_-]?token|api[_-]?key|authorization|client[_-]?secret|cookie|credentials?|github[_-]?token|password|private[_-]?key|refresh[_-]?token|secret|session[_-]?key|token|x-api-key)["']\s*:\s*["'])[^"']*(["'])/giu
+const JSON_MEDIA_PATTERN =
+  /(["'](?:file_data|file_id|image_url|input_audio)["']\s*:\s*["'])(?!\[redacted_media\b)[^"']*(["'])/giu
+const QUERY_CREDENTIAL_PATTERN =
+  /([?&](?:access[_-]?token|api[_-]?key|authorization|key|password|refresh[_-]?token|secret|sig|signature|token)=)[^&#\s"']+/giu
 
 type PropertyPath = Array<string>
 
@@ -20,13 +29,33 @@ export const redactPayloadForStableId = (value: unknown): unknown =>
   })
 
 export const redactLogString = (value: string): string =>
-  value.replaceAll(DATA_URL_BASE64_PATTERN, (_match, mimeType: string) =>
-    createMediaMarker({
-      kind: "data_url",
-      mimeType,
-      options: { stableMediaMarker: false },
-    }),
-  )
+  value
+    .replaceAll(DATA_URL_BASE64_PATTERN, (_match, mimeType: string) =>
+      createMediaMarker({
+        kind: "data_url",
+        mimeType,
+        options: { stableMediaMarker: false },
+      }),
+    )
+    .replaceAll(
+      CREDENTIAL_HEADER_PATTERN,
+      (_match, prefix: string) => `${prefix}[redacted_credential]`,
+    )
+    .replaceAll(BEARER_TOKEN_PATTERN, "Bearer [redacted_credential]")
+    .replaceAll(
+      JSON_CREDENTIAL_PATTERN,
+      (_match, prefix: string, suffix: string) =>
+        `${prefix}[redacted_credential]${suffix}`,
+    )
+    .replaceAll(
+      JSON_MEDIA_PATTERN,
+      (_match, prefix: string, suffix: string) =>
+        `${prefix}[redacted_media kind=json_field]${suffix}`,
+    )
+    .replaceAll(
+      QUERY_CREDENTIAL_PATTERN,
+      (_match, prefix: string) => `${prefix}[redacted_credential]`,
+    )
 
 const redactValue = (
   value: unknown,
@@ -34,6 +63,10 @@ const redactValue = (
   seen: WeakMap<object, unknown>,
   options: RedactionOptions,
 ): unknown => {
+  if (isCredentialPath(path)) {
+    return "[redacted_credential]"
+  }
+
   if (typeof value === "string") {
     return redactStringValue(value, path, options)
   }
@@ -69,6 +102,29 @@ const redactValue = (
     redacted[key] = redactValue(childValue, [...path, key], seen, options)
   }
   return redacted
+}
+
+const isCredentialPath = (path: PropertyPath): boolean => {
+  const key = path
+    .at(-1)
+    ?.toLowerCase()
+    .replaceAll(/[^a-z0-9]/gu, "")
+  if (!key) return false
+
+  return (
+    key === "authorization"
+    || key === "cookie"
+    || key === "credentials"
+    || key === "password"
+    || key === "secret"
+    || key === "setcookie"
+    || key === "xapikey"
+    || key === "apikey"
+    || key === "token"
+    || key.endsWith("apikey")
+    || key.endsWith("secret")
+    || key.endsWith("token")
+  )
 }
 
 const redactStringValue = (
