@@ -33,6 +33,7 @@ let capturedMessagesSignal: AbortSignal | undefined
 let capturedResponsesPayload: ResponsesPayload | null = null
 let capturedResponsesOptions: {
   allowHttpFallback?: boolean
+  reasoningRecoverySessionId?: string
   signal?: AbortSignal
   transport?: ResponsesTransport
 } | null = null
@@ -80,6 +81,7 @@ const createResponses = mock(
     payload: ResponsesPayload,
     options: {
       allowHttpFallback?: boolean
+      reasoningRecoverySessionId?: string
       signal?: AbortSignal
       transport?: ResponsesTransport
     },
@@ -866,6 +868,7 @@ test("messages Responses flow uses websocket transport by default for dual-endpo
 
   const response = await handleWithResponsesApi(createContext(), payload, {
     logger,
+    reasoningRecoverySessionId: "stable-session",
     requestId: "request-1",
     selectedModel: createModel(["/responses", "ws:/responses"]),
   })
@@ -873,6 +876,9 @@ test("messages Responses flow uses websocket transport by default for dual-endpo
   expect(response.status).toBe(200)
   expect(createResponses).toHaveBeenCalledTimes(1)
   expect(capturedResponsesOptions?.transport).toBe("websocket")
+  expect(capturedResponsesOptions?.reasoningRecoverySessionId).toBe(
+    "stable-session",
+  )
   expect(capturedResponsesOptions?.allowHttpFallback).toBe(true)
 })
 

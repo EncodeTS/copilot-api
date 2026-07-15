@@ -332,6 +332,83 @@ describe("responses handler token usage", () => {
     expect(stream).not.toContain('"type":"error"')
   })
 
+  test("does not cache reasoning recovery under a request-derived fallback session", async () => {
+    const fetchMock = mock((_input: unknown, init?: RequestInit) => {
+      if (typeof init?.body !== "string") {
+        throw new TypeError("Expected a JSON request body")
+      }
+      const body = JSON.parse(init.body) as {
+        input: Array<Record<string, unknown>>
+      }
+      const hasRejectedReasoning = body.input.some(
+        (item) => item.encrypted_content === "old-reasoning",
+      )
+      if (hasRejectedReasoning) {
+        return Promise.resolve(
+          Response.json(
+            {
+              error: {
+                code: "",
+                message: "input item does not belong to this connection",
+              },
+            },
+            { status: 400 },
+          ),
+        )
+      }
+      return Promise.resolve(
+        new Response(
+          [
+            "event: response.completed",
+            `data: ${JSON.stringify({
+              response: createResponsesResult("gpt-test"),
+              sequence_number: 1,
+              type: "response.completed",
+            })}`,
+            "",
+            "",
+          ].join("\n"),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      )
+    })
+    ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+      fetchMock as unknown as typeof fetch
+    responsesHandlerDependencies.createResponses =
+      defaultResponsesHandlerDependencies.createResponses
+    responsesApiWebSocketEnabled = false
+
+    const app = createApp()
+    for (const traceId of ["trace-1", "trace-2"]) {
+      const response = await app.request("/v1/responses", {
+        body: JSON.stringify({
+          input: [
+            {
+              encrypted_content: "old-reasoning",
+              type: "reasoning",
+            },
+            {
+              content: [{ text: "continue", type: "input_text" }],
+              role: "user",
+              type: "message",
+            },
+          ],
+          model: "gpt-test",
+          stream: true,
+        }),
+        headers: {
+          "content-type": "application/json",
+          "x-request-id": traceId,
+        },
+        method: "POST",
+      })
+      expect(response.status).toBe(200)
+      expect(await response.text()).toContain("response.completed")
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+
   test("does not add context management to native Responses API by default", async () => {
     createResponses.mockImplementation((payload) =>
       Promise.resolve(createResponsesResult(payload.model)),

@@ -157,6 +157,7 @@ export const handleResponses = async (c: Context) => {
         responsesTransport === "websocket" && endpointCapabilities.http,
       vision,
       initiator,
+      reasoningRecoverySessionId: sessionId,
       subagentMarker,
       requestId,
       sessionId: fallbackSessionId,
