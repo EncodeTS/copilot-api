@@ -9,6 +9,7 @@ import type { Model } from "~/services/copilot/get-models"
 
 import { debugJson, debugJsonTail, debugLazy } from "~/lib/logger"
 import { resolveBridgeToolSearchName } from "~/lib/tool-search"
+import { getResponsesEndpointCapabilities } from "~/lib/responses-capabilities"
 import {
   createCopilotTokenUsageRecorder,
   mergeAnthropicUsage,
@@ -97,6 +98,7 @@ export interface FlowBaseOptions {
   subagentMarker?: SubagentMarker | null
   requestId: string
   sessionId?: string
+  signal?: AbortSignal
   compactType?: CompactType
 }
 
@@ -124,6 +126,7 @@ export const handleWithChatCompletions = async (
     subagentMarker,
     requestId,
     sessionId,
+    signal,
     compactType,
   } = options
   const openAIPayload = translateToOpenAI(anthropicPayload, {
@@ -146,6 +149,7 @@ export const handleWithChatCompletions = async (
       subagentMarker,
       requestId,
       sessionId,
+      signal,
       compactType,
     },
   )
@@ -309,10 +313,12 @@ export const handleWithResponsesApi = async (
     getResponsesTransportForModel(selectedModel, {
       compactType: requestOptions.compactType,
     }) ?? "http"
+  const endpointCapabilities = getResponsesEndpointCapabilities(selectedModel)
   const response = await createOptimizedCopilotResponses(responsesPayload, {
     createResponses: messagesApiFlowDependencies.createResponses,
     logger,
     requestOptions: {
+      allowHttpFallback: transport === "websocket" && endpointCapabilities.http,
       vision,
       initiator,
       transport,
@@ -439,6 +445,7 @@ export const handleWithMessagesApi = async (
     selectedModel,
     requestId,
     sessionId,
+    signal,
     compactType,
   } = options
 
@@ -459,6 +466,7 @@ export const handleWithMessagesApi = async (
       subagentMarker,
       requestId,
       sessionId,
+      signal,
       compactType,
     },
   )

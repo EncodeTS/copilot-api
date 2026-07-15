@@ -27,6 +27,7 @@ type FlowCallOptions = {
   compactType?: number
   requestId: string
   sessionId?: string
+  signal?: AbortSignal
   subagentMarker?: unknown
   anthropicBetaHeader?: string
 }
@@ -121,6 +122,27 @@ afterEach(() => {
 })
 
 describe("messages handler orchestration", () => {
+  test("forwards the Hono request abort signal to the selected flow", async () => {
+    selectedModel = {
+      id: "messages-model",
+      supported_endpoints: ["/v1/messages"],
+    }
+    const controller = new AbortController()
+    const request = new Request("http://localhost/", {
+      body: JSON.stringify(createPayload()),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      signal: controller.signal,
+    })
+
+    const response = await createApp().request(request)
+
+    expect(response.status).toBe(200)
+    expect(handleWithMessagesApi.mock.calls[0][2].signal).toBe(
+      controller.signal,
+    )
+  })
+
   test("merges message-level system prompts before forwarding to the selected flow", async () => {
     selectedModel = {
       id: "messages-model",
@@ -259,7 +281,7 @@ describe("messages handler orchestration", () => {
     ])
   })
 
-  test("continues removing eager executeCode from the Responses bridge", async () => {
+  test("preserves forced executeCode intent for the Responses bridge", async () => {
     selectedModel = {
       id: "responses-model",
       supported_endpoints: ["/responses"],
@@ -272,6 +294,10 @@ describe("messages handler orchestration", () => {
       },
       body: JSON.stringify(
         createPayload({
+          tool_choice: {
+            type: "tool",
+            name: "mcp__ide__executeCode",
+          },
           tools: [
             {
               name: "mcp__ide__executeCode",
@@ -292,8 +318,13 @@ describe("messages handler orchestration", () => {
     expect(await response.text()).toBe("responses")
     const [, forwardedPayload] = handleWithResponsesApi.mock.calls[0]
     expect(forwardedPayload.tools?.map((tool) => tool.name)).toEqual([
+      "mcp__ide__executeCode",
       "keep_me",
     ])
+    expect(forwardedPayload.tool_choice).toEqual({
+      type: "tool",
+      name: "mcp__ide__executeCode",
+    })
   })
 
   test("continues removing eager executeCode from Chat Completions", async () => {
@@ -331,6 +362,46 @@ describe("messages handler orchestration", () => {
     expect(forwardedPayload.tools?.map((tool) => tool.name)).toEqual([
       "keep_me",
     ])
+  })
+
+  test("rejects forced executeCode when only Chat Completions is available", async () => {
+    selectedModel = {
+      id: "chat-model",
+      supported_endpoints: ["/chat/completions"],
+    }
+
+    const response = await createApp().request("/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(
+        createPayload({
+          tool_choice: {
+            type: "tool",
+            name: "mcp__ide__executeCode",
+          },
+          tools: [
+            {
+              name: "mcp__ide__executeCode",
+              description: "Execute code in VS Code",
+              input_schema: { type: "object" },
+            },
+          ],
+        }),
+      ),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        message:
+          "mcp__ide__executeCode is not supported by the Chat Completions fallback.",
+      },
+    })
+    expect(handleWithChatCompletions).not.toHaveBeenCalled()
   })
 
   test("preserves tool_result and text blocks by default", async () => {

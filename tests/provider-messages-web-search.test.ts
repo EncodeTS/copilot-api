@@ -380,7 +380,7 @@ afterEach(() => {
 })
 
 describe("provider messages web_search", () => {
-  test("adds context management when provider Messages uses Responses API", async () => {
+  test("does not add context management when an unknown provider uses Responses API", async () => {
     const app = createApp()
     const response = await app.request("/search/v1/messages", {
       method: "POST",
@@ -405,6 +405,35 @@ describe("provider messages web_search", () => {
       model: string
     }
     expect(upstreamBody.model).toBe("gpt-search")
+    expect(upstreamBody.context_management).toBeUndefined()
+  })
+
+  test("adds context management when a Responses provider explicitly opts in", async () => {
+    providerConfigs.search = {
+      ...providerConfigs.search,
+      capabilities: {
+        responsesContextManagement: true,
+      },
+    }
+
+    const app = createApp()
+    const response = await app.request("/search/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-search",
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const [, init] = fetchMock.mock.calls[0]
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      context_management?: unknown
+    }
     expect(upstreamBody.context_management).toEqual([
       {
         compact_threshold: 168000,

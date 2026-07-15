@@ -5,6 +5,8 @@ import fs from "node:fs"
 import { PATHS } from "./paths"
 
 export interface AppConfig {
+  configSchemaVersion?: number
+  migrationState?: ConfigMigrationState
   auth?: {
     apiKeys?: Array<string>
     adminApiKey?: string
@@ -54,6 +56,10 @@ export interface AppConfig {
   responsesImageRetryRequiresHttp?: boolean
 }
 
+export interface ConfigMigrationState {
+  contextManagementMessages?: "pending_user_decision"
+}
+
 export interface ContextManagementConfig {
   messages?: boolean
   responses?: boolean
@@ -65,6 +71,7 @@ export interface ModelConfig {
   topK?: number
   extraBody?: Record<string, unknown>
   contextCache?: boolean
+  responsesContextManagement?: boolean
   pricing?: TokenUsagePricingConfig
   supportPdf?: boolean
   toolContentSupportType?: Array<ToolContentSupportType>
@@ -99,8 +106,13 @@ export interface ProviderConfig {
   baseUrl?: string
   apiKey?: string
   authType?: ProviderAuthType
+  capabilities?: ProviderCapabilities
   pricingCurrency?: string
   models?: Record<string, ModelConfig>
+}
+
+export interface ProviderCapabilities {
+  responsesContextManagement?: boolean
 }
 
 export interface ResolvedProviderConfig {
@@ -109,6 +121,7 @@ export interface ResolvedProviderConfig {
   baseUrl: string
   apiKey: string
   authType: ProviderAuthType
+  capabilities?: ProviderCapabilities
   pricingCurrency?: string
   models?: Record<string, ModelConfig>
 }
@@ -187,6 +200,8 @@ const defaultContextManagement = {
   responses: false,
 } satisfies Required<ContextManagementConfig>
 
+export const CURRENT_CONFIG_SCHEMA_VERSION = 1
+
 const legacyResponsesPayloadConfigDefaults = {
   responsesPayloadBudgetBytes: 4_980_736,
   responsesPayloadRetryBudgetBytes: 4_718_592,
@@ -236,6 +251,7 @@ const responsesImageConfigDefaults = {
 }
 
 const defaultConfig: AppConfig = {
+  configSchemaVersion: CURRENT_CONFIG_SCHEMA_VERSION,
   auth: {
     apiKeys: [],
   },
@@ -257,6 +273,7 @@ const defaultConfig: AppConfig = {
 
 let cachedConfig: AppConfig | null = null
 const warnedInvalidConfigKeys = new Set<string>()
+const warnedPendingConfigMigrations = new Set<string>()
 
 function normalizeAdminApiKey(adminApiKey: unknown): string | null {
   if (typeof adminApiKey !== "string") {
@@ -357,13 +374,46 @@ export function mergeDefaultConfig(config: AppConfig): {
 } {
   const normalizedConfig = { ...config } as AppConfig & {
     parityFirst?: unknown
+    responsesApiContextManagementModels?: unknown
     smallModel?: unknown
+    useFunctionApplyPatch?: unknown
   }
   const hasDeprecatedRequestRewriteConfig =
     Object.hasOwn(normalizedConfig, "parityFirst")
     || Object.hasOwn(normalizedConfig, "smallModel")
+    || Object.hasOwn(normalizedConfig, "responsesApiContextManagementModels")
+    || Object.hasOwn(normalizedConfig, "useFunctionApplyPatch")
   delete normalizedConfig.parityFirst
+  delete normalizedConfig.responsesApiContextManagementModels
   delete normalizedConfig.smallModel
+  delete normalizedConfig.useFunctionApplyPatch
+
+  const legacyConfigSchema =
+    typeof config.configSchemaVersion !== "number"
+    || config.configSchemaVersion < CURRENT_CONFIG_SCHEMA_VERSION
+  const contextManagementMessagesNeedsDecision =
+    legacyConfigSchema && config.contextManagement?.messages === true
+  const migrationState = {
+    ...config.migrationState,
+    ...(contextManagementMessagesNeedsDecision && {
+      contextManagementMessages: "pending_user_decision" as const,
+    }),
+  }
+  if (config.contextManagement?.messages !== true) {
+    delete migrationState.contextManagementMessages
+  }
+  const hasMigrationStateChanges =
+    migrationState.contextManagementMessages
+    !== config.migrationState?.contextManagementMessages
+  const configSchemaVersion =
+    (
+      typeof config.configSchemaVersion === "number"
+      && config.configSchemaVersion > CURRENT_CONFIG_SCHEMA_VERSION
+    ) ?
+      config.configSchemaVersion
+    : CURRENT_CONFIG_SCHEMA_VERSION
+  const hasConfigSchemaVersionChanges =
+    config.configSchemaVersion !== configSchemaVersion
 
   const extraPrompts = config.extraPrompts ?? {}
   const defaultExtraPrompts = defaultConfig.extraPrompts ?? {}
@@ -416,6 +466,8 @@ export function mergeDefaultConfig(config: AppConfig): {
     && !hasContextManagementChanges
     && !hasDeprecatedRequestRewriteConfig
     && !hasResponsesImageConfigChanges
+    && !hasMigrationStateChanges
+    && !hasConfigSchemaVersionChanges
   ) {
     return { mergedConfig: config, changed: false }
   }
@@ -423,6 +475,10 @@ export function mergeDefaultConfig(config: AppConfig): {
   return {
     mergedConfig: {
       ...normalizedConfig,
+      configSchemaVersion,
+      ...(Object.keys(migrationState).length > 0 ?
+        { migrationState }
+      : { migrationState: undefined }),
       contextManagement: {
         ...defaultContextManagementConfig,
         ...contextManagement,
@@ -530,8 +586,24 @@ export function mergeConfigWithDefaults(): AppConfig {
     }
   }
 
+  warnPendingContextManagementMessagesDecision(mergedConfigWithAdminApiKey)
   cachedConfig = mergedConfigWithAdminApiKey
   return mergedConfigWithAdminApiKey
+}
+
+function warnPendingContextManagementMessagesDecision(config: AppConfig): void {
+  const migrationKey = "contextManagementMessages"
+  if (
+    config.migrationState?.contextManagementMessages !== "pending_user_decision"
+    || warnedPendingConfigMigrations.has(migrationKey)
+  ) {
+    return
+  }
+
+  warnedPendingConfigMigrations.add(migrationKey)
+  consola.warn(
+    "Config migration pending: contextManagement.messages is temporarily disabled while this decision is pending. Its stored true value is preserved; set it to false for client-owned compaction, or remove migrationState.contextManagementMessages after explicitly choosing gateway-managed compaction.",
+  )
 }
 
 export function getConfig(): AppConfig {
@@ -609,6 +681,11 @@ export function resolveMappedModel(model: string): string {
 
 export function isContextManagementEnabledForMessages(): boolean {
   const config = getConfig()
+  if (
+    config.migrationState?.contextManagementMessages === "pending_user_decision"
+  ) {
+    return false
+  }
   return config.contextManagement?.messages ?? defaultContextManagement.messages
 }
 
@@ -799,6 +876,7 @@ export function getProviderConfig(name: string): ResolvedProviderConfig | null {
     baseUrl,
     apiKey,
     authType,
+    capabilities: provider.capabilities,
     pricingCurrency: normalizePricingCurrency(provider.pricingCurrency),
     models: provider.models,
   }
@@ -813,6 +891,23 @@ export function resolveEffectiveProviderType(
     return modelConfig.type
   }
   return providerConfig.type
+}
+
+export function supportsProviderResponsesContextManagement(
+  providerConfig: ResolvedProviderConfig,
+  model?: string,
+): boolean {
+  const modelCapability =
+    model ?
+      providerConfig.models?.[model]?.responsesContextManagement
+    : undefined
+
+  return (
+    providerConfig.name === "codex"
+    || providerConfig.name === "copilot"
+    || modelCapability === true
+    || providerConfig.capabilities?.responsesContextManagement === true
+  )
 }
 
 function normalizePricingCurrency(

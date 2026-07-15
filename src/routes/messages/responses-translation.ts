@@ -1,5 +1,3 @@
-import { Buffer } from "node:buffer"
-
 import {
   BRIDGE_TOOL_SEARCH_NAME,
   formatToolSearchBridgeArguments,
@@ -72,6 +70,12 @@ import {
   type AnthropicUserContentBlock,
   type AnthropicUserMessage,
 } from "./anthropic-types"
+import {
+  decodeVersionedReasoningCarrier,
+  encodeVersionedReasoningCarrier,
+  parseLegacyOpenAIReasoningCarrierSignature,
+  type ReasoningCarrierEndpoint,
+} from "./reasoning-carrier"
 import { normalizeToolSchema } from "./non-stream-translation"
 import { assertResponsesResultUsable } from "./responses-result"
 import { parseFunctionCallArguments } from "./tool-arguments"
@@ -79,7 +83,6 @@ import { parseFunctionCallArguments } from "./tool-arguments"
 const MESSAGE_TYPE = "message"
 const COMPACTION_SIGNATURE_PREFIX = "cm1#"
 const COMPACTION_SIGNATURE_SEPARATOR = "@"
-const REASONING_SIGNATURE_PREFIX = "copilot-api-openai-reasoning-v1:"
 
 export const THINKING_TEXT = "Thinking..."
 export const REASONING_SUMMARY_SEPARATOR = "\u2063\n\n"
@@ -126,6 +129,10 @@ const buildPromptCacheKey = (
 export const translateAnthropicMessagesToResponsesPayload = (
   payload: AnthropicMessagesPayload,
   subagentAgentId?: string | null,
+  carrierTarget: ReasoningCarrierEndpoint = {
+    model: payload.model,
+    provider: "copilot",
+  },
 ): ResponsesPayload => {
   const input: Array<ResponseInputItem> = []
   const applyPhase = shouldApplyPhase(payload.model)
@@ -134,6 +141,7 @@ export const translateAnthropicMessagesToResponsesPayload = (
     tools: payload.tools,
   })
   const translationState: TranslationState = {
+    carrierTarget,
     originalTools: payload.tools ?? [],
     toolSearchEnabled,
     toolUseNameById: new Map(),
@@ -263,6 +271,7 @@ const retainLatestPromptCacheBreakpoints = (
 }
 
 interface TranslationState {
+  carrierTarget: ReasoningCarrierEndpoint
   originalTools: Array<AnthropicTool>
   toolSearchEnabled: boolean
   toolUseNameById: Map<string, string>
@@ -308,15 +317,13 @@ export const decodeCompactionCarrierSignature = (
 
 export const encodeReasoningCarrierSignature = (
   reasoning: ResponseOutputReasoning,
+  source: ReasoningCarrierEndpoint,
 ): string | undefined => {
   if (!reasoning.encrypted_content || !reasoning.id) {
     return undefined
   }
 
-  return `${REASONING_SIGNATURE_PREFIX}${Buffer.from(
-    JSON.stringify(reasoning),
-    "utf8",
-  ).toString("base64url")}`
+  return encodeVersionedReasoningCarrier(reasoning, source)
 }
 
 const translateMessage = (
@@ -410,7 +417,10 @@ const translateAssistantMessage = (
         continue
       }
 
-      const reasoningContent = createReasoningContent(block)
+      const reasoningContent = createReasoningContent(
+        block,
+        state.carrierTarget,
+      )
       if (reasoningContent) {
         flushPendingContent(pendingContent, items, {
           role: "assistant",
@@ -585,15 +595,19 @@ const createFileContent = (
 
 const createReasoningContent = (
   block: AnthropicThinkingBlock,
+  carrierTarget: ReasoningCarrierEndpoint,
 ): ResponseInputReasoning | undefined => {
-  const versionedCarrier = decodeReasoningCarrierSignature(block.signature)
+  const versionedCarrier = decodeReasoningCarrierSignature(
+    block.signature,
+    carrierTarget,
+  )
   if (versionedCarrier) {
     return versionedCarrier
   }
 
   // align with vscode-copilot-chat extractThinkingData, should add id
   // https://github.com/microsoft/vscode/blob/1.128.0/extensions/copilot/src/platform/endpoint/node/responsesApi.ts#L651
-  const carrier = parseLegacyReasoningSignature(block.signature)
+  const carrier = parseLegacyOpenAIReasoningCarrierSignature(block.signature)
   if (!carrier) {
     return undefined
   }
@@ -643,20 +657,22 @@ const createCompactionContent = (
 
 const decodeReasoningCarrierSignature = (
   signature: string,
+  carrierTarget: ReasoningCarrierEndpoint,
 ): ResponseInputReasoning | undefined => {
-  if (!signature.startsWith(REASONING_SIGNATURE_PREFIX)) {
+  const carrier = decodeVersionedReasoningCarrier(signature)
+  if (!carrier) {
+    return undefined
+  }
+  if (
+    carrier.source
+    && (carrier.source.provider !== carrierTarget.provider
+      || carrier.source.model !== carrierTarget.model)
+  ) {
     return undefined
   }
 
-  const encoded = signature.slice(REASONING_SIGNATURE_PREFIX.length)
-  if (!encoded) {
-    return undefined
-  }
-
+  const value = carrier.item
   try {
-    const value: unknown = JSON.parse(
-      Buffer.from(encoded, "base64url").toString("utf8"),
-    )
     if (
       !isRecord(value)
       || value.type !== "reasoning"
@@ -692,32 +708,6 @@ const isValidReasoningStatus = (status: unknown): boolean =>
   || status === "completed"
   || status === "in_progress"
   || status === "incomplete"
-
-const parseLegacyReasoningSignature = (
-  signature: string,
-): { encryptedContent: string; id: string } | undefined => {
-  const splitIndex = signature.lastIndexOf("@")
-
-  if (splitIndex <= 0 || splitIndex === signature.length - 1) {
-    return undefined
-  }
-
-  const encryptedContent = signature.slice(0, splitIndex)
-  const id = signature.slice(splitIndex + 1)
-  const legacyAlphabet = /^[A-Za-z0-9+/_=-]+$/u
-  const idLooksLikeReasoning =
-    /^rs(?:_|$)/u.test(id) || (id.length >= 64 && legacyAlphabet.test(id))
-
-  if (
-    encryptedContent.length < 64
-    || !legacyAlphabet.test(encryptedContent)
-    || !idLooksLikeReasoning
-  ) {
-    return undefined
-  }
-
-  return { encryptedContent, id }
-}
 
 const createFunctionToolCall = (
   block: AnthropicToolUseBlock,
@@ -1029,6 +1019,7 @@ const convertAnthropicToolChoice = (
 }
 
 interface ResponsesToAnthropicOptions {
+  carrierSource?: ReasoningCarrierEndpoint
   toolSearchName?: string
   hasToolCall?: boolean
   includeThinking?: boolean
@@ -1039,14 +1030,24 @@ export const translateResponsesResultToAnthropic = (
   options?: ResponsesToAnthropicOptions,
 ): AnthropicResponse => {
   assertResponsesResultUsable(response)
-  const contentBlocks = mapOutputToAnthropicContent(response.output, options)
+  const resolvedOptions = {
+    ...options,
+    carrierSource: options?.carrierSource ?? {
+      model: response.model,
+      provider: "copilot",
+    },
+  }
+  const contentBlocks = mapOutputToAnthropicContent(
+    response.output,
+    resolvedOptions,
+  )
   const usage = mapResponsesUsageToAnthropic(response.usage)
   let anthropicContent = fallbackContentBlocks(response.output_text)
   if (contentBlocks.length > 0) {
     anthropicContent = contentBlocks
   }
 
-  const stopReason = mapResponsesStopReason(response, options)
+  const stopReason = mapResponsesStopReason(response, resolvedOptions)
 
   return {
     id: response.id,
@@ -1079,7 +1080,14 @@ const mapOutputToAnthropicContent = (
           contentBlocks.push({
             type: "thinking",
             thinking: thinkingText,
-            signature: encodeReasoningCarrierSignature(item) ?? "",
+            signature:
+              encodeReasoningCarrierSignature(
+                item,
+                options?.carrierSource ?? {
+                  model: "unknown",
+                  provider: "copilot",
+                },
+              ) ?? "",
           })
         }
         break

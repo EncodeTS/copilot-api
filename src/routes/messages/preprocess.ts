@@ -14,18 +14,20 @@ import { getReasoningEffortForModel } from "~/lib/config"
 import { normalizeSdkModelId } from "~/lib/models"
 
 import type {
+  AnthropicCacheControl,
   AnthropicInputMessage,
   AnthropicMessage,
   AnthropicMessagesPayload,
   AnthropicTextBlock,
   AnthropicUserMessage,
 } from "./anthropic-types"
+import { isOpenAIReasoningCarrierSignature } from "./reasoning-carrier"
 
 const SYSTEM_REMINDER_START = "<system-reminder>"
 const SYSTEM_REMINDER_END = "</system-reminder>"
 const SUBAGENT_START_HOOK_ADDITIONAL_PREFIX = "SubagentStart hook additional"
 
-const IDE_EXECUTE_CODE_TOOL = "mcp__ide__executeCode"
+export const IDE_EXECUTE_CODE_TOOL = "mcp__ide__executeCode"
 const IDE_GET_DIAGNOSTICS_TOOL = "mcp__ide__getDiagnostics"
 const IDE_GET_DIAGNOSTICS_DESCRIPTION =
   "Get language diagnostics from VS Code. Returns errors, warnings, information, and hints for files in the workspace."
@@ -351,16 +353,47 @@ export const sanitizeIdeTools = (
   })
 }
 
-// Strip cache_control from system content blocks as the
-// Copilot Messages API does not support them (rejects extra fields like scope).
-// commit by nicktogo
+// Keep supported cache markers while removing `scope`, which Copilot's native
+// Messages endpoint rejects. Traverse only protocol-defined marker locations so
+// arbitrary tool input schemas are never rewritten.
 const stripCacheControl = (payload: AnthropicMessagesPayload): void => {
+  const stripScope = (holder: {
+    cache_control?: AnthropicCacheControl | null
+  }): void => {
+    const cacheControl = holder.cache_control
+    if (!cacheControl || typeof cacheControl !== "object") {
+      return
+    }
+
+    const { scope: _scope, ...supported } = cacheControl
+    holder.cache_control = supported as AnthropicCacheControl
+  }
+
+  stripScope(payload)
+
   if (Array.isArray(payload.system)) {
     for (const block of payload.system) {
-      const cacheControl = block.cache_control
-      if (cacheControl && typeof cacheControl === "object") {
-        const { scope, ...rest } = cacheControl
-        block.cache_control = rest
+      stripScope(block)
+    }
+  }
+
+  for (const tool of payload.tools ?? []) {
+    stripScope(tool)
+  }
+
+  for (const message of payload.messages) {
+    if (!Array.isArray(message.content)) {
+      continue
+    }
+
+    for (const block of message.content) {
+      if ("cache_control" in block) {
+        stripScope(block)
+      }
+      if (block.type === "tool_result" && Array.isArray(block.content)) {
+        for (const nestedBlock of block.content) {
+          stripScope(nestedBlock)
+        }
       }
     }
   }
@@ -439,6 +472,7 @@ const filterAssistantThinkingBlocks = (
           && block.thinking !== "Thinking..."
           && block.signature
           && !block.signature.includes("@")
+          && !isOpenAIReasoningCarrierSignature(block.signature)
         )
       })
     }

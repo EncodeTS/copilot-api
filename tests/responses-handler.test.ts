@@ -142,6 +142,27 @@ afterEach(async () => {
 })
 
 describe("responses handler token usage", () => {
+  test("forwards the Hono request abort signal to the upstream lifecycle", async () => {
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+    const controller = new AbortController()
+    const request = new Request("http://localhost/v1/responses", {
+      body: JSON.stringify({
+        input: "hello",
+        model: "gpt-test",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      signal: controller.signal,
+    })
+
+    const response = await createApp().request(request)
+
+    expect(response.status).toBe(200)
+    expect(createResponses.mock.calls[0][1]?.signal).toBe(controller.signal)
+  })
+
   test("uses websocket transport by default for dual-endpoint models", async () => {
     state.models = {
       object: "list",
@@ -176,6 +197,7 @@ describe("responses handler token usage", () => {
     expect(response.status).toBe(200)
     expect(createResponses).toHaveBeenCalledTimes(1)
     expect(createResponses.mock.calls[0][1]?.transport).toBe("websocket")
+    expect(createResponses.mock.calls[0][1]?.allowHttpFallback).toBe(true)
     expect(createResponses.mock.calls[0][1]?.initiator).toBe("user")
     expect(createResponses.mock.calls[0][1]?.subagentMarker).toBeNull()
   })
@@ -343,6 +365,99 @@ describe("responses handler token usage", () => {
       },
       store: false,
       text: { verbosity: "low" },
+    })
+  })
+
+  test("removes unsupported service tiers so Copilot can serve the request", async () => {
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+
+    const app = createApp()
+    for (const serviceTier of [
+      "auto",
+      "default",
+      "priority",
+      "flex",
+      "future",
+    ]) {
+      const response = await app.request("/v1/responses", {
+        body: JSON.stringify({
+          input: "hello",
+          model: "gpt-test",
+          service_tier: serviceTier,
+        }),
+        headers: {
+          "content-type": "application/json",
+        },
+        method: "POST",
+      })
+
+      expect(response.status).toBe(200)
+      expect(
+        createResponses.mock.calls.at(-1)?.[0].service_tier,
+      ).toBeUndefined()
+    }
+    expect(createResponses).toHaveBeenCalledTimes(5)
+  })
+
+  test("rejects background true instead of silently running in foreground", async () => {
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+
+    const response = await createApp().request("/v1/responses", {
+      body: JSON.stringify({
+        background: true,
+        input: "hello",
+        model: "gpt-test",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(400)
+    expect(createResponses).not.toHaveBeenCalled()
+    expect(await response.json()).toEqual({
+      error: {
+        code: "unsupported_value",
+        message:
+          "GitHub Copilot Responses does not support background; the request was not modified.",
+        param: "background",
+        type: "invalid_request_error",
+      },
+    })
+  })
+
+  test("rejects image_generation instead of deleting the requested tool", async () => {
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+
+    const response = await createApp().request("/v1/responses", {
+      body: JSON.stringify({
+        input: "draw a lighthouse",
+        model: "gpt-test",
+        tools: [{ type: "image_generation" }],
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(400)
+    expect(createResponses).not.toHaveBeenCalled()
+    expect(await response.json()).toEqual({
+      error: {
+        code: "unsupported_value",
+        message:
+          "GitHub Copilot Responses does not support image_generation; the request was not modified.",
+        param: "tools",
+        type: "invalid_request_error",
+      },
     })
   })
 

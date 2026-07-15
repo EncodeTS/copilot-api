@@ -42,6 +42,7 @@ providerModelRoutes.get("/", async (c) => {
     const upstreamResponse = await forwardProviderModels(
       providerConfig,
       c.req.raw.headers,
+      c.req.raw.signal,
     )
 
     logger.debug("provider.models.response", {
