@@ -4,6 +4,7 @@ import path from "node:path"
 export const HANDLER_LOG_DEFAULTS = Object.freeze({
   cleanupIntervalMs: 24 * 60 * 60 * 1000,
   flushIntervalMs: 1000,
+  maxBufferedBytes: 5 * 1024 * 1024,
   maxBufferSize: 100,
   maxFileBytes: 10 * 1024 * 1024,
   maxTotalBytes: 100 * 1024 * 1024,
@@ -43,6 +44,7 @@ export interface HandlerLogStorageOptions {
   fileSystem?: HandlerLogFileSystem
   flushIntervalMs?: number
   logDirectory: string
+  maxBufferedBytes?: number
   maxBufferSize?: number
   maxFileBytes?: number
   maxTotalBytes?: number
@@ -66,6 +68,10 @@ export const createHandlerLogStorage = (
   options: HandlerLogStorageOptions,
 ): HandlerLogStorage => {
   const fileSystem = options.fileSystem ?? fsPromises
+  const maxBufferedBytes = positiveInteger(
+    options.maxBufferedBytes,
+    HANDLER_LOG_DEFAULTS.maxBufferedBytes,
+  )
   const maxBufferSize = positiveInteger(
     options.maxBufferSize,
     HANDLER_LOG_DEFAULTS.maxBufferSize,
@@ -89,11 +95,14 @@ export const createHandlerLogStorage = (
   const activeSegments = new Map<string, ActiveLogSegment>()
 
   let operationQueue = Promise.resolve()
+  let totalBufferedBytes = 0
   let initialized = false
   let initializationScheduled = false
   let cleanupRegistered = false
   let timersStarted = false
   let closing = false
+  let automaticFlush: Promise<void> | undefined
+  let bufferLimitReported = false
   let closePromise: Promise<void> | undefined
   let flushInterval: ReturnType<typeof setInterval> | undefined
   let cleanupInterval: ReturnType<typeof setInterval> | undefined
@@ -189,10 +198,9 @@ export const createHandlerLogStorage = (
   }
 
   const startRuntime = async (): Promise<boolean> => {
+    if (initialized) return true
     try {
       await ensureDirectory()
-      if (initialized) return true
-
       await cleanupManagedLogs()
       initialized = true
       if (options.registerCleanup && !cleanupRegistered) {
@@ -203,9 +211,7 @@ export const createHandlerLogStorage = (
 
       flushInterval = setInterval(
         () => {
-          void flush().catch((error: unknown) => {
-            reportError("Failed to flush handler logs", error)
-          })
+          requestFlush()
         },
         positiveInteger(
           options.flushIntervalMs,
@@ -360,6 +366,7 @@ export const createHandlerLogStorage = (
         Buffer.from(snapshot.join("\n") + "\n", "utf8"),
       )
     } catch (error) {
+      initialized = false
       activeSegments.delete(baseFilePath)
       reportError("Failed to write handler log", error)
       return false
@@ -367,6 +374,12 @@ export const createHandlerLogStorage = (
 
     const latestBuffer = buffers.get(baseFilePath)
     latestBuffer?.splice(0, snapshot.length)
+    totalBufferedBytes = Math.max(
+      0,
+      totalBufferedBytes
+        - Buffer.byteLength(snapshot.join("\n") + "\n", "utf8"),
+    )
+    if (totalBufferedBytes < maxBufferedBytes) bufferLimitReported = false
     if (!latestBuffer || latestBuffer.length === 0) buffers.delete(baseFilePath)
     return true
   }
@@ -381,20 +394,46 @@ export const createHandlerLogStorage = (
     try {
       await cleanupManagedLogs()
     } catch (error) {
+      initialized = false
+      activeSegments.clear()
       reportError("Failed to clean handler logs", error)
     }
   }
 
+  const requestFlush = (): void => {
+    if (automaticFlush || closing) return
+    automaticFlush = Promise.resolve()
+      .then(flush)
+      .catch((error: unknown) => {
+        reportError("Failed to flush handler logs", error)
+      })
+      .finally(() => {
+        automaticFlush = undefined
+      })
+  }
+
   function append(baseFilePath: string, line: string): void {
+    if (closing) return
+    const lineBytes = Buffer.byteLength(line, "utf8") + 1
+    if (
+      lineBytes > maxBufferedBytes
+      || totalBufferedBytes + lineBytes > maxBufferedBytes
+    ) {
+      if (!bufferLimitReported) {
+        bufferLimitReported = true
+        reportError(
+          "Handler log buffer limit reached; dropping new log entries",
+          new Error(`Handler log buffer exceeds ${maxBufferedBytes} bytes`),
+        )
+      }
+      return
+    }
     const buffer = buffers.get(baseFilePath) ?? []
     buffer.push(line)
     buffers.set(baseFilePath, buffer)
+    totalBufferedBytes += lineBytes
     scheduleInitialization()
-    if (buffer.length >= maxBufferSize) {
-      void flush().catch((error: unknown) => {
-        reportError("Failed to flush handler logs", error)
-      })
-    }
+    if (buffer.length >= maxBufferSize) requestFlush()
   }
 
   function flush(): Promise<void> {
@@ -410,6 +449,8 @@ export const createHandlerLogStorage = (
       try {
         await cleanupManagedLogs()
       } catch (error) {
+        initialized = false
+        activeSegments.clear()
         reportError("Failed to clean handler logs", error)
       }
     })
@@ -426,6 +467,7 @@ export const createHandlerLogStorage = (
     closePromise = enqueue("Failed to close handler logs", async () => {
       if (buffers.size > 0 && (await startRuntime())) await flushBatch()
       buffers.clear()
+      totalBufferedBytes = 0
       activeSegments.clear()
     })
     return closePromise

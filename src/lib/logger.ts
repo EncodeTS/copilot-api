@@ -28,6 +28,10 @@ const MAX_LOG_FILE_BYTES = readByteLimit(
   "COPILOT_API_LOG_MAX_FILE_BYTES",
   HANDLER_LOG_DEFAULTS.maxFileBytes,
 )
+const MAX_LOG_BUFFER_BYTES = readByteLimit(
+  "COPILOT_API_LOG_MAX_BUFFER_BYTES",
+  HANDLER_LOG_DEFAULTS.maxBufferedBytes,
+)
 const MAX_LOG_TOTAL_BYTES = Math.max(
   MAX_LOG_FILE_BYTES,
   readByteLimit(
@@ -38,6 +42,7 @@ const MAX_LOG_TOTAL_BYTES = Math.max(
 
 const defaultHandlerLogStorage = createHandlerLogStorage({
   logDirectory: LOG_DIR,
+  maxBufferedBytes: MAX_LOG_BUFFER_BYTES,
   maxFileBytes: MAX_LOG_FILE_BYTES,
   maxTotalBytes: MAX_LOG_TOTAL_BYTES,
   onError: (message, error) => console.warn(message, error),
