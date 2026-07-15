@@ -4,14 +4,18 @@ import os from "node:os"
 import path from "node:path"
 
 import {
+  createHandlerLogger,
   debugJson,
   debugJsonAsync,
   debugJsonTail,
   debugLazy,
   getHandlerLogDirectory,
   redactLogString,
+  redactPayloadForDebug,
 } from "../src/lib/logger"
+import { createHandlerLogStorage } from "../src/lib/handler-log-storage"
 import { PATHS } from "../src/lib/paths"
+import { requestContext } from "../src/lib/request-context"
 import { state } from "../src/lib/state"
 
 afterEach(() => {
@@ -204,11 +208,25 @@ test("full payload logging requires opt-in and still protects credentials and me
     authorization: "Bearer test-authorization-secret",
     cookie: "session=test-cookie-secret",
     credentials: { accessToken: "test-access-token-secret" },
+    input_audio: {
+      data: "test-audio-base64-secret",
+      format: "wav",
+    },
     messages: [{ content: "diagnostic prompt text", role: "user" }],
     output: [{ text: "diagnostic response text", type: "message" }],
+    private_key: "test-snake-private-key-secret",
+    privateKey: "test-camel-private-key-secret",
     prompt: "diagnostic prompt text",
     source: { data: imageDataUrl, type: "base64" },
   }
+  const redactedPayload = redactPayloadForDebug(payload) as Record<
+    string,
+    unknown
+  >
+
+  expect(redactedPayload.privateKey).toBe("[redacted_credential]")
+  expect(redactedPayload.private_key).toBe("[redacted_credential]")
+  expect(redactedPayload.input_audio).toBe("[redacted_media kind=input_audio ]")
 
   debugJson(logger as never, "payload", payload)
 
@@ -223,6 +241,9 @@ test("full payload logging requires opt-in and still protects credentials and me
   expect(serialized).not.toContain("test-authorization-secret")
   expect(serialized).not.toContain("test-cookie-secret")
   expect(serialized).not.toContain("test-access-token-secret")
+  expect(serialized).not.toContain("test-audio-base64-secret")
+  expect(serialized).not.toContain("test-snake-private-key-secret")
+  expect(serialized).not.toContain("test-camel-private-key-secret")
   expect(serialized).not.toContain(imageDataUrl)
 })
 
@@ -249,6 +270,26 @@ test("full payload logging redacts credentials embedded in raw strings", () => {
   expect(serialized).not.toContain("file-test-secret")
   expect(serialized).not.toContain("private.example.test")
   expect(serialized).toContain("[redacted_media")
+})
+
+test("raw JSON redaction handles apostrophes and escaped matching quotes", () => {
+  const raw =
+    '{"token":"owner\'s-test-token-secret","apiKey":"escaped \\"test-api-secret\\" tail","image_url":"https://private.example.test/o\'neil.png?sig=test-media-secret"}'
+  const singleQuotedRaw =
+    "{'token':'escaped \\'test-single-token-secret\\' tail'}"
+
+  const redacted = redactLogString(raw)
+  const singleQuotedRedacted = redactLogString(singleQuotedRaw)
+
+  expect(redacted).toContain('"token":"[redacted_credential]"')
+  expect(redacted).toContain('"apiKey":"[redacted_credential]"')
+  expect(redacted).toContain('"image_url":"[redacted_media kind=json_field]"')
+  expect(redacted).not.toContain("test-token-secret")
+  expect(redacted).not.toContain("test-api-secret")
+  expect(redacted).not.toContain("private.example.test")
+  expect(redacted).not.toContain("test-media-secret")
+  expect(singleQuotedRedacted).toContain("'token':'[redacted_credential]'")
+  expect(singleQuotedRedacted).not.toContain("test-single-token-secret")
 })
 
 test("handler file reporter summarizes direct payload arguments by default", () => {
@@ -324,6 +365,76 @@ test("debugJson writes its structured summary to the handler log", () => {
     expect(contents).not.toContain("private prompt")
   } finally {
     fs.rmSync(testLogDir, { force: true, recursive: true })
+  }
+})
+
+test("handler logger emits safe summaries through injected storage", () => {
+  const logDirectory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "copilot-api-injected-logger-"),
+  )
+  const storage = createHandlerLogStorage({
+    logDirectory,
+    startTimers: false,
+  })
+  state.verbose = true
+
+  const circular: Record<string, unknown> = { type: "cycle.event" }
+  circular.self = circular
+  const logger = createHandlerLogger("  Weird Name!!!  ", { storage })
+  const validSummary = JSON.stringify({
+    byteCount: 42,
+    counts: { input: 1, messages: -1, output: 1.5, tools: "2" },
+    errorCode: 429,
+    eventType: "response.completed",
+    kind: "payload_summary",
+    model: "test/model",
+    private: "must-not-survive",
+  })
+
+  try {
+    requestContext.run(
+      {
+        parentSessionId: undefined,
+        sessionAffinity: undefined,
+        startTime: Date.now(),
+        traceId: "trace-test",
+        userAgent: "test",
+      },
+      () =>
+        logger.warn(
+          "event\nlabel",
+          validSummary,
+          "{not-json",
+          '{"byteCount":-1,"kind":"payload_summary"}',
+          7,
+          true,
+          null,
+          circular,
+        ),
+    )
+    createHandlerLogger("!!!", { storage }).warn("")
+    storage.flush()
+
+    const dateKey = new Date().toLocaleDateString("sv-SE")
+    const contents = fs.readFileSync(
+      path.join(logDirectory, `weird-name-${dateKey}.part-0.log`),
+      "utf8",
+    )
+    expect(contents).toContain("event label")
+    expect(contents).toContain("[trace-test]")
+    expect(contents).toContain("payload_summary")
+    expect(contents).toContain("input: 1")
+    expect(contents).toContain("errorCode: 429")
+    expect(contents).toContain("string_summary")
+    expect(contents).toContain("cycle.event")
+    expect(contents).not.toContain("must-not-survive")
+    expect(contents).not.toContain("byteCount: -1")
+    expect(
+      fs.existsSync(path.join(logDirectory, `handler-${dateKey}.part-0.log`)),
+    ).toBeTrue()
+  } finally {
+    storage.close()
+    fs.rmSync(logDirectory, { force: true, recursive: true })
   }
 })
 

@@ -6,9 +6,9 @@ const CREDENTIAL_HEADER_PATTERN =
   /(\b(?:authorization|cookie|set-cookie|x-api-key)\s*:\s*)[^\r\n]+/giu
 const BEARER_TOKEN_PATTERN = /\bBearer\s+[a-zA-Z0-9._~+/=-]+/gu
 const JSON_CREDENTIAL_PATTERN =
-  /(["'](?:access[_-]?token|api[_-]?key|authorization|client[_-]?secret|cookie|credentials?|github[_-]?token|password|private[_-]?key|refresh[_-]?token|secret|session[_-]?key|token|x-api-key)["']\s*:\s*["'])[^"']*(["'])/giu
+  /((["'])(?:access[_-]?token|api[_-]?key|authorization|client[_-]?secret|cookie|credentials?|github[_-]?token|password|private[_-]?key|refresh[_-]?token|secret|session[_-]?key|token|x-api-key)\2\s*:\s*)(["'])(?:\\[\s\S]|(?!\3)[^\\])*\3/giu
 const JSON_MEDIA_PATTERN =
-  /(["'](?:file_data|file_id|image_url|input_audio)["']\s*:\s*["'])(?!\[redacted_media\b)[^"']*(["'])/giu
+  /((["'])(?:file_data|file_id|image_url|input_audio)\2\s*:\s*)(["'])(?!\[redacted_media\b)(?:\\[\s\S]|(?!\3)[^\\])*\3/giu
 const QUERY_CREDENTIAL_PATTERN =
   /([?&](?:access[_-]?token|api[_-]?key|authorization|key|password|refresh[_-]?token|secret|sig|signature|token)=)[^&#\s"']+/giu
 
@@ -44,13 +44,13 @@ export const redactLogString = (value: string): string =>
     .replaceAll(BEARER_TOKEN_PATTERN, "Bearer [redacted_credential]")
     .replaceAll(
       JSON_CREDENTIAL_PATTERN,
-      (_match, prefix: string, suffix: string) =>
-        `${prefix}[redacted_credential]${suffix}`,
+      (_match, prefix: string, _keyQuote: string, valueQuote: string) =>
+        `${prefix}${valueQuote}[redacted_credential]${valueQuote}`,
     )
     .replaceAll(
       JSON_MEDIA_PATTERN,
-      (_match, prefix: string, suffix: string) =>
-        `${prefix}[redacted_media kind=json_field]${suffix}`,
+      (_match, prefix: string, _keyQuote: string, valueQuote: string) =>
+        `${prefix}${valueQuote}[redacted_media kind=json_field]${valueQuote}`,
     )
     .replaceAll(
       QUERY_CREDENTIAL_PATTERN,
@@ -63,6 +63,10 @@ const redactValue = (
   seen: WeakMap<object, unknown>,
   options: RedactionOptions,
 ): unknown => {
+  if (isMediaContainerPath(path)) {
+    return createMediaMarker({ kind: "input_audio", options })
+  }
+
   if (isCredentialPath(path)) {
     return "[redacted_credential]"
   }
@@ -116,6 +120,7 @@ const isCredentialPath = (path: PropertyPath): boolean => {
     || key === "cookie"
     || key === "credentials"
     || key === "password"
+    || key === "privatekey"
     || key === "secret"
     || key === "setcookie"
     || key === "xapikey"
@@ -126,6 +131,12 @@ const isCredentialPath = (path: PropertyPath): boolean => {
     || key.endsWith("token")
   )
 }
+
+const isMediaContainerPath = (path: PropertyPath): boolean =>
+  path
+    .at(-1)
+    ?.toLowerCase()
+    .replaceAll(/[^a-z0-9]/gu, "") === "inputaudio"
 
 const redactStringValue = (
   value: string,
