@@ -724,4 +724,46 @@ describe("createResponses", () => {
     expect(mainKey).toContain("gpt-test")
     expect(mainKey).toContain("request-1")
   })
+
+  test("websocket pool key fingerprints stable handshake headers only", () => {
+    const payload: ResponsesPayload = { input: "hello", model: "gpt-test" }
+    const baseOptions = {
+      reasoningRecoverySessionId: "stable-session",
+      requestId: "request-1",
+      websocketHeaders: {
+        Authorization: "Bearer token-1",
+        "User-Agent": "opencode/1",
+        "X-Request-Id": "request-1",
+        "X-Session-Affinity": "affinity-1",
+      },
+    }
+    const first = buildResponsesWebSocketPoolKey(payload, baseOptions)
+    const volatileOnly = buildResponsesWebSocketPoolKey(payload, {
+      ...baseOptions,
+      requestId: "request-2",
+      websocketHeaders: {
+        ...baseOptions.websocketHeaders,
+        Authorization: "Bearer token-2",
+        "X-Request-Id": "request-2",
+      },
+    })
+    const otherAffinity = buildResponsesWebSocketPoolKey(payload, {
+      ...baseOptions,
+      websocketHeaders: {
+        ...baseOptions.websocketHeaders,
+        "X-Session-Affinity": "affinity-2",
+      },
+    })
+    const otherUserAgent = buildResponsesWebSocketPoolKey(payload, {
+      ...baseOptions,
+      websocketHeaders: {
+        ...baseOptions.websocketHeaders,
+        "User-Agent": "opencode/2",
+      },
+    })
+
+    expect(volatileOnly).toBe(first)
+    expect(otherAffinity).not.toBe(first)
+    expect(otherUserAgent).not.toBe(first)
+  })
 })

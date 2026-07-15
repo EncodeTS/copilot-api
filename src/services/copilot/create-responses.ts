@@ -3,10 +3,6 @@ import { events, type ServerSentEventMessage } from "fetch-event-stream"
 import { createHash } from "node:crypto"
 
 import type { SubagentMarker } from "~/lib/subagent"
-import {
-  PooledWebSocketRequestError,
-  type PooledWebSocketRequest,
-} from "~/services/responses-websocket"
 
 import {
   copilotBaseUrl,
@@ -40,6 +36,8 @@ import { state } from "~/lib/state"
 import {
   createPooledWebSocketStream,
   createWebSocketUrl,
+  isWebSocketNotSentError,
+  type PooledWebSocketRequest,
 } from "~/services/responses-websocket"
 import {
   createReasoningRecoveryScope,
@@ -726,10 +724,12 @@ export const createResponses = async (
       payload,
       headers,
       {
+        reasoningRecoverySessionId,
         requestId,
         signal,
         subagentMarker,
         timeouts,
+        vision,
       },
     )
     const websocketStream =
@@ -915,17 +915,6 @@ const createHttpResponses = async (
       },
     )
   } catch (error) {
-    const retryableDisconnect = isRetryableHttpStreamDisconnect(error)
-    if (
-      payload.stream === true
-      && options.retryBudget
-      && !options.retryBudget.attempted
-      && !options.signal?.aborted
-      && retryableDisconnect
-    ) {
-      options.retryBudget.attempted = true
-      return await createHttpResponses(payload, headers, options)
-    }
     if (payload.stream === true && options.retryBudget) {
       throw reportStreamTermination({
         diagnostics: {
@@ -997,17 +986,23 @@ export const prepareResponsesWebSocketRequest = (
   payload: ResponsesPayload,
   preparedHeaders: Record<string, string>,
   options: {
+    reasoningRecoverySessionId?: string
     requestId: string
     signal?: AbortSignal
     subagentMarker?: SubagentMarker | null
     timeouts?: UpstreamLifecycleTimeouts
+    vision?: boolean
   },
 ): ResponsesWebSocketRequest => {
   const initiator = getResponsesWebSocketInitiator(preparedHeaders)
+  const websocketHeaders = copilotWebSocketHeaders(preparedHeaders)
 
   return {
-    headers: copilotWebSocketHeaders(preparedHeaders),
-    poolKey: buildResponsesWebSocketPoolKey(payload, options),
+    headers: websocketHeaders,
+    poolKey: buildResponsesWebSocketPoolKey(payload, {
+      ...options,
+      websocketHeaders,
+    }),
     signal: options.signal,
     timeouts: options.timeouts,
     payload: buildResponsesWebSocketPayload(payload, initiator),
@@ -1018,11 +1013,17 @@ export const prepareResponsesWebSocketRequest = (
 export const buildResponsesWebSocketPoolKey = (
   payload: ResponsesPayload,
   {
+    reasoningRecoverySessionId,
     requestId,
     subagentMarker,
+    vision = false,
+    websocketHeaders,
   }: {
+    reasoningRecoverySessionId?: string
     requestId: string
     subagentMarker?: SubagentMarker | null
+    vision?: boolean
+    websocketHeaders?: Record<string, string>
   },
 ): string => {
   const tokenFingerprint =
@@ -1037,10 +1038,43 @@ export const buildResponsesWebSocketPoolKey = (
         subagentMarker.agent_type,
       ].join(":")
     : "main"
+  const sessionKey = reasoningRecoverySessionId ?? requestId
+  const visionKey = vision ? "vision" : "text-only"
+  const headerFingerprint =
+    createResponsesWebSocketHeaderFingerprint(websocketHeaders)
 
-  return [tokenFingerprint, payload.model, requestId, subagentKey]
+  return [
+    tokenFingerprint,
+    payload.model,
+    sessionKey,
+    subagentKey,
+    visionKey,
+    headerFingerprint,
+  ]
     .map(encodePoolKeyPart)
     .join("|")
+}
+
+const VOLATILE_WEBSOCKET_POOL_HEADERS = new Set([
+  "authorization",
+  "x-agent-task-id",
+  "x-interaction-id",
+  "x-request-id",
+])
+
+const createResponsesWebSocketHeaderFingerprint = (
+  headers: Record<string, string> | undefined,
+): string => {
+  if (!headers) return "default-headers"
+
+  const stableHeaders = Object.entries(headers)
+    .map(([name, value]) => [name.toLowerCase(), value] as const)
+    .filter(([name]) => !VOLATILE_WEBSOCKET_POOL_HEADERS.has(name))
+    .sort(([left], [right]) => left.localeCompare(right))
+  return createHash("sha256")
+    .update(JSON.stringify(stableHeaders))
+    .digest("hex")
+    .slice(0, 16)
 }
 
 export const getResponsesWebSocketInitiator = (
@@ -1131,10 +1165,7 @@ const createRetryableResponsesWebSocketStream = async function* (
       yield chunk
     }
   } catch (error) {
-    if (
-      error instanceof PooledWebSocketRequestError
-      && error.sendState !== "frame-seen"
-    ) {
+    if (isWebSocketNotSentError(error)) {
       throw new RetryableStreamTransportError(error.message, error)
     }
     throw error
@@ -1154,46 +1185,7 @@ const createHttpResponsesStream = async (
   if (!isResponsesStream(response)) {
     throw new Error("Streaming HTTP attempt returned a non-streaming response")
   }
-  return createRetryableHttpResponsesStream(response)
-}
-
-const createRetryableHttpResponsesStream = async function* (
-  source: AsyncIterable<ResponsesStreamChunk>,
-): AsyncGenerator<ResponsesStreamChunk, void, unknown> {
-  try {
-    yield* source
-  } catch (error) {
-    if (isRetryableHttpStreamDisconnect(error)) {
-      throw new RetryableStreamTransportError(getErrorMessage(error), error)
-    }
-    throw error
-  }
-}
-
-const retryableHttpStreamErrorCodes = new Set([
-  "ECONNRESET",
-  "EPIPE",
-  "UND_ERR_SOCKET",
-])
-
-const isRetryableHttpStreamDisconnect = (error: unknown): boolean => {
-  let current = error
-  const seen = new Set<unknown>()
-  while (current instanceof Error && !seen.has(current)) {
-    seen.add(current)
-    const code = (current as Error & { code?: unknown }).code
-    if (typeof code === "string" && retryableHttpStreamErrorCodes.has(code)) {
-      return true
-    }
-    if (
-      current instanceof TypeError
-      && /(?:connection reset|socket closed|terminated)/iu.test(current.message)
-    ) {
-      return true
-    }
-    current = current.cause
-  }
-  return false
+  return response
 }
 
 const createSupervisedHttpResponsesStream = (
@@ -1206,10 +1198,6 @@ const createSupervisedHttpResponsesStream = (
     isTerminalEvent: isTerminalResponsesStreamChunk,
     primary: {
       open: () => primaryStream ?? createHttpResponsesStream(options),
-      transport: "http",
-    },
-    retry: {
-      open: () => createHttpResponsesStream(options),
       transport: "http",
     },
     retryBudget: options.retryBudget,

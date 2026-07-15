@@ -12,7 +12,7 @@ Fork-specific builds and defaults:
 - Messages API requests preserve the client-requested model and `tool_result` boundaries; warmup/no-tools requests are not silently rewritten to a fallback model.
 - Client `thinking` / `effort` payloads are preserved and normalized where compatible, and provider stream error handling has small robustness fixes.
 
-The `npx @jeffreycao/copilot-api@latest` examples below use the upstream npm package. To use this fork's patches, run from this source tree or install the desktop app from this fork's Releases.
+The published CLI is maintained by this fork under the `@encodets/copilot-api` npm scope. Prereleases use the `rc` dist-tag; stable releases use `latest`.
 
 ## Important Notes
 
@@ -20,7 +20,7 @@ The `npx @jeffreycao/copilot-api@latest` examples below use the upstream npm pac
 > **Before using, please be aware of the following:**
 >
 > 1. **Claude Code configuration:** When using with Claude Code, please configure the model ID as `claude-opus-4-8`. Example claude `settings.json` see [Manual Configuration with `settings.json`](#manual-configuration-with-settingsjson).
-> 2. **Built-in `copilot`, `codex` and third-party providers:** Run `npx @jeffreycao/copilot-api@latest auth` and choose `copilot`, `codex`, `deepseek`, `custom`, or other providers.
+> 2. **Built-in `copilot`, `codex` and third-party providers:** Run `npx @encodets/copilot-api@rc auth` and choose `copilot`, `codex`, `deepseek`, `custom`, or other providers.
 > 3. **Note:** See [GitHub Copilot Security Notice](./NOTICE.md#github-copilot-security-notice) for the warning removed from the README header.
 
 ---
@@ -89,29 +89,29 @@ You can run the project directly using npx:
 > [!IMPORTANT]
 > Token usage storage uses Node's built-in `node:sqlite` module when running with `npx`. It is enabled on Node.js >= 22.13.0. On Node.js < 22.13.0, the CLI still starts, but token usage storage is disabled.
 >
-> If you want token usage storage without upgrading Node.js, run the published CLI with Bun instead: `bunx --bun @jeffreycao/copilot-api@latest start`.
+> If you want token usage storage without upgrading Node.js, run the published CLI with Bun instead: `bunx --bun @encodets/copilot-api@rc start`.
 
 ```sh
-npx @jeffreycao/copilot-api@latest start
+npx @encodets/copilot-api@rc start
 ```
 
 With options:
 
 ```sh
-npx @jeffreycao/copilot-api@latest start --port 8080
+npx @encodets/copilot-api@rc start --port 8080
 ```
 
 For authentication or provider configuration only:
 
 ```sh
-npx @jeffreycao/copilot-api@latest auth
+npx @encodets/copilot-api@rc auth
 ```
 
 To run without GitHub Copilot, configure at least one provider first, then start the server normally:
 
 ```sh
-npx @jeffreycao/copilot-api@latest auth login --provider dashscope
-npx @jeffreycao/copilot-api@latest start
+npx @encodets/copilot-api@rc auth login --provider dashscope
+npx @encodets/copilot-api@rc start
 ```
 
 ## Using with Docker
@@ -143,6 +143,12 @@ If you prefer a GUI, this repository also includes an Electron desktop app in `d
 
 The settings screen also exposes `OAuth App`, `API Home`, `Enterprise URL`, verbose logging, and minimize-to-tray. Desktop packages for this fork are published in GitHub Releases:
 
+Handler logs use private permissions (`0700` for the directory and `0600` for opened files). Verbose mode records content-free structured summaries by default, including event type, model, item counts, payload byte size, and error code where available; it omits prompts, message text, tool input/output, reasoning, encrypted content, and signatures. RC9-managed logs use a daily `*.part-N.log` name, are retained for 7 days, rotate at 10 MiB per file, and are pruned oldest-first to a 100 MiB managed-log budget. The asynchronous in-memory queue is capped at 5 MiB and drops new entries after that boundary instead of growing without limit during a disk failure. The byte limits can be changed with `COPILOT_API_LOG_MAX_BUFFER_BYTES`, `COPILOT_API_LOG_MAX_FILE_BYTES`, and `COPILOT_API_LOG_MAX_TOTAL_BYTES`.
+
+Pre-RC9 handler logs (the old `*-YYYY-MM-DD.log` form) and unrelated archive or private-audit files are deliberately left untouched and excluded from automatic retention/budget cleanup. Preserve or remove those legacy files manually after any evidence you need has been copied elsewhere.
+
+For short-lived local diagnosis only, setting `COPILOT_API_LOG_FULL_PAYLOADS=1` together with verbose mode opts into payload content. Credential fields, authorization/cookie values, bearer tokens, signed query credentials, and media bodies/locators remain redacted. Full payload logs can still contain private prompts and model/tool output, so disable the opt-in immediately after diagnosis.
+
 https://github.com/EncodeTS/copilot-api/releases
 
 Choose `*-arm64.dmg` for Apple Silicon Macs and `*-x64.dmg` for Intel Macs. These fork desktop builds are unsigned/ad-hoc signed and not notarized.
@@ -171,7 +177,7 @@ There are two ways to configure Claude Code to use this AI gateway:
 To get started, run the `start` command with the `--claude-code` flag:
 
 ```sh
-npx @jeffreycao/copilot-api@latest start --claude-code
+npx @encodets/copilot-api@rc start --claude-code
 ```
 
 You will be prompted to select a primary model and a "small, fast" model for background tasks. After selecting the models, a command will be copied to your clipboard. This command sets the necessary environment variables for Claude Code to use the gateway.
@@ -225,8 +231,8 @@ OpenCode already has a direct GitHub Copilot provider. Use this section when you
 Start the AI gateway with the OpenCode OAuth app:
 
 ```sh
-npx @jeffreycao/copilot-api@latest auth --oauth-app=opencode
-npx @jeffreycao/copilot-api@latest start
+npx @encodets/copilot-api@rc auth --oauth-app=opencode
+npx @encodets/copilot-api@rc start
 ```
 
 Then point OpenCode at the gateway with `@ai-sdk/anthropic`.
@@ -376,7 +382,7 @@ Add the tool search bridge to the MCP config used by Claude Code:
     "tool_search": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@jeffreycao/copilot-api@latest", "mcp"]
+      "args": ["-y", "@encodets/copilot-api@rc", "mcp"]
     }
   }
 }
@@ -389,7 +395,7 @@ Add the tool search bridge to the MCP config used by opencode:
   "mcp": {
     "tool_search": {
       "type": "local",
-      "command": ["npx", "-y", "@jeffreycao/copilot-api@latest", "mcp"]
+      "command": ["npx", "-y", "@encodets/copilot-api@rc", "mcp"]
     }
   }
 }
@@ -467,7 +473,7 @@ After starting the server, a URL to the Copilot Usage Dashboard will be displaye
 
 1.  Start the server. For example, using npx:
     ```sh
-    npx @jeffreycao/copilot-api@latest start
+    npx @encodets/copilot-api@rc start
     ```
 2.  The server will output a URL to the usage viewer. Copy and paste this URL into your browser. It will look something like this:
     `http://localhost:4141/usage-viewer?endpoint=http://localhost:4141/usage`
@@ -523,7 +529,7 @@ The following command line options are available for the `start` command:
 | Option         | Description                                                                   | Default | Alias |
 | -------------- | ----------------------------------------------------------------------------- | ------- | ----- |
 | --port         | Port to listen on                                                             | 4141    | -p    |
-| --verbose      | Enable verbose logging                                                        | false   | -v    |
+| --verbose      | Enable structured diagnostic logging (payload content omitted by default)     | false   | -v    |
 | --github-token | Provide GitHub token directly (must be generated using the `auth` subcommand) | none    | -g    |
 | --claude-code  | Generate a command to launch Claude Code with Copilot API config              | false   | -c    |
 | --show-token   | Show GitHub and Copilot tokens on fetch and refresh                           | false   | none  |
@@ -534,7 +540,7 @@ The following command line options are available for the `start` command:
 | Option       | Description                                                                                                                  | Default | Alias |
 | ------------ | ---------------------------------------------------------------------------------------------------------------------------- | ------- | ----- |
 | --provider   | Provider to log in with or configure (`copilot`, `codex`, `opencode-go`, `deepseek`, `dashscope`, `openrouter`, or `custom`) | prompt  | none  |
-| --verbose    | Enable verbose logging                                                                                                       | false   | -v    |
+| --verbose    | Enable structured diagnostic logging (payload content omitted by default)                                                    | false   | -v    |
 | --show-token | Show GitHub token on auth                                                                                                    | false   | none  |
 
 Use `copilot-api auth login --provider copilot` only when you want to enable the GitHub Copilot provider. Copilot is not required for `codex` or third-party provider-only usage.
@@ -663,10 +669,10 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
   - **Forwarding:** the resolved value remains `output_config.effort` for the Copilot native Messages API and becomes `reasoning.effort` when translated to the Responses API.
   - **Configuration values:** `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`.
 - **useMessagesApi:** When `true`, Claude-family models that support Copilot's native `/v1/messages` endpoint will use the Messages API; otherwise they fall back to `/chat/completions`. Set to `false` to disable Messages API routing and always use `/chat/completions`. Defaults to `true`.
-- **useResponsesApiWebSocket:** When `true`, Responses API requests use Copilot's websocket transport for models that advertise `ws:/responses`; models that only advertise `/responses` continue to use HTTP. Set to `false` to disable websocket routing and use HTTP `/responses` whenever the selected model supports it. Defaults to `true`.
+- **useResponsesApiWebSocket:** When `true`, Responses API requests use Copilot's websocket transport for models that advertise `ws:/responses`; models that only advertise `/responses` continue to use HTTP. Set to `false` to disable websocket routing and use HTTP `/responses` whenever the selected model supports it. Defaults to `true`. When a stable reasoning-recovery session ID is available, idle WebSocket connections are reused only within the same token, model, session, and subagent identity; requests without a stable session remain isolated by request ID, and concurrent requests always use dedicated sockets.
 - **Old-session reasoning recovery:** If Copilot rejects replayed encrypted reasoning with `input item does not belong to this connection`, the gateway removes only historical `reasoning` input items and retries once over HTTP. The original request is always attempted unchanged, unrelated errors are not retried, and recovery is disabled after any WebSocket frame has been forwarded to the client.
   - With a stable session ID, the gateway keeps only SHA-256 fingerprints of the rejected reasoning in a process-local cache. Later turns prefilter those known incompatible items while preserving newly generated reasoning. The cache is limited to 256 scopes, 2,048 fingerprints per scope, and a 24-hour idle TTL; a process restart may require one relearning turn.
-- **Stream lifecycle hardening:** Streaming Responses failures are classified as client cancellation, upstream disconnect, or timeout and recorded once as `stream.lifecycle` with safe transport diagnostics. Real upstream disconnects and timeouts remain visible in the Desktop App log panel and the persisted App logs; expected client cancellations are DEBUG-level. A WebSocket or HTTP transport failure can retry once over HTTP only before the gateway yields its first downstream event. After any event is yielded, the gateway emits the protocol error without replaying the turn, which avoids duplicate text and tool calls.
+- **Stream lifecycle hardening:** Streaming Responses failures are classified as client cancellation, upstream disconnect, or timeout and recorded once as `stream.lifecycle` with safe transport diagnostics. Real upstream disconnects and timeouts remain visible in the Desktop App log panel and the persisted App logs; expected client cancellations are DEBUG-level. Generic HTTP fallback is gated by WebSocket send state: only a WebSocket attempt that failed before `send()` may fall back once. A WebSocket failure after `send()` and every HTTP transport failure are terminal even before the first downstream event, avoiding duplicate generations and billing. The exact old-session ownership error above remains eligible for its one sanitized HTTP recovery only while no WebSocket frame has been forwarded.
 - **useResponsesApiWebSearch:** When `true`, the server keeps Responses API tools with `type: "web_search"` and forwards them upstream. Set to `false` to strip those tools from `/responses` payloads. Defaults to `true`.
 - **messageApiWebSearchModel:** Global model used when a top-level Copilot `/v1/messages` request contains only an Anthropic server-side `web_search_*` tool. Defaults to `gpt-5-mini`. If the value is a `provider/model` alias, the request is routed into that provider's Messages API path with the provider prefix stripped. For Copilot GPT models, web search runs through `/responses`, and Anthropic `max_uses` maps to Responses `max_tool_calls`. Copilot's native Messages endpoint currently rejects `web_search_20250305`, `web_search_20260209`, and `web_search_20260318`; newer code-execution dynamic filtering therefore falls back to direct Responses search. The response exposes `x-copilot-api-web-search-mode: direct-fallback` and a comma-separated `x-copilot-api-web-search-downgrade` reason when this happens. Explicit `allowed_callers: ["direct"]` remains a direct search; under Anthropic semantics, direct calls return full result blocks even when `response_inclusion` is `excluded`. Mixed `web_search` plus custom tools are not supported and the server-side `web_search` tool is stripped.
 - **claudeTokenMultiplier:** Multiplier applied only to the local fallback estimate for Claude `/v1/messages/count_tokens` requests. Defaults to `1.15`. Claude models with a native Copilot Messages endpoint are counted by Copilot using the same prepared payload and Copilot token as generation; the proxy falls back locally only when that endpoint returns `404` or `501`.
@@ -761,23 +767,23 @@ Common `npx` commands:
 
 ```sh
 # Start the gateway
-npx @jeffreycao/copilot-api@latest start
+npx @encodets/copilot-api@rc start
 
 # Start on a custom port with verbose logging
-npx @jeffreycao/copilot-api@latest start --port 8080 --verbose
+npx @encodets/copilot-api@rc start --port 8080 --verbose
 
 # Run the auth flow
-npx @jeffreycao/copilot-api@latest auth login
+npx @encodets/copilot-api@rc auth login
 
 # Configure a third-party provider, then run without GitHub Copilot
-npx @jeffreycao/copilot-api@latest auth login --provider dashscope
-npx @jeffreycao/copilot-api@latest start
+npx @encodets/copilot-api@rc auth login --provider dashscope
+npx @encodets/copilot-api@rc start
 
 # Print debug information as JSON
-npx @jeffreycao/copilot-api@latest debug --json
+npx @encodets/copilot-api@rc debug --json
 
 # Run the published CLI with Bun instead of Node.js
-bunx --bun @jeffreycao/copilot-api@latest start
+bunx --bun @encodets/copilot-api@rc start
 ```
 
 OpenAI-compatible provider examples after configuring `dashscope`:

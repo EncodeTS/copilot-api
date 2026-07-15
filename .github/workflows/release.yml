@@ -11,9 +11,9 @@ on:
 
 jobs:
   release:
-    # This fork does not own the legacy @jeffreycao/copilot-api npm identity.
-    # Keep npm publishing opt-in until package ownership is migrated explicitly.
-    if: ${{ vars.ENABLE_NPM_PUBLISH == 'true' && !contains(github.ref_name, '-r') }}
+    # Keep publishing opt-in until @encodets/copilot-api has completed its
+    # one-time bootstrap publish and npm Trusted Publisher binding.
+    if: ${{ vars.ENABLE_NPM_PUBLISH == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -45,6 +45,9 @@ jobs:
           node-version: "24"
           package-manager-cache: false
           registry-url: "https://registry.npmjs.org"
+
+      - name: Pin OIDC-capable npm CLI
+        run: npm install --global npm@11.17.0
 
       - name: Detect pre-release
         id: prerelease
