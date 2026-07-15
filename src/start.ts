@@ -6,12 +6,14 @@ import consola from "consola"
 import { serve, type ServerHandler } from "srvx"
 import invariant from "tiny-invariant"
 
+import { registerProcessCleanup } from "~/lib/process-cleanup"
+import { responsesReasoningRecoveryRegistry } from "~/services/copilot/responses-reasoning-recovery-registry"
+
 import { runProviderSetup } from "./auth"
 import { listEnabledProviders, mergeConfigWithDefaults } from "./lib/config"
 import { readGitHubToken } from "./lib/credential-store"
 import { initOpencodeVersion } from "./lib/opencode"
 import { ensurePaths, PATHS } from "./lib/paths"
-import { registerProcessCleanup } from "./lib/process-cleanup"
 import { initProxyFromEnv } from "./lib/proxy"
 import { generateEnvScript } from "./lib/shell"
 import { state } from "./lib/state"
@@ -23,7 +25,6 @@ import {
   cacheVsCodeSessionId,
   cacheVsCodeDeviceId,
 } from "./lib/utils"
-import { responsesReasoningRecoveryRegistry } from "./services/copilot/responses-reasoning-recovery-registry"
 
 interface RunServerOptions {
   port: number

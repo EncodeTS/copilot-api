@@ -154,3 +154,45 @@ test("reasoning recovery registry falls back to memory after persistence errors"
     await fs.rm(tempDir, { force: true, recursive: true })
   }
 })
+
+test("reasoning recovery registry checkpoints active scope access times", async () => {
+  const tempDir = await fs.mkdtemp(
+    path.join(os.tmpdir(), "copilot-api-recovery-"),
+  )
+  const persistencePath = path.join(tempDir, "reasoning-recovery.json")
+  const recoveryScope = scope("active-persisted-ttl")
+  const rejected = reasoning("active-rejected-reasoning")
+  let now = 0
+
+  try {
+    const activeProcess = new ReasoningRecoveryRegistry({
+      idleTtlMs: 10,
+      now: () => now,
+      persistencePath,
+      persistenceTouchIntervalMs: 5,
+    })
+    activeProcess.rememberRejected(recoveryScope, [rejected])
+    await activeProcess.flush()
+
+    now = 6
+    expect(
+      activeProcess.filterKnown(recoveryScope, [rejected]).removedCount,
+    ).toBe(1)
+    await activeProcess.flush()
+
+    now = 12
+    const restartedProcess = new ReasoningRecoveryRegistry({
+      idleTtlMs: 10,
+      now: () => now,
+      persistencePath,
+      persistenceTouchIntervalMs: 5,
+    })
+    await restartedProcess.initialize()
+
+    expect(
+      restartedProcess.filterKnown(recoveryScope, [rejected]).removedCount,
+    ).toBe(1)
+  } finally {
+    await fs.rm(tempDir, { force: true, recursive: true })
+  }
+})

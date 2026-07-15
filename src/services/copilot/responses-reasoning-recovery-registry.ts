@@ -11,6 +11,7 @@ import type {
 const DEFAULT_MAX_SCOPES = 256
 const DEFAULT_MAX_FINGERPRINTS_PER_SCOPE = 2_048
 const DEFAULT_IDLE_TTL_MS = 24 * 60 * 60 * 1_000
+const DEFAULT_PERSISTENCE_TOUCH_INTERVAL_MS = 5 * 60 * 1_000
 const PERSISTENCE_VERSION = 1
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u
 
@@ -28,6 +29,7 @@ export type ReasoningRecoveryScope = string & {
 interface RecoveryScopeEntry {
   fingerprints: Set<ReasoningFingerprint>
   lastAccessedAt: number
+  lastPersistedAt: number
 }
 
 export interface ReasoningFilterResult {
@@ -42,6 +44,7 @@ export interface ReasoningRecoveryRegistryOptions {
   now?: () => number
   onPersistenceError?: (error: unknown) => void
   persistencePath?: string
+  persistenceTouchIntervalMs?: number
 }
 
 export class ReasoningRecoveryRegistry {
@@ -54,6 +57,7 @@ export class ReasoningRecoveryRegistry {
   private readonly maxScopes: number
   private readonly now: () => number
   private readonly onPersistenceError: (error: unknown) => void
+  private readonly persistenceTouchIntervalMs: number
   private persistencePath: string | undefined
   private persistPromise: Promise<void> = Promise.resolve()
   private dirty = false
@@ -66,6 +70,7 @@ export class ReasoningRecoveryRegistry {
     now = Date.now,
     onPersistenceError = () => {},
     persistencePath,
+    persistenceTouchIntervalMs = DEFAULT_PERSISTENCE_TOUCH_INTERVAL_MS,
   }: ReasoningRecoveryRegistryOptions = {}) {
     this.idleTtlMs = idleTtlMs
     this.maxFingerprintsPerScope = maxFingerprintsPerScope
@@ -73,6 +78,7 @@ export class ReasoningRecoveryRegistry {
     this.now = now
     this.onPersistenceError = onPersistenceError
     this.persistencePath = persistencePath
+    this.persistenceTouchIntervalMs = persistenceTouchIntervalMs
   }
 
   async initialize(persistencePath?: string): Promise<void> {
@@ -149,6 +155,11 @@ export class ReasoningRecoveryRegistry {
     }
 
     this.touch(scope, entry, now)
+    if (now - entry.lastPersistedAt >= this.persistenceTouchIntervalMs) {
+      entry.lastPersistedAt = now
+      this.dirty = true
+      void this.flush()
+    }
     const filtered = input.filter((item) => {
       const fingerprint = fingerprintReasoningItem(item)
       return !fingerprint || !entry.fingerprints.has(fingerprint)
@@ -172,6 +183,7 @@ export class ReasoningRecoveryRegistry {
     const entry = this.entries.get(scope) ?? {
       fingerprints: new Set<ReasoningFingerprint>(),
       lastAccessedAt: now,
+      lastPersistedAt: now,
     }
     let added = 0
     for (const item of input) {
@@ -197,6 +209,7 @@ export class ReasoningRecoveryRegistry {
       if (oldestScope === undefined) break
       this.entries.delete(oldestScope)
     }
+    entry.lastPersistedAt = now
     this.dirty = true
     void this.flush()
     return added
@@ -243,6 +256,7 @@ export class ReasoningRecoveryRegistry {
         {
           fingerprints: new Set(fingerprints),
           lastAccessedAt: candidate.lastAccessedAt,
+          lastPersistedAt: candidate.lastAccessedAt,
         },
       ])
     }
