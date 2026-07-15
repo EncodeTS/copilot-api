@@ -3,10 +3,6 @@ import { events, type ServerSentEventMessage } from "fetch-event-stream"
 import { createHash } from "node:crypto"
 
 import type { SubagentMarker } from "~/lib/subagent"
-import {
-  PooledWebSocketRequestError,
-  type PooledWebSocketRequest,
-} from "~/services/responses-websocket"
 
 import {
   copilotBaseUrl,
@@ -40,6 +36,8 @@ import { state } from "~/lib/state"
 import {
   createPooledWebSocketStream,
   createWebSocketUrl,
+  isWebSocketNotSentError,
+  type PooledWebSocketRequest,
 } from "~/services/responses-websocket"
 import {
   createReasoningRecoveryScope,
@@ -726,6 +724,7 @@ export const createResponses = async (
       payload,
       headers,
       {
+        reasoningRecoverySessionId,
         requestId,
         signal,
         subagentMarker,
@@ -915,17 +914,6 @@ const createHttpResponses = async (
       },
     )
   } catch (error) {
-    const retryableDisconnect = isRetryableHttpStreamDisconnect(error)
-    if (
-      payload.stream === true
-      && options.retryBudget
-      && !options.retryBudget.attempted
-      && !options.signal?.aborted
-      && retryableDisconnect
-    ) {
-      options.retryBudget.attempted = true
-      return await createHttpResponses(payload, headers, options)
-    }
     if (payload.stream === true && options.retryBudget) {
       throw reportStreamTermination({
         diagnostics: {
@@ -997,6 +985,7 @@ export const prepareResponsesWebSocketRequest = (
   payload: ResponsesPayload,
   preparedHeaders: Record<string, string>,
   options: {
+    reasoningRecoverySessionId?: string
     requestId: string
     signal?: AbortSignal
     subagentMarker?: SubagentMarker | null
@@ -1018,9 +1007,11 @@ export const prepareResponsesWebSocketRequest = (
 export const buildResponsesWebSocketPoolKey = (
   payload: ResponsesPayload,
   {
+    reasoningRecoverySessionId,
     requestId,
     subagentMarker,
   }: {
+    reasoningRecoverySessionId?: string
     requestId: string
     subagentMarker?: SubagentMarker | null
   },
@@ -1031,14 +1022,11 @@ export const buildResponsesWebSocketPoolKey = (
     : "missing-token"
   const subagentKey =
     subagentMarker ?
-      [
-        subagentMarker.session_id,
-        subagentMarker.agent_id,
-        subagentMarker.agent_type,
-      ].join(":")
+      [subagentMarker.agent_id, subagentMarker.agent_type].join(":")
     : "main"
+  const sessionKey = reasoningRecoverySessionId ?? requestId
 
-  return [tokenFingerprint, payload.model, requestId, subagentKey]
+  return [tokenFingerprint, payload.model, sessionKey, subagentKey]
     .map(encodePoolKeyPart)
     .join("|")
 }
@@ -1131,10 +1119,7 @@ const createRetryableResponsesWebSocketStream = async function* (
       yield chunk
     }
   } catch (error) {
-    if (
-      error instanceof PooledWebSocketRequestError
-      && error.sendState !== "frame-seen"
-    ) {
+    if (isWebSocketNotSentError(error)) {
       throw new RetryableStreamTransportError(error.message, error)
     }
     throw error
@@ -1154,46 +1139,7 @@ const createHttpResponsesStream = async (
   if (!isResponsesStream(response)) {
     throw new Error("Streaming HTTP attempt returned a non-streaming response")
   }
-  return createRetryableHttpResponsesStream(response)
-}
-
-const createRetryableHttpResponsesStream = async function* (
-  source: AsyncIterable<ResponsesStreamChunk>,
-): AsyncGenerator<ResponsesStreamChunk, void, unknown> {
-  try {
-    yield* source
-  } catch (error) {
-    if (isRetryableHttpStreamDisconnect(error)) {
-      throw new RetryableStreamTransportError(getErrorMessage(error), error)
-    }
-    throw error
-  }
-}
-
-const retryableHttpStreamErrorCodes = new Set([
-  "ECONNRESET",
-  "EPIPE",
-  "UND_ERR_SOCKET",
-])
-
-const isRetryableHttpStreamDisconnect = (error: unknown): boolean => {
-  let current = error
-  const seen = new Set<unknown>()
-  while (current instanceof Error && !seen.has(current)) {
-    seen.add(current)
-    const code = (current as Error & { code?: unknown }).code
-    if (typeof code === "string" && retryableHttpStreamErrorCodes.has(code)) {
-      return true
-    }
-    if (
-      current instanceof TypeError
-      && /(?:connection reset|socket closed|terminated)/iu.test(current.message)
-    ) {
-      return true
-    }
-    current = current.cause
-  }
-  return false
+  return response
 }
 
 const createSupervisedHttpResponsesStream = (
@@ -1206,10 +1152,6 @@ const createSupervisedHttpResponsesStream = (
     isTerminalEvent: isTerminalResponsesStreamChunk,
     primary: {
       open: () => primaryStream ?? createHttpResponsesStream(options),
-      transport: "http",
-    },
-    retry: {
-      open: () => createHttpResponsesStream(options),
       transport: "http",
     },
     retryBudget: options.retryBudget,
