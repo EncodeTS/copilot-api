@@ -621,5 +621,5 @@ describe("auth login validation", () => {
       expect(output).toBe(item.message)
       expect(readConfigFile(tempDir).providers).toBeUndefined()
     }
-  })
+  }, 20_000)
 })

@@ -21,6 +21,7 @@ type MockWebSocketInit = {
 }
 
 const originalClearTimeout = globalThis.clearTimeout
+const originalConsolaDebug = consola.debug
 const originalConsolaWarn = consola.warn
 const originalFetch = globalThis.fetch
 const originalSetTimeout = globalThis.setTimeout
@@ -308,6 +309,7 @@ afterEach(() => {
   state.vsCodeDeviceId = originalState.vsCodeDeviceId
   state.vsCodeVersion = originalState.vsCodeVersion
   responsesReasoningRecoveryRegistry.clear()
+  consola.debug = originalConsolaDebug
   consola.warn = originalConsolaWarn
   ;(
     globalThis as unknown as { clearTimeout: typeof clearTimeout }
@@ -658,10 +660,15 @@ test("Responses HTTP recovers incompatible reasoning history once", async () => 
 })
 
 test("Responses remembers rejected reasoning and preserves new reasoning next turn", async () => {
+  const debugMock = Object.assign(
+    mock(() => {}),
+    { raw: mock(() => {}) },
+  )
   const warnMock = Object.assign(
     mock(() => {}),
     { raw: mock(() => {}) },
   )
+  consola.debug = debugMock
   consola.warn = warnMock
   const reasoningByRequest: Array<Array<string>> = []
   const fetchMock = mock((_input: unknown, init?: RequestInit) => {
@@ -748,13 +755,22 @@ test("Responses remembers rejected reasoning and preserves new reasoning next tu
     [],
     ["new-reasoning"],
   ])
-  expect(warnMock).toHaveBeenCalledWith(
+  expect(debugMock).toHaveBeenCalledWith(
     "responses.reasoning_history_prefilter",
     {
       model: "gpt-test",
       reason: "known_incompatible_reasoning_history",
       removedReasoningItems: 2,
       subagent: false,
+    },
+  )
+  expect(warnMock).toHaveBeenCalledWith(
+    "responses.reasoning_history_recovery",
+    {
+      reason: "incompatible_reasoning_history",
+      removedReasoningItems: 2,
+      retryTransport: "http",
+      sourceTransport: "http",
     },
   )
 })
