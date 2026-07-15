@@ -13,7 +13,7 @@ jobs:
   release:
     # Keep publishing opt-in until @encodets/copilot-api has completed its
     # one-time bootstrap publish and npm Trusted Publisher binding.
-    if: ${{ vars.ENABLE_NPM_PUBLISH == 'true' && !contains(github.ref_name, '-r') }}
+    if: ${{ vars.ENABLE_NPM_PUBLISH == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

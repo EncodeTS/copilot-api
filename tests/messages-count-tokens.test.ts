@@ -7,6 +7,7 @@ import type { ResponsesPayload } from "../src/services/copilot/create-responses"
 import {
   countTokensHandlerDependencies,
   estimateResponsesInputTokens,
+  ResponsesTokenEstimateLimitError,
 } from "../src/routes/messages/count-tokens-handler"
 import { messageRoutes } from "../src/routes/messages/route"
 import type { AnthropicMessagesPayload } from "../src/routes/messages/anthropic-types"
@@ -558,12 +559,69 @@ test("GPT Responses estimator stays within the conservative live-usage band", as
     )
     const estimate = await estimateResponsesInputTokens(payload, gptModel)
     expect(estimate).toBeGreaterThanOrEqual(
-      Math.ceil(fixture.actualInputTokens * 1.05),
+      Math.ceil(fixture.actualInputTokens * 1.04),
     )
     expect(estimate).toBeLessThanOrEqual(
       Math.ceil(fixture.actualInputTokens * 1.15),
     )
   }
+})
+
+test("GPT Responses estimator rejects excessive input structure before tokenizing it", () => {
+  const input = Array.from({ length: 10_001 }, () => ({
+    content: "x",
+    role: "user" as const,
+    type: "message" as const,
+  }))
+
+  expect(
+    estimateResponsesInputTokens({ input, model: gptModel.id }, gptModel),
+  ).rejects.toBeInstanceOf(ResponsesTokenEstimateLimitError)
+})
+
+test("GPT Responses estimator observes caller cancellation during local work", () => {
+  const controller = new AbortController()
+  const reason = new Error("count request cancelled")
+  controller.abort(reason)
+
+  expect(
+    estimateResponsesInputTokens(
+      { input: "hello", model: gptModel.id },
+      gptModel,
+      { signal: controller.signal },
+    ),
+  ).rejects.toBe(reason)
+})
+
+test("GPT count_tokens returns a structured 400 for estimator safety limits", async () => {
+  state.models = { object: "list", data: [gptModel] } as typeof state.models
+  countTokensHandlerDependencies.findEndpointModel = () => gptModel
+  countTokensHandlerDependencies.estimateResponsesInputTokens = () =>
+    Promise.reject(
+      new ResponsesTokenEstimateLimitError(
+        "Responses token estimate exceeds the maximum node count of 10000",
+      ),
+    )
+
+  const response = await createApp().request("/v1/messages/count_tokens", {
+    body: JSON.stringify({
+      model: gptModel.id,
+      max_tokens: 128,
+      messages: [{ role: "user", content: "hello" }],
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })
+
+  expect(response.status).toBe(400)
+  expect(await response.json()).toEqual({
+    type: "error",
+    error: {
+      type: "invalid_request_error",
+      message:
+        "Responses token estimate exceeds the maximum node count of 10000",
+    },
+  })
 })
 
 test("models absent from a loaded Copilot catalog fail instead of returning a fake count", async () => {

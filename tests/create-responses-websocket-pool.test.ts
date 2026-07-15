@@ -1958,6 +1958,41 @@ test("Responses websocket pool isolates token, model, and subagent identity", as
   }
 })
 
+test("Responses websocket pool isolates subagent sessions with reused agent IDs", async () => {
+  const common = {
+    reasoningRecoverySessionId: "stable-root-session",
+    subagentMarker: {
+      agent_id: "reused-agent",
+      agent_type: "review",
+      session_id: "subagent-session-1",
+    },
+  }
+  await collectResponsesStream("request-1", common)
+  await collectResponsesStream("request-2", {
+    ...common,
+    subagentMarker: {
+      ...common.subagentMarker,
+      session_id: "subagent-session-2",
+    },
+  })
+
+  expect(MockWebSocket.instances).toHaveLength(2)
+})
+
+test("Responses websocket pool isolates vision handshake state", async () => {
+  const reasoningRecoverySessionId = "stable-session"
+  await collectResponsesStream("request-1", {
+    reasoningRecoverySessionId,
+    vision: false,
+  })
+  await collectResponsesStream("request-2", {
+    reasoningRecoverySessionId,
+    vision: true,
+  })
+
+  expect(MockWebSocket.instances).toHaveLength(2)
+})
+
 test("Responses websocket does not open until the stream is consumed", async () => {
   MockWebSocket.autoComplete = false
 
@@ -2334,6 +2369,7 @@ const collectResponsesStream = async (
       agent_type: string
       session_id: string
     } | null
+    vision?: boolean
   } = {},
 ): Promise<void> => {
   const response = await createResponses(
@@ -2348,7 +2384,7 @@ const collectResponsesStream = async (
       requestId,
       subagentMarker: options.subagentMarker,
       transport: "websocket",
-      vision: false,
+      vision: options.vision ?? false,
     },
   )
 
