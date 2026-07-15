@@ -42,7 +42,8 @@ test("keeps npm publishing OIDC-only and explicitly gated", async () => {
   ).text()
 
   expect(workflow).toContain("id-token: write")
-  expect(workflow).toContain("vars.ENABLE_NPM_PUBLISH == 'true'")
+  expect(workflow).toContain("if: ${{ vars.ENABLE_NPM_PUBLISH == 'true' }}")
+  expect(workflow).not.toContain("contains(github.ref_name, '-r')")
   expect(workflow).toContain("npm@11.17.0")
   expect(workflow).toContain("npm publish --access public")
   expect(workflow).not.toContain("NPM_TOKEN")

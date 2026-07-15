@@ -729,6 +729,7 @@ export const createResponses = async (
         signal,
         subagentMarker,
         timeouts,
+        vision,
       },
     )
     const websocketStream =
@@ -990,6 +991,7 @@ export const prepareResponsesWebSocketRequest = (
     signal?: AbortSignal
     subagentMarker?: SubagentMarker | null
     timeouts?: UpstreamLifecycleTimeouts
+    vision?: boolean
   },
 ): ResponsesWebSocketRequest => {
   const initiator = getResponsesWebSocketInitiator(preparedHeaders)
@@ -1010,10 +1012,12 @@ export const buildResponsesWebSocketPoolKey = (
     reasoningRecoverySessionId,
     requestId,
     subagentMarker,
+    vision = false,
   }: {
     reasoningRecoverySessionId?: string
     requestId: string
     subagentMarker?: SubagentMarker | null
+    vision?: boolean
   },
 ): string => {
   const tokenFingerprint =
@@ -1022,11 +1026,16 @@ export const buildResponsesWebSocketPoolKey = (
     : "missing-token"
   const subagentKey =
     subagentMarker ?
-      [subagentMarker.agent_id, subagentMarker.agent_type].join(":")
+      [
+        subagentMarker.session_id,
+        subagentMarker.agent_id,
+        subagentMarker.agent_type,
+      ].join(":")
     : "main"
   const sessionKey = reasoningRecoverySessionId ?? requestId
+  const visionKey = vision ? "vision" : "text-only"
 
-  return [tokenFingerprint, payload.model, sessionKey, subagentKey]
+  return [tokenFingerprint, payload.model, sessionKey, subagentKey, visionKey]
     .map(encodePoolKeyPart)
     .join("|")
 }

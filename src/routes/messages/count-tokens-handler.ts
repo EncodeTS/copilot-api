@@ -36,40 +36,78 @@ import {
 import { translateAnthropicMessagesToResponsesPayload } from "./responses-translation"
 
 const RESPONSES_ESTIMATE_SAFETY_FACTOR = 1.07
-// Value tokenization omits the Responses collection wrapper. Current live
-// single-tool and multi-tool fixtures converge on five tokens per collection,
-// independent of the number of schemas inside it.
-const RESPONSES_STRUCTURED_COLLECTION_OVERHEAD = 5
+const RESPONSES_ESTIMATE_MAX_NODES = 10_000
+const RESPONSES_ESTIMATE_MAX_DEPTH = 128
 
 interface SemanticTokenStats {
   objectCount: number
   tokens: number
 }
 
+interface SemanticTokenTraversal {
+  depthLimit: number
+  nodeLimit: number
+  nodesVisited: number
+  signal?: AbortSignal
+}
+
+export class ResponsesTokenEstimateLimitError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "ResponsesTokenEstimateLimitError"
+  }
+}
+
+const enterSemanticTokenNode = (
+  traversal: SemanticTokenTraversal,
+  depth: number,
+): void => {
+  traversal.signal?.throwIfAborted()
+  if (depth > traversal.depthLimit) {
+    throw new ResponsesTokenEstimateLimitError(
+      `Responses token estimate exceeds the maximum depth of ${traversal.depthLimit}`,
+    )
+  }
+  traversal.nodesVisited += 1
+  if (traversal.nodesVisited > traversal.nodeLimit) {
+    throw new ResponsesTokenEstimateLimitError(
+      `Responses token estimate exceeds the maximum node count of ${traversal.nodeLimit}`,
+    )
+  }
+}
+
 const countSemanticTokens = async (
   value: unknown,
   selectedModel: Model,
   includeStructure = false,
+  traversal: SemanticTokenTraversal,
+  depth = 0,
 ): Promise<SemanticTokenStats> => {
-  if (typeof value === "string" || typeof value === "number") {
+  enterSemanticTokenNode(traversal, depth)
+  if (
+    typeof value === "string"
+    || typeof value === "number"
+    || typeof value === "boolean"
+  ) {
     return {
       objectCount: 0,
       tokens: await getTextTokenCount(String(value), selectedModel),
     }
   }
   if (Array.isArray(value)) {
-    const items = await Promise.all(
-      value.map((item) =>
-        countSemanticTokens(item, selectedModel, includeStructure),
-      ),
-    )
-    return items.reduce<SemanticTokenStats>(
-      (total, item) => ({
-        objectCount: total.objectCount + item.objectCount,
-        tokens: total.tokens + item.tokens,
-      }),
-      { objectCount: 0, tokens: 0 },
-    )
+    const total = { objectCount: 0, tokens: 0 }
+    for (const item of value) {
+      const stats = await countSemanticTokens(
+        item,
+        selectedModel,
+        includeStructure,
+        traversal,
+        depth + 1,
+      )
+      total.objectCount += stats.objectCount
+      total.tokens += stats.tokens
+    }
+    return total
   }
   if (typeof value !== "object" || value === null) {
     return { objectCount: 0, tokens: 0 }
@@ -92,6 +130,8 @@ const countSemanticTokens = async (
       child,
       selectedModel,
       childIncludesStructure,
+      traversal,
+      depth + 1,
     )
     objectCount += childStats.objectCount
     tokens += childStats.tokens
@@ -102,25 +142,39 @@ const countSemanticTokens = async (
 export const estimateResponsesInputTokens = async (
   payload: ResponsesPayload,
   selectedModel: Model,
+  options: { signal?: AbortSignal } = {},
 ): Promise<number> => {
-  const semanticFields = await Promise.all([
-    countSemanticTokens(payload.context_management, selectedModel),
-    countSemanticTokens(payload.input, selectedModel),
-    countSemanticTokens(payload.instructions, selectedModel),
-    countSemanticTokens(payload.parallel_tool_calls, selectedModel),
-    countSemanticTokens(payload.reasoning, selectedModel),
-    countSemanticTokens(payload.text, selectedModel, true),
-    countSemanticTokens(payload.tool_choice, selectedModel, true),
-    countSemanticTokens(payload.tools, selectedModel, true),
-  ])
-  let semanticTokens = semanticFields.reduce(
+  const traversal: SemanticTokenTraversal = {
+    depthLimit: RESPONSES_ESTIMATE_MAX_DEPTH,
+    nodeLimit: RESPONSES_ESTIMATE_MAX_NODES,
+    nodesVisited: 0,
+    signal: options.signal,
+  }
+  const fields: Array<[unknown, boolean?]> = [
+    [payload.context_management],
+    [payload.input],
+    [payload.instructions],
+    [payload.parallel_tool_calls],
+    [payload.reasoning],
+    [payload.text, true],
+    [payload.tool_choice, true],
+    [payload.tools, true],
+  ]
+  const semanticFields: Array<SemanticTokenStats> = []
+  for (const [value, includeStructure] of fields) {
+    semanticFields.push(
+      await countSemanticTokens(
+        value,
+        selectedModel,
+        includeStructure,
+        traversal,
+      ),
+    )
+  }
+  const semanticTokens = semanticFields.reduce(
     (total, field) => total + field.tokens + field.objectCount,
     0,
   )
-  if (Array.isArray(payload.tools) && payload.tools.length > 0) {
-    semanticTokens += RESPONSES_STRUCTURED_COLLECTION_OVERHEAD
-  }
-
   // Copilot does not expose /responses/input_tokens. This is deliberately a
   // conservative local estimate of token-bearing values and schema structure,
   // not a claim of official OpenAI/Copilot token-count parity.
@@ -145,6 +199,26 @@ const unsupportedCatalogModelError = (model: string): HTTPError =>
         error: {
           type: "invalid_request_error",
           message: `The requested model is not supported by the current Copilot model catalog: ${model}`,
+        },
+      }),
+      {
+        headers: { "content-type": "application/json" },
+        status: 400,
+      },
+    ),
+  )
+
+const tokenEstimateLimitError = (
+  error: ResponsesTokenEstimateLimitError,
+): HTTPError =>
+  new HTTPError(
+    error.message,
+    new Response(
+      JSON.stringify({
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message: error.message,
         },
       }),
       {
@@ -258,11 +332,20 @@ export async function handleCountTokens(c: Context) {
     if (decision.shouldPruneInput) {
       compactInputByLatestCompaction(responsesPayload)
     }
-    const inputTokens =
-      await countTokensHandlerDependencies.estimateResponsesInputTokens(
-        responsesPayload,
-        selectedModel,
-      )
+    let inputTokens: number
+    try {
+      inputTokens =
+        await countTokensHandlerDependencies.estimateResponsesInputTokens(
+          responsesPayload,
+          selectedModel,
+          { signal: c.req.raw.signal },
+        )
+    } catch (error) {
+      if (error instanceof ResponsesTokenEstimateLimitError) {
+        throw tokenEstimateLimitError(error)
+      }
+      throw error
+    }
     consola.info("Estimated token count (Responses payload):", inputTokens)
     c.header("x-copilot-api-token-count-mode", "estimate")
     return c.json({ input_tokens: inputTokens })
