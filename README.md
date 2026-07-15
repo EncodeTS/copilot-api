@@ -12,7 +12,7 @@ Fork-specific builds and defaults:
 - Messages API requests preserve the client-requested model and `tool_result` boundaries; warmup/no-tools requests are not silently rewritten to a fallback model.
 - Client `thinking` / `effort` payloads are preserved and normalized where compatible, and provider stream error handling has small robustness fixes.
 
-The `npx @jeffreycao/copilot-api@latest` examples below use the upstream npm package. To use this fork's patches, run from this source tree or install the desktop app from this fork's Releases.
+The published CLI is maintained by this fork under the `@encodets/copilot-api` npm scope. Prereleases use the `rc` dist-tag; stable releases use `latest`.
 
 ## Important Notes
 
@@ -20,7 +20,7 @@ The `npx @jeffreycao/copilot-api@latest` examples below use the upstream npm pac
 > **Before using, please be aware of the following:**
 >
 > 1. **Claude Code configuration:** When using with Claude Code, please configure the model ID as `claude-opus-4-8`. Example claude `settings.json` see [Manual Configuration with `settings.json`](#manual-configuration-with-settingsjson).
-> 2. **Built-in `copilot`, `codex` and third-party providers:** Run `npx @jeffreycao/copilot-api@latest auth` and choose `copilot`, `codex`, `deepseek`, `custom`, or other providers.
+> 2. **Built-in `copilot`, `codex` and third-party providers:** Run `npx @encodets/copilot-api@rc auth` and choose `copilot`, `codex`, `deepseek`, `custom`, or other providers.
 > 3. **Note:** See [GitHub Copilot Security Notice](./NOTICE.md#github-copilot-security-notice) for the warning removed from the README header.
 
 ---
@@ -89,29 +89,29 @@ You can run the project directly using npx:
 > [!IMPORTANT]
 > Token usage storage uses Node's built-in `node:sqlite` module when running with `npx`. It is enabled on Node.js >= 22.13.0. On Node.js < 22.13.0, the CLI still starts, but token usage storage is disabled.
 >
-> If you want token usage storage without upgrading Node.js, run the published CLI with Bun instead: `bunx --bun @jeffreycao/copilot-api@latest start`.
+> If you want token usage storage without upgrading Node.js, run the published CLI with Bun instead: `bunx --bun @encodets/copilot-api@rc start`.
 
 ```sh
-npx @jeffreycao/copilot-api@latest start
+npx @encodets/copilot-api@rc start
 ```
 
 With options:
 
 ```sh
-npx @jeffreycao/copilot-api@latest start --port 8080
+npx @encodets/copilot-api@rc start --port 8080
 ```
 
 For authentication or provider configuration only:
 
 ```sh
-npx @jeffreycao/copilot-api@latest auth
+npx @encodets/copilot-api@rc auth
 ```
 
 To run without GitHub Copilot, configure at least one provider first, then start the server normally:
 
 ```sh
-npx @jeffreycao/copilot-api@latest auth login --provider dashscope
-npx @jeffreycao/copilot-api@latest start
+npx @encodets/copilot-api@rc auth login --provider dashscope
+npx @encodets/copilot-api@rc start
 ```
 
 ## Using with Docker
@@ -171,7 +171,7 @@ There are two ways to configure Claude Code to use this AI gateway:
 To get started, run the `start` command with the `--claude-code` flag:
 
 ```sh
-npx @jeffreycao/copilot-api@latest start --claude-code
+npx @encodets/copilot-api@rc start --claude-code
 ```
 
 You will be prompted to select a primary model and a "small, fast" model for background tasks. After selecting the models, a command will be copied to your clipboard. This command sets the necessary environment variables for Claude Code to use the gateway.
@@ -225,8 +225,8 @@ OpenCode already has a direct GitHub Copilot provider. Use this section when you
 Start the AI gateway with the OpenCode OAuth app:
 
 ```sh
-npx @jeffreycao/copilot-api@latest auth --oauth-app=opencode
-npx @jeffreycao/copilot-api@latest start
+npx @encodets/copilot-api@rc auth --oauth-app=opencode
+npx @encodets/copilot-api@rc start
 ```
 
 Then point OpenCode at the gateway with `@ai-sdk/anthropic`.
@@ -376,7 +376,7 @@ Add the tool search bridge to the MCP config used by Claude Code:
     "tool_search": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@jeffreycao/copilot-api@latest", "mcp"]
+      "args": ["-y", "@encodets/copilot-api@rc", "mcp"]
     }
   }
 }
@@ -389,7 +389,7 @@ Add the tool search bridge to the MCP config used by opencode:
   "mcp": {
     "tool_search": {
       "type": "local",
-      "command": ["npx", "-y", "@jeffreycao/copilot-api@latest", "mcp"]
+      "command": ["npx", "-y", "@encodets/copilot-api@rc", "mcp"]
     }
   }
 }
@@ -467,7 +467,7 @@ After starting the server, a URL to the Copilot Usage Dashboard will be displaye
 
 1.  Start the server. For example, using npx:
     ```sh
-    npx @jeffreycao/copilot-api@latest start
+    npx @encodets/copilot-api@rc start
     ```
 2.  The server will output a URL to the usage viewer. Copy and paste this URL into your browser. It will look something like this:
     `http://localhost:4141/usage-viewer?endpoint=http://localhost:4141/usage`
@@ -761,23 +761,23 @@ Common `npx` commands:
 
 ```sh
 # Start the gateway
-npx @jeffreycao/copilot-api@latest start
+npx @encodets/copilot-api@rc start
 
 # Start on a custom port with verbose logging
-npx @jeffreycao/copilot-api@latest start --port 8080 --verbose
+npx @encodets/copilot-api@rc start --port 8080 --verbose
 
 # Run the auth flow
-npx @jeffreycao/copilot-api@latest auth login
+npx @encodets/copilot-api@rc auth login
 
 # Configure a third-party provider, then run without GitHub Copilot
-npx @jeffreycao/copilot-api@latest auth login --provider dashscope
-npx @jeffreycao/copilot-api@latest start
+npx @encodets/copilot-api@rc auth login --provider dashscope
+npx @encodets/copilot-api@rc start
 
 # Print debug information as JSON
-npx @jeffreycao/copilot-api@latest debug --json
+npx @encodets/copilot-api@rc debug --json
 
 # Run the published CLI with Bun instead of Node.js
-bunx --bun @jeffreycao/copilot-api@latest start
+bunx --bun @encodets/copilot-api@rc start
 ```
 
 OpenAI-compatible provider examples after configuring `dashscope`:

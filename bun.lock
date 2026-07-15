@@ -3,7 +3,7 @@
   "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "@jeffreycao/copilot-api",
+      "name": "@encodets/copilot-api",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.29.0",
         "citty": "^0.1.6",
