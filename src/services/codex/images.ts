@@ -1,5 +1,4 @@
 import {
-  fetch as undiciFetch,
   getGlobalDispatcher,
   type Dispatcher,
   type RequestInit as UndiciRequestInit,
@@ -33,6 +32,11 @@ const codexImagesDispatcher = {
 type StreamingRequestInit = RequestInit & {
   duplex: "half"
 }
+
+type DispatcherFetch = (
+  input: string | URL | Request,
+  init?: UndiciRequestInit,
+) => Promise<Response>
 
 export function resolveCodexImagesUrl(
   requestUrl: string,
@@ -71,8 +75,9 @@ export async function forwardCodexImages(
 
   // Node and Undici expose separate fetch types, but their streamed request
   // and response objects are runtime-compatible here.
-  return (await undiciFetch(upstreamUrl, {
+  const fetchWithDispatcher = fetch as unknown as DispatcherFetch
+  return await fetchWithDispatcher(upstreamUrl, {
     ...init,
     dispatcher: codexImagesDispatcher,
-  } as unknown as UndiciRequestInit)) as unknown as Response
+  } as unknown as UndiciRequestInit)
 }
