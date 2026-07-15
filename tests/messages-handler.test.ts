@@ -25,6 +25,7 @@ type SelectedModel = {
 
 type FlowCallOptions = {
   compactType?: number
+  reasoningRecoverySessionId?: string
   requestId: string
   sessionId?: string
   signal?: AbortSignal
@@ -666,6 +667,7 @@ describe("messages handler orchestration", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
+        "x-session-id": "responses-session-123",
       },
       body: JSON.stringify(createPayload()),
     })
@@ -675,6 +677,10 @@ describe("messages handler orchestration", () => {
     expect(handleWithMessagesApi).not.toHaveBeenCalled()
     expect(handleWithResponsesApi).toHaveBeenCalledTimes(1)
     expect(handleWithChatCompletions).not.toHaveBeenCalled()
+    const expectedSessionId = actualUtilsModule.getUUID("responses-session-123")
+    expect(
+      handleWithResponsesApi.mock.calls[0][2].reasoningRecoverySessionId,
+    ).toBe(expectedSessionId)
   })
 
   test("falls back to Chat Completions for assistant prefill when supported", async () => {

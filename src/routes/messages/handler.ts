@@ -75,7 +75,8 @@ export async function handleCompletion(c: Context) {
     debugJson(logger, "Detected Subagent marker:", subagentMarker)
   }
 
-  let sessionId = getRootSessionId(anthropicPayload, c)
+  const reasoningRecoverySessionId = getRootSessionId(anthropicPayload, c)
+  let sessionId = reasoningRecoverySessionId
 
   // claude code and opencode compact / auto-continue detection
   const compactType = getCompactType(anthropicPayload)
@@ -131,6 +132,7 @@ export async function handleCompletion(c: Context) {
         anthropicBetaHeader: anthropicBeta,
         subagentMarker,
         selectedModel,
+        reasoningRecoverySessionId,
         requestId,
         sessionId,
         signal: c.req.raw.signal,
@@ -147,6 +149,7 @@ export async function handleCompletion(c: Context) {
       {
         subagentMarker,
         selectedModel,
+        reasoningRecoverySessionId,
         requestId,
         sessionId,
         signal: c.req.raw.signal,
