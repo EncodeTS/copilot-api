@@ -593,6 +593,29 @@ test("GPT Responses estimator observes caller cancellation during local work", (
   ).rejects.toBe(reason)
 })
 
+test("GPT Responses estimator yields while tokenizing a pathological long scalar", async () => {
+  const controller = new AbortController()
+  const reason = new Error("cancel pathological tokenization")
+  const timer = setTimeout(() => controller.abort(reason), 5)
+  const startedAt = performance.now()
+  let thrown: unknown
+
+  try {
+    await estimateResponsesInputTokens(
+      { input: "x".repeat(1_000_000), model: gptModel.id },
+      gptModel,
+      { signal: controller.signal },
+    )
+  } catch (error) {
+    thrown = error
+  } finally {
+    clearTimeout(timer)
+  }
+
+  expect(thrown).toBe(reason)
+  expect(performance.now() - startedAt).toBeLessThan(5_000)
+})
+
 test("GPT count_tokens returns a structured 400 for estimator safety limits", async () => {
   state.models = { object: "list", data: [gptModel] } as typeof state.models
   countTokensHandlerDependencies.findEndpointModel = () => gptModel
