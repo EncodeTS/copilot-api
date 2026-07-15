@@ -337,6 +337,228 @@ test("Responses websocket pool reuses the same connection for matching pool keys
   expect(MockWebSocket.instances[0]?.sent).toHaveLength(2)
 })
 
+test("Responses websocket pool does not reuse a connection after an upstream error event", async () => {
+  MockWebSocket.autoComplete = false
+
+  const firstResponse = await createResponses(
+    {
+      input: "hello",
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      initiator: "user",
+      requestId: "request-1",
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const firstChunksPromise = collectStreamChunks(
+    firstResponse as AsyncIterable<unknown>,
+  )
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  MockWebSocket.instances[0]?.emitMessage(
+    JSON.stringify({
+      error: {
+        code: "internal_error",
+        message: "internal server error",
+      },
+      type: "error",
+    }),
+  )
+  const firstChunks = await firstChunksPromise
+
+  const secondPromise = collectResponsesStream("request-1")
+  await waitFor(
+    () =>
+      MockWebSocket.instances.reduce(
+        (total, websocket) => total + websocket.sent.length,
+        0,
+      ) === 2,
+  )
+  MockWebSocket.instances.at(-1)?.completeLatestResponse()
+  await secondPromise
+
+  expect(firstChunks).toHaveLength(1)
+  expect(firstChunks[0]?.event).toBe("error")
+  expect(MockWebSocket.instances).toHaveLength(2)
+})
+
+test("Responses websocket falls back before sending on a pooled connection that closes after a terminal event", async () => {
+  MockWebSocket.autoComplete = false
+  const fetchMock = mock(() =>
+    Promise.resolve(
+      new Response(
+        [
+          "event: response.completed",
+          `data: ${JSON.stringify({
+            response: createResponsesResult(
+              "gpt-test",
+              "resp-http-stale-pool-fallback",
+            ),
+            sequence_number: 1,
+            type: "response.completed",
+          })}`,
+          "",
+          "",
+        ].join("\n"),
+        {
+          headers: { "content-type": "text/event-stream" },
+        },
+      ),
+    ),
+  )
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const firstResponse = await createResponses(
+    {
+      input: "hello",
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      initiator: "user",
+      requestId: "request-1",
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const firstChunksPromise = collectStreamChunks(
+    firstResponse as AsyncIterable<unknown>,
+  )
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  MockWebSocket.instances[0]?.completeLatestResponse()
+  await firstChunksPromise
+
+  originalSetTimeout(() => MockWebSocket.instances[0]?.close(), 0)
+  const secondResponse = await createResponses(
+    {
+      input: "hello again",
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      allowHttpFallback: true,
+      initiator: "user",
+      requestId: "request-1",
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const secondChunks = await collectStreamChunks(
+    secondResponse as AsyncIterable<unknown>,
+  )
+
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(MockWebSocket.instances[0]?.sent).toHaveLength(1)
+  expect(secondChunks).toHaveLength(1)
+  expect(secondChunks[0]?.event).toBe("response.completed")
+})
+
+test("Responses websocket retries an initial internal error over HTTP", async () => {
+  MockWebSocket.autoComplete = false
+  const fetchMock = mock(() =>
+    Promise.resolve(
+      new Response(
+        [
+          "event: response.completed",
+          `data: ${JSON.stringify({
+            response: createResponsesResult(
+              "gpt-test",
+              "resp-http-internal-error-retry",
+            ),
+            sequence_number: 1,
+            type: "response.completed",
+          })}`,
+          "",
+          "",
+        ].join("\n"),
+        {
+          headers: { "content-type": "text/event-stream" },
+        },
+      ),
+    ),
+  )
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const response = await createResponses(
+    {
+      input: "hello",
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      allowHttpFallback: true,
+      initiator: "user",
+      requestId: "initial-internal-error",
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  MockWebSocket.instances[0]?.emitMessage(
+    JSON.stringify({
+      error: {
+        code: "internal_error",
+        message: "internal server error",
+      },
+      type: "error",
+    }),
+  )
+  const chunks = await chunksPromise
+
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("response.completed")
+  expect(chunks[0]?.data).toContain("resp-http-internal-error-retry")
+})
+
+test("Responses websocket does not retry a prompt token limit error", async () => {
+  MockWebSocket.autoComplete = false
+  const fetchMock = mock(() =>
+    Promise.resolve(new Response("unexpected HTTP fallback")),
+  )
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const response = await createResponses(
+    {
+      input: "hello",
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      allowHttpFallback: true,
+      initiator: "user",
+      requestId: "prompt-token-limit",
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  MockWebSocket.instances[0]?.emitMessage(
+    JSON.stringify({
+      error: {
+        code: "bad_request",
+        message: "prompt token count of 329922 exceeds the limit of 272000",
+      },
+      type: "error",
+    }),
+  )
+  const chunks = await chunksPromise
+
+  expect(fetchMock).not.toHaveBeenCalled()
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("error")
+  expect(chunks[0]?.data).toContain(
+    "prompt token count of 329922 exceeds the limit of 272000",
+  )
+})
+
 test("Responses websocket open failure includes the underlying reason", async () => {
   MockWebSocket.failOpen = true
   MockWebSocket.failOpenEvent = {

@@ -1089,6 +1089,7 @@ const createPooledResponsesWebSocketStream = (
 ): AsyncIterable<ResponsesStreamChunk> =>
   createPooledWebSocketStream(request, {
     createChunk: createResponsesWebSocketStreamChunk,
+    isReusableTerminalChunk: (chunk) => chunk.event !== "error",
     isTerminalChunk: isTerminalResponsesStreamChunk,
     openErrorMessage: "Failed to create responses websocket",
     streamErrorMessage: "Responses websocket stream error",
@@ -1159,6 +1160,17 @@ const createRetryableResponsesWebSocketStream = async function* (
         }
         yield* recovery
         return
+      }
+
+      if (
+        options.allowHttpFallback
+        && !forwardedChunk
+        && !options.signal?.aborted
+        && failure?.code === "internal_error"
+      ) {
+        throw new RetryableStreamTransportError(
+          `Responses websocket returned internal_error: ${failure.message}`,
+        )
       }
 
       forwardedChunk = true
