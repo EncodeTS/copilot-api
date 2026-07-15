@@ -35,7 +35,7 @@ jobs:
           - arch: x64
             runner: macos-15-intel
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
 
@@ -49,9 +49,10 @@ jobs:
       - name: Build server
         run: bun run build
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22.13.0"
+          package-manager-cache: false
 
       - name: Install desktop dependencies
         working-directory: desktop
@@ -90,7 +91,7 @@ jobs:
     name: Build Windows (x64)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
 
@@ -104,9 +105,10 @@ jobs:
       - name: Build server
         run: bun run build
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22.13.0"
+          package-manager-cache: false
 
       - name: Install desktop dependencies
         working-directory: desktop
