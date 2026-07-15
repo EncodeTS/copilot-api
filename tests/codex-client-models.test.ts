@@ -136,4 +136,25 @@ describe("Codex client models", () => {
       models: [],
     })
   })
+
+  test("keeps smaller models on their own context and compact limits", async () => {
+    codexClientModelsDependencies.loadBundledCatalog = () =>
+      Promise.resolve(bundledCatalog)
+    const model = createCopilotModel({
+      max_context_window_tokens: 400_000,
+      max_output_tokens: 128_000,
+      max_prompt_tokens: 272_000,
+    })
+
+    expect(await createCodexModelsResponse("0.144.1", [model])).toEqual({
+      models: [
+        {
+          ...bundledCatalog.models[0],
+          auto_compact_token_limit: 240_000,
+          context_window: 400_000,
+          max_context_window: 400_000,
+        },
+      ],
+    })
+  })
 })

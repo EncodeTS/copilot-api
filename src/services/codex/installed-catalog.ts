@@ -367,6 +367,11 @@ async function discoverInstalledCodexExecutables(): Promise<
   return await promise
 }
 
+export async function listInstalledCodexVersions(): Promise<Array<string>> {
+  const installedExecutables = await discoverInstalledCodexExecutables()
+  return [...new Set(installedExecutables.map(({ version }) => version))]
+}
+
 async function readInstalledCodexCatalog(
   requestedVersion: string,
 ): Promise<CodexModelsResponse | null> {

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Hono } from "hono"
+import fs from "node:fs/promises"
 
 import type { ResolvedProviderConfig } from "../src/lib/config"
 import type { ModelsResponse } from "../src/services/copilot/get-models"
@@ -23,6 +24,7 @@ await mock.module("~/lib/token", () => ({
 }))
 
 const { state } = await import("../src/lib/state")
+const { PATHS } = await import("../src/lib/paths")
 const { codexClientModelsDependencies } = await import(
   "../src/services/codex/client-models"
 )
@@ -110,11 +112,16 @@ const createCodexCatalog = () => ({
       max_context_window: 372_000,
       auto_compact_token_limit: null,
       effective_context_window_percent: 95,
+      display_name: "GPT-5.6-Sol",
+      input_modalities: ["text", "image"],
       supported_reasoning_levels: [
         { effort: "low", description: "Low" },
         { effort: "max", description: "Max" },
         { effort: "ultra", description: "Ultra" },
       ],
+      shell_type: "shell_command",
+      supported_in_api: true,
+      visibility: "list",
       tool_mode: "code_mode_only",
       multi_agent_version: "v2",
     },
@@ -331,6 +338,31 @@ describe("model routes", () => {
       ),
     ).toContain("ultra")
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("persists a successful Codex models response for the next startup", async () => {
+    await fs.rm(PATHS.CODEX_MODEL_CATALOG_PATH, { force: true })
+    state.models = createGpt56CopilotModels()
+
+    const response = await createApp().request(
+      "/v1/models?client_version=0.144.1",
+      {
+        headers: {
+          "user-agent": "codex-tui/0.144.1",
+        },
+      },
+    )
+    const responseBody = (await response.json()) as { models: Array<unknown> }
+
+    expect(response.status).toBe(200)
+    const persisted = JSON.parse(
+      await fs.readFile(PATHS.CODEX_MODEL_CATALOG_PATH, "utf8"),
+    ) as {
+      _copilot_api: { client_version: string }
+      models: Array<unknown>
+    }
+    expect(persisted.models).toEqual(responseBody.models)
+    expect(persisted._copilot_api.client_version).toBe("0.144.1")
   })
 
   test("uses the Codex user-agent version when client_version is absent", async () => {

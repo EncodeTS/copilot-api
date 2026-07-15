@@ -343,6 +343,23 @@ Use `pwsh.exe` instead of `powershell.exe` if you specifically want PowerShell 7
 > [!NOTE]
 > This configuration is specific to Codex and the GitHub Copilot provider. `name` must be set to `"OpenAI"`. The command-backed auth is intentional: current Codex versions refresh a custom provider's `/models` endpoint only for command auth (`/v1/models` when the configured base URL includes `/v1`). It prints `GITHUB_COPILOT_API_KEY` when set, or the placeholder `dummy` for a gateway without API-key protection. Command auth is mutually exclusive with `env_key`, `experimental_bearer_token`, and `requires_openai_auth`; remove those fields instead of combining auth methods. Do not hardcode `model_context_window` or `model_auto_compact_token_limit`: the gateway reads the bundled catalog from the matching local Codex version before overlaying the live Copilot context limits. If the matching Codex executable cannot be found, the gateway returns an empty remote catalog so Codex safely keeps its own bundled metadata. Set `COPILOT_API_CODEX_CLI_PATH` only when the executable is outside the standard locations.
 
+To prevent a resumed Codex task from briefly using bundled fallback limits
+before the custom provider's first `/models` refresh, the gateway maintains a
+validated last-known-good Codex startup catalog at
+`~/.local/share/copilot-api/codex-model-catalog.json`. After the file has been
+generated once, add its absolute path as a top-level Codex setting and restart
+Codex:
+
+```toml
+model_catalog_json = "C:/Users/<username>/.local/share/copilot-api/codex-model-catalog.json"
+```
+
+Use the corresponding absolute path on macOS/Linux or under a custom
+`COPILOT_API_HOME`. The gateway updates the file atomically but does not edit
+`~/.codex/config.toml`; Codex reads `model_catalog_json` only at startup. The
+local catalog remains authoritative for that Codex process, so live model
+changes written by the gateway take effect after the next Codex restart.
+
 ## GPT Tool Search
 
 For GPT Responses models such as `gpt-5.4+`, this AI gateway can expose Responses `tool_search` through a small MCP bridge. The same bridge can be used by Claude Code and opencode, as long as the client loads MCP servers and sends Anthropic Messages traffic through this gateway.

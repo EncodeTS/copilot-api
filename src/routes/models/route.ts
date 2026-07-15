@@ -9,11 +9,11 @@ import { resolveProviderConfig } from "~/lib/provider-resolver"
 import { state } from "~/lib/state"
 import type { Model } from "~/services/copilot/get-models"
 import {
-  createCodexModelsResponse,
   getCodexClientVersion,
   isCodexClientUserAgent,
 } from "~/services/codex/client-models"
 import type { CodexModelsResponse } from "~/services/codex/installed-catalog"
+import { codexStartupCatalogManager } from "~/services/codex/startup-catalog"
 import {
   forwardCodexModels,
   getModels as getCodexModels,
@@ -199,8 +199,9 @@ modelRoutes.get("/", async (c) => {
         )
       }
 
-      const models = await createCodexModelsResponse(
-        getCodexClientVersion(c.req.url, userAgent),
+      const clientVersion = getCodexClientVersion(c.req.url, userAgent)
+      const models = await codexStartupCatalogManager.createResponse(
+        clientVersion,
         state.models?.data ?? [],
       )
       return createCodexCatalogHttpResponse(

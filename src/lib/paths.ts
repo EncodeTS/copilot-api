@@ -19,12 +19,16 @@ const REASONING_RECOVERY_PATH = path.join(
   APP_DIR,
   "reasoning-recovery-cache.json",
 )
+const CODEX_MODEL_CATALOG_PATH =
+  process.env.COPILOT_API_CODEX_MODEL_CATALOG_PATH?.trim()
+  || path.join(APP_DIR, "codex-model-catalog.json")
 
 export const PATHS = {
   APP_DIR,
   GITHUB_TOKEN_PATH,
   CODEX_CREDENTIAL_PATH,
   CONFIG_PATH,
+  CODEX_MODEL_CATALOG_PATH,
   REASONING_RECOVERY_PATH,
 }
 
