@@ -3,7 +3,7 @@
     "tool_search": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@jeffreycao/copilot-api@latest", "mcp"],
+      "args": ["-y", "@encodets/copilot-api@rc", "mcp"],
       "alwaysLoad": true
     }
   }
