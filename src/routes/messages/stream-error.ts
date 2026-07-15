@@ -1,20 +1,47 @@
 import type { ConsolaInstance } from "consola"
 import type { SSEStreamingApi } from "hono/streaming"
 
-import { buildErrorEvent } from "./responses-stream-translation"
+import {
+  reportStreamTermination,
+  type StreamFlow,
+  type StreamLifecycleDiagnostics,
+} from "~/lib/stream-lifecycle"
 
-export type StreamFlow = "chat_completions" | "messages" | "responses"
+import { buildErrorEvent } from "./responses-stream-translation"
 
 export const emitAnthropicStreamError = async (
   stream: SSEStreamingApi,
   logger: ConsolaInstance,
-  ctx: { error: unknown; flow: StreamFlow },
+  ctx: {
+    diagnostics?: StreamLifecycleDiagnostics
+    error: unknown
+    flow: StreamFlow
+    signal?: AbortSignal
+  },
 ): Promise<void> => {
-  const message = formatStreamErrorMessage(ctx.error)
-  logger.error(`Upstream ${ctx.flow} stream failed mid-flight: ${message}`)
+  const lifecycleError = reportStreamTermination({
+    diagnostics: ctx.diagnostics ?? {
+      elapsedMs: 0,
+      eventCount: 0,
+      flow: ctx.flow,
+      lastEventType: null,
+      retryCount: 0,
+      terminalSeen: false,
+      transport: "unknown",
+    },
+    error: ctx.error,
+    signal: ctx.signal,
+  })
+  if (
+    ctx.signal?.aborted
+    || lifecycleError.kind === "client_abort"
+    || lifecycleError.kind === "normal_terminal"
+  ) {
+    return
+  }
 
   const errorEvent = buildErrorEvent(
-    `Upstream stream ended unexpectedly: ${message}`,
+    `Upstream stream ended unexpectedly: ${lifecycleError.message}`,
   )
 
   try {
@@ -29,6 +56,3 @@ export const emitAnthropicStreamError = async (
     )
   }
 }
-
-const formatStreamErrorMessage = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error)

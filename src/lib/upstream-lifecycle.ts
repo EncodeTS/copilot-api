@@ -83,6 +83,14 @@ export interface UpstreamHttpLifecycleOptions {
   timeouts?: UpstreamLifecycleTimeouts
 }
 
+const unrefTimer = (timer: ReturnType<typeof setTimeout>): void => {
+  timer.unref?.()
+}
+
+export const upstreamLifecycleDependencies = {
+  unrefTimer,
+}
+
 export const fetchWithUpstreamLifecycle = async (
   input: string | URL | Request,
   init: RequestInit,
@@ -99,7 +107,7 @@ export const fetchWithUpstreamLifecycle = async (
       new UpstreamLifecycleTimeoutError("HTTP headers", headersTimeoutMs),
     )
   }, headersTimeoutMs)
-  timer.unref?.()
+  upstreamLifecycleDependencies.unrefTimer(timer)
   const signals = [
     requestController.signal,
     init.signal,
@@ -216,7 +224,7 @@ const readWithLifecycle = async (
       options.requestController.abort(error)
       settle(() => reject(error))
     }, options.timeoutMs)
-    timer.unref?.()
+    upstreamLifecycleDependencies.unrefTimer(timer)
 
     const cleanup = () => {
       clearTimeout(timer)

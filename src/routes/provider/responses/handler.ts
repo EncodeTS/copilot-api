@@ -13,6 +13,7 @@ import { HTTPError } from "~/lib/error"
 import { createHandlerLogger, debugJson, debugJsonTail } from "~/lib/logger"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
 import { requestContext } from "~/lib/request-context"
+import type { StreamTransport } from "~/lib/stream-lifecycle"
 import {
   createProviderTokenUsageRecorder,
   normalizeResponsesUsage,
@@ -30,7 +31,10 @@ import type {
   ResponseStreamEvent,
   ResponsesStream,
 } from "~/services/copilot/create-responses"
-import { forwardCodexResponses } from "~/services/codex/create-responses"
+import {
+  forwardCodexResponses,
+  resolveCodexResponsesTransport,
+} from "~/services/codex/create-responses"
 import { getModels as getCodexModels } from "~/services/codex/get-models"
 import {
   createProviderProxyResponse,
@@ -99,11 +103,12 @@ export async function handleProviderResponsesForProvider(
   const modelConfig = providerConfig.models?.[payload.model]
 
   if (providerConfig.name === "codex") {
+    const transport = resolveCodexResponsesTransport()
     const upstreamResponse = await forwardCodexResponses(
       payload,
       c.req.raw.headers,
       providerConfig.baseUrl,
-      { signal: c.req.raw.signal },
+      { signal: c.req.raw.signal, transport },
     )
     const recordUsage = createProviderResponsesUsageRecorder(
       payload,
@@ -117,6 +122,7 @@ export async function handleProviderResponsesForProvider(
         normalizeCodex: true,
         provider,
         recordUsage,
+        transport,
       })
     }
 
@@ -151,6 +157,7 @@ export async function handleProviderResponsesForProvider(
       normalizeCodex: false,
       provider,
       recordUsage,
+      transport: "http",
     })
   }
 
@@ -188,6 +195,7 @@ const streamProviderResponses = async (
     normalizeCodex: boolean
     provider: string
     recordUsage: (usage: UsageTokens) => void
+    transport: StreamTransport
   },
 ): Promise<Response> => {
   const iterator = upstreamResponse[Symbol.asyncIterator]()
@@ -222,7 +230,10 @@ const streamProviderResponses = async (
   }
 
   return streamSSE(c, async (stream) => {
+    const streamStartedAt = Date.now()
     let usage: UsageTokens = {}
+    let eventCount = 0
+    let lastEventType: string | null = null
     let terminalSeen = false
 
     const writeChunk = async (chunk: typeof firstChunk): Promise<boolean> => {
@@ -258,6 +269,8 @@ const streamProviderResponses = async (
         data: responseChunk.data ?? "",
         event: responseChunk.event,
       })
+      eventCount += 1
+      lastEventType = event?.type ?? responseChunk.event ?? lastEventType
 
       return isTerminalProviderResponsesEvent(event)
     }
@@ -281,11 +294,34 @@ const streamProviderResponses = async (
           stream,
           logger,
           new Error("Provider Responses stream ended without a terminal event"),
+          {
+            diagnostics: {
+              elapsedMs: Date.now() - streamStartedAt,
+              eventCount,
+              flow: "provider_responses",
+              lastEventType,
+              retryCount: 0,
+              terminalSeen,
+              transport: options.transport,
+            },
+            signal: c.req.raw.signal,
+          },
         )
       }
     } catch (error) {
       if (!terminalSeen) {
-        await emitResponsesStreamError(stream, logger, error)
+        await emitResponsesStreamError(stream, logger, error, {
+          diagnostics: {
+            elapsedMs: Date.now() - streamStartedAt,
+            eventCount,
+            flow: "provider_responses",
+            lastEventType,
+            retryCount: 0,
+            terminalSeen,
+            transport: options.transport,
+          },
+          signal: c.req.raw.signal,
+        })
       }
     } finally {
       options.recordUsage(usage)

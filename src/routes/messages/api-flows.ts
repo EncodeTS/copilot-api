@@ -22,7 +22,6 @@ import {
 } from "~/lib/token-usage"
 import { parseUserIdMetadata } from "~/lib/utils"
 import {
-  buildErrorEvent,
   createResponsesStreamState,
   translateResponsesStreamEvent,
 } from "~/routes/messages/responses-stream-translation"
@@ -181,7 +180,10 @@ export const handleWithChatCompletions = async (
 
   logger.debug("Streaming response from Copilot")
   return streamSSE(c, async (stream) => {
+    const streamStartedAt = Date.now()
     let usage: UsageTokens = {}
+    let eventCount = 0
+    let lastEventType: string | null = null
     let terminalSeen = false
     let streamFailed = false
     const streamState: AnthropicStreamState = {
@@ -206,13 +208,22 @@ export const handleWithChatCompletions = async (
 
         const chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
         if (chunk.choices.some((choice) => choice.finish_reason === "error")) {
-          terminalSeen = true
           streamFailed = true
           await emitAnthropicStreamError(stream, logger, {
+            diagnostics: {
+              elapsedMs: Date.now() - streamStartedAt,
+              eventCount,
+              flow: "chat_completions",
+              lastEventType,
+              retryCount: 0,
+              terminalSeen,
+              transport: "http",
+            },
             error: new Error(
               "Chat Completions upstream ended with finish_reason=error",
             ),
             flow: "chat_completions",
+            signal,
           })
           break
         }
@@ -236,15 +247,27 @@ export const handleWithChatCompletions = async (
             event: event.type,
             data: eventData,
           })
+          eventCount += 1
+          lastEventType = event.type
         }
       }
 
-      if (!terminalSeen) {
+      if (!terminalSeen && !streamFailed) {
         await emitAnthropicStreamError(stream, logger, {
+          diagnostics: {
+            elapsedMs: Date.now() - streamStartedAt,
+            eventCount,
+            flow: "chat_completions",
+            lastEventType,
+            retryCount: 0,
+            terminalSeen,
+            transport: "http",
+          },
           error: new Error(
             "Chat Completions stream ended without a terminal event",
           ),
           flow: "chat_completions",
+          signal,
         })
       } else if (!streamFailed) {
         for (const event of flushPendingAnthropicStreamEvents(streamState)) {
@@ -254,12 +277,24 @@ export const handleWithChatCompletions = async (
             event: event.type,
             data: eventData,
           })
+          eventCount += 1
+          lastEventType = event.type
         }
       }
     } catch (error) {
       await emitAnthropicStreamError(stream, logger, {
+        diagnostics: {
+          elapsedMs: Date.now() - streamStartedAt,
+          eventCount,
+          flow: "chat_completions",
+          lastEventType,
+          retryCount: 0,
+          terminalSeen,
+          transport: "http",
+        },
         error,
         flow: "chat_completions",
+        signal,
       })
     }
 
@@ -335,13 +370,18 @@ export const handleWithResponsesApi = async (
         emitThinking: anthropicPayload.thinking?.type !== "disabled",
         toolSearchName: resolveBridgeToolSearchName(anthropicPayload.tools),
       })
+      const streamStartedAt = Date.now()
       let usage: UsageTokens = {}
+      let eventCount = 0
+      let lastEventType: string | null = null
 
       try {
         for await (const chunk of response) {
           const eventName = chunk.event
           if (eventName === "ping") {
             await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
+            eventCount += 1
+            lastEventType = "ping"
             continue
           }
 
@@ -353,6 +393,7 @@ export const handleWithResponsesApi = async (
           debugLazy(logger, () => ["Responses raw stream event:", data])
 
           const responseEvent = JSON.parse(data) as ResponseStreamEvent
+          lastEventType = responseEvent.type
           if (
             responseEvent.type === "response.completed"
             || responseEvent.type === "response.failed"
@@ -377,6 +418,7 @@ export const handleWithResponsesApi = async (
               event: event.type,
               data: eventData,
             })
+            eventCount += 1
           }
 
           if (streamState.messageCompleted) {
@@ -386,23 +428,37 @@ export const handleWithResponsesApi = async (
         }
       } catch (error) {
         await emitAnthropicStreamError(stream, logger, {
+          diagnostics: {
+            elapsedMs: Date.now() - streamStartedAt,
+            eventCount,
+            flow: "responses",
+            lastEventType,
+            retryCount: 0,
+            terminalSeen: streamState.messageCompleted,
+            transport,
+          },
           error,
           flow: "responses",
+          signal: requestOptions.signal,
         })
         recordUsage(usage)
         return
       }
 
-      if (!streamState.messageCompleted) {
-        logger.warn(
-          "Responses stream ended without completion; sending error event",
-        )
-        const errorEvent = buildErrorEvent(
-          "Responses stream ended without completion",
-        )
-        await stream.writeSSE({
-          event: errorEvent.type,
-          data: JSON.stringify(errorEvent),
+      if (!streamState.messageCompleted && !requestOptions.signal?.aborted) {
+        await emitAnthropicStreamError(stream, logger, {
+          diagnostics: {
+            elapsedMs: Date.now() - streamStartedAt,
+            eventCount,
+            flow: "responses",
+            lastEventType,
+            retryCount: 0,
+            terminalSeen: false,
+            transport,
+          },
+          error: new Error("Responses stream ended without completion"),
+          flow: "responses",
+          signal: requestOptions.signal,
         })
       }
 
@@ -475,7 +531,10 @@ export const handleWithMessagesApi = async (
   if (isAsyncIterable(response)) {
     logger.debug("Streaming response from Copilot (Messages API)")
     return streamSSE(c, async (stream) => {
+      const streamStartedAt = Date.now()
       let usage: UsageTokens = {}
+      let eventCount = 0
+      let lastEventType: string | null = null
       let terminalSeen = false
 
       try {
@@ -507,18 +566,40 @@ export const handleWithMessagesApi = async (
             event: eventName,
             data,
           })
+          eventCount += 1
+          lastEventType = parsedEvent?.type ?? eventName ?? lastEventType
         }
 
         if (!terminalSeen) {
           await emitAnthropicStreamError(stream, logger, {
+            diagnostics: {
+              elapsedMs: Date.now() - streamStartedAt,
+              eventCount,
+              flow: "messages",
+              lastEventType,
+              retryCount: 0,
+              terminalSeen,
+              transport: "http",
+            },
             error: new Error("Messages stream ended without a terminal event"),
             flow: "messages",
+            signal,
           })
         }
       } catch (error) {
         await emitAnthropicStreamError(stream, logger, {
+          diagnostics: {
+            elapsedMs: Date.now() - streamStartedAt,
+            eventCount,
+            flow: "messages",
+            lastEventType,
+            retryCount: 0,
+            terminalSeen,
+            transport: "http",
+          },
           error,
           flow: "messages",
+          signal,
         })
       }
 

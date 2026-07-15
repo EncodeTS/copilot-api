@@ -180,9 +180,14 @@ await mock.module("undici", () => ({
 }))
 
 const { state } = await import("../src/lib/state")
-const { createResponses } = await import(
+const { createResponses: createResponsesImpl } = await import(
   "../src/services/copilot/create-responses"
 )
+const createResponses: typeof createResponsesImpl = (payload, options) =>
+  createResponsesImpl(payload, {
+    ...options,
+    fetcher: globalThis.fetch,
+  })
 const { responsesReasoningRecoveryRegistry } = await import(
   "../src/services/copilot/responses-reasoning-recovery-registry"
 )
@@ -402,6 +407,58 @@ test("Responses websocket falls back to HTTP when opening fails before send", as
   expect(chunks[0]?.data).toContain('"id":"resp-http-fallback"')
 })
 
+test("Responses websocket falls back to HTTP when it closes before the first event", async () => {
+  MockWebSocket.autoComplete = false
+  const fetchMock = mock(() =>
+    Promise.resolve(
+      new Response(
+        [
+          "event: response.completed",
+          `data: ${JSON.stringify({
+            response: createResponsesResult(
+              "gpt-test",
+              "resp-http-zero-event-fallback",
+            ),
+            sequence_number: 1,
+            type: "response.completed",
+          })}`,
+          "",
+          "",
+        ].join("\n"),
+        {
+          headers: { "content-type": "text/event-stream" },
+        },
+      ),
+    ),
+  )
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const response = await createResponses(
+    {
+      input: "hello",
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      allowHttpFallback: true,
+      initiator: "user",
+      requestId: "zero-event-fallback",
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  MockWebSocket.instances[0]?.close()
+  const chunks = await chunksPromise
+
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("response.completed")
+  expect(chunks[0]?.data).toContain('"id":"resp-http-zero-event-fallback"')
+})
+
 test("Responses websocket recovers incompatible reasoning history over HTTP", async () => {
   MockWebSocket.autoComplete = false
   const warnMock = Object.assign(
@@ -577,6 +634,384 @@ test("Responses websocket recovers incompatible reasoning history over HTTP", as
   expect(chunks).toHaveLength(1)
   expect(chunks[0]?.event).toBe("response.completed")
   expect(chunks[0]?.data).toContain('"id":"resp-reasoning-recovery"')
+})
+
+test("Responses websocket recovery retries an HTTP body reset with the recovery payload", async () => {
+  MockWebSocket.autoComplete = false
+  let attempt = 0
+  const reasoningByRequest: Array<Array<string>> = []
+  const fetchMock = mock((_input: unknown, init?: RequestInit) => {
+    attempt += 1
+    reasoningByRequest.push(
+      parseRequestBody(init).input.flatMap((item) =>
+        item.type === "reasoning" ? [String(item.encrypted_content)] : [],
+      ),
+    )
+    if (attempt === 1) {
+      const socketError = Object.assign(new Error("socket closed"), {
+        code: "UND_ERR_SOCKET",
+      })
+      return Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.error(
+                new TypeError("terminated", { cause: socketError }),
+              )
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      )
+    }
+    return Promise.resolve(
+      new Response(
+        [
+          "event: response.completed",
+          `data: ${JSON.stringify({
+            response: createResponsesResult(
+              "gpt-test",
+              "resp-recovery-body-reset",
+            ),
+            sequence_number: 1,
+            type: "response.completed",
+          })}`,
+          "",
+          "",
+        ].join("\n"),
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+    )
+  })
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const response = await createResponses(
+    {
+      input: reasoningHistoryInput(),
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      allowHttpFallback: true,
+      initiator: "user",
+      requestId: "reasoning-recovery-body-reset",
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  MockWebSocket.instances[0]?.emitMessage(
+    JSON.stringify({
+      error: {
+        code: "bad_request",
+        message: "input item does not belong to this connection",
+      },
+      type: "error",
+    }),
+  )
+
+  const chunks = await chunksPromise
+
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(reasoningByRequest).toEqual([[], []])
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("response.completed")
+  expect(chunks[0]?.data).toContain('"id":"resp-recovery-body-reset"')
+})
+
+test("Responses HTTP retries once when the stream ends before the first event", async () => {
+  let attempt = 0
+  const fetchMock = mock(() => {
+    attempt += 1
+    if (attempt === 1) {
+      return Promise.resolve(
+        new Response("", {
+          headers: { "content-type": "text/event-stream" },
+        }),
+      )
+    }
+    return Promise.resolve(
+      new Response(
+        [
+          "event: response.completed",
+          `data: ${JSON.stringify({
+            response: createResponsesResult("gpt-test", "resp-http-retry"),
+            sequence_number: 1,
+            type: "response.completed",
+          })}`,
+          "",
+          "",
+        ].join("\n"),
+        {
+          headers: { "content-type": "text/event-stream" },
+        },
+      ),
+    )
+  })
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const response = await createResponses(
+    {
+      input: "hello",
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      initiator: "user",
+      requestId: "http-zero-event-retry",
+      transport: "http",
+      vision: false,
+    },
+  )
+  const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
+
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("response.completed")
+  expect(chunks[0]?.data).toContain('"id":"resp-http-retry"')
+})
+
+test("Responses HTTP retries once when the connection resets before the first event", async () => {
+  let attempt = 0
+  const fetchMock = mock(() => {
+    attempt += 1
+    if (attempt === 1) {
+      const socketError = Object.assign(new Error("socket closed"), {
+        code: "UND_ERR_SOCKET",
+      })
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.error(new TypeError("terminated", { cause: socketError }))
+        },
+      })
+      return Promise.resolve(
+        new Response(body, {
+          headers: { "content-type": "text/event-stream" },
+        }),
+      )
+    }
+    return Promise.resolve(
+      new Response(
+        [
+          "event: response.completed",
+          `data: ${JSON.stringify({
+            response: createResponsesResult(
+              "gpt-test",
+              "resp-http-reset-retry",
+            ),
+            sequence_number: 1,
+            type: "response.completed",
+          })}`,
+          "",
+          "",
+        ].join("\n"),
+        {
+          headers: { "content-type": "text/event-stream" },
+        },
+      ),
+    )
+  })
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const response = await createResponses(
+    {
+      input: "hello",
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      initiator: "user",
+      requestId: "http-reset-retry",
+      transport: "http",
+      vision: false,
+    },
+  )
+  const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
+
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("response.completed")
+  expect(chunks[0]?.data).toContain('"id":"resp-http-reset-retry"')
+})
+
+test("Responses HTTP retries once when the connection resets before headers", async () => {
+  let attempt = 0
+  const fetchMock = mock(() => {
+    attempt += 1
+    if (attempt === 1) {
+      const socketError = Object.assign(new Error("socket closed"), {
+        code: "UND_ERR_SOCKET",
+      })
+      return Promise.reject(
+        new TypeError("fetch failed", { cause: socketError }),
+      )
+    }
+    return Promise.resolve(
+      new Response(
+        [
+          "event: response.completed",
+          `data: ${JSON.stringify({
+            response: createResponsesResult(
+              "gpt-test",
+              "resp-http-headers-retry",
+            ),
+            sequence_number: 1,
+            type: "response.completed",
+          })}`,
+          "",
+          "",
+        ].join("\n"),
+        {
+          headers: { "content-type": "text/event-stream" },
+        },
+      ),
+    )
+  })
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const response = await createResponses(
+    {
+      input: "hello",
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      initiator: "user",
+      requestId: "http-headers-retry",
+      transport: "http",
+      vision: false,
+    },
+  )
+  const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
+
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("response.completed")
+  expect(chunks[0]?.data).toContain('"id":"resp-http-headers-retry"')
+})
+
+test("Responses HTTP emits a protocol error after two pre-header resets", async () => {
+  const fetchMock = mock(() => {
+    const socketError = Object.assign(new Error("socket closed"), {
+      code: "UND_ERR_SOCKET",
+    })
+    return Promise.reject(new TypeError("fetch failed", { cause: socketError }))
+  })
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const response = await createResponses(
+    { input: "hello", model: "gpt-test", stream: true },
+    {
+      initiator: "user",
+      requestId: "http-final-headers-reset",
+      transport: "http",
+      vision: false,
+    },
+  )
+  const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
+
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("error")
+  expect(chunks[0]?.data).toContain("fetch failed")
+})
+
+test("Responses HTTP shares one retry budget across headers and body", async () => {
+  let attempt = 0
+  const fetchMock = mock(() => {
+    attempt += 1
+    if (attempt === 1) {
+      const socketError = Object.assign(new Error("socket closed"), {
+        code: "UND_ERR_SOCKET",
+      })
+      return Promise.reject(
+        new TypeError("fetch failed", { cause: socketError }),
+      )
+    }
+    return Promise.resolve(
+      new Response("", {
+        headers: { "content-type": "text/event-stream" },
+      }),
+    )
+  })
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const response = await createResponses(
+    {
+      input: "hello",
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      initiator: "user",
+      requestId: "http-shared-retry-budget",
+      transport: "http",
+      vision: false,
+    },
+  )
+  const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
+
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("error")
+  expect(chunks[0]?.data).toContain(
+    '"message":"http stream ended without a terminal event"',
+  )
+})
+
+test("Responses HTTP does not retry after forwarding the first event", async () => {
+  const fetchMock = mock(() =>
+    Promise.resolve(
+      new Response(
+        [
+          "event: response.created",
+          `data: ${JSON.stringify({
+            response: createResponsesResult("gpt-test", "resp-http-partial"),
+            sequence_number: 1,
+            type: "response.created",
+          })}`,
+          "",
+          "",
+        ].join("\n"),
+        {
+          headers: { "content-type": "text/event-stream" },
+        },
+      ),
+    ),
+  )
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const response = await createResponses(
+    {
+      input: "hello",
+      model: "gpt-test",
+      stream: true,
+    },
+    {
+      initiator: "user",
+      requestId: "http-partial-no-retry",
+      transport: "http",
+      vision: false,
+    },
+  )
+  const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
+
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(chunks).toHaveLength(2)
+  expect(chunks[0]?.event).toBe("response.created")
+  expect(chunks[1]?.event).toBe("error")
+  expect(chunks[1]?.data).toContain(
+    '"message":"http stream ended without a terminal event"',
+  )
 })
 
 test("Responses HTTP recovers incompatible reasoning history once", async () => {
@@ -1034,28 +1469,9 @@ test("Responses HTTP preserves aborts while reading an error body", async () => 
 
   let caught: unknown
   try {
-    await createResponses(
-      {
-        input: [
-          {
-            encrypted_content: "old-reasoning",
-            type: "reasoning",
-          },
-          {
-            content: [{ text: "continue", type: "input_text" }],
-            role: "user",
-            type: "message",
-          },
-        ],
-        model: "gpt-test",
-        stream: true,
-      },
-      {
-        initiator: "user",
-        requestId: "http-recovery-aborted-error-body",
-        transport: "http",
-        vision: false,
-      },
+    await createHttpTestResponse(
+      reasoningHistoryInput(),
+      "http-recovery-aborted-error-body",
     )
   } catch (error) {
     caught = error
@@ -1084,28 +1500,9 @@ test("Responses HTTP preserves timeouts while reading an error body", async () =
 
   let caught: unknown
   try {
-    await createResponses(
-      {
-        input: [
-          {
-            encrypted_content: "old-reasoning",
-            type: "reasoning",
-          },
-          {
-            content: [{ text: "continue", type: "input_text" }],
-            role: "user",
-            type: "message",
-          },
-        ],
-        model: "gpt-test",
-        stream: true,
-      },
-      {
-        initiator: "user",
-        requestId: "http-recovery-timeout-error-body",
-        transport: "http",
-        vision: false,
-      },
+    await createHttpTestResponse(
+      reasoningHistoryInput(),
+      "http-recovery-timeout-error-body",
     )
   } catch (error) {
     caught = error
@@ -1467,10 +1864,8 @@ test("Responses websocket closes after caller aborts a partial stream", async ()
 
   expect(fetchMock).not.toHaveBeenCalled()
   expect(websocket?.readyState).toBe(MockWebSocket.CLOSED)
-  expect(chunks.at(-1)?.event).toBe("error")
-  expect(chunks.at(-1)?.data).toContain(
-    '"message":"client disconnected after partial response"',
-  )
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("response.created")
 })
 
 test("Responses websocket pool separates different request IDs", async () => {
