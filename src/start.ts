@@ -6,11 +6,14 @@ import consola from "consola"
 import { serve, type ServerHandler } from "srvx"
 import invariant from "tiny-invariant"
 
+import { registerProcessCleanup } from "~/lib/process-cleanup"
+import { responsesReasoningRecoveryRegistry } from "~/services/copilot/responses-reasoning-recovery-registry"
+
 import { runProviderSetup } from "./auth"
 import { listEnabledProviders, mergeConfigWithDefaults } from "./lib/config"
 import { readGitHubToken } from "./lib/credential-store"
 import { initOpencodeVersion } from "./lib/opencode"
-import { ensurePaths } from "./lib/paths"
+import { ensurePaths, PATHS } from "./lib/paths"
 import { initProxyFromEnv } from "./lib/proxy"
 import { generateEnvScript } from "./lib/shell"
 import { state } from "./lib/state"
@@ -167,6 +170,10 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   state.showToken = options.showToken
 
   await ensurePaths()
+  await responsesReasoningRecoveryRegistry.initialize(
+    PATHS.REASONING_RECOVERY_PATH,
+  )
+  registerProcessCleanup(() => responsesReasoningRecoveryRegistry.flush())
 
   const serverUrl = `http://localhost:${options.port}`
 

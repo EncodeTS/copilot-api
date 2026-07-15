@@ -5,13 +5,21 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 interface ConfigFileShape {
+  auth?: {
+    adminApiKey?: string
+    apiKeys?: Array<string>
+  }
   builtinProviders?: Record<string, unknown>
   configSchemaVersion?: number
   contextManagement?: {
+    futureMode?: string
     messages?: boolean
     responses?: boolean
   }
   extraPrompts?: Record<string, string>
+  futureSetting?: {
+    enabled?: boolean
+  }
   modelReasoningEfforts?: Record<string, string>
   modelResponsesApiCompactThresholds?: Record<string, number>
   migrationState?: {
@@ -29,6 +37,7 @@ interface ConfigFileShape {
   responsesPayloadSendHardLimitBytes?: number
   responsesApiContextManagementModels?: Array<string>
   useFunctionApplyPatch?: boolean
+  useResponsesApiWebSocket?: boolean
   providers?: Record<
     string,
     {
@@ -105,6 +114,87 @@ afterEach(() => {
 })
 
 describe("builtin provider config", () => {
+  test("persists credentials and overrides without materializing defaults", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = path.join(tempDir, "config.json")
+
+    runScript(
+      tempDir,
+      'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
+    )
+
+    const persisted = readConfigFile(configPath)
+    expect(persisted.configSchemaVersion).toBe(2)
+    expect(persisted.auth?.adminApiKey).toMatch(/^[a-f0-9]{64}$/)
+    expect(persisted.auth?.apiKeys).toBeUndefined()
+    expect(persisted.contextManagement).toBeUndefined()
+    expect(persisted.extraPrompts).toBeUndefined()
+    expect(persisted.modelReasoningEfforts).toBeUndefined()
+    expect(persisted.responsesImageOptimization).toBeUndefined()
+    expect(persisted.responsesPayloadBudgetBytes).toBeUndefined()
+    expect(persisted.useResponsesApiWebSocket).toBeUndefined()
+  })
+
+  test("prunes materialized defaults while preserving overrides and unknown fields", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {
+      futureSetting: { enabled: true },
+      responsesImageOptimization: true,
+      responsesPayloadBudgetBytes: 31_457_280,
+      useResponsesApiWebSocket: false,
+    })
+
+    runScript(
+      tempDir,
+      'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
+    )
+
+    const persisted = readConfigFile(configPath)
+    expect(persisted.futureSetting).toEqual({ enabled: true })
+    expect(persisted.useResponsesApiWebSocket).toBe(false)
+    expect(persisted.responsesImageOptimization).toBeUndefined()
+    expect(persisted.responsesPayloadBudgetBytes).toBeUndefined()
+  })
+
+  test("preserves explicit values after sparse config migration", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {
+      configSchemaVersion: 2,
+      contextManagement: {
+        responses: false,
+      },
+    })
+
+    runScript(
+      tempDir,
+      'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
+    )
+
+    expect(readConfigFile(configPath).contextManagement).toEqual({
+      responses: false,
+    })
+  })
+
+  test("preserves unknown nested fields after sparse config migration", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {
+      configSchemaVersion: 1,
+      contextManagement: {
+        futureMode: "adaptive",
+        responses: false,
+      },
+    })
+
+    runScript(
+      tempDir,
+      'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
+    )
+
+    expect(readConfigFile(configPath).contextManagement).toEqual({
+      futureMode: "adaptive",
+    })
+  })
+
   test("does not persist builtinProviders when missing", () => {
     const tempDir = createTempConfigDir()
     const configPath = writeConfigFile(tempDir, {})
@@ -130,10 +220,7 @@ describe("builtin provider config", () => {
       messages: false,
       responses: false,
     })
-    expect(readConfigFile(configPath).contextManagement).toEqual({
-      messages: false,
-      responses: false,
-    })
+    expect(readConfigFile(configPath).contextManagement).toBeUndefined()
   })
 
   test("adds Responses image budget defaults", () => {
@@ -158,19 +245,11 @@ describe("builtin provider config", () => {
       retryBudget: 29_360_128,
       retryRequiresHttp: true,
     })
-    expect(readConfigFile(configPath)).toMatchObject({
-      responsesImageCompression: true,
-      responsesImageCompressionCacheBytes: 268_435_456,
-      responsesImageCompressionConcurrency: 8,
-      responsesImageCompressionMaxActionsPerRequest: 64,
-      responsesImageMaxInputImageBytes: 25_149_440,
-      responsesImageAllowReplacingLatestOnHardLimit: true,
-      responsesImageOptimization: true,
-      responsesImageRetryRequiresHttp: true,
-      responsesPayloadBudgetBytes: 31_457_280,
-      responsesPayloadRetryBudgetBytes: 29_360_128,
-      responsesPayloadSendHardLimitBytes: 33_538_048,
-    })
+    const persisted = readConfigFile(configPath)
+    expect(persisted.responsesImageCompression).toBeUndefined()
+    expect(persisted.responsesImageMaxInputImageBytes).toBeUndefined()
+    expect(persisted.responsesImageOptimization).toBeUndefined()
+    expect(persisted.responsesPayloadBudgetBytes).toBeUndefined()
   })
 
   test("migrates the legacy Responses image budget defaults", () => {
@@ -186,15 +265,14 @@ describe("builtin provider config", () => {
       'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
     )
 
-    expect(readConfigFile(configPath)).toMatchObject({
-      responsesImageMaxInputImageBytes: 25_149_440,
-      responsesPayloadBudgetBytes: 31_457_280,
-      responsesPayloadRetryBudgetBytes: 29_360_128,
-      responsesPayloadSendHardLimitBytes: 33_538_048,
-    })
+    const persisted = readConfigFile(configPath)
+    expect(persisted.responsesImageMaxInputImageBytes).toBeUndefined()
+    expect(persisted.responsesPayloadBudgetBytes).toBeUndefined()
+    expect(persisted.responsesPayloadRetryBudgetBytes).toBeUndefined()
+    expect(persisted.responsesPayloadSendHardLimitBytes).toBeUndefined()
   })
 
-  test("preserves custom Responses image budgets while adding the single-image limit", () => {
+  test("preserves custom image budgets without materializing the default image limit", () => {
     const tempDir = createTempConfigDir()
     const configPath = writeConfigFile(tempDir, {
       responsesPayloadBudgetBytes: 4_900_000,
@@ -208,11 +286,13 @@ describe("builtin provider config", () => {
     )
 
     expect(readConfigFile(configPath)).toMatchObject({
-      responsesImageMaxInputImageBytes: 25_149_440,
       responsesPayloadBudgetBytes: 4_900_000,
       responsesPayloadRetryBudgetBytes: 4_600_000,
       responsesPayloadSendHardLimitBytes: 5_100_000,
     })
+    expect(
+      readConfigFile(configPath).responsesImageMaxInputImageBytes,
+    ).toBeUndefined()
   })
 
   test("normalizes invalid Responses image budget config values", () => {
@@ -246,7 +326,7 @@ describe("builtin provider config", () => {
   test("allows overriding context management per endpoint", () => {
     const tempDir = createTempConfigDir()
     writeConfigFile(tempDir, {
-      configSchemaVersion: 1,
+      configSchemaVersion: 2,
       contextManagement: {
         messages: true,
         responses: true,
@@ -279,10 +359,9 @@ describe("builtin provider config", () => {
     )
 
     expect(readConfigFile(configPath)).toMatchObject({
-      configSchemaVersion: 1,
+      configSchemaVersion: 2,
       contextManagement: {
         messages: true,
-        responses: false,
       },
       migrationState: {
         contextManagementMessages: "pending_user_decision",
@@ -371,7 +450,7 @@ describe("builtin provider config", () => {
       'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
     )
 
-    expect(readConfigFile(configPath).providers).toEqual({})
+    expect(readConfigFile(configPath).providers).toBeUndefined()
   })
 
   test("isGpt56OrAbove detects gpt-5.6 and above models", () => {
@@ -671,10 +750,7 @@ describe("builtin provider config", () => {
     )
 
     const writtenConfig = readConfigFile(configPath)
-    expect(writtenConfig.extraPrompts).toBeDefined()
-    expect(Object.keys(writtenConfig.extraPrompts ?? {})).toEqual([
-      "gpt-5-mini",
-    ])
+    expect(writtenConfig.extraPrompts).toBeUndefined()
   })
 
   test("does not persist gpt-5.3+ modelReasoningEfforts in config file", () => {
@@ -686,8 +762,6 @@ describe("builtin provider config", () => {
       'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
     )
 
-    expect(readConfigFile(configPath).modelReasoningEfforts).toEqual({
-      "gpt-5-mini": "low",
-    })
+    expect(readConfigFile(configPath).modelReasoningEfforts).toBeUndefined()
   })
 })

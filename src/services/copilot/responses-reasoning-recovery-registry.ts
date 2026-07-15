@@ -1,4 +1,7 @@
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
+import fs from "node:fs/promises"
+import path from "node:path"
+import consola from "consola"
 
 import type {
   ResponseInputItem,
@@ -8,6 +11,9 @@ import type {
 const DEFAULT_MAX_SCOPES = 256
 const DEFAULT_MAX_FINGERPRINTS_PER_SCOPE = 2_048
 const DEFAULT_IDLE_TTL_MS = 24 * 60 * 60 * 1_000
+const DEFAULT_PERSISTENCE_TOUCH_INTERVAL_MS = 5 * 60 * 1_000
+const PERSISTENCE_VERSION = 1
+const SHA256_PATTERN = /^[a-f0-9]{64}$/u
 
 declare const reasoningFingerprintBrand: unique symbol
 declare const reasoningRecoveryScopeBrand: unique symbol
@@ -23,6 +29,7 @@ export type ReasoningRecoveryScope = string & {
 interface RecoveryScopeEntry {
   fingerprints: Set<ReasoningFingerprint>
   lastAccessedAt: number
+  lastPersistedAt: number
 }
 
 export interface ReasoningFilterResult {
@@ -35,6 +42,9 @@ export interface ReasoningRecoveryRegistryOptions {
   maxFingerprintsPerScope?: number
   maxScopes?: number
   now?: () => number
+  onPersistenceError?: (error: unknown) => void
+  persistencePath?: string
+  persistenceTouchIntervalMs?: number
 }
 
 export class ReasoningRecoveryRegistry {
@@ -46,17 +56,87 @@ export class ReasoningRecoveryRegistry {
   private readonly maxFingerprintsPerScope: number
   private readonly maxScopes: number
   private readonly now: () => number
+  private readonly onPersistenceError: (error: unknown) => void
+  private readonly persistenceTouchIntervalMs: number
+  private persistencePath: string | undefined
+  private persistPromise: Promise<void> = Promise.resolve()
+  private dirty = false
+  private persistenceErrorReported = false
 
   constructor({
     idleTtlMs = DEFAULT_IDLE_TTL_MS,
     maxFingerprintsPerScope = DEFAULT_MAX_FINGERPRINTS_PER_SCOPE,
     maxScopes = DEFAULT_MAX_SCOPES,
     now = Date.now,
+    onPersistenceError = () => {},
+    persistencePath,
+    persistenceTouchIntervalMs = DEFAULT_PERSISTENCE_TOUCH_INTERVAL_MS,
   }: ReasoningRecoveryRegistryOptions = {}) {
     this.idleTtlMs = idleTtlMs
     this.maxFingerprintsPerScope = maxFingerprintsPerScope
     this.maxScopes = maxScopes
     this.now = now
+    this.onPersistenceError = onPersistenceError
+    this.persistencePath = persistencePath
+    this.persistenceTouchIntervalMs = persistenceTouchIntervalMs
+  }
+
+  async initialize(persistencePath?: string): Promise<void> {
+    if (persistencePath) {
+      this.persistencePath = persistencePath
+    }
+    if (!this.persistencePath) return
+
+    try {
+      const persisted = JSON.parse(
+        await fs.readFile(this.persistencePath, "utf8"),
+      ) as unknown
+      this.restorePersistedState(persisted)
+    } catch (error) {
+      if (!isFileNotFoundError(error)) {
+        this.reportPersistenceError(error)
+      }
+    }
+  }
+
+  async flush(): Promise<void> {
+    if (!this.persistencePath || !this.dirty) {
+      await this.persistPromise
+      return
+    }
+
+    this.dirty = false
+    const persistencePath = this.persistencePath
+    const snapshot = JSON.stringify(
+      {
+        scopes: [...this.entries].map(([scope, entry]) => ({
+          fingerprints: [...entry.fingerprints],
+          lastAccessedAt: entry.lastAccessedAt,
+          scope,
+        })),
+        version: PERSISTENCE_VERSION,
+      },
+      null,
+      2,
+    )
+    const writePromise = this.persistPromise.then(async () => {
+      const directory = path.dirname(persistencePath)
+      const temporaryPath = `${persistencePath}.${process.pid}.${randomUUID()}.tmp`
+      try {
+        await fs.mkdir(directory, { recursive: true })
+        await fs.writeFile(temporaryPath, `${snapshot}\n`, {
+          encoding: "utf8",
+          mode: 0o600,
+        })
+        await fs.rename(temporaryPath, persistencePath)
+      } finally {
+        await fs.rm(temporaryPath, { force: true })
+      }
+    })
+    this.persistPromise = writePromise.catch((error: unknown) => {
+      this.reportPersistenceError(error)
+    })
+    await this.persistPromise
   }
 
   filterKnown(
@@ -75,6 +155,11 @@ export class ReasoningRecoveryRegistry {
     }
 
     this.touch(scope, entry, now)
+    if (now - entry.lastPersistedAt >= this.persistenceTouchIntervalMs) {
+      entry.lastPersistedAt = now
+      this.dirty = true
+      void this.flush()
+    }
     const filtered = input.filter((item) => {
       const fingerprint = fingerprintReasoningItem(item)
       return !fingerprint || !entry.fingerprints.has(fingerprint)
@@ -98,6 +183,7 @@ export class ReasoningRecoveryRegistry {
     const entry = this.entries.get(scope) ?? {
       fingerprints: new Set<ReasoningFingerprint>(),
       lastAccessedAt: now,
+      lastPersistedAt: now,
     }
     let added = 0
     for (const item of input) {
@@ -123,11 +209,68 @@ export class ReasoningRecoveryRegistry {
       if (oldestScope === undefined) break
       this.entries.delete(oldestScope)
     }
+    entry.lastPersistedAt = now
+    this.dirty = true
+    void this.flush()
     return added
   }
 
   clear(): void {
     this.entries.clear()
+    this.dirty = true
+    void this.flush()
+  }
+
+  private restorePersistedState(value: unknown): void {
+    if (
+      !isRecord(value)
+      || value.version !== PERSISTENCE_VERSION
+      || !Array.isArray(value.scopes)
+    ) {
+      return
+    }
+
+    const now = this.now()
+    const restored: Array<[ReasoningRecoveryScope, RecoveryScopeEntry]> = []
+    for (const candidate of value.scopes) {
+      if (
+        !isRecord(candidate)
+        || typeof candidate.scope !== "string"
+        || !SHA256_PATTERN.test(candidate.scope)
+        || typeof candidate.lastAccessedAt !== "number"
+        || !Number.isFinite(candidate.lastAccessedAt)
+        || now - candidate.lastAccessedAt >= this.idleTtlMs
+        || !Array.isArray(candidate.fingerprints)
+      ) {
+        continue
+      }
+      const fingerprints = candidate.fingerprints
+        .filter(
+          (fingerprint): fingerprint is ReasoningFingerprint =>
+            typeof fingerprint === "string" && SHA256_PATTERN.test(fingerprint),
+        )
+        .slice(-this.maxFingerprintsPerScope)
+      if (fingerprints.length === 0) continue
+      restored.push([
+        candidate.scope as ReasoningRecoveryScope,
+        {
+          fingerprints: new Set(fingerprints),
+          lastAccessedAt: candidate.lastAccessedAt,
+          lastPersistedAt: candidate.lastAccessedAt,
+        },
+      ])
+    }
+
+    this.entries.clear()
+    for (const [scope, entry] of restored.slice(-this.maxScopes)) {
+      this.entries.set(scope, entry)
+    }
+  }
+
+  private reportPersistenceError(error: unknown): void {
+    if (this.persistenceErrorReported) return
+    this.persistenceErrorReported = true
+    this.onPersistenceError(error)
   }
 
   private pruneExpired(now: number): void {
@@ -149,8 +292,15 @@ export class ReasoningRecoveryRegistry {
   }
 }
 
-export const responsesReasoningRecoveryRegistry =
-  new ReasoningRecoveryRegistry()
+export const responsesReasoningRecoveryRegistry = new ReasoningRecoveryRegistry(
+  {
+    onPersistenceError: (error) => {
+      consola.warn("responses.reasoning_history_persistence_unavailable", {
+        message: error instanceof Error ? error.message : String(error),
+      })
+    },
+  },
+)
 
 export const createReasoningRecoveryScope = ({
   agentId,
@@ -193,3 +343,8 @@ const hashValue = (value: string): string =>
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
+
+const isFileNotFoundError = (error: unknown): boolean =>
+  error instanceof Error
+  && "code" in error
+  && (error as NodeJS.ErrnoException).code === "ENOENT"

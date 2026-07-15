@@ -679,7 +679,7 @@ export const createResponses = async (
   )
   if (knownReasoning.removedCount > 0) {
     payload = { ...payload, input: knownReasoning.input }
-    consola.warn("responses.reasoning_history_prefilter", {
+    consola.debug("responses.reasoning_history_prefilter", {
       model: payload.model,
       reason: "known_incompatible_reasoning_history",
       removedReasoningItems: knownReasoning.removedCount,

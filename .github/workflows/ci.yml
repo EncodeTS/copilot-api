@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ "main", "dev" ]
+    branches: ["main", "dev"]
   pull_request:
     types: [opened, synchronize, reopened]
 
@@ -10,11 +10,12 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22.13.0"
+          package-manager-cache: false
 
       - name: Verify Node sqlite support
         run: node -e "import('node:sqlite').then(() => console.log('node:sqlite ok')).catch((error) => { console.error(error); process.exit(1) })"
@@ -41,11 +42,12 @@ jobs:
   windows-codex:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22.13.0"
+          package-manager-cache: false
 
       - uses: oven-sh/setup-bun@v2
         with:
