@@ -1,4 +1,5 @@
 import consola from "consola"
+import { setTimeout as delay } from "node:timers/promises"
 import { getProxyForUrl } from "proxy-from-env"
 import { WebSocket } from "undici"
 
@@ -20,6 +21,7 @@ export interface PooledWebSocketRequest<TPayload> {
 export interface PooledWebSocketStreamOptions<TChunk> {
   createChunk: (data: string) => TChunk
   idleTimeoutMs?: number
+  isReusableTerminalChunk?: (chunk: TChunk) => boolean
   isTerminalChunk: (chunk: TChunk) => boolean
   openErrorMessage: string
   streamErrorMessage: string
@@ -46,6 +48,7 @@ interface PooledWebSocketEntry {
 interface PooledWebSocketRequestTarget {
   entry: PooledWebSocketEntry
   pooled: boolean
+  reused: boolean
 }
 
 export type WebSocketRequestSendState =
@@ -89,7 +92,10 @@ const runPooledWebSocketRequest = async function* <TPayload, TChunk>(
   request: PooledWebSocketRequest<TPayload>,
   options: PooledWebSocketStreamOptions<TChunk>,
 ): AsyncIterable<TChunk> {
-  const { entry, pooled } = getPooledWebSocketRequestTarget(request, options)
+  const { entry, pooled, reused } = getPooledWebSocketRequestTarget(
+    request,
+    options,
+  )
   let reachedTerminal = false
   let frameSeen = false
   let sendAttempted = false
@@ -105,6 +111,7 @@ const runPooledWebSocketRequest = async function* <TPayload, TChunk>(
       request.poolKey,
       entry,
       pooled,
+      reused,
       options,
     )
     sendAttempted = true
@@ -119,6 +126,12 @@ const runPooledWebSocketRequest = async function* <TPayload, TChunk>(
       const isTerminal = options.isTerminalChunk(chunk)
       if (isTerminal) {
         reachedTerminal = true
+        if (
+          options.isReusableTerminalChunk
+          && !options.isReusableTerminalChunk(chunk)
+        ) {
+          removePooledWebSocketEntry(request.poolKey, entry)
+        }
       }
       yield chunk
 
@@ -153,6 +166,7 @@ const getPooledWebSocketRequestTarget = <TPayload, TChunk>(
     return {
       entry: createPooledWebSocketEntry(request, options),
       pooled: false,
+      reused: false,
     }
   }
 
@@ -163,6 +177,7 @@ const getPooledWebSocketRequestTarget = <TPayload, TChunk>(
     return {
       entry: existing,
       pooled: true,
+      reused: true,
     }
   }
 
@@ -171,6 +186,7 @@ const getPooledWebSocketRequestTarget = <TPayload, TChunk>(
   return {
     entry,
     pooled: true,
+    reused: false,
   }
 }
 
@@ -245,6 +261,7 @@ const getReadyPooledWebSocket = async (
   poolKey: string,
   entry: PooledWebSocketEntry,
   pooled: boolean,
+  reused: boolean,
   options?: { unavailableErrorMessage?: string },
 ): Promise<InstanceType<typeof WebSocket>> => {
   const unavailableErrorMessage =
@@ -256,6 +273,9 @@ const getReadyPooledWebSocket = async (
   }
 
   const websocket = await entry.websocketPromise
+  if (reused) {
+    await delay(0)
+  }
   if (entry.closed || (pooled && websocketPool.get(poolKey) !== entry)) {
     throw new Error(unavailableErrorMessage)
   }
