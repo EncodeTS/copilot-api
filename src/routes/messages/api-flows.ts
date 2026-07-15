@@ -95,6 +95,7 @@ export const messagesApiFlowDependencies = {
 
 export interface FlowBaseOptions {
   logger: ConsolaInstance
+  reasoningRecoverySessionId?: string
   subagentMarker?: SubagentMarker | null
   requestId: string
   sessionId?: string

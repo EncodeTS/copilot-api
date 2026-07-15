@@ -182,6 +182,9 @@ const { state } = await import("../src/lib/state")
 const { createResponses } = await import(
   "../src/services/copilot/create-responses"
 )
+const { responsesReasoningRecoveryRegistry } = await import(
+  "../src/services/copilot/responses-reasoning-recovery-registry"
+)
 
 const originalState = {
   accountType: state.accountType,
@@ -286,6 +289,7 @@ beforeEach(() => {
   state.copilotToken = "test-token"
   state.vsCodeDeviceId = "device-1"
   state.vsCodeVersion = "1.120.0"
+  responsesReasoningRecoveryRegistry.clear()
 })
 
 afterEach(() => {
@@ -303,6 +307,7 @@ afterEach(() => {
   state.copilotToken = originalState.copilotToken
   state.vsCodeDeviceId = originalState.vsCodeDeviceId
   state.vsCodeVersion = originalState.vsCodeVersion
+  responsesReasoningRecoveryRegistry.clear()
   consola.warn = originalConsolaWarn
   ;(
     globalThis as unknown as { clearTimeout: typeof clearTimeout }
@@ -650,6 +655,260 @@ test("Responses HTTP recovers incompatible reasoning history once", async () => 
   expect(chunks).toHaveLength(1)
   expect(chunks[0]?.event).toBe("response.completed")
   expect(chunks[0]?.data).toContain('"id":"resp-http-reasoning-recovery"')
+})
+
+test("Responses remembers rejected reasoning and preserves new reasoning next turn", async () => {
+  const warnMock = Object.assign(
+    mock(() => {}),
+    { raw: mock(() => {}) },
+  )
+  consola.warn = warnMock
+  const reasoningByRequest: Array<Array<string>> = []
+  const fetchMock = mock((_input: unknown, init?: RequestInit) => {
+    const body = parseRequestBody(init)
+    const reasoning = body.input
+      .filter((item) => item.type === "reasoning")
+      .map((item) => String(item.encrypted_content))
+    reasoningByRequest.push(reasoning)
+
+    if (reasoning.some((value) => value.startsWith("old-reasoning"))) {
+      return Promise.resolve(connectionOwnershipErrorResponse())
+    }
+
+    return Promise.resolve(
+      new Response(
+        [
+          "event: response.completed",
+          `data: ${JSON.stringify({
+            response: createResponsesResult(
+              "gpt-test",
+              `resp-turn-${reasoningByRequest.length}`,
+            ),
+            sequence_number: 1,
+            type: "response.completed",
+          })}`,
+          "",
+          "",
+        ].join("\n"),
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+    )
+  })
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const oldReasoning = [
+    {
+      encrypted_content: "old-reasoning-1",
+      type: "reasoning" as const,
+    },
+    {
+      encrypted_content: "old-reasoning-2",
+      type: "reasoning" as const,
+    },
+  ]
+  const options = {
+    initiator: "user" as const,
+    reasoningRecoverySessionId: "reasoning-cache-session",
+    requestId: "reasoning-cache-turn-1",
+    transport: "http" as const,
+    vision: false,
+  }
+
+  const first = await createResponses(
+    {
+      input: [...oldReasoning, userHistoryInput()],
+      model: "gpt-test",
+      stream: true,
+    },
+    options,
+  )
+  await collectStreamChunks(first as AsyncIterable<unknown>)
+
+  const second = await createResponses(
+    {
+      input: [
+        ...oldReasoning,
+        {
+          encrypted_content: "new-reasoning",
+          type: "reasoning",
+        },
+        userHistoryInput(),
+      ],
+      model: "gpt-test",
+      stream: true,
+    },
+    { ...options, requestId: "reasoning-cache-turn-2" },
+  )
+  await collectStreamChunks(second as AsyncIterable<unknown>)
+
+  expect(fetchMock).toHaveBeenCalledTimes(3)
+  expect(reasoningByRequest).toEqual([
+    ["old-reasoning-1", "old-reasoning-2"],
+    [],
+    ["new-reasoning"],
+  ])
+  expect(warnMock).toHaveBeenCalledWith(
+    "responses.reasoning_history_prefilter",
+    {
+      model: "gpt-test",
+      reason: "known_incompatible_reasoning_history",
+      removedReasoningItems: 2,
+      subagent: false,
+    },
+  )
+})
+
+test("Responses reasoning memory is isolated by session, model, and subagent", async () => {
+  const fetchMock = mock((_input: unknown, init?: RequestInit) => {
+    const body = parseRequestBody(init)
+    const hasRejectedReasoning = body.input.some(
+      (item) => item.encrypted_content === "old-reasoning",
+    )
+    if (hasRejectedReasoning) {
+      return Promise.resolve(connectionOwnershipErrorResponse())
+    }
+    return Promise.resolve(
+      new Response(
+        [
+          "event: response.completed",
+          `data: ${JSON.stringify({
+            response: createResponsesResult(String(body.model)),
+            sequence_number: 1,
+            type: "response.completed",
+          })}`,
+          "",
+          "",
+        ].join("\n"),
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+    )
+  })
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  const requestCounts: Array<number> = []
+  const run = async ({
+    agentId,
+    model = "gpt-test",
+    requestId,
+    sessionId,
+  }: {
+    agentId?: string
+    model?: string
+    requestId: string
+    sessionId: string
+  }) => {
+    const before = fetchMock.mock.calls.length
+    const response = await createResponses(
+      {
+        input: [
+          {
+            encrypted_content: "old-reasoning",
+            type: "reasoning",
+          },
+          userHistoryInput(),
+        ],
+        model,
+        stream: true,
+      },
+      {
+        initiator: "user",
+        reasoningRecoverySessionId: sessionId,
+        requestId,
+        subagentMarker:
+          agentId ?
+            {
+              agent_id: agentId,
+              agent_type: "review",
+              session_id: sessionId,
+            }
+          : null,
+        transport: "http",
+        vision: false,
+      },
+    )
+    await collectStreamChunks(response as AsyncIterable<unknown>)
+    requestCounts.push(fetchMock.mock.calls.length - before)
+  }
+
+  await run({ requestId: "base-learn", sessionId: "session-a" })
+  await run({ requestId: "base-reuse", sessionId: "session-a" })
+  await run({ requestId: "other-session", sessionId: "session-b" })
+  await run({
+    model: "gpt-other",
+    requestId: "other-model",
+    sessionId: "session-a",
+  })
+  await run({
+    agentId: "agent-a",
+    requestId: "other-subagent",
+    sessionId: "session-a",
+  })
+
+  expect(requestCounts).toEqual([2, 1, 2, 2, 2])
+})
+
+test("Responses without a stable session repeats stateless recovery", async () => {
+  const reasoningByRequest: Array<Array<string>> = []
+  const fetchMock = mock((_input: unknown, init?: RequestInit) => {
+    const body = parseRequestBody(init)
+    const reasoning = body.input
+      .filter((item) => item.type === "reasoning")
+      .map((item) => String(item.encrypted_content))
+    reasoningByRequest.push(reasoning)
+    if (reasoning.some((value) => value === "old-reasoning")) {
+      return Promise.resolve(connectionOwnershipErrorResponse())
+    }
+    return Promise.resolve(
+      new Response(
+        [
+          "event: response.completed",
+          `data: ${JSON.stringify({
+            response: createResponsesResult("gpt-test"),
+            sequence_number: 1,
+            type: "response.completed",
+          })}`,
+          "",
+          "",
+        ].join("\n"),
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+    )
+  })
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+
+  for (const requestId of ["stateless-turn-1", "stateless-turn-2"]) {
+    const response = await createResponses(
+      {
+        input: [
+          {
+            encrypted_content: "old-reasoning",
+            type: "reasoning",
+          },
+          userHistoryInput(),
+        ],
+        model: "gpt-test",
+        stream: true,
+      },
+      {
+        initiator: "user",
+        requestId,
+        transport: "http",
+        vision: false,
+      },
+    )
+    await collectStreamChunks(response as AsyncIterable<unknown>)
+  }
+
+  expect(fetchMock).toHaveBeenCalledTimes(4)
+  expect(reasoningByRequest).toEqual([
+    ["old-reasoning"],
+    [],
+    ["old-reasoning"],
+    [],
+  ])
 })
 
 test("Responses HTTP reasoning recovery runs at most once", async () => {
