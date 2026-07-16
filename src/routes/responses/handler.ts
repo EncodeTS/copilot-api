@@ -7,9 +7,8 @@ import {
   resolveMappedModel,
 } from "~/lib/config"
 import { createHandlerLogger, debugJson, debugJsonTail } from "~/lib/logger"
-import { parseProviderModelAlias } from "~/lib/provider-model"
 import { getResponsesEndpointCapabilities } from "~/lib/responses-capabilities"
-import { handleProviderResponsesForProvider } from "~/routes/provider/responses/handler"
+import { routeProviderModelAlias } from "~/routes/provider/model-router"
 import { state } from "~/lib/state"
 import {
   createCopilotTokenUsageRecorder,
@@ -54,14 +53,11 @@ export const handleResponses = async (c: Context) => {
     )
   }
 
-  const providerModelAlias = parseProviderModelAlias(payload.model)
-  if (providerModelAlias) {
-    payload.model = providerModelAlias.model
-    return await handleProviderResponsesForProvider(c, {
-      payload,
-      provider: providerModelAlias.provider,
-    })
-  }
+  const providerResponse = await routeProviderModelAlias(c, {
+    endpoint: "responses",
+    payload,
+  })
+  if (providerResponse) return providerResponse
 
   const unsupportedIntent = getUnsupportedCopilotResponsesIntent(payload)
   if (unsupportedIntent) {

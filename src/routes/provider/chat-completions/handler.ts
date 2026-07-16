@@ -3,11 +3,7 @@ import type { Context } from "hono"
 
 import { streamSSE } from "hono/streaming"
 
-import {
-  type ModelConfig,
-  type ResolvedProviderConfig,
-  resolveEffectiveProviderType,
-} from "~/lib/config"
+import { type ModelConfig, type ResolvedProviderConfig } from "~/lib/config"
 import {
   applyDashScopePreserveThinkingDefault,
   applyOpenAICompatibleContextCache,
@@ -15,7 +11,7 @@ import {
 } from "~/lib/dashscope"
 import { HTTPError } from "~/lib/error"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
-import { resolveProviderConfig } from "~/lib/provider-resolver"
+import { resolveProviderModel } from "~/lib/provider-resolver"
 import {
   createProviderTokenUsageRecorder,
   normalizeOpenAIUsage,
@@ -41,11 +37,13 @@ export async function handleProviderChatCompletionsForProvider(
   },
 ): Promise<Response> {
   const { payload, provider } = options
-  const providerConfig = await resolveProviderConfig(provider)
+  const resolvedProviderModel = await resolveProviderModel(
+    provider,
+    payload.model,
+  )
   if (
-    !providerConfig
-    || resolveEffectiveProviderType(providerConfig, payload.model)
-      !== "openai-compatible"
+    !resolvedProviderModel
+    || resolvedProviderModel.type !== "openai-compatible"
   ) {
     return c.json(
       {
@@ -58,7 +56,11 @@ export async function handleProviderChatCompletionsForProvider(
     )
   }
 
-  const modelConfig = providerConfig.models?.[payload.model]
+  const {
+    config: providerConfig,
+    forwardingConfig,
+    modelConfig,
+  } = resolvedProviderModel
   applyProviderModelDefaults(payload, modelConfig)
   applyMissingExtraBody(payload, {
     extraBody: modelConfig?.extraBody,
@@ -76,7 +78,7 @@ export async function handleProviderChatCompletionsForProvider(
   })
 
   const upstreamResponse = await forwardProviderChatCompletions(
-    providerConfig,
+    forwardingConfig,
     payload,
     c.req.raw.headers,
     c.req.raw.signal,

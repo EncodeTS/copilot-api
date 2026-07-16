@@ -6,12 +6,11 @@ import { streamSSE } from "hono/streaming"
 import { logCodexRateLimitsEvent } from "~/lib/codex-rate-limit"
 import {
   type ModelConfig,
-  resolveEffectiveProviderType,
   supportsProviderResponsesContextManagement,
 } from "~/lib/config"
 import { HTTPError } from "~/lib/error"
 import { createHandlerLogger, debugJson, debugJsonTail } from "~/lib/logger"
-import { resolveProviderConfig } from "~/lib/provider-resolver"
+import { resolveProviderModel } from "~/lib/provider-resolver"
 import { requestContext } from "~/lib/request-context"
 import type { StreamTransport } from "~/lib/stream-lifecycle"
 import {
@@ -56,11 +55,13 @@ export async function handleProviderResponsesForProvider(
     payload,
     provider,
   })
-  const providerConfig = await resolveProviderConfig(provider)
+  const resolvedProviderModel = await resolveProviderModel(
+    provider,
+    payload.model,
+  )
   if (
-    !providerConfig
-    || resolveEffectiveProviderType(providerConfig, payload.model)
-      !== "openai-responses"
+    !resolvedProviderModel
+    || resolvedProviderModel.type !== "openai-responses"
   ) {
     return c.json(
       {
@@ -72,6 +73,11 @@ export async function handleProviderResponsesForProvider(
       400,
     )
   }
+  const {
+    config: providerConfig,
+    forwardingConfig,
+    modelConfig,
+  } = resolvedProviderModel
 
   const model =
     providerConfig.name === "codex" ?
@@ -99,8 +105,6 @@ export async function handleProviderResponsesForProvider(
     contextManagement: payload.context_management,
     provider,
   })
-
-  const modelConfig = providerConfig.models?.[payload.model]
 
   if (providerConfig.name === "codex") {
     const transport = resolveCodexResponsesTransport()
@@ -132,7 +136,7 @@ export async function handleProviderResponsesForProvider(
   }
 
   const upstreamResponse = await forwardProviderResponses(
-    providerConfig,
+    forwardingConfig,
     payload,
     c.req.raw.headers,
     c.req.raw.signal,
