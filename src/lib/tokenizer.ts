@@ -6,6 +6,7 @@ import type {
   ToolCall,
 } from "~/services/copilot/create-chat-completions"
 import type { Model } from "~/services/copilot/get-models"
+import { scheduler } from "node:timers/promises"
 
 // Encoder type mapping
 const ENCODING_MAP = {
@@ -124,6 +125,23 @@ const calculateTokens = (
   // every reply is primed with <|start|>assistant<|message|>
   numTokens += 3
   return numTokens
+}
+
+const calculateTokensResponsively = async (
+  messages: Array<Message>,
+  encoder: Encoder,
+  constants: ReturnType<typeof getModelConstants>,
+  signal: AbortSignal,
+): Promise<number> => {
+  if (messages.length === 0) return 0
+
+  let numTokens = 0
+  for (const message of messages) {
+    await scheduler.yield()
+    signal.throwIfAborted()
+    numTokens += calculateMessageTokens(message, encoder, constants)
+  }
+  return numTokens + 3
 }
 
 /**
@@ -363,6 +381,24 @@ export const numTokensForTools = (
   return funcTokenCount
 }
 
+const numTokensForToolsResponsively = async (
+  tools: Array<Tool>,
+  encoder: Encoder,
+  constants: ReturnType<typeof getModelConstants>,
+  signal: AbortSignal,
+): Promise<number> => {
+  let funcTokenCount = 0
+  for (const tool of tools) {
+    await scheduler.yield()
+    signal.throwIfAborted()
+    funcTokenCount +=
+      constants.isGpt ?
+        calculateToolTokens(tool, encoder, constants)
+      : encoder.encode(JSON.stringify(tool)).length
+  }
+  return funcTokenCount + (constants.isGpt ? constants.funcEnd : 0)
+}
+
 /**
  * Calculate the token count of messages, supporting multiple GPT encoders
  */
@@ -378,6 +414,10 @@ export const getTokenCount = async (
   // Get corresponding encoder module
   const encoder = await getEncodeChatFunction(tokenizer)
   options.signal?.throwIfAborted()
+  if (options.signal) {
+    await scheduler.wait(1)
+    options.signal.throwIfAborted()
+  }
 
   const simplifiedMessages = payload.messages
   const inputMessages = simplifiedMessages.filter(
@@ -389,11 +429,35 @@ export const getTokenCount = async (
 
   const constants = getModelConstants(model)
   // gpt count token https://github.com/openai/openai-cookbook/blob/main/examples/How_to_count_tokens_with_tiktoken.ipynb
-  let inputTokens = calculateTokens(inputMessages, encoder, constants)
+  let inputTokens =
+    options.signal ?
+      await calculateTokensResponsively(
+        inputMessages,
+        encoder,
+        constants,
+        options.signal,
+      )
+    : calculateTokens(inputMessages, encoder, constants)
   if (payload.tools && payload.tools.length > 0) {
-    inputTokens += numTokensForTools(payload.tools, encoder, constants)
+    inputTokens +=
+      options.signal ?
+        await numTokensForToolsResponsively(
+          payload.tools,
+          encoder,
+          constants,
+          options.signal,
+        )
+      : numTokensForTools(payload.tools, encoder, constants)
   }
-  const outputTokens = calculateTokens(outputMessages, encoder, constants)
+  const outputTokens =
+    options.signal ?
+      await calculateTokensResponsively(
+        outputMessages,
+        encoder,
+        constants,
+        options.signal,
+      )
+    : calculateTokens(outputMessages, encoder, constants)
   options.signal?.throwIfAborted()
 
   return {

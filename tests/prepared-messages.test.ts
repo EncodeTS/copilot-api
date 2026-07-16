@@ -379,6 +379,101 @@ test("Chat estimation observes caller cancellation without invoking the tokenize
   expect(getTokenCount).not.toHaveBeenCalled()
 })
 
+test("Chat estimation yields so in-flight cancellation interrupts warmed tokenization", async () => {
+  state.models = {
+    object: "list",
+    data: [dualModel],
+  } as typeof state.models
+  const source: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [
+      { role: "user", content: "x".repeat(50_000) },
+      { role: "assistant", content: '{"value":' },
+    ],
+    model: dualModel.id,
+  }
+  await countPreparedCopilotMessages(prepareCopilotMessagesRequest(source))
+
+  const controller = new AbortController()
+  const reason = new Error("cancelled during count")
+  const timer = setTimeout(() => controller.abort(reason), 1)
+  let thrown: unknown
+  try {
+    await countPreparedCopilotMessages(prepareCopilotMessagesRequest(source), {
+      signal: controller.signal,
+    })
+  } catch (error) {
+    thrown = error
+  } finally {
+    clearTimeout(timer)
+  }
+
+  expect(thrown).toBe(reason)
+})
+
+test("Count Tokens does not invoke generation adapters", async () => {
+  state.models = {
+    object: "list",
+    data: [dualModel],
+  } as typeof state.models
+  const generationCalled = mock(() => {})
+  preparedMessagesGenerationDependencies.handleWithChatCompletions = () => {
+    generationCalled()
+    return Promise.reject(new Error("generation must remain unreachable"))
+  }
+  preparedMessagesGenerationDependencies.handleWithMessagesApi = () => {
+    generationCalled()
+    return Promise.reject(new Error("generation must remain unreachable"))
+  }
+  preparedMessagesGenerationDependencies.handleWithResponsesApi = () => {
+    generationCalled()
+    return Promise.reject(new Error("generation must remain unreachable"))
+  }
+  preparedMessagesCountDependencies.getTokenCount = () =>
+    Promise.resolve({ input: 20, output: 0 })
+
+  await countPreparedCopilotMessages(
+    prepareCopilotMessagesRequest({
+      max_tokens: 128,
+      messages: [
+        { role: "user", content: "Return JSON" },
+        { role: "assistant", content: '{"value":' },
+      ],
+      model: dualModel.id,
+    }),
+  )
+
+  expect(generationCalled).not.toHaveBeenCalled()
+})
+
+test("native Messages count preserves non-fallback upstream errors", async () => {
+  state.models = {
+    object: "list",
+    data: [messagesModel],
+  } as typeof state.models
+  const source: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: messagesModel.id,
+  }
+
+  for (const status of [401, 429, 500]) {
+    const expected = new HTTPError(
+      `upstream ${status}`,
+      new Response("failed", { status }),
+    )
+    preparedMessagesCountDependencies.countCopilotMessagesTokens = () =>
+      Promise.reject(expected)
+    let thrown: unknown
+    try {
+      await countPreparedCopilotMessages(prepareCopilotMessagesRequest(source))
+    } catch (error) {
+      thrown = error
+    }
+    expect(thrown).toBe(expected)
+  }
+})
+
 test("fallback Chat estimation preserves trimmed unknown model behavior", async () => {
   state.models = undefined
   preparedMessagesCoreDependencies.findEndpointModel = () => undefined

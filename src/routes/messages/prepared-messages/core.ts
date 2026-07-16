@@ -44,7 +44,6 @@ interface PreparedCommon {
   sourcePayload: AnthropicMessagesPayload
   subagentMarker?: SubagentMarker | null
   tokenizerModel: Model
-  usedFallbackModel: boolean
 }
 
 export type PreparedCopilotMessagesPlan =
@@ -116,7 +115,6 @@ export const prepareCopilotMessagesRequest = (
     sourcePayload,
     subagentMarker,
     tokenizerModel,
-    usedFallbackModel: endpointModel === undefined,
   }
   let plan: PreparedCopilotMessagesPlan
 

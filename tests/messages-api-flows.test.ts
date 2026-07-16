@@ -128,7 +128,9 @@ const createContext = () =>
 const handleWithChatCompletions = (
   c: Parameters<typeof handlePreparedChatCompletions>[0],
   payload: AnthropicMessagesPayload,
-  options: Parameters<typeof handlePreparedChatCompletions>[2],
+  options: Parameters<typeof handlePreparedChatCompletions>[2] & {
+    selectedModel?: Model
+  },
 ) => {
   const plan = prepareForModel(
     payload,
@@ -148,7 +150,9 @@ const handleWithChatCompletions = (
 const handleWithMessagesApi = (
   c: Parameters<typeof handlePreparedMessagesApi>[0],
   payload: AnthropicMessagesPayload,
-  options: Parameters<typeof handlePreparedMessagesApi>[2],
+  options: Parameters<typeof handlePreparedMessagesApi>[2] & {
+    selectedModel?: Model
+  },
 ) => {
   const plan = prepareForModel(
     payload,
