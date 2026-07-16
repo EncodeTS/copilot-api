@@ -28,8 +28,9 @@ export const countTextsInTokenizerWorker = (
   texts: Array<string>,
   encoding: string,
   signal: AbortSignal,
-): Promise<Array<number>> =>
-  new Promise((resolve, reject) => {
+): Promise<Array<number>> => {
+  signal.throwIfAborted()
+  return new Promise((resolve, reject) => {
     const job: TokenizerJob = {
       abort: () => {},
       encoding,
@@ -44,6 +45,7 @@ export const countTextsInTokenizerWorker = (
     queue.push(job)
     startNextJob()
   })
+}
 
 const startNextJob = () => {
   if (activeJob || queue.length === 0) return
@@ -71,7 +73,6 @@ const getWorker = (): Worker => {
   if (worker) return worker
 
   const createdWorker = new Worker(getTokenizerWorkerUrl())
-  createdWorker.unref()
   createdWorker.on("message", handleWorkerMessage)
   createdWorker.on("error", (error) =>
     handleWorkerFailure(createdWorker, error),
@@ -84,6 +85,7 @@ const getWorker = (): Worker => {
     }
     startNextJob()
   })
+  createdWorker.unref()
   worker = createdWorker
   return createdWorker
 }
