@@ -6,7 +6,7 @@ import type {
   ToolCall,
 } from "~/services/copilot/create-chat-completions"
 import type { Model } from "~/services/copilot/get-models"
-import { scheduler } from "node:timers/promises"
+import { Worker } from "node:worker_threads"
 
 // Encoder type mapping
 const ENCODING_MAP = {
@@ -22,13 +22,23 @@ type SupportedEncoding = keyof typeof ENCODING_MAP
 // Define encoder interface
 interface Encoder {
   encode: (text: string) => Array<number>
-  encodeGenerator: (
-    text: string,
-  ) => Generator<Array<number>, number | void, undefined>
 }
 
 // Cache loaded encoders to avoid repeated imports
 const encodingCache = new Map<string, Encoder>()
+const RESPONSIVE_ENCODING_THRESHOLD = 16_384
+const TOKENIZER_WORKER_SOURCE = `
+const { parentPort, workerData } = require("node:worker_threads")
+import(workerData.moduleName)
+  .then((encoder) => {
+    parentPort.postMessage(
+      workerData.texts.map((text) => encoder.encode(text).length),
+    )
+  })
+  .catch((error) => {
+    throw error
+  })
+`
 
 /**
  * Calculate tokens for tool calls
@@ -371,6 +381,7 @@ const createResponsiveEncoder = async (
   payload: ChatCompletionsPayload,
   encoder: Encoder,
   constants: ReturnType<typeof getModelConstants>,
+  tokenizer: string,
   signal: AbortSignal,
 ): Promise<Encoder> => {
   const texts = new Set<string>()
@@ -379,36 +390,88 @@ const createResponsiveEncoder = async (
       texts.add(text)
       return []
     },
-    *encodeGenerator(text) {
-      texts.add(text)
-      yield []
-      return 0
-    },
   }
   calculateTokens(payload.messages, collectingEncoder, constants)
   if (payload.tools && payload.tools.length > 0) {
     numTokensForTools(payload.tools, collectingEncoder, constants)
   }
 
-  const encodedByText = new Map<string, Array<number>>()
-  for (const text of texts) {
-    const tokens = new Array<number>()
-    for (const chunk of encoder.encodeGenerator(text)) {
-      tokens.push(...chunk)
-      await scheduler.yield()
-      signal.throwIfAborted()
-    }
-    encodedByText.set(text, tokens)
+  const textList = [...texts]
+  const totalCodeUnits = textList.reduce(
+    (total, text) => total + text.length,
+    0,
+  )
+  if (totalCodeUnits < RESPONSIVE_ENCODING_THRESHOLD) {
+    signal.throwIfAborted()
+    return encoder
   }
 
+  const supportedEncoding = tokenizer in ENCODING_MAP ? tokenizer : "o200k_base"
+  const counts = await encodeTextsInWorker(textList, supportedEncoding, signal)
+  const countByText = new Map(
+    textList.map((text, index) => [text, counts[index]]),
+  )
   return {
-    encode: (text) => encodedByText.get(text) ?? encoder.encode(text),
-    *encodeGenerator(text) {
-      yield encodedByText.get(text) ?? encoder.encode(text)
-      return 0
-    },
+    encode: (text) =>
+      new Array<number>(countByText.get(text) ?? encoder.encode(text).length),
   }
 }
+
+const encodeTextsInWorker = (
+  texts: Array<string>,
+  encoding: string,
+  signal: AbortSignal,
+): Promise<Array<number>> =>
+  new Promise((resolve, reject) => {
+    const worker = new Worker(TOKENIZER_WORKER_SOURCE, {
+      eval: true,
+      workerData: {
+        moduleName: `gpt-tokenizer/encoding/${encoding}`,
+        texts,
+      },
+    })
+    let settled = false
+
+    const cleanup = () => {
+      signal.removeEventListener("abort", handleAbort)
+    }
+    const fail = (error: unknown) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(error instanceof Error ? error : new Error(String(error)))
+    }
+    const handleAbort = () => {
+      void worker.terminate()
+      fail(signal.reason ?? new Error("Token count aborted"))
+    }
+
+    signal.addEventListener("abort", handleAbort, { once: true })
+    worker.once("message", (value: unknown) => {
+      if (!isSafeIntegerArray(value)) {
+        fail(new TypeError("Tokenizer worker returned invalid counts"))
+        return
+      }
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve(value)
+    })
+    worker.once("error", fail)
+    worker.once("exit", (code) => {
+      if (!settled && code !== 0) {
+        fail(new Error(`Tokenizer worker exited with code ${code}`))
+      }
+    })
+    if (signal.aborted) handleAbort()
+  })
+
+const isSafeIntegerArray = (value: unknown): value is Array<number> =>
+  Array.isArray(value)
+  && value.every(
+    (count: unknown) =>
+      typeof count === "number" && Number.isSafeInteger(count),
+  )
 
 /**
  * Calculate the token count of messages, supporting multiple GPT encoders
@@ -437,7 +500,13 @@ export const getTokenCount = async (
   const constants = getModelConstants(model)
   const calculationEncoder =
     options.signal ?
-      await createResponsiveEncoder(payload, encoder, constants, options.signal)
+      await createResponsiveEncoder(
+        payload,
+        encoder,
+        constants,
+        tokenizer,
+        options.signal,
+      )
     : encoder
   // gpt count token https://github.com/openai/openai-cookbook/blob/main/examples/How_to_count_tokens_with_tiktoken.ipynb
   let inputTokens = calculateTokens(
