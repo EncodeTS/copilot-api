@@ -1,14 +1,14 @@
 import type { Context } from "hono"
 
-import type { AnthropicMessagesPayload } from "./anthropic-types"
+import type { AnthropicMessagesPayload } from "~/routes/messages/anthropic-types"
 import {
   prepareCopilotMessagesRequest,
   PreparedMessagesValidationError,
-} from "./prepared-messages/core"
+} from "~/routes/messages/prepared-messages/core"
 import {
   generatePreparedCopilotMessages,
   preparedMessagesGenerationDependencies,
-} from "./prepared-messages/generate"
+} from "~/routes/messages/prepared-messages/generate"
 
 export const messagesTranslationDependencies =
   preparedMessagesGenerationDependencies

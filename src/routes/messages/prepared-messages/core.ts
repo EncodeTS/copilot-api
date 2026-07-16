@@ -13,21 +13,21 @@ import type { ChatCompletionsPayload } from "~/services/copilot/create-chat-comp
 import type { ResponsesPayload } from "~/services/copilot/create-responses"
 import type { Model } from "~/services/copilot/get-models"
 
-import type { AnthropicMessagesPayload } from "../anthropic-types"
-import { prepareCopilotChatCompletionsPayload } from "../copilot-chat-payload"
-import { translateToOpenAI } from "../non-stream-translation"
+import type { AnthropicMessagesPayload } from "~/routes/messages/anthropic-types"
+import { prepareCopilotChatCompletionsPayload } from "~/routes/messages/copilot-chat-payload"
+import { translateToOpenAI } from "~/routes/messages/non-stream-translation"
 import {
   getCompactType,
   IDE_EXECUTE_CODE_TOOL,
   normalizeSystemMessages,
   prepareMessagesApiPayload,
   sanitizeIdeTools,
-} from "../preprocess"
+} from "~/routes/messages/preprocess"
 import {
   hasTrailingAssistantPrefill,
   translateAnthropicMessagesToResponsesPayload,
-} from "../responses-translation"
-import { parseSubagentMarkerFromFirstUser } from "../subagent-marker"
+} from "~/routes/messages/responses-translation"
+import { parseSubagentMarkerFromFirstUser } from "~/routes/messages/subagent-marker"
 
 const MESSAGES_ENDPOINT = "/v1/messages"
 const CHAT_COMPLETIONS_ENDPOINT = "/chat/completions"

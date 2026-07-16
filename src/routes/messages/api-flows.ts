@@ -43,8 +43,8 @@ import {
   type AnthropicStreamState,
   type CopilotUsage,
 } from "./anthropic-types"
-export { prepareCopilotChatCompletionsPayload } from "./copilot-chat-payload"
-import { translateToAnthropic } from "./non-stream-translation"
+export { prepareCopilotChatCompletionsPayload } from "~/routes/messages/copilot-chat-payload"
+import { translateToAnthropic } from "~/routes/messages/non-stream-translation"
 import {
   flushPendingAnthropicStreamEvents,
   translateChunkToAnthropicEvents,

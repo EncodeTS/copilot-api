@@ -12,9 +12,9 @@ import {
   handlePreparedMessagesApi,
   handlePreparedResponsesApi,
   type FlowBaseOptions,
-} from "../api-flows"
-import type { PreparedCopilotMessagesRequest } from "./core"
-import { getPreparedCopilotMessagesPlan } from "./core"
+} from "~/routes/messages/api-flows"
+import type { PreparedCopilotMessagesRequest } from "~/routes/messages/prepared-messages/core"
+import { getPreparedCopilotMessagesPlan } from "~/routes/messages/prepared-messages/core"
 
 const logger = createHandlerLogger("prepared-messages-generation")
 
