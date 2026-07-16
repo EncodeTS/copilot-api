@@ -1,9 +1,13 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
+import { isDeepStrictEqual } from "node:util"
 import consola from "consola"
 
-import { createCodexModelsResponse } from "~/services/codex/client-models"
+import {
+  projectCodexModels,
+  type CodexModelsProjection,
+} from "~/services/codex/client-models"
 import {
   listInstalledCodexVersions,
   type CodexModelsResponse,
@@ -15,77 +19,176 @@ import { PATHS } from "~/lib/paths"
 export type CodexStartupCatalogUpdateResult =
   | {
       clientVersion: string
+      degraded: boolean
+      inputRevision: number
       modelCount: number
       path: string
+      restartRequired: boolean
       status: "unchanged" | "updated"
     }
   | {
-      clientVersion: string
-      path: string
-      reason: "older_client_version"
-      status: "skipped"
-    }
-  | {
+      clientVersion?: string
+      degraded: boolean
+      inputRevision: number
       path: string
       reason:
         | "invalid_catalog"
         | "invalid_client_version"
         | "no_installed_client"
-        | "no_valid_catalog"
+        | "older_client_version"
+        | "projection_unavailable"
+        | "superseded_input"
+      restartRequired: false
       status: "skipped"
     }
+  | {
+      clientVersion?: string
+      degraded: boolean
+      inputRevision: number
+      path: string
+      reason: "generation_failed" | "persistence_failed"
+      restartRequired: false
+      status: "failed"
+    }
+
+export interface CodexStartupCatalogInputs {
+  copilotModels: ReadonlyArray<Model>
+  modelMappings: Readonly<Record<string, string>>
+}
 
 export interface CodexStartupCatalogManager {
-  createResponse: typeof createCodexModelsResponse
+  createResponse: (
+    clientVersion: string | null,
+    inputs: CodexStartupCatalogInputs,
+  ) => Promise<CodexModelsResponse>
   refresh: (
-    copilotModels: Array<Model>,
+    inputs: CodexStartupCatalogInputs,
   ) => Promise<CodexStartupCatalogUpdateResult>
 }
 
-type ObserveCodexStartupCatalog = (
-  clientVersion: string,
-  catalog: CodexModelsResponse,
-) => Promise<CodexStartupCatalogUpdateResult>
+interface CodexStartupCatalogSnapshot extends CodexStartupCatalogInputs {
+  inputRevision: number
+}
 
 interface PersistedCodexStartupCatalog extends CodexModelsResponse {
   _copilot_api: {
     client_version: string
     generated_at: string
+    input_revision?: number
   }
 }
 
 export const createCodexStartupCatalogManager = ({
   catalogPath,
-  createModelsResponse = createCodexModelsResponse,
+  projectModels = projectCodexModels,
   listInstalledVersions = listInstalledCodexVersions,
   writeAtomically = writeFileAtomically,
 }: {
   catalogPath: string
-  createModelsResponse?: typeof createCodexModelsResponse
+  projectModels?: typeof projectCodexModels
   listInstalledVersions?: typeof listInstalledCodexVersions
   writeAtomically?: typeof writeFileAtomically
 }): CodexStartupCatalogManager => {
-  const observe: ObserveCodexStartupCatalog = async (
-    clientVersion,
-    catalog,
-  ) => {
+  let currentSnapshot: CodexStartupCatalogSnapshot | null = null
+  let persistenceQueue: Promise<void> = Promise.resolve()
+
+  const captureInputs = (
+    inputs: CodexStartupCatalogInputs,
+  ): CodexStartupCatalogSnapshot => {
+    const nextInputs = cloneInputs(inputs)
+    if (
+      currentSnapshot
+      && isDeepStrictEqual(
+        currentSnapshot.copilotModels,
+        nextInputs.copilotModels,
+      )
+      && isDeepStrictEqual(
+        currentSnapshot.modelMappings,
+        nextInputs.modelMappings,
+      )
+    ) {
+      return currentSnapshot
+    }
+
+    currentSnapshot = deepFreeze({
+      ...nextInputs,
+      inputRevision: (currentSnapshot?.inputRevision ?? 0) + 1,
+    })
+    return currentSnapshot
+  }
+
+  const persistProjectionNow = async (
+    clientVersion: string | null,
+    snapshot: CodexStartupCatalogSnapshot,
+    projection: CodexModelsProjection,
+  ): Promise<CodexStartupCatalogUpdateResult> => {
     const normalizedVersion = normalizeCodexVersion(clientVersion)
     if (!normalizedVersion) {
       return {
+        degraded: projection.status === "degraded",
+        inputRevision: snapshot.inputRevision,
         path: catalogPath,
         reason: "invalid_client_version",
+        restartRequired: false,
         status: "skipped",
       }
     }
-    if (!isValidCodexStartupCatalog(catalog)) {
+    if (
+      currentSnapshot
+      && snapshot.inputRevision < currentSnapshot.inputRevision
+    ) {
       return {
+        clientVersion: normalizedVersion,
+        degraded: projection.status === "degraded",
+        inputRevision: snapshot.inputRevision,
+        path: catalogPath,
+        reason: "superseded_input",
+        restartRequired: false,
+        status: "skipped",
+      }
+    }
+    if (projection.status === "unavailable") {
+      return {
+        clientVersion: normalizedVersion,
+        degraded: false,
+        inputRevision: snapshot.inputRevision,
+        path: catalogPath,
+        reason: "projection_unavailable",
+        restartRequired: false,
+        status: "skipped",
+      }
+    }
+    if (!isValidCodexStartupCatalog(projection.catalog)) {
+      return {
+        clientVersion: normalizedVersion,
+        degraded: projection.status === "degraded",
+        inputRevision: snapshot.inputRevision,
         path: catalogPath,
         reason: "invalid_catalog",
+        restartRequired: false,
         status: "skipped",
       }
     }
 
-    const existingCatalog = await readPersistedCatalog(catalogPath)
+    let existingCatalog: PersistedCodexStartupCatalog | null
+    try {
+      existingCatalog = await readPersistedCatalog(catalogPath)
+    } catch (error) {
+      consola.warn("codex.startup_catalog.persist_failed", {
+        clientVersion: normalizedVersion,
+        inputRevision: snapshot.inputRevision,
+        error,
+      })
+      return {
+        clientVersion: normalizedVersion,
+        degraded: projection.status === "degraded",
+        inputRevision: snapshot.inputRevision,
+        path: catalogPath,
+        reason: "persistence_failed",
+        restartRequired: false,
+        status: "failed",
+      }
+    }
     const existingVersion = existingCatalog?._copilot_api.client_version ?? null
     if (
       existingVersion
@@ -93,8 +196,11 @@ export const createCodexStartupCatalogManager = ({
     ) {
       return {
         clientVersion: normalizedVersion,
+        degraded: projection.status === "degraded",
+        inputRevision: snapshot.inputRevision,
         path: catalogPath,
         reason: "older_client_version",
+        restartRequired: false,
         status: "skipped",
       }
     }
@@ -102,90 +208,178 @@ export const createCodexStartupCatalogManager = ({
     if (
       existingCatalog
       && existingVersion === normalizedVersion
-      && areCatalogModelsEqual(existingCatalog.models, catalog.models)
+      && areCatalogModelsEqual(
+        existingCatalog.models,
+        projection.catalog.models,
+      )
     ) {
       return {
         clientVersion: normalizedVersion,
-        modelCount: catalog.models.length,
+        degraded: projection.status === "degraded",
+        inputRevision: snapshot.inputRevision,
+        modelCount: projection.catalog.models.length,
         path: catalogPath,
+        restartRequired: false,
         status: "unchanged",
       }
     }
 
     const persistedCatalog: PersistedCodexStartupCatalog = {
-      ...catalog,
+      ...projection.catalog,
       _copilot_api: {
         client_version: normalizedVersion,
         generated_at: new Date().toISOString(),
+        input_revision: snapshot.inputRevision,
       },
     }
     const content = `${JSON.stringify(persistedCatalog, null, 2)}\n`
-    await writeAtomically(catalogPath, content, (writtenContent) => {
-      try {
-        return isValidPersistedCatalog(
-          JSON.parse(writtenContent) as PersistedCodexStartupCatalog,
-        )
-      } catch {
-        return false
+    try {
+      await writeAtomically(catalogPath, content, (writtenContent) => {
+        try {
+          return isValidPersistedCatalog(
+            JSON.parse(writtenContent) as PersistedCodexStartupCatalog,
+          )
+        } catch {
+          return false
+        }
+      })
+    } catch (error) {
+      consola.warn("codex.startup_catalog.persist_failed", {
+        clientVersion: normalizedVersion,
+        inputRevision: snapshot.inputRevision,
+        error,
+      })
+      return {
+        clientVersion: normalizedVersion,
+        degraded: projection.status === "degraded",
+        inputRevision: snapshot.inputRevision,
+        path: catalogPath,
+        reason: "persistence_failed",
+        restartRequired: false,
+        status: "failed",
       }
-    })
+    }
     return {
       clientVersion: normalizedVersion,
-      modelCount: catalog.models.length,
+      degraded: projection.status === "degraded",
+      inputRevision: snapshot.inputRevision,
+      modelCount: projection.catalog.models.length,
       path: catalogPath,
+      restartRequired: true,
       status: "updated",
     }
   }
 
-  const refresh: CodexStartupCatalogManager["refresh"] = async (
-    copilotModels,
-  ) => {
-    const versions = (await listInstalledVersions()).sort((left, right) =>
-      compareCodexVersions(right, left),
+  const persistProjection = (
+    clientVersion: string | null,
+    snapshot: CodexStartupCatalogSnapshot,
+    projection: CodexModelsProjection,
+  ): Promise<CodexStartupCatalogUpdateResult> => {
+    const operation = persistenceQueue.then(() =>
+      persistProjectionNow(clientVersion, snapshot, projection),
     )
+    persistenceQueue = operation.then(
+      () => undefined,
+      () => undefined,
+    )
+    return operation
+  }
+
+  const refresh: CodexStartupCatalogManager["refresh"] = async (inputs) => {
+    const snapshot = captureInputs(inputs)
+    let versions: Array<string>
+    try {
+      versions = (await listInstalledVersions()).sort((left, right) =>
+        compareCodexVersions(right, left),
+      )
+    } catch (error) {
+      consola.warn("codex.startup_catalog.discovery_failed", {
+        inputRevision: snapshot.inputRevision,
+        error,
+      })
+      return {
+        degraded: false,
+        inputRevision: snapshot.inputRevision,
+        path: catalogPath,
+        reason: "generation_failed",
+        restartRequired: false,
+        status: "failed",
+      }
+    }
     if (versions.length === 0) {
       return {
+        degraded: false,
+        inputRevision: snapshot.inputRevision,
         path: catalogPath,
         reason: "no_installed_client",
+        restartRequired: false,
         status: "skipped",
       }
     }
 
-    for (const clientVersion of versions) {
-      const catalog = await createModelsResponse(clientVersion, copilotModels)
-      if (isValidCodexStartupCatalog(catalog)) {
-        return await observe(clientVersion, catalog)
+    const clientVersion = versions[0]
+    let projection: CodexModelsProjection
+    try {
+      projection = await projectModels({
+        clientVersion,
+        copilotModels: snapshot.copilotModels,
+        modelMappings: snapshot.modelMappings,
+      })
+    } catch (error) {
+      consola.warn("codex.startup_catalog.generation_failed", {
+        clientVersion,
+        inputRevision: snapshot.inputRevision,
+        error,
+      })
+      return {
+        clientVersion,
+        degraded: false,
+        inputRevision: snapshot.inputRevision,
+        path: catalogPath,
+        reason: "generation_failed",
+        restartRequired: false,
+        status: "failed",
       }
     }
-    return {
-      path: catalogPath,
-      reason: "no_valid_catalog",
-      status: "skipped",
-    }
+    return await persistProjection(clientVersion, snapshot, projection)
   }
 
   const createResponse: CodexStartupCatalogManager["createResponse"] = async (
     clientVersion,
-    copilotModels,
+    inputs,
   ) => {
-    const catalog = await createModelsResponse(clientVersion, copilotModels)
-    if (clientVersion && isValidCodexStartupCatalog(catalog)) {
-      try {
-        consola.debug(
-          "codex.startup_catalog",
-          await observe(clientVersion, catalog),
-        )
-      } catch (error) {
-        consola.warn("codex.startup_catalog.persist_failed", {
-          clientVersion,
-          error,
-        })
-      }
-    }
-    return catalog
+    const snapshot = captureInputs(inputs)
+    const projection = await projectModels({
+      clientVersion,
+      copilotModels: snapshot.copilotModels,
+      modelMappings: snapshot.modelMappings,
+    })
+    consola.debug(
+      "codex.startup_catalog",
+      await persistProjection(clientVersion, snapshot, projection),
+    )
+    return projection.catalog
   }
 
   return { createResponse, refresh }
+}
+
+const cloneInputs = (
+  inputs: CodexStartupCatalogInputs,
+): CodexStartupCatalogInputs => ({
+  copilotModels: structuredClone([...inputs.copilotModels]),
+  modelMappings: Object.fromEntries(Object.entries(inputs.modelMappings)),
+})
+
+const deepFreeze = <T>(value: T): T => {
+  if (typeof value !== "object" || value === null || Object.isFrozen(value)) {
+    return value
+  }
+  Object.freeze(value)
+  for (const nested of Object.values(value)) {
+    deepFreeze(nested)
+  }
+  return value
 }
 
 const isValidCodexStartupCatalog = (value: CodexModelsResponse): boolean => {
@@ -283,6 +477,8 @@ const isValidPersistedCatalog = (
   && normalizeCodexVersion(value._copilot_api.client_version) !== null
   && typeof value._copilot_api.generated_at === "string"
   && !Number.isNaN(Date.parse(value._copilot_api.generated_at))
+  && (value._copilot_api.input_revision === undefined
+    || isPositiveSafeInteger(value._copilot_api.input_revision))
 
 const areCatalogModelsEqual = (
   left: Array<unknown>,

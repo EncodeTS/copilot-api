@@ -15,6 +15,23 @@ export type ModelMappingsValidationResult =
       reason: 'duplicate' | 'incomplete'
     }
 
+export type ModelMappingsSaveOutcome =
+  'refresh_failed' | 'refresh_skipped' | 'restart_required' | 'saved'
+
+export type ModelMappingsSaveMessageKey =
+  | 'saved'
+  | 'savedDegraded'
+  | 'savedRefreshFailed'
+  | 'savedRefreshSkipped'
+  | 'savedRestartRequired'
+
+export interface ModelMappingsSavePresentation {
+  degradedMessageKey: 'savedDegraded' | null
+  messageKey: Exclude<ModelMappingsSaveMessageKey, 'savedDegraded'>
+  outcome: ModelMappingsSaveOutcome
+  tone: 'error' | 'info' | 'success' | 'warning'
+}
+
 function createModelMappingRowId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 }
@@ -42,14 +59,14 @@ export function modelMappingsToRows(
 export function buildModelMappingsFromRows(
   rows: ModelMappingRow[],
 ): ModelMappingsValidationResult {
-  const modelMappings: Record<string, string> = {}
+  const modelMappings = Object.create(null) as Record<string, string>
 
   for (const row of rows) {
-    if (!row.source && !row.target) {
+    if (!row.source.trim() && !row.target.trim()) {
       continue
     }
 
-    if (!row.source || !row.target) {
+    if (!row.source.trim() || !row.target.trim()) {
       return { ok: false, reason: 'incomplete' }
     }
 
@@ -62,3 +79,42 @@ export function buildModelMappingsFromRows(
 
   return { modelMappings, ok: true }
 }
+
+export function getModelMappingsSavePresentation(
+  result: ModelMappingsSaveResult,
+): ModelMappingsSavePresentation {
+  const refresh = result.catalogRefresh
+  const degradedMessageKey = refresh.degraded ? 'savedDegraded' : null
+
+  if (refresh.status === 'failed') {
+    return {
+      degradedMessageKey,
+      messageKey: 'savedRefreshFailed',
+      outcome: 'refresh_failed',
+      tone: 'error',
+    }
+  }
+  if (refresh.status === 'skipped') {
+    return {
+      degradedMessageKey,
+      messageKey: 'savedRefreshSkipped',
+      outcome: 'refresh_skipped',
+      tone: 'warning',
+    }
+  }
+  if (refresh.status === 'updated' && refresh.restartRequired) {
+    return {
+      degradedMessageKey,
+      messageKey: 'savedRestartRequired',
+      outcome: 'restart_required',
+      tone: refresh.degraded ? 'warning' : 'info',
+    }
+  }
+  return {
+    degradedMessageKey,
+    messageKey: 'saved',
+    outcome: 'saved',
+    tone: refresh.degraded ? 'warning' : 'success',
+  }
+}
+import type { ModelMappingsSaveResult } from '../types/ipc'

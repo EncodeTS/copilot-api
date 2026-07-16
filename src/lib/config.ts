@@ -66,6 +66,30 @@ export interface ContextManagementConfig {
   responses?: boolean
 }
 
+export type ModelMappingsDiagnosticCode =
+  | "chain"
+  | "invalid_record"
+  | "self_mapping"
+  | "unsafe_name"
+  | "whitespace_source"
+  | "whitespace_target"
+
+export interface ModelMappingsDiagnostic {
+  code: ModelMappingsDiagnosticCode
+  source?: string
+  target?: string
+}
+
+export class ModelMappingsValidationError extends Error {
+  readonly diagnostics: Array<ModelMappingsDiagnostic>
+
+  constructor(diagnostics: Array<ModelMappingsDiagnostic>) {
+    super("Invalid model mappings.")
+    this.name = "ModelMappingsValidationError"
+    this.diagnostics = diagnostics
+  }
+}
+
 const DEPRECATED_REQUEST_REWRITE_CONFIG_KEYS = [
   "parityFirst",
   "responsesApiContextManagementModels",
@@ -290,6 +314,7 @@ const defaultConfig: AppConfig = {
 let cachedConfig: AppConfig | null = null
 const warnedInvalidConfigKeys = new Set<string>()
 const warnedPendingConfigMigrations = new Set<string>()
+let warnedInvalidModelMappings = false
 
 function normalizeAdminApiKey(adminApiKey: unknown): string | null {
   if (typeof adminApiKey !== "string") {
@@ -774,37 +799,90 @@ export function getExtraPromptForModel(model: string): string {
 
 export function getModelMappings(): Record<string, string> {
   const config = getConfig()
-  const modelMappings = config.modelMappings
-  if (!modelMappings) {
-    return { ...defaultConfig.modelMappings }
-  }
-
-  const validMappings: Record<string, string> = {}
-  for (const [sourceModel, targetModel] of Object.entries(modelMappings)) {
+  try {
+    const modelMappings = validateModelMappings(config.modelMappings ?? {})
+    warnedInvalidModelMappings = false
+    return modelMappings
+  } catch (error) {
     if (
-      !sourceModel
-      || typeof targetModel !== "string"
-      || targetModel.length === 0
+      error instanceof ModelMappingsValidationError
+      && !warnedInvalidModelMappings
     ) {
-      continue
+      warnedInvalidModelMappings = true
+      consola.warn("config.model_mappings.disabled", {
+        diagnostics: error.diagnostics,
+      })
     }
-    validMappings[sourceModel] = targetModel
+    return createSafeModelMappings()
   }
-
-  return validMappings
 }
 
-function validateModelMappings(
-  modelMappings: Record<string, string>,
+const PROTOTYPE_SENSITIVE_MODEL_NAMES = new Set([
+  "__proto__",
+  "constructor",
+  "prototype",
+])
+
+const createSafeModelMappings = (): Record<string, string> =>
+  Object.create(null) as Record<string, string>
+
+export function validateModelMappings(
+  modelMappings: unknown,
 ): Record<string, string> {
-  const validatedMappings: Record<string, string> = {}
-  for (const [sourceModel, targetModel] of Object.entries(modelMappings)) {
-    if (!sourceModel || !targetModel) {
-      throw new Error(
-        "Each model mapping must use non-empty source and target values.",
-      )
+  if (!isPlainRecord(modelMappings)) {
+    throw new ModelMappingsValidationError([{ code: "invalid_record" }])
+  }
+
+  const entries = Object.entries(modelMappings)
+  const sourceModels = new Set(entries.map(([sourceModel]) => sourceModel))
+  const diagnostics: Array<ModelMappingsDiagnostic> = []
+  const validatedMappings = createSafeModelMappings()
+
+  for (const [sourceModel, targetValue] of entries) {
+    if (!sourceModel.trim()) {
+      diagnostics.push({ code: "whitespace_source", source: sourceModel })
+      continue
     }
-    validatedMappings[sourceModel] = targetModel
+    if (typeof targetValue !== "string" || !targetValue.trim()) {
+      diagnostics.push({
+        code: "whitespace_target",
+        source: sourceModel,
+        ...(typeof targetValue === "string" ? { target: targetValue } : {}),
+      })
+      continue
+    }
+    if (
+      PROTOTYPE_SENSITIVE_MODEL_NAMES.has(sourceModel)
+      || PROTOTYPE_SENSITIVE_MODEL_NAMES.has(targetValue)
+    ) {
+      diagnostics.push({
+        code: "unsafe_name",
+        source: sourceModel,
+        target: targetValue,
+      })
+      continue
+    }
+    if (sourceModel === targetValue) {
+      diagnostics.push({
+        code: "self_mapping",
+        source: sourceModel,
+        target: targetValue,
+      })
+      continue
+    }
+    if (sourceModels.has(targetValue)) {
+      diagnostics.push({
+        code: "chain",
+        source: sourceModel,
+        target: targetValue,
+      })
+      continue
+    }
+    validatedMappings[sourceModel] = targetValue
+  }
+
+  if (diagnostics.length > 0) {
+    throw new ModelMappingsValidationError(diagnostics)
   }
 
   return validatedMappings
@@ -824,7 +902,8 @@ export function setModelMappings(
 }
 
 export function resolveMappedModel(model: string): string {
-  return getModelMappings()[model] ?? model
+  const modelMappings = getModelMappings()
+  return Object.hasOwn(modelMappings, model) ? modelMappings[model] : model
 }
 
 export function isContextManagementEnabledForMessages(): boolean {

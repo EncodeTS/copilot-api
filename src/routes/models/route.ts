@@ -1,7 +1,7 @@
 import { Hono } from "hono"
 import { createHash } from "node:crypto"
 
-import { listEnabledProviders } from "~/lib/config"
+import { getModelMappings, listEnabledProviders } from "~/lib/config"
 import { forwardError } from "~/lib/error"
 import { createHandlerLogger } from "~/lib/logger"
 import { toClientModelId } from "~/lib/models"
@@ -54,6 +54,31 @@ function normalizeCopilotModel(model: Model): ClientModel {
     owned_by: model.vendor,
     display_name: model.name,
   }
+}
+
+export function projectGeneralCopilotModels(
+  models: ReadonlyArray<Model>,
+  modelMappings: Readonly<Record<string, string>>,
+): Array<Model> {
+  const modelsById = new Map(models.map((model) => [model.id, model]))
+  return models.map((source) => {
+    const targetId = modelMappings[source.id]
+    if (!targetId || targetId.includes("/")) {
+      return structuredClone(source)
+    }
+    const target = modelsById.get(targetId)
+    if (!target) {
+      return structuredClone(source)
+    }
+
+    return {
+      ...structuredClone(source),
+      capabilities: structuredClone(target.capabilities),
+      supported_endpoints: structuredClone(target.supported_endpoints),
+      vendor: target.vendor,
+      version: target.version,
+    }
+  })
 }
 
 function getStringField(
@@ -146,7 +171,12 @@ async function getProviderModels(
 async function getAggregatedModels(
   requestHeaders: Headers,
 ): Promise<Array<ClientModel>> {
-  const copilotModels = state.models?.data.map(normalizeCopilotModel) ?? []
+  const copilotModels =
+    state.models ?
+      projectGeneralCopilotModels(state.models.data, getModelMappings()).map(
+        normalizeCopilotModel,
+      )
+    : []
   const providerModelsByProvider = await Promise.all(
     listEnabledProviders().map((provider) =>
       getProviderModels(provider, requestHeaders),
@@ -202,7 +232,10 @@ modelRoutes.get("/", async (c) => {
       const clientVersion = getCodexClientVersion(c.req.url, userAgent)
       const models = await codexStartupCatalogManager.createResponse(
         clientVersion,
-        state.models?.data ?? [],
+        {
+          copilotModels: state.models?.data ?? [],
+          modelMappings: getModelMappings(),
+        },
       )
       return createCodexCatalogHttpResponse(
         models,
