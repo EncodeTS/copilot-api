@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test"
+import type { ConsolaInstance } from "consola"
 import { Hono } from "hono"
 
 import type {
@@ -19,6 +20,7 @@ import type {
 } from "../src/services/copilot/create-responses"
 
 import { COMPACT_REQUEST } from "../src/lib/compact"
+import { HTTPError } from "../src/lib/error"
 import {
   closeUsageStore,
   getTokenUsageEventsPage,
@@ -93,12 +95,17 @@ const createResponses = mock(
 )
 
 const {
-  handleWithChatCompletions,
-  handleWithMessagesApi,
-  handleWithResponsesApi,
+  handlePreparedChatCompletions,
+  handlePreparedMessagesApi,
+  handlePreparedResponsesApi,
   messagesApiFlowDependencies,
   prepareCopilotChatCompletionsPayload,
 } = await import("../src/routes/messages/api-flows")
+const { prepareCopilotMessagesRequest } = await import(
+  "../src/routes/messages/prepared-messages"
+)
+const { getPreparedCopilotMessagesPlan, preparedMessagesCoreDependencies } =
+  await import("../src/routes/messages/prepared-messages/core")
 const { responsesUtilsDependencies } = await import(
   "../src/routes/responses/utils"
 )
@@ -110,13 +117,100 @@ const logger = {
   debug: () => {},
   warn: () => {},
   error: () => {},
-} as unknown as Parameters<typeof handleWithChatCompletions>[2]["logger"]
+} as unknown as ConsolaInstance
 
 const createContext = () =>
   ({
     json: (body: unknown, status?: number) =>
       Response.json(body, { status: status ?? 200 }),
-  }) as Parameters<typeof handleWithChatCompletions>[0]
+  }) as Parameters<typeof handlePreparedChatCompletions>[0]
+
+const handleWithChatCompletions = (
+  c: Parameters<typeof handlePreparedChatCompletions>[0],
+  payload: AnthropicMessagesPayload,
+  options: Parameters<typeof handlePreparedChatCompletions>[2],
+) => {
+  const plan = prepareForModel(
+    payload,
+    options.selectedModel ?? createModel([]),
+  )
+  if (plan.kind !== "chat_completions") {
+    throw new Error(`Expected Chat plan, received ${plan.kind}`)
+  }
+  return handlePreparedChatCompletions(
+    c,
+    plan.sourcePayload,
+    options,
+    plan.payload,
+  )
+}
+
+const handleWithMessagesApi = (
+  c: Parameters<typeof handlePreparedMessagesApi>[0],
+  payload: AnthropicMessagesPayload,
+  options: Parameters<typeof handlePreparedMessagesApi>[2],
+) => {
+  const plan = prepareForModel(
+    payload,
+    options.selectedModel ?? createModel(["/v1/messages"]),
+  )
+  if (plan.kind !== "messages") {
+    throw new Error(`Expected Messages plan, received ${plan.kind}`)
+  }
+  return handlePreparedMessagesApi(c, plan.payload, options)
+}
+
+const handleWithResponsesApi = (
+  c: Parameters<typeof handlePreparedResponsesApi>[0],
+  payload: AnthropicMessagesPayload,
+  options: Parameters<typeof handlePreparedResponsesApi>[2],
+) => {
+  let plan
+  try {
+    plan = prepareForModel(
+      payload,
+      options.selectedModel ?? createModel(["/responses"]),
+    )
+  } catch (error) {
+    if (error instanceof HTTPError) return Promise.resolve(error.response)
+    throw error
+  }
+  if (plan.kind !== "responses") {
+    throw new Error(`Expected Responses plan, received ${plan.kind}`)
+  }
+  return handlePreparedResponsesApi(
+    c,
+    plan.sourcePayload,
+    options,
+    plan.payload,
+    options.compactType ? "http" : plan.transport,
+  )
+}
+
+const prepareForModel = (
+  payload: AnthropicMessagesPayload,
+  selectedModel: Model,
+) => {
+  const previousFindModel = preparedMessagesCoreDependencies.findEndpointModel
+  const previousMessagesEnabled =
+    preparedMessagesCoreDependencies.isMessagesApiEnabled
+  const effectiveModel = {
+    ...selectedModel,
+    id: payload.model,
+    name: payload.model,
+  }
+  preparedMessagesCoreDependencies.findEndpointModel = () => effectiveModel
+  preparedMessagesCoreDependencies.isMessagesApiEnabled = () => true
+  try {
+    return getPreparedCopilotMessagesPlan(
+      prepareCopilotMessagesRequest(payload),
+    )
+  } finally {
+    preparedMessagesCoreDependencies.findEndpointModel = previousFindModel
+    preparedMessagesCoreDependencies.isMessagesApiEnabled =
+      previousMessagesEnabled
+  }
+}
 
 test("messages Chat flow forwards the caller abort signal", async () => {
   const controller = new AbortController()
