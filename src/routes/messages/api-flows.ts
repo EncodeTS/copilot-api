@@ -83,14 +83,11 @@ export interface ResponsesFlowOptions extends FlowBaseOptions {
   selectedModel?: Model
 }
 
-export interface MessagesFlowOptions extends FlowBaseOptions {
+export type MessagesFlowOptions = FlowBaseOptions & {
   anthropicBetaHeader?: string
-  selectedModel?: Model
 }
 
-export interface ChatCompletionsFlowOptions extends FlowBaseOptions {
-  selectedModel?: Model
-}
+export type ChatCompletionsFlowOptions = FlowBaseOptions
 
 export const handlePreparedChatCompletions = async (
   c: Context,
