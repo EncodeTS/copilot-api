@@ -412,6 +412,31 @@ test("Chat estimation yields so in-flight cancellation interrupts warmed tokeniz
   expect(thrown).toBe(reason)
 })
 
+test("worker-backed Chat estimation preserves exact token counts", async () => {
+  state.models = {
+    object: "list",
+    data: [dualModel],
+  } as typeof state.models
+  const source: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [
+      { role: "user", content: "x".repeat(50_000) },
+      { role: "assistant", content: '{"value":' },
+    ],
+    model: dualModel.id,
+  }
+
+  const synchronous = await countPreparedCopilotMessages(
+    prepareCopilotMessagesRequest(source),
+  )
+  const workerBacked = await countPreparedCopilotMessages(
+    prepareCopilotMessagesRequest(source),
+    { signal: new AbortController().signal },
+  )
+
+  expect(workerBacked).toEqual(synchronous)
+})
+
 test("Count Tokens does not invoke generation adapters", async () => {
   state.models = {
     object: "list",
