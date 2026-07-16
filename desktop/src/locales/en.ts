@@ -213,6 +213,14 @@ const en: Locale = {
       'Only the modelMappings field is updated through the service API. Other config values remain untouched.',
     saved:
       'Saved through the service API. New requests to /v1/messages, /v1/messages/count_tokens, /v1/responses, and /v1/chat/completions will use the updated mappings immediately.',
+    savedDegraded:
+      'The projected catalog is degraded because unavailable aliases were omitted.',
+    savedRefreshFailed:
+      'Mappings are active for new requests, but the Codex startup catalog could not be refreshed. The previous startup catalog was preserved.',
+    savedRefreshSkipped:
+      'Mappings are active for new requests. The Codex startup catalog refresh was skipped, so no restart is currently required.',
+    savedRestartRequired:
+      'Mappings are active for new requests and the Codex startup catalog was updated. Restart Codex to load the new capabilities.',
     loadFailed: 'Failed to load model mappings',
     saveFailed: 'Failed to save model mappings',
     serverRequired:

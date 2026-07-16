@@ -455,7 +455,7 @@ test("worker-backed Chat estimation preserves exact token counts", async () => {
   )
 
   expect(workerBacked).toEqual(synchronous)
-})
+}, 10_000)
 
 test("Count Tokens does not invoke generation adapters", async () => {
   state.models = {

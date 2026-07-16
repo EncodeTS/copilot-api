@@ -48,9 +48,26 @@ test("background timer picks up newly-rolled-out models", async () => {
   expect(state.models?.data.map((m) => m.id)).toContain("m2")
 })
 
+test("successful initial and periodic model refreshes publish immutable snapshots", async () => {
+  const observed: Array<Array<string>> = []
+  await cacheModels(fetcherMock as never, TEST_INTERVAL_MS, (models) => {
+    observed.push(models.data.map((model) => model.id))
+  })
+  fetcherMock.mockImplementation(() =>
+    Promise.resolve(makeModels(["m1", "m2"])),
+  )
+
+  await sleep(200)
+
+  expect(observed[0]).toEqual(["m1"])
+  expect(observed.some((ids) => ids.includes("m2"))).toBeTrue()
+})
+
 test("refresh failure keeps the previous cache", async () => {
-  await cacheModels(fetcherMock as never, TEST_INTERVAL_MS)
+  const onRefresh = mock(() => {})
+  await cacheModels(fetcherMock as never, TEST_INTERVAL_MS, onRefresh)
   const before = state.models
+  const observationsBeforeFailure = onRefresh.mock.calls.length
 
   fetcherMock.mockImplementation(() =>
     Promise.reject(new Error("upstream blip")),
@@ -59,6 +76,7 @@ test("refresh failure keeps the previous cache", async () => {
   await sleep(500)
 
   expect(state.models).toEqual(before)
+  expect(onRefresh).toHaveBeenCalledTimes(observationsBeforeFailure)
 })
 
 test("stopModelsRefreshLoop prevents further refreshes", async () => {

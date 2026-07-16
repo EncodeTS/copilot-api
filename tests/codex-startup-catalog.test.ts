@@ -4,6 +4,7 @@ import os from "node:os"
 import path from "node:path"
 
 import type { CodexModelsResponse } from "~/services/codex/installed-catalog"
+import type { CodexModelsProjection } from "~/services/codex/client-models"
 import { createCodexStartupCatalogManager } from "~/services/codex/startup-catalog"
 import type { Model } from "~/services/copilot/get-models"
 
@@ -57,8 +58,26 @@ const createManagerForResponse = (
 ) =>
   createCodexStartupCatalogManager({
     catalogPath,
-    createModelsResponse: () => Promise.resolve(catalog),
+    projectModels: () => Promise.resolve(createProjection(catalog)),
   })
+
+const createProjection = (
+  catalog: CodexModelsResponse,
+  status: CodexModelsProjection["status"] = "complete",
+): CodexModelsProjection => ({
+  catalog,
+  diagnostics:
+    status === "degraded" ?
+      [{ code: "target_unavailable", source: "virtual", target: "missing" }]
+    : status === "unavailable" ? [{ code: "base_catalog_unavailable" }]
+    : [],
+  status,
+})
+
+const emptyInputs = {
+  copilotModels: [] as Array<Model>,
+  modelMappings: {},
+}
 
 const readPersistedCatalog = async (catalogPath: string) =>
   JSON.parse(await fs.readFile(catalogPath, "utf8")) as CodexModelsResponse & {
@@ -73,7 +92,9 @@ test("Codex startup catalog stores a valid last-known-good snapshot", async () =
     const catalog = createCatalog()
     const manager = createManagerForResponse(catalogPath, catalog)
 
-    expect(await manager.createResponse("0.144.2", [])).toEqual(catalog)
+    expect(await manager.createResponse("0.144.2", emptyInputs)).toEqual(
+      catalog,
+    )
     const persisted = await readPersistedCatalog(catalogPath)
     expect(persisted.models).toEqual(catalog.models)
     expect(persisted._copilot_api.client_version).toBe("0.144.2")
@@ -89,7 +110,7 @@ test("Codex startup catalog does not let an older client overwrite a newer snaps
     const currentCatalog = createCatalog()
     await createManagerForResponse(catalogPath, currentCatalog).createResponse(
       "0.144.2",
-      [],
+      emptyInputs,
     )
 
     await createManagerForResponse(
@@ -98,7 +119,7 @@ test("Codex startup catalog does not let an older client overwrite a newer snaps
         autoCompactTokenLimit: 240_000,
         contextWindow: 400_000,
       }),
-    ).createResponse("0.143.0", [])
+    ).createResponse("0.143.0", emptyInputs)
 
     expect((await readPersistedCatalog(catalogPath)).models).toEqual(
       currentCatalog.models,
@@ -109,19 +130,22 @@ test("Codex startup catalog does not let an older client overwrite a newer snaps
 test("Codex startup catalog refreshes from the newest installed client", async () => {
   await withTemporaryCatalog(async (catalogPath) => {
     const currentCatalog = createCatalog()
-    const createModelsResponse = mock((clientVersion: string | null) =>
-      Promise.resolve(
-        clientVersion === "0.144.2" ? currentCatalog : { models: [] },
-      ),
+    const projectModels = mock(
+      ({ clientVersion }: { clientVersion: string | null }) =>
+        Promise.resolve(
+          createProjection(
+            clientVersion === "0.144.2" ? currentCatalog : { models: [] },
+          ),
+        ),
     )
     const manager = createCodexStartupCatalogManager({
       catalogPath,
-      createModelsResponse,
+      projectModels,
       listInstalledVersions: () =>
         Promise.resolve(["0.143.0", "0.144.2", "0.144.1"]),
     })
 
-    const result = await manager.refresh([] as Array<Model>)
+    const result = await manager.refresh(emptyInputs)
 
     expect(result).toMatchObject({
       clientVersion: "0.144.2",
@@ -129,8 +153,8 @@ test("Codex startup catalog refreshes from the newest installed client", async (
       path: catalogPath,
       status: "updated",
     })
-    expect(createModelsResponse).toHaveBeenCalledTimes(1)
-    expect(createModelsResponse.mock.calls[0]?.[0]).toBe("0.144.2")
+    expect(projectModels).toHaveBeenCalledTimes(1)
+    expect(projectModels.mock.calls[0]?.[0].clientVersion).toBe("0.144.2")
     expect((await readPersistedCatalog(catalogPath)).models).toEqual(
       currentCatalog.models,
     )
@@ -142,7 +166,7 @@ test("Codex startup catalog rejects invalid catalog variants", async () => {
     const catalog = createCatalog()
     await createManagerForResponse(catalogPath, catalog).createResponse(
       "0.144.2",
-      [],
+      emptyInputs,
     )
     const previousBytes = await fs.readFile(catalogPath)
     const partialCatalog = createCatalog()
@@ -167,7 +191,7 @@ test("Codex startup catalog rejects invalid catalog variants", async () => {
       await createManagerForResponse(
         catalogPath,
         invalidCatalog,
-      ).createResponse("0.144.3", [])
+      ).createResponse("0.144.3", emptyInputs)
     }
 
     expect(await fs.readFile(catalogPath)).toEqual(previousBytes)
@@ -182,12 +206,12 @@ test("Codex startup catalog replaces an older snapshot with a newer client", asy
         autoCompactTokenLimit: 240_000,
         contextWindow: 400_000,
       }),
-    ).createResponse("0.143.0", [])
+    ).createResponse("0.143.0", emptyInputs)
     const currentCatalog = createCatalog()
 
     await createManagerForResponse(catalogPath, currentCatalog).createResponse(
       "0.144.2",
-      [],
+      emptyInputs,
     )
 
     expect((await readPersistedCatalog(catalogPath)).models).toEqual(
@@ -206,7 +230,7 @@ test("Codex startup catalog upgrades a legacy snapshot without metadata", async 
       "utf8",
     )
 
-    await manager.createResponse("0.144.2", [])
+    await manager.createResponse("0.144.2", emptyInputs)
 
     const persisted = await readPersistedCatalog(catalogPath)
     expect(persisted.models).toEqual(catalog.models)
@@ -219,16 +243,15 @@ test("Codex startup catalog keeps generation failures away from last-known-good"
     const catalog = createCatalog()
     await createManagerForResponse(catalogPath, catalog).createResponse(
       "0.144.2",
-      [],
+      emptyInputs,
     )
     const previousBytes = await fs.readFile(catalogPath)
     const manager = createCodexStartupCatalogManager({
       catalogPath,
-      createModelsResponse: () =>
-        Promise.reject(new Error("generation failed")),
+      projectModels: () => Promise.reject(new Error("generation failed")),
     })
 
-    expect(manager.createResponse("0.144.3", [])).rejects.toThrow(
+    expect(manager.createResponse("0.144.3", emptyInputs)).rejects.toThrow(
       "generation failed",
     )
     expect(await fs.readFile(catalogPath)).toEqual(previousBytes)
@@ -246,7 +269,9 @@ test("Codex models response survives a startup catalog write failure", async () 
     const catalog = createCatalog()
     const manager = createManagerForResponse(blockedCatalogPath, catalog)
 
-    expect(await manager.createResponse("0.144.2", [])).toEqual(catalog)
+    expect(await manager.createResponse("0.144.2", emptyInputs)).toEqual(
+      catalog,
+    )
     expect(await fs.readFile(blockingParent, "utf8")).toBe("keep me")
   })
 })
@@ -259,7 +284,7 @@ test("Codex startup catalog preserves last-known-good across atomic-layer failur
     })
     await createManagerForResponse(catalogPath, originalCatalog).createResponse(
       "0.143.0",
-      [],
+      emptyInputs,
     )
     const previousBytes = await fs.readFile(catalogPath)
 
@@ -267,14 +292,164 @@ test("Codex startup catalog preserves last-known-good across atomic-layer failur
       const currentCatalog = createCatalog()
       const manager = createCodexStartupCatalogManager({
         catalogPath,
-        createModelsResponse: () => Promise.resolve(currentCatalog),
+        projectModels: () => Promise.resolve(createProjection(currentCatalog)),
         writeAtomically: () => Promise.reject(new Error(failure)),
       })
 
-      expect(await manager.createResponse("0.144.2", [])).toEqual(
+      expect(await manager.createResponse("0.144.2", emptyInputs)).toEqual(
         currentCatalog,
       )
       expect(await fs.readFile(catalogPath)).toEqual(previousBytes)
     }
+  })
+})
+
+test("Codex startup catalog persists a degraded projection and removes stale aliases", async () => {
+  await withTemporaryCatalog(async (catalogPath) => {
+    const originalCatalog = createCatalog()
+    await createManagerForResponse(catalogPath, originalCatalog).createResponse(
+      "0.144.2",
+      emptyInputs,
+    )
+    const degradedCatalog = createCatalog({
+      autoCompactTokenLimit: 240_000,
+      contextWindow: 400_000,
+    })
+    const manager = createCodexStartupCatalogManager({
+      catalogPath,
+      projectModels: () =>
+        Promise.resolve(createProjection(degradedCatalog, "degraded")),
+    })
+
+    const result = await manager.createResponse("0.144.2", {
+      copilotModels: [],
+      modelMappings: { virtual: "missing" },
+    })
+
+    expect(result).toEqual(degradedCatalog)
+    expect((await readPersistedCatalog(catalogPath)).models).toEqual(
+      degradedCatalog.models,
+    )
+  })
+})
+
+test("Codex startup catalog preserves last-known-good for unavailable projections", async () => {
+  await withTemporaryCatalog(async (catalogPath) => {
+    const catalog = createCatalog()
+    await createManagerForResponse(catalogPath, catalog).createResponse(
+      "0.144.2",
+      emptyInputs,
+    )
+    const previousBytes = await fs.readFile(catalogPath)
+    const manager = createCodexStartupCatalogManager({
+      catalogPath,
+      listInstalledVersions: () => Promise.resolve(["0.144.2"]),
+      projectModels: () =>
+        Promise.resolve(createProjection({ models: [] }, "unavailable")),
+    })
+
+    expect(
+      await manager.refresh({
+        copilotModels: [],
+        modelMappings: { virtual: "missing" },
+      }),
+    ).toMatchObject({
+      reason: "projection_unavailable",
+      status: "skipped",
+    })
+    expect(await fs.readFile(catalogPath)).toEqual(previousBytes)
+  })
+})
+
+test("Codex startup catalog lets the latest input revision win when older generation finishes last", async () => {
+  await withTemporaryCatalog(async (catalogPath) => {
+    let releaseOlder!: (projection: CodexModelsProjection) => void
+    const olderProjection = new Promise<CodexModelsProjection>((resolve) => {
+      releaseOlder = resolve
+    })
+    const newerCatalog = createCatalog()
+    const projectModels = mock(
+      ({
+        modelMappings,
+      }: {
+        modelMappings: Readonly<Record<string, string>>
+      }) =>
+        Object.hasOwn(modelMappings, "older") ? olderProjection : (
+          Promise.resolve(createProjection(newerCatalog))
+        ),
+    )
+    const manager = createCodexStartupCatalogManager({
+      catalogPath,
+      projectModels,
+      listInstalledVersions: () => Promise.resolve(["0.144.2"]),
+    })
+
+    const olderRefresh = manager.refresh({
+      copilotModels: [],
+      modelMappings: { older: "target" },
+    })
+    await Promise.resolve()
+    const newerRefresh = manager.refresh({
+      copilotModels: [],
+      modelMappings: { newer: "target" },
+    })
+    expect(await newerRefresh).toMatchObject({ status: "updated" })
+
+    releaseOlder(
+      createProjection(
+        createCatalog({
+          autoCompactTokenLimit: 240_000,
+          contextWindow: 400_000,
+        }),
+      ),
+    )
+    expect(await olderRefresh).toMatchObject({
+      reason: "superseded_input",
+      status: "skipped",
+    })
+    expect((await readPersistedCatalog(catalogPath)).models).toEqual(
+      newerCatalog.models,
+    )
+  })
+})
+
+test("Codex startup observations reuse unchanged input revisions without bypassing version ordering", async () => {
+  await withTemporaryCatalog(async (catalogPath) => {
+    const manager = createCodexStartupCatalogManager({
+      catalogPath,
+      projectModels: () => Promise.resolve(createProjection(createCatalog())),
+    })
+
+    await manager.createResponse("0.145.0", emptyInputs)
+    const result = await manager.createResponse("0.144.2", {
+      copilotModels: [],
+      modelMappings: {},
+    })
+
+    expect(result).toEqual(createCatalog())
+    expect(
+      (await readPersistedCatalog(catalogPath))._copilot_api.client_version,
+    ).toBe("0.145.0")
+  })
+})
+
+test("Codex startup observations ignore mapping key order when assigning revisions", async () => {
+  await withTemporaryCatalog(async (catalogPath) => {
+    const manager = createCodexStartupCatalogManager({
+      catalogPath,
+      listInstalledVersions: () => Promise.resolve(["0.145.0"]),
+      projectModels: () => Promise.resolve(createProjection(createCatalog())),
+    })
+
+    const first = await manager.refresh({
+      copilotModels: [],
+      modelMappings: { alpha: "target-a", beta: "target-b" },
+    })
+    const reordered = await manager.refresh({
+      copilotModels: [],
+      modelMappings: { beta: "target-b", alpha: "target-a" },
+    })
+
+    expect(reordered.inputRevision).toBe(first.inputRevision)
   })
 })

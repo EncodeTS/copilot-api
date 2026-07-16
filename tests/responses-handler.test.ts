@@ -114,6 +114,7 @@ beforeEach(async () => {
   responsesApiWebSocketEnabled = true
   responsesHandlerDependencies.createResponses = createResponses
   responsesHandlerDependencies.isResponsesApiWebSearchEnabled = () => true
+  responsesHandlerDependencies.resolveMappedModel = (model) => model
   responsesUtilsDependencies.getModelResponsesApiCompactThreshold = () =>
     undefined
   responsesUtilsDependencies.isContextManagementEnabledForMessages = () => true
@@ -146,6 +147,79 @@ afterEach(async () => {
 })
 
 describe("responses handler token usage", () => {
+  test("model mapping preserves explicit and omitted native Responses intent", async () => {
+    state.models = {
+      object: "list",
+      data: [
+        {
+          capabilities: {
+            limits: { max_prompt_tokens: 128000 },
+          },
+          id: "gpt-target",
+          supported_endpoints: ["/responses"],
+        },
+      ],
+    } as typeof state.models
+    responsesHandlerDependencies.resolveMappedModel = (model) =>
+      model === "gpt-source" ? "gpt-target" : model
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve(createResponsesResult(payload.model)),
+    )
+    const input = [
+      {
+        role: "user",
+        content: [{ type: "input_text", text: "hello" }],
+      },
+    ]
+    const tools = [
+      {
+        type: "function",
+        name: "lookup",
+        description: "Lookup",
+        parameters: { type: "object", properties: {} },
+      },
+    ]
+
+    for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
+      const response = await createApp().request("/v1/responses", {
+        body: JSON.stringify({
+          input,
+          instructions: "Keep the caller instructions",
+          max_output_tokens: 321,
+          metadata: { request: effort },
+          model: "gpt-source",
+          reasoning: { effort, summary: "detailed" },
+          tool_choice: "required",
+          tools,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      })
+
+      expect(response.status).toBe(200)
+      expect(createResponses.mock.calls.at(-1)?.[0]).toMatchObject({
+        input,
+        instructions: "Keep the caller instructions",
+        max_output_tokens: 321,
+        metadata: { request: effort },
+        model: "gpt-target",
+        reasoning: { effort, summary: "detailed" },
+        tool_choice: "required",
+        tools,
+      })
+    }
+
+    await createApp().request("/v1/responses", {
+      body: JSON.stringify({
+        input,
+        model: "gpt-source",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+    expect(createResponses.mock.calls.at(-1)?.[0].reasoning).toBeUndefined()
+  })
+
   test("forwards the Hono request abort signal to the upstream lifecycle", async () => {
     createResponses.mockImplementation((payload) =>
       Promise.resolve(createResponsesResult(payload.model)),

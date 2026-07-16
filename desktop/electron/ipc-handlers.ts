@@ -37,12 +37,10 @@ import type {
   ProviderAuthInput,
   ServerAuthInfo,
 } from '../src/types/ipc'
-
-interface ConfigApiErrorResponse {
-  error?: {
-    message?: string
-  }
-}
+import {
+  readConfigApiError,
+  saveModelMappingsRequest,
+} from './model-mappings-api'
 
 type ServerAuthScope = 'default' | 'admin'
 
@@ -119,15 +117,6 @@ function getConfigApiBaseUrl(): string {
   return `http://localhost:${getPort()}/admin/config/model-mappings`
 }
 
-async function readConfigApiError(response: Response): Promise<string> {
-  try {
-    const payload = (await response.json()) as ConfigApiErrorResponse
-    return payload.error?.message ?? response.statusText
-  } catch {
-    return response.statusText
-  }
-}
-
 async function fetchModelMappingsConfig(): Promise<ModelMappingsConfig> {
   const headers = await getServerRequestHeaders('admin')
   const response = await fetch(getConfigApiBaseUrl(), {
@@ -143,20 +132,13 @@ async function fetchModelMappingsConfig(): Promise<ModelMappingsConfig> {
 
 async function saveModelMappingsViaApi(
   modelMappings: Record<string, string>,
-): Promise<void> {
+): ReturnType<typeof saveModelMappingsRequest> {
   const headers = await getServerRequestHeaders('admin')
-  const response = await fetch(getConfigApiBaseUrl(), {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      ...headers,
-    },
-    body: JSON.stringify({ modelMappings }),
-    signal: AbortSignal.timeout(5000),
+  return await saveModelMappingsRequest({
+    headers,
+    modelMappings,
+    url: getConfigApiBaseUrl(),
   })
-  if (!response.ok) {
-    throw new Error(await readConfigApiError(response))
-  }
 }
 
 export function registerIpcHandlers(
@@ -302,9 +284,8 @@ export function registerIpcHandlers(
   )
   ipcMain.handle(
     'config:save-model-mappings',
-    async (_event, modelMappings: Record<string, string>) => {
-      await saveModelMappingsViaApi(modelMappings)
-    },
+    async (_event, modelMappings: Record<string, string>) =>
+      await saveModelMappingsViaApi(modelMappings),
   )
 
   // Shell: Open the system browser

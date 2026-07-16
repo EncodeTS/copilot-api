@@ -6,7 +6,10 @@ import { networkInterfaces } from "node:os"
 
 import type { AnthropicMessagesPayload } from "~/routes/messages/anthropic-types"
 
-import { getModels as getCopilotModels } from "~/services/copilot/get-models"
+import {
+  getModels as getCopilotModels,
+  type ModelsResponse,
+} from "~/services/copilot/get-models"
 import { getVSCodeVersion } from "~/services/get-vscode-version"
 
 import { getVSCodeDeviceId } from "./deviceid"
@@ -33,8 +36,14 @@ export const stopModelsRefreshLoop = () => {
 }
 
 type ModelsFetcher = typeof getCopilotModels
+type ModelsRefreshObserver = (
+  models: Readonly<ModelsResponse>,
+) => Promise<void> | void
 
-const refreshModels = async (fetcher: ModelsFetcher) => {
+const refreshModels = async (
+  fetcher: ModelsFetcher,
+  onRefresh?: ModelsRefreshObserver,
+) => {
   const prevIds = new Set(state.models?.data.map((m) => m.id) ?? [])
   const models = await fetcher()
   state.models = {
@@ -51,9 +60,20 @@ const refreshModels = async (fetcher: ModelsFetcher) => {
   } else {
     consola.debug(`Models refresh: no changes (${nextIds.length} total)`)
   }
+  if (onRefresh) {
+    try {
+      await onRefresh(structuredClone(state.models))
+    } catch (error) {
+      consola.warn("Models refresh observer failed.", error)
+    }
+  }
 }
 
-const scheduleModelsRefresh = (fetcher: ModelsFetcher, intervalMs: number) => {
+const scheduleModelsRefresh = (
+  fetcher: ModelsFetcher,
+  intervalMs: number,
+  onRefresh?: ModelsRefreshObserver,
+) => {
   const jitter = Math.floor(Math.random() * (intervalMs / 6))
   const delay = intervalMs + jitter
   consola.debug(
@@ -63,11 +83,11 @@ const scheduleModelsRefresh = (fetcher: ModelsFetcher, intervalMs: number) => {
   stopModelsRefreshLoop()
   modelsRefreshTimer = setTimeout(async () => {
     try {
-      await refreshModels(fetcher)
+      await refreshModels(fetcher, onRefresh)
     } catch (error) {
       consola.warn("Failed to refresh models, keeping previous cache.", error)
     } finally {
-      scheduleModelsRefresh(fetcher, intervalMs)
+      scheduleModelsRefresh(fetcher, intervalMs, onRefresh)
     }
   }, delay)
 }
@@ -75,9 +95,10 @@ const scheduleModelsRefresh = (fetcher: ModelsFetcher, intervalMs: number) => {
 export async function cacheModels(
   fetcher: ModelsFetcher = getCopilotModels,
   intervalMs: number = MODELS_REFRESH_BASE_MS,
+  onRefresh?: ModelsRefreshObserver,
 ): Promise<void> {
-  await refreshModels(fetcher)
-  scheduleModelsRefresh(fetcher, intervalMs)
+  await refreshModels(fetcher, onRefresh)
+  scheduleModelsRefresh(fetcher, intervalMs, onRefresh)
 }
 
 export const cacheVSCodeVersion = async () => {
