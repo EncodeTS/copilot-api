@@ -11,7 +11,11 @@ import { responsesReasoningRecoveryRegistry } from "~/services/copilot/responses
 import { codexStartupCatalogManager } from "~/services/codex/startup-catalog"
 
 import { runProviderSetup } from "./auth"
-import { listEnabledProviders, mergeConfigWithDefaults } from "./lib/config"
+import {
+  getModelMappings,
+  listEnabledProviders,
+  mergeConfigWithDefaults,
+} from "./lib/config"
 import { readGitHubToken } from "./lib/credential-store"
 import { initOpencodeVersion } from "./lib/opencode"
 import { ensurePaths, PATHS } from "./lib/paths"
@@ -57,22 +61,17 @@ async function setupCopilotMode(
   await cacheVsCodeDeviceId()
 
   await setupCopilotToken()
-  await cacheModels()
-  try {
-    const result = await codexStartupCatalogManager.refresh(
-      state.models?.data ?? [],
-    )
+  await cacheModels(undefined, undefined, async (models) => {
+    const result = await codexStartupCatalogManager.refresh({
+      copilotModels: models.data,
+      modelMappings: getModelMappings(),
+    })
     if (result.status === "updated") {
       consola.info("Codex startup catalog updated", result)
     } else {
       consola.debug("Codex startup catalog refresh", result)
     }
-  } catch (error) {
-    consola.warn(
-      "Failed to refresh Codex startup catalog; keeping last-known-good file.",
-      error,
-    )
-  }
+  })
 
   consola.info(
     `Available models: \n${state.models?.data.map((model) => `- ${model.id}`).join("\n")}`,

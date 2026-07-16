@@ -1,4 +1,5 @@
 import type { LangPreference } from '../locales'
+import type { CodexStartupCatalogUpdateResult } from '../../../src/services/codex/startup-catalog'
 
 export interface DeviceCodeInfo {
   user_code: string
@@ -59,6 +60,10 @@ export interface ServerAuthInfo {
 export interface ModelMappingsConfig {
   configPath: string
   modelMappings: Record<string, string>
+}
+
+export interface ModelMappingsSaveResult extends ModelMappingsConfig {
+  catalogRefresh: CodexStartupCatalogUpdateResult
 }
 
 export type TokenUsagePeriod = 'day' | 'week' | 'month'
@@ -201,7 +206,7 @@ declare global {
       getModelMappingsConfig: () => Promise<ModelMappingsConfig>
       saveModelMappings: (
         modelMappings: Record<string, string>,
-      ) => Promise<void>
+      ) => Promise<ModelMappingsSaveResult>
       openUrl: (url: string) => Promise<void>
       fetchUsage: () => Promise<unknown>
       fetchModels: () => Promise<unknown>

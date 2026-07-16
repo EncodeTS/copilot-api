@@ -4,6 +4,7 @@ import { useLanguage } from '../contexts/LanguageContext'
 import {
   buildModelMappingsFromRows,
   createModelMappingRow,
+  getModelMappingsSaveOutcome,
   modelMappingsToRows,
   type ModelMappingRow,
 } from '../lib/model-mappings-editor'
@@ -23,6 +24,7 @@ export default function ModelMappingsPage({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [saveMessage, setSaveMessage] = useState('')
+  const [saveWarning, setSaveWarning] = useState(false)
 
   useEffect(() => {
     translationRef.current = t
@@ -37,6 +39,7 @@ export default function ModelMappingsPage({
     setConfigPath('')
     setRows([])
     setSaveMessage('')
+    setSaveWarning(false)
     setError(t('advancedConfig.serverRequired'))
   }, [serverRunning, t])
 
@@ -93,18 +96,21 @@ export default function ModelMappingsPage({
     )
     setError('')
     setSaveMessage('')
+    setSaveWarning(false)
   }
 
   const handleAddRow = () => {
     setRows((currentRows) => [...currentRows, createModelMappingRow()])
     setError('')
     setSaveMessage('')
+    setSaveWarning(false)
   }
 
   const handleRemoveRow = (id: string) => {
     setRows((currentRows) => currentRows.filter((row) => row.id !== id))
     setError('')
     setSaveMessage('')
+    setSaveWarning(false)
   }
 
   const buildModelMappings = (): Record<string, string> | null => {
@@ -127,6 +133,7 @@ export default function ModelMappingsPage({
   const handleSave = async () => {
     setError('')
     setSaveMessage('')
+    setSaveWarning(false)
 
     const nextModelMappings = buildModelMappings()
     if (!nextModelMappings) {
@@ -135,9 +142,24 @@ export default function ModelMappingsPage({
 
     setSaving(true)
     try {
-      await window.electronAPI.saveModelMappings(nextModelMappings)
-      setRows(modelMappingsToRows(nextModelMappings))
-      setSaveMessage(t('advancedConfig.saved'))
+      const result =
+        await window.electronAPI.saveModelMappings(nextModelMappings)
+      setRows(modelMappingsToRows(result.modelMappings))
+      const outcome = getModelMappingsSaveOutcome(result)
+      setSaveWarning(
+        outcome === 'degraded'
+          || outcome === 'refresh_failed'
+          || outcome === 'refresh_skipped',
+      )
+      setSaveMessage(
+        outcome === 'restart_required' ?
+          t('advancedConfig.savedRestartRequired')
+        : outcome === 'degraded' ? t('advancedConfig.savedDegraded')
+        : outcome === 'refresh_failed' ? t('advancedConfig.savedRefreshFailed')
+        : outcome === 'refresh_skipped' ?
+          t('advancedConfig.savedRefreshSkipped')
+        : t('advancedConfig.saved'),
+      )
     } catch (err) {
       setError(`${t('advancedConfig.saveFailed')}: ${(err as Error).message}`)
     } finally {
@@ -182,7 +204,13 @@ export default function ModelMappingsPage({
         )}
 
         {saveMessage && !error && (
-          <div className="shrink-0 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[13px] text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-400">
+          <div
+            className={
+              saveWarning ?
+                'shrink-0 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300'
+              : 'shrink-0 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[13px] text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-400'
+            }
+          >
             {saveMessage}
           </div>
         )}

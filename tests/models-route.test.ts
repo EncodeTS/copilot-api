@@ -10,9 +10,12 @@ const actualTokenModule = await import("../src/lib/token")
 
 let enabledProviders: Array<string> = []
 let providerConfigs: Record<string, ResolvedProviderConfig | null> = {}
+let modelMappings: Record<string, string> = {}
+let bundledCodexCatalog: ReturnType<typeof createCodexCatalog>
 
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
+  getModelMappings: () => modelMappings,
   getProviderConfig: (provider: string) => providerConfigs[provider] ?? null,
   getRawProviderConfig: (provider: string) => providerConfigs[provider] ?? null,
   listEnabledProviders: () => enabledProviders,
@@ -171,12 +174,14 @@ function createApp() {
 
 beforeEach(() => {
   enabledProviders = []
+  modelMappings = {}
   providerConfigs = {}
+  bundledCodexCatalog = createCodexCatalog()
   state.models = undefined
   fetchMock.mockClear()
   clearCodexCatalogCache()
   codexClientModelsDependencies.loadBundledCatalog = (version) =>
-    Promise.resolve(version === "0.144.1" ? createCodexCatalog() : null)
+    Promise.resolve(version === "0.144.1" ? bundledCodexCatalog : null)
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
     fetchMock as unknown as typeof fetch
 })
@@ -230,6 +235,63 @@ describe("model routes", () => {
       "second/second-model",
       "first/first-model",
     ])
+  })
+
+  test("projects target operations onto an existing source without mutating the live snapshot", async () => {
+    const source = createCopilotModels(["gpt-source"]).data[0]
+    source.name = "Source display"
+    source.preview = true
+    source.vendor = "source-vendor"
+    source.version = "source-version"
+    source.supported_endpoints = ["/chat/completions"]
+    const target = createGpt56CopilotModels().data[0]
+    target.id = "gpt-target"
+    target.name = "Target display"
+    const originalSource = structuredClone(source)
+    const originalTarget = structuredClone(target)
+    state.models = {
+      data: [source, target],
+      object: "list",
+    }
+    modelMappings = { "gpt-source": "gpt-target" }
+
+    const response = await createApp().request("/v1/models")
+    const body = (await response.json()) as {
+      data: Array<Record<string, unknown>>
+    }
+    const virtualSource = body.data.find(({ id }) => id === "gpt-source")
+
+    expect(virtualSource).toMatchObject({
+      id: "gpt-source",
+      display_name: "Source display",
+      name: "Source display",
+      object: "model",
+      preview: true,
+      supported_endpoints: target.supported_endpoints,
+      vendor: target.vendor,
+      version: target.version,
+    })
+    expect(virtualSource?.capabilities).toEqual(target.capabilities)
+    expect(body.data.map(({ id }) => id)).toContain("gpt-target")
+    expect(source).toEqual(originalSource)
+    expect(target).toEqual(originalTarget)
+    expect(virtualSource?.capabilities).not.toBe(target.capabilities)
+  })
+
+  test("does not synthesize absent sources or provider-target capabilities", async () => {
+    state.models = createGpt56CopilotModels()
+    modelMappings = {
+      "absent-source": "gpt-5.6-sol",
+      "gpt-5.6-sol": "provider/model",
+    }
+
+    const response = await createApp().request("/v1/models")
+    const body = (await response.json()) as {
+      data: Array<{ id: string; vendor: string }>
+    }
+
+    expect(body.data.map(({ id }) => id)).toEqual(["gpt-5.6-sol"])
+    expect(body.data[0]?.vendor).toBe("openai")
   })
 
   test("returns provider models in provider-only mode and skips failed providers", async () => {
@@ -336,7 +398,7 @@ describe("model routes", () => {
       (model?.supported_reasoning_levels as Array<{ effort: string }>).map(
         ({ effort }) => effort,
       ),
-    ).toContain("ultra")
+    ).toEqual(["low", "max"])
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
@@ -435,5 +497,56 @@ describe("model routes", () => {
     expect(cachedResponse.status).toBe(304)
     expect(await cachedResponse.text()).toBe("")
     expect(cachedResponse.headers.get("etag")).toBe(etag)
+  })
+
+  test("changes Codex ETags only when mappings change the effective catalog", async () => {
+    bundledCodexCatalog = {
+      models: [
+        {
+          ...createCodexCatalog().models[0],
+          base_instructions: "mini instructions",
+          display_name: "Mini",
+          slug: "gpt-mini",
+        },
+        {
+          ...createCodexCatalog().models[0],
+          base_instructions: "target instructions",
+          display_name: "Target",
+          slug: "gpt-target",
+        },
+      ],
+    }
+    const mini = createGpt56CopilotModels().data[0]
+    mini.id = "gpt-mini"
+    mini.name = "Mini"
+    const target = structuredClone(mini)
+    target.id = "gpt-target"
+    target.name = "Target"
+    target.capabilities.limits.max_context_window_tokens = 400_000
+    state.models = { data: [mini, target], object: "list" }
+    const request = {
+      headers: { "user-agent": "codex-tui/0.144.1" },
+    }
+    const app = createApp()
+
+    const baseline = await app.request(
+      "/v1/models?client_version=0.144.1",
+      request,
+    )
+    const baselineEtag = baseline.headers.get("etag")
+
+    modelMappings = { "irrelevant-source": "provider/model" }
+    const irrelevant = await app.request(
+      "/v1/models?client_version=0.144.1",
+      request,
+    )
+    expect(irrelevant.headers.get("etag")).toBe(baselineEtag)
+
+    modelMappings = { "gpt-mini": "gpt-target" }
+    const effective = await app.request(
+      "/v1/models?client_version=0.144.1",
+      request,
+    )
+    expect(effective.headers.get("etag")).not.toBe(baselineEtag)
   })
 })

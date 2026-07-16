@@ -15,6 +15,13 @@ export type ModelMappingsValidationResult =
       reason: 'duplicate' | 'incomplete'
     }
 
+export type ModelMappingsSaveOutcome =
+  | 'degraded'
+  | 'refresh_failed'
+  | 'refresh_skipped'
+  | 'restart_required'
+  | 'saved'
+
 function createModelMappingRowId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 }
@@ -42,14 +49,14 @@ export function modelMappingsToRows(
 export function buildModelMappingsFromRows(
   rows: ModelMappingRow[],
 ): ModelMappingsValidationResult {
-  const modelMappings: Record<string, string> = {}
+  const modelMappings = Object.create(null) as Record<string, string>
 
   for (const row of rows) {
-    if (!row.source && !row.target) {
+    if (!row.source.trim() && !row.target.trim()) {
       continue
     }
 
-    if (!row.source || !row.target) {
+    if (!row.source.trim() || !row.target.trim()) {
       return { ok: false, reason: 'incomplete' }
     }
 
@@ -62,3 +69,15 @@ export function buildModelMappingsFromRows(
 
   return { modelMappings, ok: true }
 }
+
+export function getModelMappingsSaveOutcome(
+  result: ModelMappingsSaveResult,
+): ModelMappingsSaveOutcome {
+  const refresh = result.catalogRefresh
+  if (refresh.status === 'failed') return 'refresh_failed'
+  if (refresh.degraded) return 'degraded'
+  if (refresh.restartRequired) return 'restart_required'
+  if (refresh.status === 'skipped') return 'refresh_skipped'
+  return 'saved'
+}
+import type { ModelMappingsSaveResult } from '../types/ipc'

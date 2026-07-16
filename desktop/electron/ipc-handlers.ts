@@ -37,6 +37,7 @@ import type {
   ProviderAuthInput,
   ServerAuthInfo,
 } from '../src/types/ipc'
+import { saveModelMappingsRequest } from './model-mappings-api'
 
 interface ConfigApiErrorResponse {
   error?: {
@@ -143,20 +144,13 @@ async function fetchModelMappingsConfig(): Promise<ModelMappingsConfig> {
 
 async function saveModelMappingsViaApi(
   modelMappings: Record<string, string>,
-): Promise<void> {
+): ReturnType<typeof saveModelMappingsRequest> {
   const headers = await getServerRequestHeaders('admin')
-  const response = await fetch(getConfigApiBaseUrl(), {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      ...headers,
-    },
-    body: JSON.stringify({ modelMappings }),
-    signal: AbortSignal.timeout(5000),
+  return await saveModelMappingsRequest({
+    headers,
+    modelMappings,
+    url: getConfigApiBaseUrl(),
   })
-  if (!response.ok) {
-    throw new Error(await readConfigApiError(response))
-  }
 }
 
 export function registerIpcHandlers(
@@ -302,9 +296,8 @@ export function registerIpcHandlers(
   )
   ipcMain.handle(
     'config:save-model-mappings',
-    async (_event, modelMappings: Record<string, string>) => {
-      await saveModelMappingsViaApi(modelMappings)
-    },
+    async (_event, modelMappings: Record<string, string>) =>
+      await saveModelMappingsViaApi(modelMappings),
   )
 
   // Shell: Open the system browser

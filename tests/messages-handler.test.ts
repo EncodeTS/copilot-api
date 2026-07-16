@@ -159,6 +159,42 @@ afterEach(() => {
 })
 
 describe("messages handler orchestration", () => {
+  test("resolves model identity before shared request preparation", async () => {
+    modelMappings = { "original-model": "messages-model" }
+    selectedModel = {
+      id: "messages-model",
+      supported_endpoints: ["/v1/messages"],
+    }
+    const tools = [
+      {
+        name: "lookup",
+        description: "Lookup",
+        input_schema: { type: "object", properties: {} },
+      },
+    ]
+
+    const response = await createApp().request("/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(
+        createPayload({
+          system: "Keep these instructions",
+          temperature: 0.4,
+          tools,
+        }),
+      ),
+    })
+
+    expect(response.status).toBe(200)
+    expect(findEndpointModel).toHaveBeenCalledWith("messages-model")
+    expect(handleWithMessagesApi.mock.calls[0][1]).toMatchObject({
+      model: "messages-model",
+      system: "Keep these instructions",
+      temperature: 0.4,
+      tools,
+    })
+  })
+
   test("forwards the Hono request abort signal to the selected flow", async () => {
     selectedModel = {
       id: "messages-model",
