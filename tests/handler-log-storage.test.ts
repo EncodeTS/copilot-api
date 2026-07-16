@@ -196,6 +196,59 @@ test("handler log storage applies retention and budget only to managed files", a
   }
 })
 
+test("handler log cleanup tolerates a concurrent segment removal", async () => {
+  const logDirectory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "copilot-api-storage-removal-race-"),
+  )
+  const expiredFile = path.join(
+    logDirectory,
+    "expired-handler-2026-07-01.part-0.log",
+  )
+  fs.writeFileSync(expiredFile, "expired")
+  fs.utimesSync(expiredFile, new Date(0), new Date(0))
+
+  const errors: Array<string> = []
+  let simulateRace = true
+  const fileSystem: HandlerLogFileSystem = {
+    ...fsPromises,
+    rm: async (...args) => {
+      if (simulateRace && args[0] === expiredFile) {
+        simulateRace = false
+        await fsPromises.rm(...args)
+        throw Object.assign(new Error("removed concurrently"), {
+          code: "ENOENT",
+        })
+      }
+      await fsPromises.rm(...args)
+    },
+  }
+  const storage = createHandlerLogStorage({
+    fileSystem,
+    logDirectory,
+    now: () => Date.UTC(2026, 6, 15),
+    onError: (message) => errors.push(message),
+    startTimers: false,
+  })
+
+  try {
+    await storage.cleanup()
+    expect(errors).toEqual([])
+    expect(fs.existsSync(expiredFile)).toBeFalse()
+
+    const basePath = path.join(logDirectory, "current-handler-2026-07-15.log")
+    storage.append(basePath, "current")
+    await storage.flush()
+    expect(
+      fs.existsSync(
+        path.join(logDirectory, "current-handler-2026-07-15.part-0.log"),
+      ),
+    ).toBeTrue()
+  } finally {
+    await storage.close()
+    fs.rmSync(logDirectory, { force: true, recursive: true })
+  }
+})
+
 test("handler log cleanup reports a permission failure and rebuilds a deleted directory", async () => {
   const parentDirectory = fs.mkdtempSync(
     path.join(os.tmpdir(), "copilot-api-storage-rebuild-"),
