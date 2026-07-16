@@ -398,7 +398,7 @@ describe("model routes", () => {
       (model?.supported_reasoning_levels as Array<{ effort: string }>).map(
         ({ effort }) => effort,
       ),
-    ).toEqual(["low", "max"])
+    ).toEqual(["low", "max", "ultra"])
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
