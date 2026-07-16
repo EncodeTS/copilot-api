@@ -1,14 +1,6 @@
 import { parentPort } from "node:worker_threads"
 
-const ENCODING_MAP = {
-  o200k_base: () => import("gpt-tokenizer/encoding/o200k_base"),
-  cl100k_base: () => import("gpt-tokenizer/encoding/cl100k_base"),
-  p50k_base: () => import("gpt-tokenizer/encoding/p50k_base"),
-  p50k_edit: () => import("gpt-tokenizer/encoding/p50k_edit"),
-  r50k_base: () => import("gpt-tokenizer/encoding/r50k_base"),
-} as const
-
-type SupportedEncoding = keyof typeof ENCODING_MAP
+import { ENCODING_MAP, type SupportedEncoding } from "~/lib/tokenizer-encodings"
 
 interface TokenizerWorkerRequest {
   encoding: SupportedEncoding
