@@ -431,3 +431,24 @@ test("Codex startup observations reuse unchanged input revisions without bypassi
     ).toBe("0.145.0")
   })
 })
+
+test("Codex startup observations ignore mapping key order when assigning revisions", async () => {
+  await withTemporaryCatalog(async (catalogPath) => {
+    const manager = createCodexStartupCatalogManager({
+      catalogPath,
+      listInstalledVersions: () => Promise.resolve(["0.145.0"]),
+      projectModels: () => Promise.resolve(createProjection(createCatalog())),
+    })
+
+    const first = await manager.refresh({
+      copilotModels: [],
+      modelMappings: { alpha: "target-a", beta: "target-b" },
+    })
+    const reordered = await manager.refresh({
+      copilotModels: [],
+      modelMappings: { beta: "target-b", alpha: "target-a" },
+    })
+
+    expect(reordered.inputRevision).toBe(first.inputRevision)
+  })
+})

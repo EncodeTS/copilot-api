@@ -1,6 +1,7 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
+import { isDeepStrictEqual } from "node:util"
 import consola from "consola"
 
 import {
@@ -97,10 +98,14 @@ export const createCodexStartupCatalogManager = ({
     const nextInputs = cloneInputs(inputs)
     if (
       currentSnapshot
-      && JSON.stringify(currentSnapshot.copilotModels)
-        === JSON.stringify(nextInputs.copilotModels)
-      && JSON.stringify(currentSnapshot.modelMappings)
-        === JSON.stringify(nextInputs.modelMappings)
+      && isDeepStrictEqual(
+        currentSnapshot.copilotModels,
+        nextInputs.copilotModels,
+      )
+      && isDeepStrictEqual(
+        currentSnapshot.modelMappings,
+        nextInputs.modelMappings,
+      )
     ) {
       return currentSnapshot
     }
