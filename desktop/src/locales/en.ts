@@ -214,7 +214,7 @@ const en: Locale = {
     saved:
       'Saved through the service API. New requests to /v1/messages, /v1/messages/count_tokens, /v1/responses, and /v1/chat/completions will use the updated mappings immediately.',
     savedDegraded:
-      'Mappings are active for new requests. The startup catalog was updated with unavailable aliases omitted; restart Codex to load it.',
+      'The projected catalog is degraded because unavailable aliases were omitted.',
     savedRefreshFailed:
       'Mappings are active for new requests, but the Codex startup catalog could not be refreshed. The previous startup catalog was preserved.',
     savedRefreshSkipped:

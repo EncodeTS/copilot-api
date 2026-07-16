@@ -309,6 +309,57 @@ describe("Codex client models", () => {
     ])
   })
 
+  test("reports disabled, Responses-incompatible, and provider-qualified alias targets", async () => {
+    codexClientModelsDependencies.loadBundledCatalog = () =>
+      Promise.resolve(aliasCatalog)
+    const luna = createCopilotModel(
+      { max_context_window_tokens: 1_050_000 },
+      { id: "gpt-5.6-luna" },
+    )
+    const cases: Array<{
+      code:
+        | "target_disabled"
+        | "target_provider_qualified"
+        | "target_responses_unsupported"
+      copilotModels: Array<Model>
+      target: string
+    }> = [
+      {
+        code: "target_disabled",
+        copilotModels: [{ ...luna, model_picker_enabled: false }],
+        target: "gpt-5.6-luna",
+      },
+      {
+        code: "target_responses_unsupported",
+        copilotModels: [{ ...luna, supported_endpoints: ["/v1/messages"] }],
+        target: "gpt-5.6-luna",
+      },
+      {
+        code: "target_provider_qualified",
+        copilotModels: [],
+        target: "provider/model",
+      },
+    ]
+
+    for (const { code, copilotModels, target } of cases) {
+      const result = await projectCodexModels({
+        clientVersion: "0.144.1",
+        copilotModels,
+        modelMappings: { "gpt-5.4-mini": target },
+      })
+
+      expect(result.status).toBe("degraded")
+      expect(result.catalog.models.map(({ slug }) => slug)).not.toContain(
+        "gpt-5.4-mini",
+      )
+      expect(result.diagnostics).toContainEqual({
+        code,
+        source: "gpt-5.4-mini",
+        target,
+      })
+    }
+  })
+
   test("omits aliases with invalid live capacity or incompatible reasoning", async () => {
     codexClientModelsDependencies.loadBundledCatalog = () =>
       Promise.resolve(aliasCatalog)

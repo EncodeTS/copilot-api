@@ -6,16 +6,17 @@ import consola from "consola"
 import { serve, type ServerHandler } from "srvx"
 import invariant from "tiny-invariant"
 
-import { registerProcessCleanup } from "~/lib/process-cleanup"
-import { responsesReasoningRecoveryRegistry } from "~/services/copilot/responses-reasoning-recovery-registry"
-import { codexStartupCatalogManager } from "~/services/codex/startup-catalog"
-
-import { runProviderSetup } from "./auth"
 import {
   getModelMappings,
   listEnabledProviders,
   mergeConfigWithDefaults,
-} from "./lib/config"
+} from "~/lib/config"
+import { registerProcessCleanup } from "~/lib/process-cleanup"
+import { responsesReasoningRecoveryRegistry } from "~/services/copilot/responses-reasoning-recovery-registry"
+import type { ModelsResponse } from "~/services/copilot/get-models"
+import { codexStartupCatalogManager } from "~/services/codex/startup-catalog"
+
+import { runProviderSetup } from "./auth"
 import { readGitHubToken } from "./lib/credential-store"
 import { initOpencodeVersion } from "./lib/opencode"
 import { ensurePaths, PATHS } from "./lib/paths"
@@ -40,6 +41,25 @@ interface RunServerOptions {
   proxyEnv: boolean
 }
 
+export const startDependencies = {
+  getModelMappings,
+  refreshStartupCatalog: codexStartupCatalogManager.refresh,
+}
+
+export async function refreshCodexStartupCatalog(
+  models: ModelsResponse,
+): Promise<void> {
+  const result = await startDependencies.refreshStartupCatalog({
+    copilotModels: models.data,
+    modelMappings: startDependencies.getModelMappings(),
+  })
+  if (result.status === "updated") {
+    consola.info("Codex startup catalog updated", result)
+  } else {
+    consola.debug("Codex startup catalog refresh", result)
+  }
+}
+
 async function setupCopilotMode(
   githubToken: string,
   fromCli: boolean,
@@ -61,17 +81,7 @@ async function setupCopilotMode(
   await cacheVsCodeDeviceId()
 
   await setupCopilotToken()
-  await cacheModels(undefined, undefined, async (models) => {
-    const result = await codexStartupCatalogManager.refresh({
-      copilotModels: models.data,
-      modelMappings: getModelMappings(),
-    })
-    if (result.status === "updated") {
-      consola.info("Codex startup catalog updated", result)
-    } else {
-      consola.debug("Codex startup catalog refresh", result)
-    }
-  })
+  await cacheModels(undefined, undefined, refreshCodexStartupCatalog)
 
   consola.info(
     `Available models: \n${state.models?.data.map((model) => `- ${model.id}`).join("\n")}`,

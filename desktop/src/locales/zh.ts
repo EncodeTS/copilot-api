@@ -206,8 +206,7 @@ const zh: Locale = {
       '保存时会通过服务接口只更新 config.json 里的 modelMappings 字段，不会覆盖其他配置。',
     saved:
       '已通过服务接口保存。后续新的 `POST /v1/messages`、`POST /v1/messages/count_tokens`、`POST /v1/responses` 和 `POST /v1/chat/completions` 请求都会立即使用最新映射。',
-    savedDegraded:
-      '映射已对新请求生效。启动目录已更新，但不可用的别名已被省略；请重启 Codex 以加载新目录。',
+    savedDegraded: '目录投影已降级，不可用的别名已被省略。',
     savedRefreshFailed:
       '映射已对新请求生效，但 Codex 启动目录刷新失败，之前的启动目录已保留。',
     savedRefreshSkipped:

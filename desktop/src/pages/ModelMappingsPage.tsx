@@ -4,10 +4,10 @@ import { useLanguage } from '../contexts/LanguageContext'
 import {
   buildModelMappingsFromRows,
   createModelMappingRow,
-  getModelMappingsSaveOutcome,
+  getModelMappingsSavePresentation,
   modelMappingsToRows,
   type ModelMappingRow,
-  type ModelMappingsSaveOutcome,
+  type ModelMappingsSavePresentation,
 } from '../lib/model-mappings-editor'
 
 interface ModelMappingsPageProps {
@@ -25,8 +25,8 @@ export default function ModelMappingsPage({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [saveMessage, setSaveMessage] = useState('')
-  const [saveOutcome, setSaveOutcome] =
-    useState<ModelMappingsSaveOutcome | null>(null)
+  const [savePresentation, setSavePresentation] =
+    useState<ModelMappingsSavePresentation | null>(null)
 
   useEffect(() => {
     translationRef.current = t
@@ -41,7 +41,7 @@ export default function ModelMappingsPage({
     setConfigPath('')
     setRows([])
     setSaveMessage('')
-    setSaveOutcome(null)
+    setSavePresentation(null)
     setError(t('advancedConfig.serverRequired'))
   }, [serverRunning, t])
 
@@ -98,21 +98,21 @@ export default function ModelMappingsPage({
     )
     setError('')
     setSaveMessage('')
-    setSaveOutcome(null)
+    setSavePresentation(null)
   }
 
   const handleAddRow = () => {
     setRows((currentRows) => [...currentRows, createModelMappingRow()])
     setError('')
     setSaveMessage('')
-    setSaveOutcome(null)
+    setSavePresentation(null)
   }
 
   const handleRemoveRow = (id: string) => {
     setRows((currentRows) => currentRows.filter((row) => row.id !== id))
     setError('')
     setSaveMessage('')
-    setSaveOutcome(null)
+    setSavePresentation(null)
   }
 
   const buildModelMappings = (): Record<string, string> | null => {
@@ -135,7 +135,7 @@ export default function ModelMappingsPage({
   const handleSave = async () => {
     setError('')
     setSaveMessage('')
-    setSaveOutcome(null)
+    setSavePresentation(null)
 
     const nextModelMappings = buildModelMappings()
     if (!nextModelMappings) {
@@ -147,16 +147,23 @@ export default function ModelMappingsPage({
       const result =
         await window.electronAPI.saveModelMappings(nextModelMappings)
       setRows(modelMappingsToRows(result.modelMappings))
-      const outcome = getModelMappingsSaveOutcome(result)
-      setSaveOutcome(outcome)
+      const presentation = getModelMappingsSavePresentation(result)
+      const messages = {
+        saved: t('advancedConfig.saved'),
+        savedRefreshFailed: t('advancedConfig.savedRefreshFailed'),
+        savedRefreshSkipped: t('advancedConfig.savedRefreshSkipped'),
+        savedRestartRequired: t('advancedConfig.savedRestartRequired'),
+      }
+      setSavePresentation(presentation)
       setSaveMessage(
-        outcome === 'restart_required' ?
-          t('advancedConfig.savedRestartRequired')
-        : outcome === 'degraded' ? t('advancedConfig.savedDegraded')
-        : outcome === 'refresh_failed' ? t('advancedConfig.savedRefreshFailed')
-        : outcome === 'refresh_skipped' ?
-          t('advancedConfig.savedRefreshSkipped')
-        : t('advancedConfig.saved'),
+        [
+          messages[presentation.messageKey],
+          presentation.degradedMessageKey ?
+            t('advancedConfig.savedDegraded')
+          : null,
+        ]
+          .filter(Boolean)
+          .join(' '),
       )
     } catch (err) {
       setError(`${t('advancedConfig.saveFailed')}: ${(err as Error).message}`)
@@ -204,13 +211,11 @@ export default function ModelMappingsPage({
         {saveMessage && !error && (
           <div
             className={
-              saveOutcome === 'refresh_failed' ?
+              savePresentation?.tone === 'error' ?
                 'shrink-0 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-700 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-400'
-              : saveOutcome === 'restart_required' ?
+              : savePresentation?.tone === 'info' ?
                 'shrink-0 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[13px] text-blue-700 dark:border-blue-500/30 dark:bg-blue-500/15 dark:text-blue-300'
-              : (
-                saveOutcome === 'degraded' || saveOutcome === 'refresh_skipped'
-              ) ?
+              : savePresentation?.tone === 'warning' ?
                 'shrink-0 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300'
               : 'shrink-0 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[13px] text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-400'
 
