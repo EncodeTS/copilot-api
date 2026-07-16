@@ -369,12 +369,15 @@ export const numTokensForTools = (
 export const getTokenCount = async (
   payload: ChatCompletionsPayload,
   model: Model,
+  options: { signal?: AbortSignal } = {},
 ): Promise<{ input: number; output: number }> => {
+  options.signal?.throwIfAborted()
   // Get tokenizer string
   const tokenizer = getTokenizerFromModel(model)
 
   // Get corresponding encoder module
   const encoder = await getEncodeChatFunction(tokenizer)
+  options.signal?.throwIfAborted()
 
   const simplifiedMessages = payload.messages
   const inputMessages = simplifiedMessages.filter(
@@ -391,6 +394,7 @@ export const getTokenCount = async (
     inputTokens += numTokensForTools(payload.tools, encoder, constants)
   }
   const outputTokens = calculateTokens(outputMessages, encoder, constants)
+  options.signal?.throwIfAborted()
 
   return {
     input: inputTokens,

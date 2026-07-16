@@ -102,7 +102,7 @@ const {
   prepareCopilotChatCompletionsPayload,
 } = await import("../src/routes/messages/api-flows")
 const { prepareCopilotMessagesRequest } = await import(
-  "../src/routes/messages/prepared-messages"
+  "../src/routes/messages/prepared-messages/core"
 )
 const { getPreparedCopilotMessagesPlan, preparedMessagesCoreDependencies } =
   await import("../src/routes/messages/prepared-messages/core")

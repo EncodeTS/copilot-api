@@ -49,6 +49,8 @@ interface PreparedCommon {
 
 export type PreparedCopilotMessagesPlan =
   | (PreparedCommon & {
+      countPayload: ChatCompletionsPayload
+      countSourcePayload: AnthropicMessagesPayload
       kind: "chat_completions"
       payload: ChatCompletionsPayload
     })
@@ -163,8 +165,27 @@ export const prepareCopilotMessagesRequest = (
         endpointModel?.capabilities.supports.reasoning_effort,
     })
     prepareCopilotChatCompletionsPayload(payload)
+    const countSourcePayload =
+      endpointModel ? sourcePayload : (
+        {
+          ...structuredClone(sourcePayload),
+          model: tokenizerModel.id,
+        }
+      )
+    const countPayload =
+      endpointModel ? payload : (
+        translateToOpenAI(countSourcePayload, {
+          validateReasoningEffort: true,
+          reasoningEffortSupport: undefined,
+        })
+      )
+    if (!endpointModel) {
+      prepareCopilotChatCompletionsPayload(countPayload)
+    }
     plan = {
       ...common,
+      countPayload,
+      countSourcePayload,
       kind,
       payload,
     }
