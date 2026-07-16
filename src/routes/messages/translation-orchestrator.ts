@@ -3,11 +3,11 @@ import type { Context } from "hono"
 import { HTTPError } from "~/lib/error"
 
 import type { AnthropicMessagesPayload } from "./anthropic-types"
+import { prepareCopilotMessagesRequest } from "./prepared-messages/core"
 import {
   generatePreparedCopilotMessages,
-  prepareCopilotMessagesRequest,
   preparedMessagesGenerationDependencies,
-} from "./prepared-messages"
+} from "./prepared-messages/generate"
 
 export const messagesTranslationDependencies =
   preparedMessagesGenerationDependencies

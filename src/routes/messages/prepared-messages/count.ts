@@ -11,10 +11,16 @@ import type { PreparedCopilotMessagesRequest } from "./core"
 import { getPreparedCopilotMessagesPlan } from "./core"
 import { estimateResponsesInputTokens } from "./token-estimation"
 
-export interface PreparedMessagesCountResult {
-  inputTokens: number
-  mode: "authoritative" | "estimate"
-}
+export type PreparedMessagesCountResult =
+  | {
+      mode: "authoritative"
+      response: Awaited<ReturnType<typeof countMessagesTokens>>
+    }
+  | {
+      fallbackStatus?: 404 | 501
+      inputTokens: number
+      mode: "estimate"
+    }
 
 export const preparedMessagesCountDependencies = {
   countCopilotMessagesTokens: countMessagesTokens,
@@ -33,12 +39,6 @@ export const countPreparedCopilotMessages = async (
   } = {},
 ): Promise<PreparedMessagesCountResult> => {
   const plan = getPreparedCopilotMessagesPlan(prepared)
-  if (
-    plan.usedFallbackModel
-    && preparedMessagesCountDependencies.hasEndpointModelCatalog()
-  ) {
-    throw unsupportedCatalogModelError(plan.sourcePayload.model)
-  }
   if (plan.kind === "responses") {
     return {
       inputTokens:
@@ -51,6 +51,7 @@ export const countPreparedCopilotMessages = async (
     }
   }
   if (plan.kind === "messages") {
+    let fallbackStatus: 404 | 501 | undefined
     try {
       const result =
         await preparedMessagesCountDependencies.countCopilotMessagesTokens(
@@ -65,8 +66,8 @@ export const countPreparedCopilotMessages = async (
           },
         )
       return {
-        inputTokens: result.input_tokens,
         mode: "authoritative",
+        response: result,
       }
     } catch (error) {
       if (
@@ -75,14 +76,17 @@ export const countPreparedCopilotMessages = async (
       ) {
         throw error
       }
+      fallbackStatus = error.response.status
     }
 
     return {
+      fallbackStatus,
       inputTokens: await estimateChatPayload(
         plan.fallbackPayload,
         plan.sourcePayload,
         plan.tokenizerModel,
         options.anthropicBetaHeader,
+        options.signal,
       ),
       mode: "estimate",
     }
@@ -90,32 +94,15 @@ export const countPreparedCopilotMessages = async (
 
   return {
     inputTokens: await estimateChatPayload(
-      plan.payload,
-      plan.sourcePayload,
+      plan.countPayload,
+      plan.countSourcePayload,
       plan.tokenizerModel,
       options.anthropicBetaHeader,
+      options.signal,
     ),
     mode: "estimate",
   }
 }
-
-const unsupportedCatalogModelError = (model: string): HTTPError =>
-  new HTTPError(
-    "Requested model is absent from the current Copilot model catalog",
-    new Response(
-      JSON.stringify({
-        type: "error",
-        error: {
-          type: "invalid_request_error",
-          message: `The requested model is not supported by the current Copilot model catalog: ${model}`,
-        },
-      }),
-      {
-        headers: { "content-type": "application/json" },
-        status: 400,
-      },
-    ),
-  )
 
 const estimateChatPayload = async (
   payload: ChatCompletionsPayload,
@@ -125,11 +112,15 @@ const estimateChatPayload = async (
   },
   model: Parameters<typeof getTokenCount>[1],
   anthropicBetaHeader?: string,
+  signal?: AbortSignal,
 ): Promise<number> => {
+  signal?.throwIfAborted()
   const tokenCount = await preparedMessagesCountDependencies.getTokenCount(
     payload,
     model,
+    { signal },
   )
+  signal?.throwIfAborted()
   if (source.tools && source.tools.length > 0 && anthropicBetaHeader) {
     const toolsLength = source.tools.length
     const addToolSystemPromptCount = !source.tools.some(

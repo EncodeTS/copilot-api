@@ -10,67 +10,18 @@ import { routeProviderModelAlias } from "~/routes/provider/model-router"
 import { type AnthropicMessagesPayload } from "./anthropic-types"
 import {
   countPreparedCopilotMessages,
-  prepareCopilotMessagesRequest,
   preparedMessagesCountDependencies,
-} from "./prepared-messages"
-import { preparedMessagesCoreDependencies } from "./prepared-messages/core"
+} from "./prepared-messages/count"
+import {
+  prepareCopilotMessagesRequest,
+  preparedMessagesCoreDependencies,
+} from "./prepared-messages/core"
 
 export {
   estimateResponsesInputTokens,
   ResponsesTokenEstimateLimitError,
 } from "./prepared-messages/token-estimation"
 import { ResponsesTokenEstimateLimitError } from "./prepared-messages/token-estimation"
-
-export const countTokensHandlerDependencies = {
-  get countCopilotMessagesTokens() {
-    return preparedMessagesCountDependencies.countCopilotMessagesTokens
-  },
-  set countCopilotMessagesTokens(
-    value: typeof preparedMessagesCountDependencies.countCopilotMessagesTokens,
-  ) {
-    preparedMessagesCountDependencies.countCopilotMessagesTokens = value
-  },
-  get estimateResponsesInputTokens() {
-    return preparedMessagesCountDependencies.estimateResponsesInputTokens
-  },
-  set estimateResponsesInputTokens(
-    value: typeof preparedMessagesCountDependencies.estimateResponsesInputTokens,
-  ) {
-    preparedMessagesCountDependencies.estimateResponsesInputTokens = value
-  },
-  get findEndpointModel() {
-    return preparedMessagesCoreDependencies.findEndpointModel
-  },
-  set findEndpointModel(
-    value: typeof preparedMessagesCoreDependencies.findEndpointModel,
-  ) {
-    preparedMessagesCoreDependencies.findEndpointModel = value
-  },
-  get getTokenCount() {
-    return preparedMessagesCountDependencies.getTokenCount
-  },
-  set getTokenCount(
-    value: typeof preparedMessagesCountDependencies.getTokenCount,
-  ) {
-    preparedMessagesCountDependencies.getTokenCount = value
-  },
-  get hasEndpointModelCatalog() {
-    return preparedMessagesCountDependencies.hasEndpointModelCatalog
-  },
-  set hasEndpointModelCatalog(
-    value: typeof preparedMessagesCountDependencies.hasEndpointModelCatalog,
-  ) {
-    preparedMessagesCountDependencies.hasEndpointModelCatalog = value
-  },
-  get isMessagesApiEnabled() {
-    return preparedMessagesCoreDependencies.isMessagesApiEnabled
-  },
-  set isMessagesApiEnabled(
-    value: typeof preparedMessagesCoreDependencies.isMessagesApiEnabled,
-  ) {
-    preparedMessagesCoreDependencies.isMessagesApiEnabled = value
-  },
-}
 
 const tokenEstimateLimitError = (
   error: ResponsesTokenEstimateLimitError,
@@ -102,6 +53,13 @@ export async function handleCountTokens(c: Context) {
   })
   if (providerResponse) return providerResponse
 
+  if (
+    !preparedMessagesCoreDependencies.findEndpointModel(anthropicPayload.model)
+    && preparedMessagesCountDependencies.hasEndpointModelCatalog()
+  ) {
+    throw unsupportedCatalogModelError(anthropicPayload.model)
+  }
+
   let result
   try {
     result = await countPreparedCopilotMessages(
@@ -119,11 +77,38 @@ export async function handleCountTokens(c: Context) {
     throw error
   }
 
-  if (result.mode === "estimate") {
-    consola.info("Estimated token count:", result.inputTokens)
-    c.header("x-copilot-api-token-count-mode", "estimate")
-  } else {
-    consola.info("Token count (Copilot Messages API):", result.inputTokens)
+  if (result.mode === "authoritative") {
+    consola.info(
+      "Token count (Copilot Messages API):",
+      result.response.input_tokens,
+    )
+    return c.json(result.response)
   }
+
+  if (result.fallbackStatus) {
+    consola.warn(
+      `Copilot Messages count endpoint unavailable (${result.fallbackStatus}); using a local estimate`,
+    )
+  }
+  consola.info("Estimated token count:", result.inputTokens)
+  c.header("x-copilot-api-token-count-mode", "estimate")
   return c.json({ input_tokens: result.inputTokens })
 }
+
+const unsupportedCatalogModelError = (model: string): HTTPError =>
+  new HTTPError(
+    "Requested model is absent from the current Copilot model catalog",
+    new Response(
+      JSON.stringify({
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message: `The requested model is not supported by the current Copilot model catalog: ${model}`,
+        },
+      }),
+      {
+        headers: { "content-type": "application/json" },
+        status: 400,
+      },
+    ),
+  )
