@@ -5,10 +5,15 @@ import { state } from "../src/lib/state"
 import type { Model } from "../src/services/copilot/get-models"
 import type { ResponsesPayload } from "../src/services/copilot/create-responses"
 import {
-  countTokensHandlerDependencies,
+  compactSummaryPromptStart,
+  compactTextOnlyGuard,
+} from "../src/lib/compact"
+import {
   estimateResponsesInputTokens,
   ResponsesTokenEstimateLimitError,
 } from "../src/routes/messages/count-tokens-handler"
+import { preparedMessagesCountDependencies } from "../src/routes/messages/prepared-messages/count"
+import { preparedMessagesCoreDependencies } from "../src/routes/messages/prepared-messages/core"
 import { messageRoutes } from "../src/routes/messages/route"
 import type { AnthropicMessagesPayload } from "../src/routes/messages/anthropic-types"
 import { translateAnthropicMessagesToResponsesPayload } from "../src/routes/messages/responses-translation"
@@ -27,7 +32,8 @@ const originalState = {
   vsCodeVersion: state.vsCodeVersion,
 }
 const originalAnthropicApiKey = process.env.ANTHROPIC_API_KEY
-const originalDependencies = { ...countTokensHandlerDependencies }
+const originalCountDependencies = { ...preparedMessagesCountDependencies }
+const originalCoreDependencies = { ...preparedMessagesCoreDependencies }
 
 const claudeModel = {
   id: "claude-opus-4-8",
@@ -53,6 +59,12 @@ const gptModel = {
     },
     tokenizer: "o200k_base",
   },
+} as Model
+
+const chatModel = {
+  ...gptModel,
+  id: "gpt-chat",
+  supported_endpoints: ["/chat/completions"],
 } as Model
 
 const fetchMock = mock((_input: string | URL | Request, _init?: RequestInit) =>
@@ -82,14 +94,14 @@ beforeEach(() => {
     object: "list",
     data: [claudeModel],
   } as typeof state.models
-  countTokensHandlerDependencies.findEndpointModel = (model) =>
+  preparedMessagesCoreDependencies.findEndpointModel = (model) =>
     model === claudeModel.id ? claudeModel : undefined
-  countTokensHandlerDependencies.getTokenCount = (payload) =>
+  preparedMessagesCountDependencies.getTokenCount = (payload) =>
     Promise.resolve({
       input: payload.tools?.length ? 20 : 10,
       output: 0,
     })
-  countTokensHandlerDependencies.isMessagesApiEnabled = () => true
+  preparedMessagesCoreDependencies.isMessagesApiEnabled = () => true
   process.env.ANTHROPIC_API_KEY = "must-not-be-used"
   fetchMock.mockClear()
   globalThis.fetch = fetchMock as unknown as typeof fetch
@@ -105,7 +117,8 @@ afterEach(() => {
   state.vsCodeDeviceId = originalState.vsCodeDeviceId
   state.vsCodeSessionId = originalState.vsCodeSessionId
   state.vsCodeVersion = originalState.vsCodeVersion
-  Object.assign(countTokensHandlerDependencies, originalDependencies)
+  Object.assign(preparedMessagesCountDependencies, originalCountDependencies)
+  Object.assign(preparedMessagesCoreDependencies, originalCoreDependencies)
   if (originalAnthropicApiKey === undefined) {
     delete process.env.ANTHROPIC_API_KEY
   } else {
@@ -178,10 +191,13 @@ test("Claude count_tokens forwards the final native Messages request to Copilot"
 test("Claude count_tokens preserves the official count endpoint's accounting", async () => {
   fetchMock.mockImplementationOnce(() =>
     Promise.resolve(
-      new Response(JSON.stringify({ input_tokens: 59 }), {
-        headers: { "content-type": "application/json" },
-        status: 200,
-      }),
+      new Response(
+        JSON.stringify({ input_tokens: 59, accounting: "upstream" }),
+        {
+          headers: { "content-type": "application/json" },
+          status: 200,
+        },
+      ),
     ),
   )
 
@@ -198,7 +214,10 @@ test("Claude count_tokens preserves the official count endpoint's accounting", a
   expect(response.status).toBe(200)
   // The official count endpoint includes request construction overhead. It is
   // not expected to equal generation usage.input_tokens for the visible text.
-  expect(await response.json()).toEqual({ input_tokens: 59 })
+  expect(await response.json()).toEqual({
+    input_tokens: 59,
+    accounting: "upstream",
+  })
 })
 
 test("Claude count_tokens preserves Copilot validation errors", async () => {
@@ -334,12 +353,12 @@ test("GPT count_tokens estimates the final Responses payload without calling Mes
     object: "list",
     data: [gptModel],
   } as typeof state.models
-  countTokensHandlerDependencies.findEndpointModel = (model) =>
+  preparedMessagesCoreDependencies.findEndpointModel = (model) =>
     model === gptModel.id ? gptModel : undefined
   const estimateResponses = mock((_payload: ResponsesPayload, _model: Model) =>
     Promise.resolve(321),
   )
-  countTokensHandlerDependencies.estimateResponsesInputTokens =
+  preparedMessagesCountDependencies.estimateResponsesInputTokens =
     estimateResponses
 
   const response = await createApp().request("/v1/messages/count_tokens", {
@@ -394,6 +413,116 @@ test("GPT count_tokens estimates the final Responses payload without calling Mes
     tools: [],
   })
   expect(estimateResponses.mock.calls[0][0]).not.toHaveProperty("tool_choice")
+})
+
+test("Count Tokens rejects assistant prefill for a Responses-only model", async () => {
+  state.models = {
+    object: "list",
+    data: [gptModel],
+  } as typeof state.models
+  preparedMessagesCoreDependencies.findEndpointModel = (model) =>
+    model === gptModel.id ? gptModel : undefined
+
+  const response = await createApp().request("/v1/messages/count_tokens", {
+    body: JSON.stringify({
+      model: gptModel.id,
+      max_tokens: 100,
+      messages: [
+        { role: "user", content: "Return JSON" },
+        { role: "assistant", content: '{"value":' },
+      ],
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })
+
+  expect(response.status).toBe(400)
+  expect(await response.json()).toEqual({
+    type: "error",
+    error: {
+      type: "invalid_request_error",
+      message:
+        "Assistant prefill is not supported by the Responses API bridge.",
+    },
+  })
+})
+
+test("Count Tokens rejects forced executeCode for a Chat-only model", async () => {
+  state.models = {
+    object: "list",
+    data: [chatModel],
+  } as typeof state.models
+  preparedMessagesCoreDependencies.findEndpointModel = (model) =>
+    model === chatModel.id ? chatModel : undefined
+
+  const response = await createApp().request("/v1/messages/count_tokens", {
+    body: JSON.stringify({
+      model: chatModel.id,
+      max_tokens: 100,
+      messages: [{ role: "user", content: "run code" }],
+      tool_choice: {
+        type: "tool",
+        name: "mcp__ide__executeCode",
+      },
+      tools: [
+        {
+          name: "mcp__ide__executeCode",
+          description: "Execute code",
+          input_schema: { type: "object" },
+        },
+      ],
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })
+
+  expect(response.status).toBe(400)
+  expect(await response.json()).toEqual({
+    type: "error",
+    error: {
+      type: "invalid_request_error",
+      message:
+        "mcp__ide__executeCode is not supported by the Chat Completions fallback.",
+    },
+  })
+})
+
+test("Count Tokens uses Chat estimation for compact requests on ws-only models", async () => {
+  const wsOnlyModel = {
+    ...gptModel,
+    id: "gpt-ws-only",
+    supported_endpoints: ["ws:/responses"],
+  } as Model
+  state.models = {
+    object: "list",
+    data: [wsOnlyModel],
+  } as typeof state.models
+  preparedMessagesCoreDependencies.findEndpointModel = (model) =>
+    model === wsOnlyModel.id ? wsOnlyModel : undefined
+  const estimateResponses = mock(() => Promise.resolve(321))
+  preparedMessagesCountDependencies.estimateResponsesInputTokens =
+    estimateResponses
+
+  const response = await createApp().request("/v1/messages/count_tokens", {
+    body: JSON.stringify({
+      model: wsOnlyModel.id,
+      max_tokens: 100,
+      messages: [
+        {
+          role: "user",
+          content: `${compactTextOnlyGuard}\n\n${compactSummaryPromptStart}\n\nPending Tasks:\n- one`,
+        },
+      ],
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })
+
+  expect(response.status).toBe(200)
+  expect(response.headers.get("x-copilot-api-token-count-mode")).toBe(
+    "estimate",
+  )
+  expect(estimateResponses).not.toHaveBeenCalled()
 })
 
 test("GPT Responses estimator stays within the conservative live-usage band", async () => {
@@ -618,8 +747,8 @@ test("GPT Responses estimator yields while tokenizing a pathological long scalar
 
 test("GPT count_tokens returns a structured 400 for estimator safety limits", async () => {
   state.models = { object: "list", data: [gptModel] } as typeof state.models
-  countTokensHandlerDependencies.findEndpointModel = () => gptModel
-  countTokensHandlerDependencies.estimateResponsesInputTokens = () =>
+  preparedMessagesCoreDependencies.findEndpointModel = () => gptModel
+  preparedMessagesCountDependencies.estimateResponsesInputTokens = () =>
     Promise.reject(
       new ResponsesTokenEstimateLimitError(
         "Responses token estimate exceeds the maximum node count of 10000",
@@ -648,7 +777,7 @@ test("GPT count_tokens returns a structured 400 for estimator safety limits", as
 })
 
 test("models absent from a loaded Copilot catalog fail instead of returning a fake count", async () => {
-  countTokensHandlerDependencies.findEndpointModel = () => undefined
+  preparedMessagesCoreDependencies.findEndpointModel = () => undefined
 
   const response = await createApp().request("/v1/messages/count_tokens", {
     body: JSON.stringify({
@@ -672,9 +801,37 @@ test("models absent from a loaded Copilot catalog fail instead of returning a fa
   expect(fetchMock).not.toHaveBeenCalled()
 })
 
+test("catalog rejection precedes prepared-flow validation", async () => {
+  preparedMessagesCoreDependencies.findEndpointModel = () => undefined
+
+  const response = await createApp().request("/v1/messages/count_tokens", {
+    body: JSON.stringify({
+      model: "unknown-model",
+      max_tokens: 128,
+      messages: [{ role: "user", content: "hello" }],
+      tool_choice: {
+        type: "tool",
+        name: "mcp__ide__executeCode",
+      },
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })
+
+  expect(response.status).toBe(400)
+  expect(await response.json()).toEqual({
+    type: "error",
+    error: {
+      type: "invalid_request_error",
+      message:
+        "The requested model is not supported by the current Copilot model catalog: unknown-model",
+    },
+  })
+})
+
 test("an unavailable Copilot catalog keeps the fallback explicitly labeled", async () => {
   state.models = undefined
-  countTokensHandlerDependencies.findEndpointModel = () => undefined
+  preparedMessagesCoreDependencies.findEndpointModel = () => undefined
 
   const response = await createApp().request("/v1/messages/count_tokens", {
     body: JSON.stringify({

@@ -6,6 +6,7 @@ import type {
   ToolCall,
 } from "~/services/copilot/create-chat-completions"
 import type { Model } from "~/services/copilot/get-models"
+import { countTextsInTokenizerWorker } from "./tokenizer-worker-client"
 
 // Encoder type mapping
 const ENCODING_MAP = {
@@ -25,6 +26,7 @@ interface Encoder {
 
 // Cache loaded encoders to avoid repeated imports
 const encodingCache = new Map<string, Encoder>()
+const RESPONSIVE_ENCODING_THRESHOLD = 16_384
 
 /**
  * Calculate tokens for tool calls
@@ -363,18 +365,68 @@ export const numTokensForTools = (
   return funcTokenCount
 }
 
+const createResponsiveEncoder = async (
+  payload: ChatCompletionsPayload,
+  encoder: Encoder,
+  constants: ReturnType<typeof getModelConstants>,
+  tokenizer: string,
+  signal: AbortSignal,
+): Promise<Encoder> => {
+  const texts = new Set<string>()
+  const collectingEncoder: Encoder = {
+    encode: (text) => {
+      texts.add(text)
+      return []
+    },
+  }
+  calculateTokens(payload.messages, collectingEncoder, constants)
+  if (payload.tools && payload.tools.length > 0) {
+    numTokensForTools(payload.tools, collectingEncoder, constants)
+  }
+
+  const textList = [...texts]
+  const totalCodeUnits = textList.reduce(
+    (total, text) => total + text.length,
+    0,
+  )
+  if (totalCodeUnits < RESPONSIVE_ENCODING_THRESHOLD) {
+    signal.throwIfAborted()
+    return encoder
+  }
+
+  const supportedEncoding = tokenizer in ENCODING_MAP ? tokenizer : "o200k_base"
+  const counts = await encodeTextsInWorker(textList, supportedEncoding, signal)
+  const countByText = new Map(
+    textList.map((text, index) => [text, counts[index]]),
+  )
+  return {
+    encode: (text) =>
+      new Array<number>(countByText.get(text) ?? encoder.encode(text).length),
+  }
+}
+
+const encodeTextsInWorker = (
+  texts: Array<string>,
+  encoding: string,
+  signal: AbortSignal,
+): Promise<Array<number>> =>
+  countTextsInTokenizerWorker(texts, encoding, signal)
+
 /**
  * Calculate the token count of messages, supporting multiple GPT encoders
  */
 export const getTokenCount = async (
   payload: ChatCompletionsPayload,
   model: Model,
+  options: { signal?: AbortSignal } = {},
 ): Promise<{ input: number; output: number }> => {
+  options.signal?.throwIfAborted()
   // Get tokenizer string
   const tokenizer = getTokenizerFromModel(model)
 
   // Get corresponding encoder module
   const encoder = await getEncodeChatFunction(tokenizer)
+  options.signal?.throwIfAborted()
 
   const simplifiedMessages = payload.messages
   const inputMessages = simplifiedMessages.filter(
@@ -385,12 +437,35 @@ export const getTokenCount = async (
   )
 
   const constants = getModelConstants(model)
+  const calculationEncoder =
+    options.signal ?
+      await createResponsiveEncoder(
+        payload,
+        encoder,
+        constants,
+        tokenizer,
+        options.signal,
+      )
+    : encoder
   // gpt count token https://github.com/openai/openai-cookbook/blob/main/examples/How_to_count_tokens_with_tiktoken.ipynb
-  let inputTokens = calculateTokens(inputMessages, encoder, constants)
+  let inputTokens = calculateTokens(
+    inputMessages,
+    calculationEncoder,
+    constants,
+  )
   if (payload.tools && payload.tools.length > 0) {
-    inputTokens += numTokensForTools(payload.tools, encoder, constants)
+    inputTokens += numTokensForTools(
+      payload.tools,
+      calculationEncoder,
+      constants,
+    )
   }
-  const outputTokens = calculateTokens(outputMessages, encoder, constants)
+  const outputTokens = calculateTokens(
+    outputMessages,
+    calculationEncoder,
+    constants,
+  )
+  options.signal?.throwIfAborted()
 
   return {
     input: inputTokens,

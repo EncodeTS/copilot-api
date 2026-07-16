@@ -49,9 +49,6 @@ await mock.module("~/lib/token-usage", () => ({
 }))
 
 const { messageRoutes } = await import("../src/routes/messages/route")
-const { resolveCountTokensModel } = await import(
-  "../src/routes/messages/count-tokens-handler"
-)
 
 const originalFetch = globalThis.fetch
 
@@ -284,14 +281,6 @@ describe("provider/model aliases on top-level messages routes", () => {
     expect(openAIPayload.model).toBe("qwen-plus")
     expect(selectedModel.id).toBe("qwen-plus")
     expect(selectedModel.capabilities.tokenizer).toBe("o200k_base")
-  })
-
-  test("resolves missing top-level count_tokens models to the o200k_base fallback model", () => {
-    const resolved = resolveCountTokensModel("missing-model", () => undefined)
-
-    expect(resolved.fallback).toBe(true)
-    expect(resolved.model.id).toBe("missing-model")
-    expect(resolved.model.capabilities.tokenizer).toBe("o200k_base")
   })
 
   test("does not return a fake count when provider token counting fails", async () => {
