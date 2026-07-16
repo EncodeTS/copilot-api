@@ -14,6 +14,12 @@ export const HANDLER_LOG_DEFAULTS = Object.freeze({
 const MANAGED_LOG_FILENAME_PATTERN =
   /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?-\d{4}-\d{2}-\d{2}\.part-\d+\.log$/u
 
+const hasFileSystemErrorCode = (error: unknown, code: string): boolean =>
+  error instanceof Error && "code" in error && error.code === code
+
+const isMissingFileError = (error: unknown): boolean =>
+  hasFileSystemErrorCode(error, "ENOENT")
+
 interface ActiveLogSegment {
   filePath: string
   index: number
@@ -156,6 +162,10 @@ export const createHandlerLogStorage = (
       forgetSegment(filePath)
       return true
     } catch (error) {
+      if (isMissingFileError(error)) {
+        forgetSegment(filePath)
+        return true
+      }
       reportError("Failed to remove handler log", error)
       return false
     }
@@ -176,10 +186,13 @@ export const createHandlerLogStorage = (
       }
       if (!stats.isFile()) continue
 
-      if (now() - stats.mtimeMs > retentionMs) {
-        await removeManagedFile(filePath)
+      if (
+        now() - stats.mtimeMs > retentionMs
+        && (await removeManagedFile(filePath))
+      ) {
         continue
       }
+      await fileSystem.chmod(filePath, 0o600)
       files.push({ filePath, mtimeMs: stats.mtimeMs, size: stats.size })
     }
 
