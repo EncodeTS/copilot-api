@@ -102,20 +102,31 @@ test("handler logs are private on disk", () => {
     path.join(os.tmpdir(), "copilot-api-private-logs-"),
   )
   fs.chmodSync(testLogDir, 0o755)
-  const dateKey = new Date().toLocaleDateString("sv-SE")
-  const existingLog = path.join(
-    testLogDir,
-    `existing-fixture-${dateKey}.part-0.log`,
-  )
-  fs.writeFileSync(existingLog, "existing\n", { mode: 0o644 })
 
   try {
+    const script = `
+      const fs = await import("node:fs")
+      const path = await import("node:path")
+      const logDir = process.env.COPILOT_API_LOG_DIR
+      if (!logDir) throw new Error("Missing log directory")
+      const dateKey = new Date().toLocaleDateString("sv-SE")
+      const existingLogs = [
+        path.join(logDir, \`existing-fixture-\${dateKey}.part-0.log\`),
+        path.join(logDir, \`existing-fixture-\${dateKey}.part-1.log\`),
+      ]
+      for (const [index, filePath] of existingLogs.entries()) {
+        fs.writeFileSync(filePath, \`existing \${index}\\n\`, { mode: 0o644 })
+        fs.chmodSync(filePath, 0o644)
+        if ((fs.statSync(filePath).mode & 0o777) !== 0o644) {
+          throw new Error("Could not create a public fixture")
+        }
+      }
+      const { createHandlerLogger } = await import("./src/lib/logger")
+      createHandlerLogger("private-fixture").warn("private.fixture")
+      createHandlerLogger("existing-fixture").warn("existing.fixture")
+    `
     const result = Bun.spawnSync({
-      cmd: [
-        process.execPath,
-        "--eval",
-        'const { createHandlerLogger } = await import("./src/lib/logger"); createHandlerLogger("private-fixture").warn("private.fixture"); createHandlerLogger("existing-fixture").warn("existing.fixture");',
-      ],
+      cmd: [process.execPath, "--eval", script],
       cwd: path.resolve(import.meta.dir, ".."),
       env: { ...process.env, COPILOT_API_LOG_DIR: testLogDir },
     })
@@ -123,15 +134,21 @@ test("handler logs are private on disk", () => {
     expect(result.exitCode).toBe(0)
     expect(fs.statSync(testLogDir).mode & 0o777).toBe(0o700)
 
-    const logFiles = fs
-      .readdirSync(testLogDir)
-      .filter(
-        (entry) =>
-          entry.startsWith("private-fixture-")
-          || entry.startsWith("existing-fixture-"),
-      )
-    expect(logFiles).toHaveLength(2)
-    for (const logFile of logFiles) {
+    const logFiles = fs.readdirSync(testLogDir)
+    const privateLogs = logFiles.filter((entry) =>
+      entry.startsWith("private-fixture-"),
+    )
+    const existingLogs = logFiles.filter((entry) =>
+      entry.startsWith("existing-fixture-"),
+    )
+    expect(privateLogs).toHaveLength(1)
+    expect(existingLogs).toHaveLength(2)
+
+    for (const logFile of logFiles.filter(
+      (entry) =>
+        entry.startsWith("private-fixture-")
+        || entry.startsWith("existing-fixture-"),
+    )) {
       expect(fs.statSync(path.join(testLogDir, logFile)).mode & 0o777).toBe(
         0o600,
       )
