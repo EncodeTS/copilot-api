@@ -71,8 +71,9 @@ await mock.module("~/lib/models", () => ({
 await mock.module("~/lib/utils", () => ({
   ...actualUtilsModule,
 }))
-const { handleCompletion, messagesFlowHandlers } = await import(
-  "../src/routes/messages/handler"
+const { handleCompletion } = await import("../src/routes/messages/handler")
+const { messagesTranslationDependencies: messagesFlowHandlers } = await import(
+  "../src/routes/messages/translation-orchestrator"
 )
 
 const defaultMessagesFlowHandlers = { ...messagesFlowHandlers }
@@ -363,6 +364,10 @@ describe("messages handler orchestration", () => {
     expect(forwardedPayload.tools?.map((tool) => tool.name)).toEqual([
       "keep_me",
     ])
+    const options = handleWithChatCompletions.mock.calls[0][2]
+    expect(options.requestId).toBe(
+      actualUtilsModule.generateRequestIdFromPayload(forwardedPayload),
+    )
   })
 
   test("rejects forced executeCode when only Chat Completions is available", async () => {

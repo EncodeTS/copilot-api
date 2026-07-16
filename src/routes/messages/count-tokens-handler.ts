@@ -8,15 +8,12 @@ import {
   isMessagesApiEnabled,
   resolveMappedModel,
 } from "~/lib/config"
-import {
-  createFallbackModel,
-  parseProviderModelAlias,
-} from "~/lib/provider-model"
+import { createFallbackModel } from "~/lib/provider-model"
 import { HTTPError } from "~/lib/error"
 import { getTextTokenCount, getTokenCount } from "~/lib/tokenizer"
 import { generateRequestIdFromPayload, getRootSessionId } from "~/lib/utils"
 import { state } from "~/lib/state"
-import { handleProviderCountTokensForProvider } from "~/routes/provider/messages/count-tokens-handler"
+import { routeProviderModelAlias } from "~/routes/provider/model-router"
 import {
   applyResponsesApiContextManagement,
   compactInputByLatestCompaction,
@@ -303,14 +300,11 @@ export async function handleCountTokens(c: Context) {
   anthropicPayload.model = resolveMappedModel(anthropicPayload.model)
   normalizeSystemMessages(anthropicPayload)
 
-  const providerModelAlias = parseProviderModelAlias(anthropicPayload.model)
-  if (providerModelAlias) {
-    anthropicPayload.model = providerModelAlias.model
-    return await handleProviderCountTokensForProvider(c, {
-      payload: anthropicPayload,
-      provider: providerModelAlias.provider,
-    })
-  }
+  const providerResponse = await routeProviderModelAlias(c, {
+    endpoint: "count_tokens",
+    payload: anthropicPayload,
+  })
+  if (providerResponse) return providerResponse
 
   const anthropicBeta = c.req.header("anthropic-beta")
 
