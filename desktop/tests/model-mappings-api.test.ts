@@ -37,3 +37,41 @@ test('desktop model mappings adapter returns the complete admin save outcome', a
   })
   expect(fetchRequest.mock.calls[0]?.[1].signal).toBeInstanceOf(AbortSignal)
 })
+
+test('desktop model mappings adapter reports structured API errors', async () => {
+  const fetchRequest = mock(() =>
+    Promise.resolve(
+      Response.json(
+        { error: { message: 'Invalid model mappings.' } },
+        { status: 400 },
+      ),
+    ),
+  )
+
+  await expect(
+    saveModelMappingsRequest({
+      fetchRequest: fetchRequest as unknown as typeof fetch,
+      modelMappings: { source: 'target' },
+      url: 'http://localhost/admin/config/model-mappings',
+    }),
+  ).rejects.toThrow('Invalid model mappings.')
+})
+
+test('desktop model mappings adapter falls back to HTTP status text', async () => {
+  const fetchRequest = mock(() =>
+    Promise.resolve(
+      new Response('upstream failure', {
+        status: 502,
+        statusText: 'Bad Gateway',
+      }),
+    ),
+  )
+
+  await expect(
+    saveModelMappingsRequest({
+      fetchRequest: fetchRequest as unknown as typeof fetch,
+      modelMappings: { source: 'target' },
+      url: 'http://localhost/admin/config/model-mappings',
+    }),
+  ).rejects.toThrow('Bad Gateway')
+})

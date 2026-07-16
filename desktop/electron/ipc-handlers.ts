@@ -37,13 +37,10 @@ import type {
   ProviderAuthInput,
   ServerAuthInfo,
 } from '../src/types/ipc'
-import { saveModelMappingsRequest } from './model-mappings-api'
-
-interface ConfigApiErrorResponse {
-  error?: {
-    message?: string
-  }
-}
+import {
+  readConfigApiError,
+  saveModelMappingsRequest,
+} from './model-mappings-api'
 
 type ServerAuthScope = 'default' | 'admin'
 
@@ -118,15 +115,6 @@ function getConfigApiBaseUrl(): string {
   }
 
   return `http://localhost:${getPort()}/admin/config/model-mappings`
-}
-
-async function readConfigApiError(response: Response): Promise<string> {
-  try {
-    const payload = (await response.json()) as ConfigApiErrorResponse
-    return payload.error?.message ?? response.statusText
-  } catch {
-    return response.statusText
-  }
 }
 
 async function fetchModelMappingsConfig(): Promise<ModelMappingsConfig> {

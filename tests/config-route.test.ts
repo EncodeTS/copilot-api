@@ -115,6 +115,64 @@ describe("config model mappings route", () => {
     })
   })
 
+  test("reports an unchanged startup catalog separately from the saved mapping", async () => {
+    refreshStartupCatalog.mockResolvedValueOnce({
+      clientVersion: "0.144.2",
+      degraded: false,
+      inputRevision: 2,
+      modelCount: 1,
+      path: "/tmp/models.json",
+      restartRequired: false,
+      status: "unchanged",
+    })
+    const response = await createApp().request("/admin/config/model-mappings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        modelMappings: { source: "target" },
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      catalogRefresh: {
+        degraded: false,
+        restartRequired: false,
+        status: "unchanged",
+      },
+      modelMappings: { source: "target" },
+    })
+  })
+
+  test("reports a degraded startup catalog without failing the mapping save", async () => {
+    refreshStartupCatalog.mockResolvedValueOnce({
+      clientVersion: "0.144.2",
+      degraded: true,
+      inputRevision: 3,
+      modelCount: 1,
+      path: "/tmp/models.json",
+      restartRequired: true,
+      status: "updated",
+    })
+    const response = await createApp().request("/admin/config/model-mappings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        modelMappings: { source: "target" },
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      catalogRefresh: {
+        degraded: true,
+        restartRequired: true,
+        status: "updated",
+      },
+      modelMappings: { source: "target" },
+    })
+  })
+
   test("rejects invalid request bodies", async () => {
     const app = createApp()
     const response = await app.request("/admin/config/model-mappings", {

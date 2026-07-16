@@ -16,11 +16,21 @@ export type ModelMappingsValidationResult =
     }
 
 export type ModelMappingsSaveOutcome =
-  | 'degraded'
-  | 'refresh_failed'
-  | 'refresh_skipped'
-  | 'restart_required'
+  'refresh_failed' | 'refresh_skipped' | 'restart_required' | 'saved'
+
+export type ModelMappingsSaveMessageKey =
   | 'saved'
+  | 'savedDegraded'
+  | 'savedRefreshFailed'
+  | 'savedRefreshSkipped'
+  | 'savedRestartRequired'
+
+export interface ModelMappingsSavePresentation {
+  degradedMessageKey: 'savedDegraded' | null
+  messageKey: Exclude<ModelMappingsSaveMessageKey, 'savedDegraded'>
+  outcome: ModelMappingsSaveOutcome
+  tone: 'error' | 'info' | 'success' | 'warning'
+}
 
 function createModelMappingRowId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
@@ -70,14 +80,41 @@ export function buildModelMappingsFromRows(
   return { modelMappings, ok: true }
 }
 
-export function getModelMappingsSaveOutcome(
+export function getModelMappingsSavePresentation(
   result: ModelMappingsSaveResult,
-): ModelMappingsSaveOutcome {
+): ModelMappingsSavePresentation {
   const refresh = result.catalogRefresh
-  if (refresh.status === 'failed') return 'refresh_failed'
-  if (refresh.degraded) return 'degraded'
-  if (refresh.restartRequired) return 'restart_required'
-  if (refresh.status === 'skipped') return 'refresh_skipped'
-  return 'saved'
+  const degradedMessageKey = refresh.degraded ? 'savedDegraded' : null
+
+  if (refresh.status === 'failed') {
+    return {
+      degradedMessageKey,
+      messageKey: 'savedRefreshFailed',
+      outcome: 'refresh_failed',
+      tone: 'error',
+    }
+  }
+  if (refresh.status === 'skipped') {
+    return {
+      degradedMessageKey,
+      messageKey: 'savedRefreshSkipped',
+      outcome: 'refresh_skipped',
+      tone: 'warning',
+    }
+  }
+  if (refresh.status === 'updated' && refresh.restartRequired) {
+    return {
+      degradedMessageKey,
+      messageKey: 'savedRestartRequired',
+      outcome: 'restart_required',
+      tone: refresh.degraded ? 'warning' : 'info',
+    }
+  }
+  return {
+    degradedMessageKey,
+    messageKey: 'saved',
+    outcome: 'saved',
+    tone: refresh.degraded ? 'warning' : 'success',
+  }
 }
 import type { ModelMappingsSaveResult } from '../types/ipc'

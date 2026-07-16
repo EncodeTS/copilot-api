@@ -6,7 +6,7 @@ interface ConfigApiErrorResponse {
   }
 }
 
-async function readConfigApiError(response: Response): Promise<string> {
+export async function readConfigApiError(response: Response): Promise<string> {
   try {
     const payload = (await response.json()) as ConfigApiErrorResponse
     return payload.error?.message ?? response.statusText

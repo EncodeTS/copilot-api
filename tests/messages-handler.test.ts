@@ -79,6 +79,9 @@ const handleWithChatCompletions = mock(
     _options: FlowCallOptions,
   ) => Promise.resolve(new Response("chat")),
 )
+const countCopilotMessagesTokens = mock((_payload: AnthropicMessagesPayload) =>
+  Promise.resolve({ input_tokens: 42 }),
+)
 
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
@@ -94,8 +97,14 @@ await mock.module("~/lib/utils", () => ({
   ...actualUtilsModule,
 }))
 const { handleCompletion } = await import("../src/routes/messages/handler")
+const { handleCountTokens } = await import(
+  "../src/routes/messages/count-tokens-handler"
+)
 const { messagesTranslationDependencies: messagesFlowHandlers } = await import(
   "../src/routes/messages/translation-orchestrator"
+)
+const { preparedMessagesCountDependencies } = await import(
+  "../src/routes/messages/prepared-messages/count"
 )
 const { preparedMessagesCoreDependencies } = await import(
   "../src/routes/messages/prepared-messages/core"
@@ -105,11 +114,15 @@ const defaultMessagesFlowHandlers = { ...messagesFlowHandlers }
 const defaultPreparedMessagesCoreDependencies = {
   ...preparedMessagesCoreDependencies,
 }
+const defaultPreparedMessagesCountDependencies = {
+  ...preparedMessagesCountDependencies,
+}
 const defaultResponsesUtilsDependencies = { ...responsesUtilsDependencies }
 
 const createApp = () => {
   const app = new Hono()
   app.post("/", handleCompletion)
+  app.post("/count_tokens", handleCountTokens)
   return app
 }
 
@@ -133,6 +146,8 @@ beforeEach(() => {
   preparedMessagesCoreDependencies.findEndpointModel = findEndpointModel
   preparedMessagesCoreDependencies.isMessagesApiEnabled = () =>
     messagesApiEnabled
+  preparedMessagesCountDependencies.countCopilotMessagesTokens =
+    countCopilotMessagesTokens
 
   messagesFlowHandlers.handleWithMessagesApi = handleWithMessagesApi
   messagesFlowHandlers.handleWithResponsesApi = handleWithResponsesApi
@@ -142,6 +157,7 @@ beforeEach(() => {
   handleWithMessagesApi.mockClear()
   handleWithResponsesApi.mockClear()
   handleWithChatCompletions.mockClear()
+  countCopilotMessagesTokens.mockClear()
 })
 
 afterEach(() => {
@@ -156,10 +172,14 @@ afterEach(() => {
     preparedMessagesCoreDependencies,
     defaultPreparedMessagesCoreDependencies,
   )
+  Object.assign(
+    preparedMessagesCountDependencies,
+    defaultPreparedMessagesCountDependencies,
+  )
 })
 
 describe("messages handler orchestration", () => {
-  test("resolves model identity before shared request preparation", async () => {
+  test("resolves mapped identity before shared generation and count preparation", async () => {
     modelMappings = { "original-model": "messages-model" }
     selectedModel = {
       id: "messages-model",
@@ -173,26 +193,38 @@ describe("messages handler orchestration", () => {
       },
     ]
 
-    const response = await createApp().request("/", {
+    const body = JSON.stringify(
+      createPayload({
+        system: "Keep these instructions",
+        temperature: 0.4,
+        tools,
+      }),
+    )
+    const app = createApp()
+    const response = await app.request("/", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(
-        createPayload({
-          system: "Keep these instructions",
-          temperature: 0.4,
-          tools,
-        }),
-      ),
+      body,
+    })
+    const countResponse = await app.request("/count_tokens", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
     })
 
     expect(response.status).toBe(200)
-    expect(findEndpointModel).toHaveBeenCalledWith("messages-model")
-    expect(handleWithMessagesApi.mock.calls[0][1]).toMatchObject({
+    expect(countResponse.status).toBe(200)
+    expect(findEndpointModel).toHaveBeenNthCalledWith(1, "messages-model")
+    expect(findEndpointModel).toHaveBeenNthCalledWith(2, "messages-model")
+    const preparedGenerationPayload = handleWithMessagesApi.mock.calls[0][1]
+    const preparedCountPayload = countCopilotMessagesTokens.mock.calls[0][0]
+    expect(preparedGenerationPayload).toMatchObject({
       model: "messages-model",
       system: "Keep these instructions",
       temperature: 0.4,
       tools,
     })
+    expect(preparedCountPayload).toEqual(preparedGenerationPayload)
   })
 
   test("forwards the Hono request abort signal to the selected flow", async () => {
