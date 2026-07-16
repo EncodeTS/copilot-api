@@ -1,9 +1,10 @@
 import type { Context } from "hono"
 
-import { HTTPError } from "~/lib/error"
-
 import type { AnthropicMessagesPayload } from "./anthropic-types"
-import { prepareCopilotMessagesRequest } from "./prepared-messages/core"
+import {
+  prepareCopilotMessagesRequest,
+  PreparedMessagesValidationError,
+} from "./prepared-messages/core"
 import {
   generatePreparedCopilotMessages,
   preparedMessagesGenerationDependencies,
@@ -22,7 +23,7 @@ export const handleCopilotMessages = async (
       prepareCopilotMessagesRequest(payload),
     )
   } catch (error) {
-    if (error instanceof HTTPError) return error.response
+    if (error instanceof PreparedMessagesValidationError) return error.response
     throw error
   }
 }

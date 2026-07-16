@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, mock, test } from "bun:test"
 import { state } from "../src/lib/state"
 import { HTTPError } from "../src/lib/error"
 import type { AnthropicMessagesPayload } from "../src/routes/messages/anthropic-types"
+import { handleCopilotMessages } from "../src/routes/messages/translation-orchestrator"
 import {
   countPreparedCopilotMessages,
   preparedMessagesCountDependencies,
@@ -444,6 +445,35 @@ test("Count Tokens does not invoke generation adapters", async () => {
   )
 
   expect(generationCalled).not.toHaveBeenCalled()
+})
+
+test("generation rethrows transport HTTP errors for the route error adapter", async () => {
+  state.models = {
+    object: "list",
+    data: [dualModel],
+  } as typeof state.models
+  const expected = new HTTPError(
+    "upstream failed",
+    new Response("plain upstream failure", { status: 502 }),
+  )
+  preparedMessagesGenerationDependencies.handleWithChatCompletions = () =>
+    Promise.reject(expected)
+  let thrown: unknown
+
+  try {
+    await handleCopilotMessages(createGenerationContext(), {
+      max_tokens: 128,
+      messages: [
+        { role: "user", content: "Return JSON" },
+        { role: "assistant", content: '{"value":' },
+      ],
+      model: dualModel.id,
+    })
+  } catch (error) {
+    thrown = error
+  }
+
+  expect(thrown).toBe(expected)
 })
 
 test("native Messages count preserves non-fallback upstream errors", async () => {

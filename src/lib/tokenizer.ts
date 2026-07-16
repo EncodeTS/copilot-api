@@ -22,6 +22,9 @@ type SupportedEncoding = keyof typeof ENCODING_MAP
 // Define encoder interface
 interface Encoder {
   encode: (text: string) => Array<number>
+  encodeGenerator: (
+    text: string,
+  ) => Generator<Array<number>, number | void, undefined>
 }
 
 // Cache loaded encoders to avoid repeated imports
@@ -125,23 +128,6 @@ const calculateTokens = (
   // every reply is primed with <|start|>assistant<|message|>
   numTokens += 3
   return numTokens
-}
-
-const calculateTokensResponsively = async (
-  messages: Array<Message>,
-  encoder: Encoder,
-  constants: ReturnType<typeof getModelConstants>,
-  signal: AbortSignal,
-): Promise<number> => {
-  if (messages.length === 0) return 0
-
-  let numTokens = 0
-  for (const message of messages) {
-    await scheduler.yield()
-    signal.throwIfAborted()
-    numTokens += calculateMessageTokens(message, encoder, constants)
-  }
-  return numTokens + 3
 }
 
 /**
@@ -381,22 +367,47 @@ export const numTokensForTools = (
   return funcTokenCount
 }
 
-const numTokensForToolsResponsively = async (
-  tools: Array<Tool>,
+const createResponsiveEncoder = async (
+  payload: ChatCompletionsPayload,
   encoder: Encoder,
   constants: ReturnType<typeof getModelConstants>,
   signal: AbortSignal,
-): Promise<number> => {
-  let funcTokenCount = 0
-  for (const tool of tools) {
-    await scheduler.yield()
-    signal.throwIfAborted()
-    funcTokenCount +=
-      constants.isGpt ?
-        calculateToolTokens(tool, encoder, constants)
-      : encoder.encode(JSON.stringify(tool)).length
+): Promise<Encoder> => {
+  const texts = new Set<string>()
+  const collectingEncoder: Encoder = {
+    encode: (text) => {
+      texts.add(text)
+      return []
+    },
+    *encodeGenerator(text) {
+      texts.add(text)
+      yield []
+      return 0
+    },
   }
-  return funcTokenCount + (constants.isGpt ? constants.funcEnd : 0)
+  calculateTokens(payload.messages, collectingEncoder, constants)
+  if (payload.tools && payload.tools.length > 0) {
+    numTokensForTools(payload.tools, collectingEncoder, constants)
+  }
+
+  const encodedByText = new Map<string, Array<number>>()
+  for (const text of texts) {
+    const tokens = new Array<number>()
+    for (const chunk of encoder.encodeGenerator(text)) {
+      tokens.push(...chunk)
+      await scheduler.yield()
+      signal.throwIfAborted()
+    }
+    encodedByText.set(text, tokens)
+  }
+
+  return {
+    encode: (text) => encodedByText.get(text) ?? encoder.encode(text),
+    *encodeGenerator(text) {
+      yield encodedByText.get(text) ?? encoder.encode(text)
+      return 0
+    },
+  }
 }
 
 /**
@@ -414,10 +425,6 @@ export const getTokenCount = async (
   // Get corresponding encoder module
   const encoder = await getEncodeChatFunction(tokenizer)
   options.signal?.throwIfAborted()
-  if (options.signal) {
-    await scheduler.wait(1)
-    options.signal.throwIfAborted()
-  }
 
   const simplifiedMessages = payload.messages
   const inputMessages = simplifiedMessages.filter(
@@ -428,36 +435,28 @@ export const getTokenCount = async (
   )
 
   const constants = getModelConstants(model)
+  const calculationEncoder =
+    options.signal ?
+      await createResponsiveEncoder(payload, encoder, constants, options.signal)
+    : encoder
   // gpt count token https://github.com/openai/openai-cookbook/blob/main/examples/How_to_count_tokens_with_tiktoken.ipynb
-  let inputTokens =
-    options.signal ?
-      await calculateTokensResponsively(
-        inputMessages,
-        encoder,
-        constants,
-        options.signal,
-      )
-    : calculateTokens(inputMessages, encoder, constants)
+  let inputTokens = calculateTokens(
+    inputMessages,
+    calculationEncoder,
+    constants,
+  )
   if (payload.tools && payload.tools.length > 0) {
-    inputTokens +=
-      options.signal ?
-        await numTokensForToolsResponsively(
-          payload.tools,
-          encoder,
-          constants,
-          options.signal,
-        )
-      : numTokensForTools(payload.tools, encoder, constants)
+    inputTokens += numTokensForTools(
+      payload.tools,
+      calculationEncoder,
+      constants,
+    )
   }
-  const outputTokens =
-    options.signal ?
-      await calculateTokensResponsively(
-        outputMessages,
-        encoder,
-        constants,
-        options.signal,
-      )
-    : calculateTokens(outputMessages, encoder, constants)
+  const outputTokens = calculateTokens(
+    outputMessages,
+    calculationEncoder,
+    constants,
+  )
   options.signal?.throwIfAborted()
 
   return {
