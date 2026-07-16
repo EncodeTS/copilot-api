@@ -195,6 +195,10 @@ export interface Locale {
     emptyDescription: string
     saveHelp: string
     saved: string
+    savedDegraded: string
+    savedRefreshFailed: string
+    savedRefreshSkipped: string
+    savedRestartRequired: string
     loadFailed: string
     saveFailed: string
     serverRequired: string
