@@ -16,7 +16,6 @@ import type {
 } from "~/services/copilot/create-chat-completions"
 import type {
   ResponsesResult,
-  ResponseStreamEvent,
   ResponsesStream,
 } from "~/services/copilot/create-responses"
 
@@ -25,7 +24,6 @@ import {
   type ResolvedProviderConfig,
   supportsProviderResponsesContextManagement,
 } from "~/lib/config"
-import { logCodexRateLimitsEvent } from "~/lib/codex-rate-limit"
 import {
   applyDashScopePreserveThinkingDefault,
   applyOpenAICompatibleContextCache,
@@ -58,11 +56,9 @@ import {
   translateChunkToAnthropicEvents,
 } from "~/routes/messages/stream-translation"
 import {
-  buildErrorEvent,
-  createResponsesStreamState,
-  translateResponsesStreamEvent,
-} from "~/routes/messages/responses-stream-translation"
-import { collectResponsesStreamResult } from "~/routes/messages/responses-stream-collection"
+  collectProviderResponsesStreamResult,
+  consumeResponsesStream,
+} from "~/routes/messages/responses-stream-consumer"
 import { getResponsesResultFailureMessage } from "~/routes/messages/responses-result"
 import {
   hasTrailingAssistantPrefill,
@@ -264,12 +260,11 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
     )
 
     if (isResponsesStream(upstreamResponse)) {
-      const body = await collectResponsesStreamResult({
+      const body = await collectProviderResponsesStreamResult({
         errorMessagePrefix: `${provider} web search responses stream`,
-        parseEvent: (data) =>
-          parseResponsesProviderStreamChunk(data, providerConfig),
-        upstreamResponse,
         logger,
+        providerConfig,
+        upstreamResponse,
       })
       return respondWebSearchProviderMessagesJson(c, {
         body,
@@ -309,12 +304,11 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
 
   const contentType = upstreamResponse.headers.get("content-type") ?? ""
   if (contentType.includes("text/event-stream")) {
-    const body = await collectResponsesStreamResult({
+    const body = await collectProviderResponsesStreamResult({
       errorMessagePrefix: `${provider} web search responses stream`,
-      parseEvent: (data) =>
-        parseResponsesProviderStreamChunk(data, providerConfig),
-      upstreamResponse: events(upstreamResponse),
       logger,
+      providerConfig,
+      upstreamResponse: events(upstreamResponse),
     })
     return respondWebSearchProviderMessagesJson(c, {
       body,
@@ -404,12 +398,11 @@ const handleOpenAIResponsesProviderMessages = async (
         })
       }
 
-      const body = await collectResponsesStreamResult({
+      const body = await collectProviderResponsesStreamResult({
         errorMessagePrefix: `${provider} messages responses stream`,
-        parseEvent: (data) =>
-          parseResponsesProviderStreamChunk(data, providerConfig),
-        upstreamResponse,
         logger,
+        providerConfig,
+        upstreamResponse,
       })
       return respondResponsesProviderMessagesJson(c, {
         body,
@@ -969,77 +962,18 @@ const streamResponsesProviderMessages = ({
     modelConfig,
     pricingCurrency,
   )
-  return streamSSE(c, async (stream) => {
-    let usage: UsageTokens = {}
-    const streamState = createResponsesStreamState({
-      carrierSource: { model: payload.model, provider },
-      emitThinking: payload.thinking?.type !== "disabled",
-      toolSearchName: resolveBridgeToolSearchName(payload.tools),
-    })
-
-    try {
-      for await (const chunk of upstreamResponse) {
-        debugJsonTail(logger, "provider.messages.responses.raw_stream_event:", {
-          value: chunk.data,
-          tailLength: 1_000,
-        })
-        const eventName = chunk.event
-        if (eventName === "ping") {
-          await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
-          continue
-        }
-
-        if (chunk.data === "[DONE]") {
-          break
-        }
-
-        if (!chunk.data) {
-          continue
-        }
-
-        const parsed = parseResponsesProviderStreamChunk(
-          chunk.data,
-          providerConfig,
-        )
-        if (!parsed) {
-          continue
-        }
-
-        if (
-          parsed.type === "response.completed"
-          || parsed.type === "response.failed"
-          || parsed.type === "response.incomplete"
-        ) {
-          usage = normalizeResponsesUsage(parsed.response.usage)
-        }
-
-        const events = translateResponsesStreamEvent(parsed, streamState)
-        for (const event of events) {
-          const eventData = JSON.stringify(event)
-          debugLazy(logger, () => [
-            "provider.messages.responses.translated_event:",
-            eventData,
-          ])
-          await stream.writeSSE({
-            event: event.type,
-            data: eventData,
-          })
-        }
-      }
-
-      if (!streamState.messageCompleted) {
-        const errorEvent = buildErrorEvent(
-          `${provider} stream ended without a completion event`,
-        )
-        await stream.writeSSE({
-          event: errorEvent.type,
-          data: JSON.stringify(errorEvent),
-        })
-      }
-    } finally {
-      recordUsage(usage)
-    }
-  })
+  return streamSSE(c, (stream) =>
+    consumeResponsesStream({
+      kind: "provider",
+      logger,
+      output: stream,
+      payload,
+      provider,
+      providerConfig,
+      recordUsage,
+      upstreamResponse,
+    }),
+  )
 }
 
 const isResponsesStream = (value: unknown): value is ResponsesStream => {
@@ -1198,27 +1132,6 @@ const createAnthropicStreamErrorEvent = ({
 
 const getProviderStreamErrorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error)
-
-const parseResponsesProviderStreamChunk = (
-  data: string,
-  providerConfig: ResolvedProviderConfig,
-): ResponseStreamEvent | null => {
-  try {
-    const parsed = JSON.parse(data) as ResponseStreamEvent
-    if (providerConfig.name === "codex") {
-      logCodexRateLimitsEvent(parsed)
-    }
-
-    return parsed
-  } catch (error) {
-    logger.error("provider.messages.responses.parse_chunk_error", {
-      provider: providerConfig.name,
-      data,
-      error,
-    })
-    return null
-  }
-}
 
 const parseProviderStreamEvent = (
   data: string,

@@ -21,10 +21,6 @@ import {
   type UsageTokens,
 } from "~/lib/token-usage"
 import { parseUserIdMetadata } from "~/lib/utils"
-import {
-  createResponsesStreamState,
-  translateResponsesStreamEvent,
-} from "~/routes/messages/responses-stream-translation"
 import { getResponsesResultFailureMessage } from "~/routes/messages/responses-result"
 import {
   hasTrailingAssistantPrefill,
@@ -49,7 +45,6 @@ import { createMessages as createCopilotMessages } from "~/services/copilot/crea
 import {
   createResponses as createCopilotResponses,
   type ResponsesResult,
-  type ResponseStreamEvent,
 } from "~/services/copilot/create-responses"
 
 import {
@@ -67,6 +62,7 @@ import {
   flushPendingAnthropicStreamEvents,
   translateChunkToAnthropicEvents,
 } from "./stream-translation"
+import { consumeResponsesStream } from "./responses-stream-consumer"
 import { emitAnthropicStreamError } from "./stream-error"
 
 const COPILOT_CONTEXT_CACHE_SYSTEM_MARKER_LIMIT = 2
@@ -365,105 +361,18 @@ export const handleWithResponsesApi = async (
 
   if (responsesPayload.stream && isAsyncIterable(response)) {
     logger.debug("Streaming response from Copilot (Responses API)")
-    return streamSSE(c, async (stream) => {
-      const streamState = createResponsesStreamState({
-        emitThinking: anthropicPayload.thinking?.type !== "disabled",
-        toolSearchName: resolveBridgeToolSearchName(anthropicPayload.tools),
-      })
-      const streamStartedAt = Date.now()
-      let usage: UsageTokens = {}
-      let eventCount = 0
-      let lastEventType: string | null = null
-
-      try {
-        for await (const chunk of response) {
-          const eventName = chunk.event
-          if (eventName === "ping") {
-            await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
-            eventCount += 1
-            lastEventType = "ping"
-            continue
-          }
-
-          const data = chunk.data
-          if (!data || data === "[DONE]") {
-            continue
-          }
-
-          debugLazy(logger, () => ["Responses raw stream event:", data])
-
-          const responseEvent = JSON.parse(data) as ResponseStreamEvent
-          lastEventType = responseEvent.type
-          if (
-            responseEvent.type === "response.completed"
-            || responseEvent.type === "response.failed"
-            || responseEvent.type === "response.incomplete"
-          ) {
-            usage = {
-              ...normalizeResponsesUsage(responseEvent.response.usage),
-              total_nano_aiu: normalizeOptionalToken(
-                responseEvent.copilot_usage?.total_nano_aiu,
-              ),
-            }
-          }
-
-          const events = translateResponsesStreamEvent(
-            responseEvent,
-            streamState,
-          )
-          for (const event of events) {
-            const eventData = JSON.stringify(event)
-            debugLazy(logger, () => ["Translated Anthropic event:", eventData])
-            await stream.writeSSE({
-              event: event.type,
-              data: eventData,
-            })
-            eventCount += 1
-          }
-
-          if (streamState.messageCompleted) {
-            logger.debug("Message completed, ending stream")
-            break
-          }
-        }
-      } catch (error) {
-        await emitAnthropicStreamError(stream, logger, {
-          diagnostics: {
-            elapsedMs: Date.now() - streamStartedAt,
-            eventCount,
-            flow: "responses",
-            lastEventType,
-            retryCount: 0,
-            terminalSeen: streamState.messageCompleted,
-            transport,
-          },
-          error,
-          flow: "responses",
-          signal: requestOptions.signal,
-        })
-        recordUsage(usage)
-        return
-      }
-
-      if (!streamState.messageCompleted && !requestOptions.signal?.aborted) {
-        await emitAnthropicStreamError(stream, logger, {
-          diagnostics: {
-            elapsedMs: Date.now() - streamStartedAt,
-            eventCount,
-            flow: "responses",
-            lastEventType,
-            retryCount: 0,
-            terminalSeen: false,
-            transport,
-          },
-          error: new Error("Responses stream ended without completion"),
-          flow: "responses",
-          signal: requestOptions.signal,
-        })
-      }
-
-      recordUsage(usage)
-    })
+    return streamSSE(c, (stream) =>
+      consumeResponsesStream({
+        kind: "copilot",
+        logger,
+        output: stream,
+        payload: anthropicPayload,
+        recordUsage,
+        signal: requestOptions.signal,
+        transport,
+        upstreamResponse: response,
+      }),
+    )
   }
 
   const responsesResult = response as ResponsesResult
