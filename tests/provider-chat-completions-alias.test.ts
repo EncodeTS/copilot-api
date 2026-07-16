@@ -1,18 +1,23 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Hono } from "hono"
 
-import type { ResolvedProviderConfig } from "../src/lib/config"
+import type {
+  ProviderAuthType,
+  ResolvedProviderConfig,
+} from "../src/lib/config"
 
 const actualConfigModule = await import("../src/lib/config")
 const actualTokenUsageModule = await import("../src/lib/token-usage")
 
 let providerConfig: ResolvedProviderConfig | null = null
+let configuredAuthType: ProviderAuthType | undefined
 let modelMappings: Record<string, string> = {}
 
 const noopTokenUsageRecorder = () => {}
 
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
+  getRawProviderConfig: () => ({ authType: configuredAuthType }),
   getProviderConfig: () => providerConfig,
   resolveMappedModel: (model: string) => modelMappings[model] ?? model,
 }))
@@ -69,6 +74,7 @@ const createApp = () => {
 }
 
 beforeEach(() => {
+  configuredAuthType = "authorization"
   providerConfig = {
     apiKey: "provider-key",
     authType: "authorization",
@@ -249,6 +255,74 @@ describe("provider/model aliases on top-level chat completions route", () => {
           "Provider 'dash' does not support the /v1/chat/completions endpoint",
         type: "invalid_request_error",
       },
+    })
+  })
+
+  test("routes a model-level chat protocol override through the chat adapter", async () => {
+    configuredAuthType = "x-api-key"
+    providerConfig = {
+      ...(providerConfig as ResolvedProviderConfig),
+      authType: "x-api-key",
+      models: {
+        "qwen-plus": {
+          type: "openai-compatible",
+        },
+      },
+      type: "anthropic",
+    }
+
+    const response = await createApp().request("/v1/chat/completions", {
+      body: JSON.stringify({
+        messages: [{ content: "hello", role: "user" }],
+        model: "dash/qwen-plus",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "https://dashscope.example/compatible-mode/v1/chat/completions",
+    )
+    expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toEqual({
+      "content-type": "application/json",
+      accept: "application/json",
+      "x-api-key": "provider-key",
+    })
+  })
+
+  test("defaults auth from the model-level protocol when auth is omitted", async () => {
+    configuredAuthType = undefined
+    providerConfig = {
+      ...(providerConfig as ResolvedProviderConfig),
+      authType: "x-api-key",
+      models: {
+        "qwen-plus": {
+          type: "openai-compatible",
+        },
+      },
+      type: "anthropic",
+    }
+
+    const response = await createApp().request("/v1/chat/completions", {
+      body: JSON.stringify({
+        messages: [{ content: "hello", role: "user" }],
+        model: "dash/qwen-plus",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toEqual({
+      "content-type": "application/json",
+      accept: "application/json",
+      authorization: "Bearer provider-key",
     })
   })
 

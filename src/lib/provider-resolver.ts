@@ -1,7 +1,11 @@
 import {
   getRawProviderConfig,
   getProviderConfig,
+  type ModelConfig,
   type ResolvedProviderConfig,
+  resolveEffectiveProviderType,
+  resolveProviderAuthType,
+  type ProviderType,
 } from "~/lib/config"
 import { state } from "~/lib/state"
 import { setupCodexToken } from "~/lib/token"
@@ -49,4 +53,38 @@ export async function resolveProviderConfig(
   }
 
   return getProviderConfig(normalizedProviderName)
+}
+
+export interface ResolvedProviderModel {
+  config: ResolvedProviderConfig
+  forwardingConfig: ResolvedProviderConfig
+  modelConfig: ModelConfig | undefined
+  type: ProviderType
+}
+
+export async function resolveProviderModel(
+  providerName: string,
+  model: string,
+): Promise<ResolvedProviderModel | null> {
+  const config = await resolveProviderConfig(providerName)
+  if (!config) return null
+
+  const type = resolveEffectiveProviderType(config, model)
+  return {
+    config,
+    forwardingConfig:
+      type === config.type ?
+        config
+      : {
+          ...config,
+          type,
+          authType: resolveProviderAuthType(
+            config.name,
+            getRawProviderConfig(config.name)?.authType,
+            type,
+          ),
+        },
+    modelConfig: config.models?.[model],
+    type,
+  }
 }

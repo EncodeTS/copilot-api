@@ -23,8 +23,6 @@ import type {
 import {
   type ModelConfig,
   type ResolvedProviderConfig,
-  resolveEffectiveProviderType,
-  resolveProviderAuthType,
   supportsProviderResponsesContextManagement,
 } from "~/lib/config"
 import { logCodexRateLimitsEvent } from "~/lib/codex-rate-limit"
@@ -40,7 +38,7 @@ import {
   debugJsonTail,
   debugLazy,
 } from "~/lib/logger"
-import { resolveProviderConfig } from "~/lib/provider-resolver"
+import { resolveProviderModel } from "~/lib/provider-resolver"
 import { resolveBridgeToolSearchName } from "~/lib/tool-search"
 import {
   createProviderTokenUsageRecorder,
@@ -111,8 +109,11 @@ export async function handleProviderMessagesForProvider(
   },
 ): Promise<Response> {
   const { payload, provider } = options
-  const providerConfig = await resolveProviderConfig(provider)
-  if (!providerConfig) {
+  const resolvedProviderModel = await resolveProviderModel(
+    provider,
+    payload.model,
+  )
+  if (!resolvedProviderModel) {
     return c.json(
       {
         error: {
@@ -125,11 +126,12 @@ export async function handleProviderMessagesForProvider(
   }
 
   try {
-    const modelConfig = providerConfig.models?.[payload.model]
-    const effectiveType = resolveEffectiveProviderType(
-      providerConfig,
-      payload.model,
-    )
+    const {
+      config: providerConfig,
+      forwardingConfig,
+      modelConfig,
+      type: effectiveType,
+    } = resolvedProviderModel
     debugJson(logger, "provider.messages.request", { payload, provider })
 
     normalizeSystemMessages(payload)
@@ -157,7 +159,7 @@ export async function handleProviderMessagesForProvider(
             modelConfig,
             payload,
             provider,
-            providerConfig,
+            providerConfig: forwardingConfig,
           })
         }
 
@@ -168,7 +170,7 @@ export async function handleProviderMessagesForProvider(
         modelConfig,
         payload,
         provider,
-        providerConfig,
+        providerConfig: forwardingConfig,
       })
     }
 
@@ -179,7 +181,7 @@ export async function handleProviderMessagesForProvider(
         modelConfig,
         payload,
         provider,
-        providerConfig,
+        providerConfig: forwardingConfig,
       })
     }
 
@@ -192,17 +194,7 @@ export async function handleProviderMessagesForProvider(
       provider,
     })
     const upstreamResponse = await forwardProviderMessages(
-      effectiveType === providerConfig.type ?
-        providerConfig
-      : {
-          ...providerConfig,
-          type: effectiveType,
-          authType: resolveProviderAuthType(
-            providerConfig.name,
-            undefined,
-            effectiveType,
-          ),
-        },
+      forwardingConfig,
       payload,
       c.req.raw.headers,
       c.req.raw.signal,

@@ -1,7 +1,7 @@
 import type { Context, Env } from "hono"
 
 import { createHandlerLogger } from "~/lib/logger"
-import { resolveProviderConfig } from "~/lib/provider-resolver"
+import { resolveProviderModel } from "~/lib/provider-resolver"
 import { createFallbackModel } from "~/lib/provider-model"
 import { getTokenCount } from "~/lib/tokenizer"
 import { type AnthropicMessagesPayload } from "~/routes/messages/anthropic-types"
@@ -29,8 +29,8 @@ export async function handleProviderCountTokensForProvider(
   normalizeSystemMessages(anthropicPayload)
   const modelId = anthropicPayload.model.trim()
 
-  const providerConfig = await resolveProviderConfig(provider)
-  if (!providerConfig) {
+  const resolvedProviderModel = await resolveProviderModel(provider, modelId)
+  if (!resolvedProviderModel) {
     return c.json(
       {
         error: {
@@ -42,12 +42,9 @@ export async function handleProviderCountTokensForProvider(
     )
   }
 
-  const modelConfig = providerConfig.models?.[modelId]
+  const { modelConfig, type } = resolvedProviderModel
   const translationOptions =
-    (
-      providerConfig.type === "openai-compatible"
-      || providerConfig.type === "openai-responses"
-    ) ?
+    type === "openai-compatible" || type === "openai-responses" ?
       {
         supportPdf: modelConfig?.supportPdf,
         toolContentSupportType: modelConfig?.toolContentSupportType ?? [],

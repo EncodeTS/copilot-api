@@ -5,7 +5,6 @@ import { streamSSE, type SSEMessage } from "hono/streaming"
 
 import { resolveMappedModel } from "~/lib/config"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
-import { parseProviderModelAlias } from "~/lib/provider-model"
 import { state } from "~/lib/state"
 import {
   createCopilotTokenUsageRecorder,
@@ -14,7 +13,7 @@ import {
   type UsageTokens,
 } from "~/lib/token-usage"
 import { generateRequestIdFromPayload, getUUID, isNullish } from "~/lib/utils"
-import { handleProviderChatCompletionsForProvider } from "~/routes/provider/chat-completions/handler"
+import { routeProviderModelAlias } from "~/routes/provider/model-router"
 import {
   createChatCompletions,
   type ChatCompletionChunk,
@@ -38,14 +37,11 @@ export async function handleCompletion(c: Context) {
     )
   }
 
-  const providerModelAlias = parseProviderModelAlias(payload.model)
-  if (providerModelAlias) {
-    payload.model = providerModelAlias.model
-    return await handleProviderChatCompletionsForProvider(c, {
-      payload,
-      provider: providerModelAlias.provider,
-    })
-  }
+  const providerResponse = await routeProviderModelAlias(c, {
+    endpoint: "chat_completions",
+    payload,
+  })
+  if (providerResponse) return providerResponse
 
   debugJson(logger, "Request payload:", payload)
 
