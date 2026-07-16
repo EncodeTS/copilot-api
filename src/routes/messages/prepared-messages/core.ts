@@ -37,6 +37,8 @@ export interface PreparedCopilotMessagesRequest {
   readonly [preparedBrand]: true
 }
 
+export class PreparedMessagesValidationError extends HTTPError {}
+
 interface PreparedCommon {
   compactType?: CompactType
   endpointModel?: Model
@@ -227,8 +229,10 @@ const selectFlow = (
   return "chat_completions"
 }
 
-const invalidRequestError = (message: string): HTTPError =>
-  new HTTPError(
+const invalidRequestError = (
+  message: string,
+): PreparedMessagesValidationError =>
+  new PreparedMessagesValidationError(
     message,
     new Response(
       JSON.stringify({
