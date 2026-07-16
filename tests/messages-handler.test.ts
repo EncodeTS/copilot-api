@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Hono } from "hono"
 
 import type { AnthropicMessagesPayload } from "../src/routes/messages/anthropic-types"
+import type { Model } from "../src/services/copilot/get-models"
 
 import {
   compactSummaryPromptStart,
@@ -35,7 +36,28 @@ type FlowCallOptions = {
 
 let selectedModel: SelectedModel | undefined
 
-const findEndpointModel = mock((_: string) => selectedModel)
+const findEndpointModel = mock((_: string): Model | undefined =>
+  selectedModel ?
+    ({
+      capabilities: {
+        family: "test",
+        limits: {},
+        object: "model_capabilities",
+        supports: {},
+        tokenizer: "o200k_base",
+        type: "chat",
+      },
+      id: selectedModel.id,
+      model_picker_enabled: true,
+      name: selectedModel.id,
+      object: "model",
+      preview: false,
+      supported_endpoints: selectedModel.supported_endpoints,
+      vendor: "test",
+      version: "1",
+    } satisfies Model)
+  : undefined,
+)
 const handleWithMessagesApi = mock(
   (
     _c: unknown,
@@ -75,8 +97,14 @@ const { handleCompletion } = await import("../src/routes/messages/handler")
 const { messagesTranslationDependencies: messagesFlowHandlers } = await import(
   "../src/routes/messages/translation-orchestrator"
 )
+const { preparedMessagesCoreDependencies } = await import(
+  "../src/routes/messages/prepared-messages/core"
+)
 
 const defaultMessagesFlowHandlers = { ...messagesFlowHandlers }
+const defaultPreparedMessagesCoreDependencies = {
+  ...preparedMessagesCoreDependencies,
+}
 const defaultResponsesUtilsDependencies = { ...responsesUtilsDependencies }
 
 const createApp = () => {
@@ -102,6 +130,9 @@ beforeEach(() => {
 
   responsesUtilsDependencies.isResponsesApiWebSocketEnabled = () =>
     responsesApiWebSocketEnabled
+  preparedMessagesCoreDependencies.findEndpointModel = findEndpointModel
+  preparedMessagesCoreDependencies.isMessagesApiEnabled = () =>
+    messagesApiEnabled
 
   messagesFlowHandlers.handleWithMessagesApi = handleWithMessagesApi
   messagesFlowHandlers.handleWithResponsesApi = handleWithResponsesApi
@@ -121,6 +152,10 @@ afterEach(() => {
   messagesFlowHandlers.handleWithChatCompletions =
     defaultMessagesFlowHandlers.handleWithChatCompletions
   Object.assign(responsesUtilsDependencies, defaultResponsesUtilsDependencies)
+  Object.assign(
+    preparedMessagesCoreDependencies,
+    defaultPreparedMessagesCoreDependencies,
+  )
 })
 
 describe("messages handler orchestration", () => {
@@ -515,7 +550,32 @@ describe("messages handler orchestration", () => {
     expect(await response.text()).toBe("messages")
 
     const [, forwardedPayload] = handleWithMessagesApi.mock.calls[0]
-    expect(forwardedPayload.messages[0]).toEqual(payload.messages[0])
+    expect(forwardedPayload.messages[0]).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "tool-1",
+          content: [
+            {
+              type: "tool_reference",
+              tool_name: "AskUserQuestion",
+            },
+          ],
+        },
+        {
+          type: "text",
+          text: "Tool loaded.",
+          cache_control: {
+            type: "ephemeral",
+          },
+        },
+      ],
+    })
+    expect(payload.messages[0]).toHaveProperty(
+      "content.1.cache_control.scope",
+      "user",
+    )
   })
 
   test("delegates to the Messages API flow when the model supports /v1/messages", async () => {

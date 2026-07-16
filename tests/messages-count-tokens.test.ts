@@ -5,6 +5,10 @@ import { state } from "../src/lib/state"
 import type { Model } from "../src/services/copilot/get-models"
 import type { ResponsesPayload } from "../src/services/copilot/create-responses"
 import {
+  compactSummaryPromptStart,
+  compactTextOnlyGuard,
+} from "../src/lib/compact"
+import {
   countTokensHandlerDependencies,
   estimateResponsesInputTokens,
   ResponsesTokenEstimateLimitError,
@@ -53,6 +57,12 @@ const gptModel = {
     },
     tokenizer: "o200k_base",
   },
+} as Model
+
+const chatModel = {
+  ...gptModel,
+  id: "gpt-chat",
+  supported_endpoints: ["/chat/completions"],
 } as Model
 
 const fetchMock = mock((_input: string | URL | Request, _init?: RequestInit) =>
@@ -394,6 +404,116 @@ test("GPT count_tokens estimates the final Responses payload without calling Mes
     tools: [],
   })
   expect(estimateResponses.mock.calls[0][0]).not.toHaveProperty("tool_choice")
+})
+
+test("Count Tokens rejects assistant prefill for a Responses-only model", async () => {
+  state.models = {
+    object: "list",
+    data: [gptModel],
+  } as typeof state.models
+  countTokensHandlerDependencies.findEndpointModel = (model) =>
+    model === gptModel.id ? gptModel : undefined
+
+  const response = await createApp().request("/v1/messages/count_tokens", {
+    body: JSON.stringify({
+      model: gptModel.id,
+      max_tokens: 100,
+      messages: [
+        { role: "user", content: "Return JSON" },
+        { role: "assistant", content: '{"value":' },
+      ],
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })
+
+  expect(response.status).toBe(400)
+  expect(await response.json()).toEqual({
+    type: "error",
+    error: {
+      type: "invalid_request_error",
+      message:
+        "Assistant prefill is not supported by the Responses API bridge.",
+    },
+  })
+})
+
+test("Count Tokens rejects forced executeCode for a Chat-only model", async () => {
+  state.models = {
+    object: "list",
+    data: [chatModel],
+  } as typeof state.models
+  countTokensHandlerDependencies.findEndpointModel = (model) =>
+    model === chatModel.id ? chatModel : undefined
+
+  const response = await createApp().request("/v1/messages/count_tokens", {
+    body: JSON.stringify({
+      model: chatModel.id,
+      max_tokens: 100,
+      messages: [{ role: "user", content: "run code" }],
+      tool_choice: {
+        type: "tool",
+        name: "mcp__ide__executeCode",
+      },
+      tools: [
+        {
+          name: "mcp__ide__executeCode",
+          description: "Execute code",
+          input_schema: { type: "object" },
+        },
+      ],
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })
+
+  expect(response.status).toBe(400)
+  expect(await response.json()).toEqual({
+    type: "error",
+    error: {
+      type: "invalid_request_error",
+      message:
+        "mcp__ide__executeCode is not supported by the Chat Completions fallback.",
+    },
+  })
+})
+
+test("Count Tokens uses Chat estimation for compact requests on ws-only models", async () => {
+  const wsOnlyModel = {
+    ...gptModel,
+    id: "gpt-ws-only",
+    supported_endpoints: ["ws:/responses"],
+  } as Model
+  state.models = {
+    object: "list",
+    data: [wsOnlyModel],
+  } as typeof state.models
+  countTokensHandlerDependencies.findEndpointModel = (model) =>
+    model === wsOnlyModel.id ? wsOnlyModel : undefined
+  const estimateResponses = mock(() => Promise.resolve(321))
+  countTokensHandlerDependencies.estimateResponsesInputTokens =
+    estimateResponses
+
+  const response = await createApp().request("/v1/messages/count_tokens", {
+    body: JSON.stringify({
+      model: wsOnlyModel.id,
+      max_tokens: 100,
+      messages: [
+        {
+          role: "user",
+          content: `${compactTextOnlyGuard}\n\n${compactSummaryPromptStart}\n\nPending Tasks:\n- one`,
+        },
+      ],
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })
+
+  expect(response.status).toBe(200)
+  expect(response.headers.get("x-copilot-api-token-count-mode")).toBe(
+    "estimate",
+  )
+  expect(estimateResponses).not.toHaveBeenCalled()
 })
 
 test("GPT Responses estimator stays within the conservative live-usage band", async () => {
