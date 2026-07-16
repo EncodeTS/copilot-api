@@ -6,18 +6,8 @@ import type {
   ToolCall,
 } from "~/services/copilot/create-chat-completions"
 import type { Model } from "~/services/copilot/get-models"
-import { countTextsInTokenizerWorker } from "./tokenizer-worker-client"
-
-// Encoder type mapping
-const ENCODING_MAP = {
-  o200k_base: () => import("gpt-tokenizer/encoding/o200k_base"),
-  cl100k_base: () => import("gpt-tokenizer/encoding/cl100k_base"),
-  p50k_base: () => import("gpt-tokenizer/encoding/p50k_base"),
-  p50k_edit: () => import("gpt-tokenizer/encoding/p50k_edit"),
-  r50k_base: () => import("gpt-tokenizer/encoding/r50k_base"),
-} as const
-
-type SupportedEncoding = keyof typeof ENCODING_MAP
+import { ENCODING_MAP, isSupportedEncoding } from "~/lib/tokenizer-encodings"
+import { countTextsInTokenizerWorker } from "~/lib/tokenizer-worker-client"
 
 // Define encoder interface
 interface Encoder {
@@ -139,14 +129,13 @@ const getEncodeChatFunction = async (encoding: string): Promise<Encoder> => {
     }
   }
 
-  const supportedEncoding = encoding as SupportedEncoding
-  if (!(supportedEncoding in ENCODING_MAP)) {
+  if (!isSupportedEncoding(encoding)) {
     const fallbackModule = (await ENCODING_MAP.o200k_base()) as Encoder
     encodingCache.set(encoding, fallbackModule)
     return fallbackModule
   }
 
-  const encodingModule = (await ENCODING_MAP[supportedEncoding]()) as Encoder
+  const encodingModule = (await ENCODING_MAP[encoding]()) as Encoder
   encodingCache.set(encoding, encodingModule)
   return encodingModule
 }
@@ -373,9 +362,11 @@ const createResponsiveEncoder = async (
   signal: AbortSignal,
 ): Promise<Encoder> => {
   const texts = new Set<string>()
+  let totalCodeUnits = 0
   const collectingEncoder: Encoder = {
     encode: (text) => {
       texts.add(text)
+      totalCodeUnits += text.length
       return []
     },
   }
@@ -385,17 +376,18 @@ const createResponsiveEncoder = async (
   }
 
   const textList = [...texts]
-  const totalCodeUnits = textList.reduce(
-    (total, text) => total + text.length,
-    0,
-  )
   if (totalCodeUnits < RESPONSIVE_ENCODING_THRESHOLD) {
     signal.throwIfAborted()
     return encoder
   }
 
-  const supportedEncoding = tokenizer in ENCODING_MAP ? tokenizer : "o200k_base"
-  const counts = await encodeTextsInWorker(textList, supportedEncoding, signal)
+  const supportedEncoding =
+    isSupportedEncoding(tokenizer) ? tokenizer : "o200k_base"
+  const counts = await countTextsInTokenizerWorker(
+    textList,
+    supportedEncoding,
+    signal,
+  )
   const countByText = new Map(
     textList.map((text, index) => [text, counts[index]]),
   )
@@ -404,13 +396,6 @@ const createResponsiveEncoder = async (
       new Array<number>(countByText.get(text) ?? encoder.encode(text).length),
   }
 }
-
-const encodeTextsInWorker = (
-  texts: Array<string>,
-  encoding: string,
-  signal: AbortSignal,
-): Promise<Array<number>> =>
-  countTextsInTokenizerWorker(texts, encoding, signal)
 
 /**
  * Calculate the token count of messages, supporting multiple GPT encoders

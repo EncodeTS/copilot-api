@@ -1,10 +1,12 @@
 import { Worker } from "node:worker_threads"
 
+import type { SupportedEncoding } from "~/lib/tokenizer-encodings"
+
 const WORKER_IDLE_TIMEOUT_MS = 5_000
 
 interface TokenizerJob {
   abort: () => void
-  encoding: string
+  encoding: SupportedEncoding
   id: number
   reject: (reason?: unknown) => void
   resolve: (counts: Array<number>) => void
@@ -26,7 +28,7 @@ const queue = new Array<TokenizerJob>()
 
 export const countTextsInTokenizerWorker = (
   texts: Array<string>,
-  encoding: string,
+  encoding: SupportedEncoding,
   signal: AbortSignal,
 ): Promise<Array<number>> => {
   signal.throwIfAborted()
