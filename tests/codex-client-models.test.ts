@@ -352,6 +352,26 @@ describe("Codex client models", () => {
     )
   })
 
+  test("does not apply alias reasoning validation to ordinary models", async () => {
+    codexClientModelsDependencies.loadBundledCatalog = () =>
+      Promise.resolve(aliasCatalog)
+    const luna = createCopilotModel(
+      { max_context_window_tokens: 1_050_000 },
+      { id: "gpt-5.6-luna", reasoningEfforts: ["ultra"] },
+    )
+
+    const result = await projectCodexModels({
+      clientVersion: "0.144.1",
+      copilotModels: [luna],
+      modelMappings: {},
+    })
+
+    expect(result.status).toBe("complete")
+    expect(result.catalog.models[0]?.supported_reasoning_levels).toEqual(
+      aliasCatalog.models[1]?.supported_reasoning_levels,
+    )
+  })
+
   test("reports an unavailable projection when no trustworthy base catalog exists", async () => {
     codexClientModelsDependencies.loadBundledCatalog = () =>
       Promise.resolve(null)

@@ -127,21 +127,21 @@ function applyCopilotCapabilities(
     if (requireContextWindow) {
       return { reason: "target_context_invalid" }
     }
-    return applyLiveReasoningCapabilities(template, copilotModel)
+    return { model: { ...template } }
   }
 
-  return applyLiveReasoningCapabilities(
-    {
-      ...template,
-      context_window: contextWindow,
-      max_context_window: contextWindow,
-      auto_compact_token_limit: resolveAutoCompactTokenLimit(
-        copilotModel,
-        contextWindow,
-      ),
-    },
-    copilotModel,
-  )
+  const model = {
+    ...template,
+    context_window: contextWindow,
+    max_context_window: contextWindow,
+    auto_compact_token_limit: resolveAutoCompactTokenLimit(
+      copilotModel,
+      contextWindow,
+    ),
+  }
+  return requireContextWindow ?
+      applyLiveReasoningCapabilities(model, copilotModel)
+    : { model }
 }
 
 function applyLiveReasoningCapabilities(
