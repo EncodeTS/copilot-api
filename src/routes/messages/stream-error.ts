@@ -1,5 +1,4 @@
 import type { ConsolaInstance } from "consola"
-import type { SSEStreamingApi } from "hono/streaming"
 
 import {
   reportStreamTermination,
@@ -9,8 +8,12 @@ import {
 
 import { buildErrorEvent } from "./responses-stream-translation"
 
+export interface AnthropicStreamOutput {
+  writeSSE: (message: { data: string; event?: string }) => Promise<unknown>
+}
+
 export const emitAnthropicStreamError = async (
-  stream: SSEStreamingApi,
+  stream: AnthropicStreamOutput,
   logger: ConsolaInstance,
   ctx: {
     diagnostics?: StreamLifecycleDiagnostics
