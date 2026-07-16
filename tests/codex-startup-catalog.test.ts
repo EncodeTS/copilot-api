@@ -343,6 +343,7 @@ test("Codex startup catalog preserves last-known-good for unavailable projection
     const previousBytes = await fs.readFile(catalogPath)
     const manager = createCodexStartupCatalogManager({
       catalogPath,
+      listInstalledVersions: () => Promise.resolve(["0.144.2"]),
       projectModels: () =>
         Promise.resolve(createProjection({ models: [] }, "unavailable")),
     })
