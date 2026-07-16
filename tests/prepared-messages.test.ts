@@ -380,24 +380,44 @@ test("Chat estimation observes caller cancellation without invoking the tokenize
   expect(getTokenCount).not.toHaveBeenCalled()
 })
 
-test("Chat estimation yields so in-flight cancellation interrupts warmed tokenization", async () => {
+test("Chat estimation interrupts active encoding in a warmed worker", async () => {
   state.models = {
     object: "list",
     data: [dualModel],
   } as typeof state.models
-  const source: AnthropicMessagesPayload = {
+  const warmSource: AnthropicMessagesPayload = {
     max_tokens: 128,
     messages: [
-      { role: "user", content: "x".repeat(50_000) },
+      { role: "user", content: "x".repeat(20_000) },
       { role: "assistant", content: '{"value":' },
     ],
     model: dualModel.id,
   }
-  await countPreparedCopilotMessages(prepareCopilotMessagesRequest(source))
+  await countPreparedCopilotMessages(
+    prepareCopilotMessagesRequest(warmSource),
+    {
+      signal: new AbortController().signal,
+    },
+  )
+
+  let randomState = 123_456_789
+  const randomText = new Array<string>(500_000)
+  for (let index = 0; index < randomText.length; index += 1) {
+    randomState = (1_103_515_245 * randomState + 12_345) >>> 0
+    randomText[index] = String.fromCharCode(32 + (randomState % 95))
+  }
+  const source: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [
+      { role: "user", content: randomText.join("") },
+      { role: "assistant", content: '{"value":' },
+    ],
+    model: dualModel.id,
+  }
 
   const controller = new AbortController()
-  const reason = new Error("cancelled during count")
-  const timer = setTimeout(() => controller.abort(reason), 1)
+  const reason = "cancelled during count"
+  const timer = setTimeout(() => controller.abort(reason), 20)
   let thrown: unknown
   try {
     await countPreparedCopilotMessages(prepareCopilotMessagesRequest(source), {

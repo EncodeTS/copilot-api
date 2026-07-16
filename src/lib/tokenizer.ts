@@ -6,7 +6,7 @@ import type {
   ToolCall,
 } from "~/services/copilot/create-chat-completions"
 import type { Model } from "~/services/copilot/get-models"
-import { Worker } from "node:worker_threads"
+import { countTextsInTokenizerWorker } from "./tokenizer-worker-client"
 
 // Encoder type mapping
 const ENCODING_MAP = {
@@ -27,18 +27,6 @@ interface Encoder {
 // Cache loaded encoders to avoid repeated imports
 const encodingCache = new Map<string, Encoder>()
 const RESPONSIVE_ENCODING_THRESHOLD = 16_384
-const TOKENIZER_WORKER_SOURCE = `
-const { parentPort, workerData } = require("node:worker_threads")
-import(workerData.moduleName)
-  .then((encoder) => {
-    parentPort.postMessage(
-      workerData.texts.map((text) => encoder.encode(text).length),
-    )
-  })
-  .catch((error) => {
-    throw error
-  })
-`
 
 /**
  * Calculate tokens for tool calls
@@ -422,56 +410,7 @@ const encodeTextsInWorker = (
   encoding: string,
   signal: AbortSignal,
 ): Promise<Array<number>> =>
-  new Promise((resolve, reject) => {
-    const worker = new Worker(TOKENIZER_WORKER_SOURCE, {
-      eval: true,
-      workerData: {
-        moduleName: `gpt-tokenizer/encoding/${encoding}`,
-        texts,
-      },
-    })
-    let settled = false
-
-    const cleanup = () => {
-      signal.removeEventListener("abort", handleAbort)
-    }
-    const fail = (error: unknown) => {
-      if (settled) return
-      settled = true
-      cleanup()
-      reject(error instanceof Error ? error : new Error(String(error)))
-    }
-    const handleAbort = () => {
-      void worker.terminate()
-      fail(signal.reason ?? new Error("Token count aborted"))
-    }
-
-    signal.addEventListener("abort", handleAbort, { once: true })
-    worker.once("message", (value: unknown) => {
-      if (!isSafeIntegerArray(value)) {
-        fail(new TypeError("Tokenizer worker returned invalid counts"))
-        return
-      }
-      if (settled) return
-      settled = true
-      cleanup()
-      resolve(value)
-    })
-    worker.once("error", fail)
-    worker.once("exit", (code) => {
-      if (!settled && code !== 0) {
-        fail(new Error(`Tokenizer worker exited with code ${code}`))
-      }
-    })
-    if (signal.aborted) handleAbort()
-  })
-
-const isSafeIntegerArray = (value: unknown): value is Array<number> =>
-  Array.isArray(value)
-  && value.every(
-    (count: unknown) =>
-      typeof count === "number" && Number.isSafeInteger(count),
-  )
+  countTextsInTokenizerWorker(texts, encoding, signal)
 
 /**
  * Calculate the token count of messages, supporting multiple GPT encoders
