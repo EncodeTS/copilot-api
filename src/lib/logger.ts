@@ -7,6 +7,7 @@ import {
   HANDLER_LOG_DEFAULTS,
   type HandlerLogStorage,
 } from "./handler-log-storage"
+import { toSafeLogMetadata as toSafeMetadata } from "./log-metadata"
 import { PATHS } from "./paths"
 import { registerProcessCleanup } from "./process-cleanup"
 import { requestContext } from "./request-context"
@@ -71,6 +72,25 @@ const sanitizeName = (name: string) => {
 
 type DebugLogger = Pick<ConsolaInstance, "debug">
 
+type DiagnosticLogLevel = "debug" | "error" | "info" | "warn"
+type DiagnosticLogger = Pick<
+  ConsolaInstance,
+  "debug" | "error" | "info" | "warn"
+>
+type DiagnosticFieldValue = boolean | null | number | string | undefined
+
+const DIAGNOSTIC_EVENT_BRAND = Symbol("copilot-api.diagnostic-event")
+
+interface DiagnosticLogEvent {
+  readonly [DIAGNOSTIC_EVENT_BRAND]: true
+  event: string
+  fields: Record<string, boolean | null | number | string>
+  kind: "diagnostic_event"
+}
+
+const DIAGNOSTIC_EVENT_PATTERN = /^[a-zA-Z0-9._:-]+$/u
+const DIAGNOSTIC_FIELD_PATTERN = /^[a-zA-Z][a-zA-Z0-9._-]{0,63}$/u
+
 type AsyncDebugValueFactory = () => Promise<unknown>
 
 interface PayloadSummary {
@@ -83,20 +103,8 @@ interface PayloadSummary {
 }
 
 const SUMMARY_COUNT_KEYS = ["input", "messages", "output", "tools"] as const
-const SAFE_METADATA_PATTERN = /^[a-zA-Z0-9._:/+-]+$/u
-
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
-
-const toSafeMetadata = (value: unknown): string | undefined =>
-  (
-    typeof value === "string"
-    && value.length > 0
-    && value.length <= 200
-    && SAFE_METADATA_PATTERN.test(value)
-  ) ?
-    value
-  : undefined
 
 const serializeForByteCount = (value: unknown): string => {
   const seen = new WeakSet<object>()
@@ -232,8 +240,60 @@ const summarizeLogArgument = (value: unknown): unknown => {
   return summarizePayloadForDebug(value)
 }
 
+const createDiagnosticLogEvent = (
+  event: string,
+  fields: Record<string, DiagnosticFieldValue>,
+): DiagnosticLogEvent => {
+  const safeEvent =
+    (
+      event.length > 0
+      && event.length <= 100
+      && DIAGNOSTIC_EVENT_PATTERN.test(event)
+    ) ?
+      event
+    : "diagnostic.event"
+  const safeFields: DiagnosticLogEvent["fields"] = {}
+
+  for (const [key, value] of Object.entries(fields)) {
+    if (!DIAGNOSTIC_FIELD_PATTERN.test(key) || value === undefined) continue
+
+    if (typeof value === "string") {
+      const safeValue = toSafeMetadata(value)
+      if (safeValue !== undefined) safeFields[key] = safeValue
+      continue
+    }
+    safeFields[key] = value
+  }
+
+  const context = requestContext.getStore()
+  if (context) {
+    const traceId = toSafeMetadata(context.traceId)
+    if (traceId !== undefined) safeFields.traceId = traceId
+    safeFields.elapsedMs ??= Math.max(0, Date.now() - context.startTime)
+  }
+
+  const diagnostic = {
+    event: safeEvent,
+    fields: safeFields,
+    kind: "diagnostic_event" as const,
+  } as DiagnosticLogEvent
+  Object.defineProperty(diagnostic, DIAGNOSTIC_EVENT_BRAND, {
+    enumerable: false,
+    value: true,
+  })
+  return diagnostic
+}
+
+const isDiagnosticLogEvent = (value: unknown): value is DiagnosticLogEvent =>
+  typeof value === "object"
+  && value !== null
+  && (value as Partial<DiagnosticLogEvent>)[DIAGNOSTIC_EVENT_BRAND] === true
+
 const prepareFileLogArguments = (args: Array<unknown>): Array<unknown> =>
   args.map((arg, index) => {
+    if (isDiagnosticLogEvent(arg)) {
+      return arg
+    }
     if (index === 0 && typeof arg === "string") {
       return redactLogString(arg.replaceAll(/[\r\n]+/gu, " ").slice(0, 200))
     }
@@ -242,6 +302,32 @@ const prepareFileLogArguments = (args: Array<unknown>): Array<unknown> =>
         redactDebugArg(arg)
       : summarizeLogArgument(arg)
   })
+
+export const logDiagnosticEvent = (
+  logger: DiagnosticLogger,
+  level: DiagnosticLogLevel,
+  event: string,
+  fields: Record<string, DiagnosticFieldValue> = {},
+): void => {
+  if (level === "debug" && !state.verbose) {
+    return
+  }
+  const diagnostic = createDiagnosticLogEvent(event, fields)
+  switch (level) {
+    case "debug":
+      logger.debug(diagnostic)
+      break
+    case "error":
+      logger.error(diagnostic)
+      break
+    case "info":
+      logger.info(diagnostic)
+      break
+    case "warn":
+      logger.warn(diagnostic)
+      break
+  }
+}
 
 export const debugLazy = (
   logger: DebugLogger,

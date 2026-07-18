@@ -10,6 +10,7 @@ import {
   debugJsonTail,
   debugLazy,
   getHandlerLogDirectory,
+  logDiagnosticEvent,
   redactLogString,
   redactPayloadForDebug,
 } from "../src/lib/logger"
@@ -769,4 +770,107 @@ test("debugJsonTail preserves tail truncation behavior", () => {
   debugJsonTail(logger as never, "payload", { value: payload, tailLength: 10 })
 
   expect(logger.debug).toHaveBeenCalledWith("payload", expected)
+})
+
+test("diagnostic events preserve safe correlation fields on disk", async () => {
+  const logDirectory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "copilot-api-diagnostic-event-"),
+  )
+  const storage = createHandlerLogStorage({
+    logDirectory,
+    startTimers: false,
+  })
+  const logger = createHandlerLogger("responses-diagnostics", { storage })
+
+  try {
+    requestContext.run(
+      {
+        parentSessionId: undefined,
+        sessionAffinity: undefined,
+        startTime: Date.now(),
+        traceId: "trace-diagnostic",
+        userAgent: "test",
+      },
+      () =>
+        logDiagnosticEvent(logger, "warn", "responses.upstream_error", {
+          errorCode: "model_max_prompt_tokens_exceeded",
+          model: "gpt-5.6-luna",
+          overLimitTokens: 45_636,
+          promptLimitTokens: 922_000,
+          promptTokens: 967_636,
+          requestId: "request-safe-id",
+          unsafeCredential: "Bearer secret-token",
+          unsafePrompt: "private prompt text",
+        }),
+    )
+    await storage.flush()
+
+    const dateKey = new Date().toLocaleDateString("sv-SE")
+    const contents = fs.readFileSync(
+      path.join(logDirectory, `responses-diagnostics-${dateKey}.part-0.log`),
+      "utf8",
+    )
+    expect(contents).toContain("responses.upstream_error")
+    expect(contents).toContain("trace-diagnostic")
+    expect(contents).toContain("model_max_prompt_tokens_exceeded")
+    expect(contents).toContain("promptTokens: 967636")
+    expect(contents).toContain("promptLimitTokens: 922000")
+    expect(contents).toContain("overLimitTokens: 45636")
+    expect(contents).toContain("request-safe-id")
+    expect(contents).toContain("elapsedMs:")
+    expect(contents).not.toContain("payload_summary")
+  } finally {
+    await storage.close()
+    fs.rmSync(logDirectory, { force: true, recursive: true })
+  }
+})
+
+test("diagnostic events reject a hostile trace id", () => {
+  const logger = {
+    debug: mock(() => {}),
+    error: mock(() => {}),
+    info: mock(() => {}),
+    warn: mock(() => {}),
+  }
+
+  requestContext.run(
+    {
+      parentSessionId: undefined,
+      sessionAffinity: undefined,
+      startTime: Date.now(),
+      traceId: "private trace text",
+      userAgent: "test",
+    },
+    () =>
+      logDiagnosticEvent(logger as never, "info", "responses.request", {
+        model: "gpt-5.6-sol",
+      }),
+  )
+
+  const serialized = JSON.stringify(
+    (logger.info.mock.calls as Array<Array<unknown>>)[0][0],
+  )
+  expect(serialized).toContain("gpt-5.6-sol")
+  expect(serialized).not.toContain("private trace text")
+})
+
+test("diagnostic debug events follow the verbose switch", () => {
+  const logger = {
+    debug: mock(() => {}),
+    error: mock(() => {}),
+    info: mock(() => {}),
+    warn: mock(() => {}),
+  }
+
+  state.verbose = false
+  logDiagnosticEvent(logger as never, "debug", "responses.request_shape", {
+    payloadBytes: 123,
+  })
+  expect(logger.debug).not.toHaveBeenCalled()
+
+  state.verbose = true
+  logDiagnosticEvent(logger as never, "debug", "responses.request_shape", {
+    payloadBytes: 123,
+  })
+  expect(logger.debug).toHaveBeenCalledTimes(1)
 })

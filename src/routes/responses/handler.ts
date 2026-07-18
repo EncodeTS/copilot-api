@@ -6,7 +6,14 @@ import {
   isResponsesApiWebSearchEnabled as isConfiguredResponsesApiWebSearchEnabled,
   resolveMappedModel,
 } from "~/lib/config"
-import { createHandlerLogger, debugJson, debugJsonTail } from "~/lib/logger"
+import {
+  createHandlerLogger,
+  debugJson,
+  debugJsonTail,
+  logDiagnosticEvent,
+} from "~/lib/logger"
+import { responsesDiagnosticsLogger } from "~/lib/responses-diagnostic-logger"
+import { summarizeResponsesPayload } from "~/lib/responses-diagnostics"
 import { getResponsesEndpointCapabilities } from "~/lib/responses-capabilities"
 import { routeProviderModelAlias } from "~/routes/provider/model-router"
 import { state } from "~/lib/state"
@@ -137,6 +144,37 @@ export const handleResponses = async (c: Context) => {
     compactInputByLatestCompaction(payload)
   }
 
+  const requestDiagnostic = summarizeResponsesPayload(payload, {
+    includePayloadBytes: false,
+  })
+  logDiagnosticEvent(responsesDiagnosticsLogger, "info", "responses.request", {
+    compactThreshold: requestDiagnostic.compactThreshold,
+    contextOwner: contextManagementDecision.owner,
+    inputItems: requestDiagnostic.inputItems,
+    model: requestDiagnostic.model,
+    requestId,
+    requestedModel,
+    sessionId: fallbackSessionId,
+    stream: requestDiagnostic.stream,
+    transport: responsesTransport,
+  })
+  const modelLimits = selectedModel?.capabilities.limits
+  logDiagnosticEvent(
+    responsesDiagnosticsLogger,
+    "debug",
+    "responses.context_management",
+    {
+      compactThreshold: requestDiagnostic.compactThreshold,
+      contextInjected: contextManagementDecision.injected,
+      contextOwner: contextManagementDecision.owner,
+      maxContextTokens: modelLimits?.max_context_window_tokens,
+      maxOutputTokens: modelLimits?.max_output_tokens,
+      promptLimitTokens: modelLimits?.max_prompt_tokens,
+      requestId,
+      sessionId: fallbackSessionId,
+      shouldPruneInput: contextManagementDecision.shouldPruneInput,
+    },
+  )
   debugJsonTail(logger, "Translated Responses payload:", {
     value: payload,
     tailLength: 2_000,

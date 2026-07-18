@@ -766,4 +766,42 @@ describe("createResponses", () => {
     expect(otherAffinity).not.toBe(first)
     expect(otherUserAgent).not.toBe(first)
   })
+
+  test("preserves Copilot prompt limit failures after diagnostic logging", () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "model_max_prompt_tokens_exceeded",
+              message:
+                "prompt token count of 967636 exceeds the limit of 922000",
+            },
+          }),
+          {
+            headers: {
+              "content-type": "application/json",
+              "x-copilot-service-request-id": "service-request-1",
+              "x-github-request-id": "github-request-1",
+              "x-request-id": "upstream-request-1",
+            },
+            status: 400,
+          },
+        ),
+      ),
+    )
+
+    expect(
+      createResponses(
+        { input: "hello", model: "gpt-5.6-luna", stream: false },
+        {
+          initiator: "user",
+          requestId: "request-1",
+          vision: false,
+        },
+      ),
+    ).rejects.toThrow(
+      "Failed to create responses: prompt token count of 967636 exceeds the limit of 922000",
+    )
+  })
 })

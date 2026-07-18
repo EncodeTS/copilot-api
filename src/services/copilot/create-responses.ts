@@ -18,6 +18,13 @@ import {
   type CopilotQuotaSnapshot,
 } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
+import { logDiagnosticEvent } from "~/lib/logger"
+import { responsesDiagnosticsLogger } from "~/lib/responses-diagnostic-logger"
+import {
+  createResponsesTransportErrorDiagnostic,
+  createResponsesUpstreamErrorDiagnostic,
+  summarizeResponsesPayload,
+} from "~/lib/responses-diagnostics"
 import {
   createStreamRetryBudget,
   reportStreamTermination,
@@ -719,6 +726,38 @@ export const createResponses = async (
   const effectiveTransport =
     compactType === COMPACT_REQUEST ? "http" : transport
 
+  if (state.verbose) {
+    const outgoing = summarizeResponsesPayload(payload)
+    logDiagnosticEvent(
+      responsesDiagnosticsLogger,
+      "debug",
+      "responses.upstream_request",
+      {
+        assistantMessages: outgoing.roleCounts.assistant,
+        compactThreshold: outgoing.compactThreshold,
+        compactionItems: outgoing.inputTypeCounts.compaction,
+        compactionTriggerItems: outgoing.inputTypeCounts.compaction_trigger,
+        contextManagementItems: outgoing.contextManagementItems,
+        developerMessages: outgoing.roleCounts.developer,
+        functionOutputItems: outgoing.inputTypeCounts.function_call_output,
+        inputItems: outgoing.inputItems,
+        instructionsBytes: outgoing.instructionsBytes,
+        messageItems: outgoing.inputTypeCounts.message,
+        model: outgoing.model,
+        payloadBytes: outgoing.payloadBytes,
+        reasoningItems: outgoing.inputTypeCounts.reasoning,
+        requestId,
+        sessionId,
+        stream: outgoing.stream,
+        systemMessages: outgoing.roleCounts.system,
+        toolCount: outgoing.toolCount,
+        transport: effectiveTransport,
+        userMessages: outgoing.roleCounts.user,
+        visionItems: outgoing.visionItems,
+      },
+    )
+  }
+
   if (payload.stream === true && effectiveTransport === "websocket") {
     const websocketRequest = prepareResponsesWebSocketRequest(
       payload,
@@ -915,6 +954,19 @@ const createHttpResponses = async (
       },
     )
   } catch (error) {
+    if (!options.signal?.aborted) {
+      logDiagnosticEvent(
+        responsesDiagnosticsLogger,
+        "error",
+        "responses.transport_error",
+        createResponsesTransportErrorDiagnostic({
+          error,
+          payload,
+          requestHeaders: headers,
+          transport: "http",
+        }),
+      )
+    }
     if (payload.stream === true && options.retryBudget) {
       throw reportStreamTermination({
         diagnostics: {
@@ -958,7 +1010,22 @@ const createHttpResponses = async (
       return recovery
     }
 
-    consola.error("Failed to create responses", response)
+    logDiagnosticEvent(
+      responsesDiagnosticsLogger,
+      "error",
+      "responses.upstream_error",
+      createResponsesUpstreamErrorDiagnostic({
+        failure: failure ?? {
+          code: null,
+          message: "unparsed upstream error",
+        },
+        payload,
+        requestHeaders: headers,
+        responseHeaders: response.headers,
+        status: response.status,
+        transport: "http",
+      }),
+    )
     throw new HTTPError(
       failure?.message ?
         `Failed to create responses: ${failure.message}`
@@ -1173,10 +1240,38 @@ const createRetryableResponsesWebSocketStream = async function* (
         )
       }
 
+      if (failure) {
+        logDiagnosticEvent(
+          responsesDiagnosticsLogger,
+          "error",
+          "responses.upstream_error",
+          createResponsesUpstreamErrorDiagnostic({
+            failure,
+            payload: options.payload,
+            requestHeaders: options.headers,
+            status: failure.status,
+            transport: "websocket",
+          }),
+        )
+      }
+
       forwardedChunk = true
       yield chunk
     }
   } catch (error) {
+    if (!options.signal?.aborted) {
+      logDiagnosticEvent(
+        responsesDiagnosticsLogger,
+        "warn",
+        "responses.transport_error",
+        createResponsesTransportErrorDiagnostic({
+          error,
+          payload: options.payload,
+          requestHeaders: options.headers,
+          transport: "websocket",
+        }),
+      )
+    }
     if (isWebSocketNotSentError(error)) {
       throw new RetryableStreamTransportError(error.message, error)
     }
