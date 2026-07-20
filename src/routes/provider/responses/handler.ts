@@ -35,7 +35,10 @@ import {
   forwardCodexResponses,
   resolveCodexResponsesTransport,
 } from "~/services/codex/create-responses"
-import { getModels as getCodexModels } from "~/services/codex/get-models"
+import {
+  getCodexProviderCatalogHeaders,
+  loadCodexProviderModels,
+} from "~/services/codex/get-models"
 import {
   createProviderProxyResponse,
   forwardProviderResponses,
@@ -43,6 +46,10 @@ import {
 import type { ContentfulStatusCode } from "hono/utils/http-status"
 
 const logger = createHandlerLogger("provider-responses-handler")
+
+export const providerResponsesDependencies = {
+  loadCodexProviderModels,
+}
 
 export async function handleProviderResponsesForProvider(
   c: Context,
@@ -80,10 +87,38 @@ export async function handleProviderResponsesForProvider(
     modelConfig,
   } = resolvedProviderModel
 
-  const model =
+  const codexCatalog =
     providerConfig.name === "codex" ?
-      getCodexModels().data.find((model) => model.id === payload.model)
+      await providerResponsesDependencies.loadCodexProviderModels(
+        c.req.raw.signal,
+      )
     : undefined
+  if (codexCatalog) {
+    for (const [name, value] of Object.entries(
+      getCodexProviderCatalogHeaders(codexCatalog),
+    )) {
+      c.header(name, value)
+    }
+  }
+  const model = codexCatalog?.catalog.data.find(
+    (model) => model.id === payload.model,
+  )
+  const requestedEffort = payload.reasoning?.effort
+  if (
+    providerConfig.name === "codex"
+    && requestedEffort
+    && !model?.capabilities.supports.reasoning_effort?.includes(requestedEffort)
+  ) {
+    return c.json(
+      {
+        error: {
+          message: `Reasoning effort '${requestedEffort}' is not supported by Codex model '${payload.model}'`,
+          type: "invalid_request_error",
+        },
+      },
+      400,
+    )
+  }
 
   // Smaller than the client compaction threshold, use server-side compaction to maintain cache hit rate.
   if (

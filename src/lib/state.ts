@@ -10,6 +10,7 @@ export interface State {
   codexRefreshToken?: string
   codexExpiresAt?: number
   codexAccountId?: string
+  codexCredentialRevision?: number
 
   accountType: string
   copilotUsageScope?: string
@@ -30,6 +31,7 @@ export interface State {
 
 export const state: State = {
   accountType: "individual",
+  codexCredentialRevision: 0,
   showToken: false,
   verbose: false,
   vsCodeDeviceId: randomUUID(),

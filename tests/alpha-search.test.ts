@@ -25,12 +25,19 @@ const { state } = await import("../src/lib/state")
 const { forwardCodexAlphaSearch, resolveCodexAlphaSearchUrl } = await import(
   "../src/services/codex/alpha-search"
 )
-const { forwardCodexModels, getModels, resolveCodexModelsUrl } = await import(
-  "../src/services/codex/get-models"
-)
+const {
+  captureCodexCredentialSnapshot,
+  clearCodexProviderCatalogCache,
+  fetchCodexProviderCatalog,
+  forwardCodexModels,
+  getStaticCodexModels,
+  loadCodexProviderModels,
+  resolveCodexModelsUrl,
+} = await import("../src/services/codex/get-models")
 const { alphaSearchRoutes } = await import("../src/routes/alpha-search/route")
 
 const originalFetch = globalThis.fetch
+const originalCodexCredentialRevision = state.codexCredentialRevision
 const alphaSearchPayload = {
   id: "search-request-id",
   model: "gpt-5.6-sol",
@@ -103,8 +110,10 @@ beforeEach(() => {
   }
   state.codexAccessToken = "codex-access-token"
   state.codexAccountId = "account-123"
+  state.codexCredentialRevision = 1
   state.verbose = false
   fetchMock.mockClear()
+  clearCodexProviderCatalogCache()
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
     fetchMock as unknown as typeof fetch
 })
@@ -113,7 +122,9 @@ afterEach(() => {
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
   state.codexAccessToken = undefined
   state.codexAccountId = undefined
+  state.codexCredentialRevision = originalCodexCredentialRevision
   state.verbose = false
+  clearCodexProviderCatalogCache()
 })
 
 describe("Codex alpha search URL", () => {
@@ -154,8 +165,77 @@ describe("Codex models forwarding", () => {
     expect(headers.get("chatgpt-account-id")).toBe("account-123")
   })
 
+  test("uses canonical headers for cached provider discovery", async () => {
+    await fetchCodexProviderCatalog({
+      accessToken: "codex-access-token",
+      accountId: "account-123",
+      credentialRevision: 1,
+    })
+
+    const [url, init] = fetchMock.mock.calls[0] ?? []
+    expect(url).toBe("https://chatgpt.com/backend-api/codex/models")
+    const headers = new Headers(init?.headers)
+    expect([...headers.keys()].sort()).toEqual([
+      "accept",
+      "authorization",
+      "chatgpt-account-id",
+      "originator",
+      "user-agent",
+    ])
+    expect(headers.get("accept")).toBe("application/json")
+    expect(headers.get("originator")).toBe("copilot-api")
+    expect(headers.get("user-agent")).toBe("copilot-api")
+    expect(headers.get("if-none-match")).toBeNull()
+    expect(headers.get("cookie")).toBeNull()
+    expect(headers.get("openai-beta")).toBeNull()
+    expect(headers.get("range")).toBeNull()
+  })
+
+  test("keeps scope and auth bound when login changes before refresh starts", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        Response.json({
+          models: [
+            {
+              slug: "gpt-test",
+              display_name: "GPT Test",
+              visibility: "list",
+              supported_in_api: true,
+              input_modalities: ["text"],
+              context_window: 100_000,
+              supported_reasoning_levels: [{ effort: "low" }],
+              supports_parallel_tool_calls: false,
+            },
+          ],
+        }),
+      ),
+    )
+    state.codexAccessToken = "account-a-token"
+    state.codexAccountId = "account-a"
+    state.codexCredentialRevision = 11
+
+    const accountALoad = loadCodexProviderModels()
+    state.codexAccessToken = "account-b-token"
+    state.codexAccountId = "account-b"
+    state.codexCredentialRevision = 12
+    await accountALoad
+
+    const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers)
+    expect(headers.get("authorization")).toBe("Bearer account-a-token")
+    expect(headers.get("chatgpt-account-id")).toBe("account-a")
+  })
+
+  test("rejects an unknown account before discovery", () => {
+    state.codexAccountId = "   "
+
+    expect(() => captureCodexCredentialSnapshot()).toThrow(
+      "Codex account id is not loaded",
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   test("keeps the built-in Codex model catalog available", () => {
-    const models = getModels()
+    const models = getStaticCodexModels()
     expect(models.object).toBe("list")
     expect(models.data.map((model) => model.id)).toContain("gpt-5.6-sol")
   })

@@ -234,6 +234,17 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
     expect(result.reasoning?.effort).toBe("xhigh")
   })
 
+  it("forwards Codex ultra reasoning effort through Messages to Responses", () => {
+    const result = translateAnthropicMessagesToResponsesPayload({
+      ...samplePayload,
+      output_config: {
+        effort: "ultra",
+      },
+    })
+
+    expect(result.reasoning?.effort).toBe("ultra")
+  })
+
   it("preserves the Claude client request bundle when bridging to GPT Responses", () => {
     const schema = {
       type: "object",

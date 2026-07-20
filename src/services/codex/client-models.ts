@@ -1,4 +1,5 @@
 import { isResponsesApiWebSocketEnabled } from "~/lib/config"
+import { normalizeGatewayReasoningEffort } from "~/lib/reasoning-effort"
 import { getResponsesEndpointCapabilities } from "~/lib/responses-capabilities"
 import {
   loadInstalledCodexCatalog,
@@ -127,7 +128,7 @@ function applyCopilotCapabilities(
     if (requireContextWindow) {
       return { reason: "target_context_invalid" }
     }
-    return { model: { ...template } }
+    return applyLiveReasoningCapabilities(template, copilotModel)
   }
 
   const model = {
@@ -139,38 +140,39 @@ function applyCopilotCapabilities(
       contextWindow,
     ),
   }
-  return requireContextWindow ?
-      applyLiveReasoningCapabilities(model, copilotModel)
-    : { model }
+  return applyLiveReasoningCapabilities(model, copilotModel)
 }
 
 function applyLiveReasoningCapabilities(
   template: CodexModelInfo,
   copilotModel: Model,
 ): { model: CodexModelInfo } | { reason: "reasoning_incompatible" } {
-  if (!Object.hasOwn(copilotModel.capabilities.supports, "reasoning_effort")) {
-    return { model: { ...template } }
-  }
-
+  const hasLiveEfforts = Object.hasOwn(
+    copilotModel.capabilities.supports,
+    "reasoning_effort",
+  )
   const liveEfforts = copilotModel.capabilities.supports.reasoning_effort ?? []
   const descriptorLevels = template.supported_reasoning_levels
-  const supportedReasoningLevels =
-    Array.isArray(descriptorLevels) ?
-      descriptorLevels.filter(
-        (level) =>
-          isRecord(level)
-          && typeof level.effort === "string"
-          && liveEfforts.includes(level.effort),
-      )
-    : []
-  const defaultEffort =
+  if (!Array.isArray(descriptorLevels)) {
+    return hasLiveEfforts ?
+        { reason: "reasoning_incompatible" }
+      : { model: { ...template } }
+  }
+  const supportedReasoningLevels = descriptorLevels.filter((level) => {
+    if (!isRecord(level)) return false
+    const effort = normalizeGatewayReasoningEffort(level.effort)
+    return effort !== null && (!hasLiveEfforts || liveEfforts.includes(effort))
+  })
+  const rawDefaultEffort =
     typeof template.default_reasoning_effort === "string" ?
       template.default_reasoning_effort
     : typeof template.default_reasoning_level === "string" ?
       template.default_reasoning_level
     : undefined
+  const defaultEffort = normalizeGatewayReasoningEffort(rawDefaultEffort)
   if (
     supportedReasoningLevels.length === 0
+    || (rawDefaultEffort !== undefined && !defaultEffort)
     || (defaultEffort
       && !supportedReasoningLevels.some(
         (level) =>
@@ -305,13 +307,11 @@ export async function projectCodexModels({
       mappedTarget !== undefined,
     )
     if ("reason" in applied) {
-      if (mappedTarget) {
-        diagnostics.push({
-          code: applied.reason,
-          source: sourceDescriptor.slug,
-          target: targetId,
-        })
-      }
+      diagnostics.push({
+        code: applied.reason,
+        source: sourceDescriptor.slug,
+        target: targetId,
+      })
       return []
     }
     return [applied.model]

@@ -12,6 +12,7 @@ import {
 } from "~/lib/api-config"
 import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
+import type { GatewayReasoningEffort } from "~/lib/reasoning-effort"
 import { state } from "~/lib/state"
 import {
   fetchWithUpstreamLifecycle,
@@ -224,7 +225,7 @@ export interface ChatCompletionsPayload {
     include_usage?: boolean | null
   } | null
   thinking_budget?: number
-  reasoning_effort?: string
+  reasoning_effort?: GatewayReasoningEffort | null
   top_k?: number | null
   parallel_tool_calls?: boolean | null
 }

@@ -7,6 +7,7 @@ import type {
   AnthropicResponse,
 } from "../src/routes/messages/anthropic-types"
 import type { Model } from "../src/services/copilot/get-models"
+import type { GatewayReasoningEffort } from "../src/lib/reasoning-effort"
 import type {
   ChatCompletionResponse,
   ChatCompletionsPayload,
@@ -1580,7 +1581,7 @@ test("messages Responses flow preserves the configured tool_search alias in non-
 
 const createModel = (
   supportedEndpoints: Array<string>,
-  options: { reasoningEffort?: Array<string> } = {},
+  options: { reasoningEffort?: Array<GatewayReasoningEffort> } = {},
 ): Model => ({
   capabilities: {
     family: "gpt",

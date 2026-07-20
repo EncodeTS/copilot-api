@@ -9,6 +9,7 @@ import {
 } from "../src/services/codex/client-models"
 import type { CodexModelsResponse } from "../src/services/codex/installed-catalog"
 import type { Model } from "../src/services/copilot/get-models"
+import type { GatewayReasoningEffort } from "../src/lib/reasoning-effort"
 
 const originalLoadBundledCatalog =
   codexClientModelsDependencies.loadBundledCatalog
@@ -63,7 +64,7 @@ const createCopilotModel = (
     reasoningEfforts,
   }: {
     id?: string
-    reasoningEfforts?: Array<string>
+    reasoningEfforts?: Array<GatewayReasoningEffort>
   } = {},
 ): Model => ({
   capabilities: {
@@ -403,7 +404,59 @@ describe("Codex client models", () => {
     )
   })
 
-  test("does not apply alias reasoning validation to ordinary models", async () => {
+  test("filters unknown installed descriptor efforts without live metadata", async () => {
+    const catalog = structuredClone(aliasCatalog)
+    const reasoningLevels = catalog.models[1]?.supported_reasoning_levels
+    if (!Array.isArray(reasoningLevels)) {
+      throw new Error("Expected reasoning levels fixture")
+    }
+    reasoningLevels.push({
+      effort: "future-hyper",
+      description: "Future",
+    })
+    codexClientModelsDependencies.loadBundledCatalog = () =>
+      Promise.resolve(catalog)
+    const luna = createCopilotModel(
+      { max_context_window_tokens: 1_050_000 },
+      { id: "gpt-5.6-luna" },
+    )
+
+    const result = await projectCodexModels({
+      clientVersion: "0.144.1",
+      copilotModels: [luna],
+      modelMappings: {},
+    })
+
+    expect(
+      (
+        result.catalog.models[0]?.supported_reasoning_levels as Array<{
+          effort: string
+        }>
+      ).map(({ effort }) => effort),
+    ).toEqual(["low", "medium", "max"])
+  })
+
+  test("does not advertise ordinary descriptor efforts rejected by live Copilot", async () => {
+    codexClientModelsDependencies.loadBundledCatalog = () =>
+      Promise.resolve(aliasCatalog)
+    const luna = createCopilotModel(
+      { max_context_window_tokens: 1_050_000 },
+      { id: "gpt-5.6-luna", reasoningEfforts: ["low", "max"] },
+    )
+
+    const result = await projectCodexModels({
+      clientVersion: "0.144.1",
+      copilotModels: [luna],
+      modelMappings: {},
+    })
+
+    expect(result.catalog.models[0]?.supported_reasoning_levels).toEqual([
+      { effort: "low", description: "Luna low" },
+      { effort: "max", description: "Luna max" },
+    ])
+  })
+
+  test("omits ordinary models with no live reasoning intersection", async () => {
     codexClientModelsDependencies.loadBundledCatalog = () =>
       Promise.resolve(aliasCatalog)
     const luna = createCopilotModel(
@@ -417,10 +470,13 @@ describe("Codex client models", () => {
       modelMappings: {},
     })
 
-    expect(result.status).toBe("complete")
-    expect(result.catalog.models[0]?.supported_reasoning_levels).toEqual(
-      aliasCatalog.models[1]?.supported_reasoning_levels,
-    )
+    expect(result.status).toBe("degraded")
+    expect(result.catalog.models).toEqual([])
+    expect(result.diagnostics).toContainEqual({
+      code: "reasoning_incompatible",
+      source: "gpt-5.6-luna",
+      target: "gpt-5.6-luna",
+    })
   })
 
   test("reports an unavailable projection when no trustworthy base catalog exists", async () => {

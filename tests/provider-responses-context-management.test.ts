@@ -3,8 +3,10 @@ import { Hono } from "hono"
 
 import type { ResolvedProviderConfig } from "../src/lib/config"
 import type { ResponsesResult } from "../src/services/copilot/create-responses"
+import type { CodexProviderCatalogSnapshot } from "../src/services/codex/get-models"
 
 const actualConfigModule = await import("../src/lib/config")
+const actualTokenModule = await import("../src/lib/token")
 const actualTokenUsageModule = await import("../src/lib/token-usage")
 
 let providerConfig: ResolvedProviderConfig | null = null
@@ -14,7 +16,14 @@ const noopTokenUsageRecorder = () => {}
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
   getProviderConfig: () => providerConfig,
+  getRawProviderConfig: () => providerConfig,
+  isResponsesApiWebSocketEnabled: () => false,
   resolveMappedModel: (model: string) => model,
+}))
+
+await mock.module("~/lib/token", () => ({
+  ...actualTokenModule,
+  setupCodexToken: async () => {},
 }))
 
 await mock.module("~/lib/token-usage", () => ({
@@ -23,12 +32,50 @@ await mock.module("~/lib/token-usage", () => ({
 }))
 
 const { responsesRoutes } = await import("../src/routes/responses/route")
+const { state } = await import("../src/lib/state")
+const { providerResponsesDependencies } = await import(
+  "../src/routes/provider/responses/handler"
+)
 const { responsesUtilsDependencies } = await import(
   "../src/routes/responses/utils"
 )
 
 const defaultResponsesUtilsDependencies = { ...responsesUtilsDependencies }
 const originalFetch = globalThis.fetch
+const originalLoadCodexProviderModels =
+  providerResponsesDependencies.loadCodexProviderModels
+const originalCodexAccessToken = state.codexAccessToken
+const originalCodexAccountId = state.codexAccountId
+
+const codexCatalogSnapshot: CodexProviderCatalogSnapshot = {
+  catalog: {
+    data: [
+      {
+        capabilities: {
+          family: "gpt-test",
+          limits: { max_prompt_tokens: 372_000 },
+          object: "model_capabilities",
+          supports: { reasoning_effort: ["low", "max", "ultra"] },
+          type: "chat",
+        },
+        id: "gpt-test",
+        model_picker_enabled: true,
+        name: "GPT Test",
+        object: "model",
+        vendor: "openai",
+        version: "codex-official",
+      },
+    ],
+    object: "list",
+  },
+  diagnostics: [],
+  fetchedAt: 1,
+  freshness: "fresh",
+  source: "official",
+}
+const loadCodexProviderModels = mock((_signal?: AbortSignal) =>
+  Promise.resolve(codexCatalogSnapshot),
+)
 
 const createResponsesResult = (model: string): ResponsesResult => ({
   created_at: 0,
@@ -92,6 +139,9 @@ beforeEach(() => {
   responsesUtilsDependencies.isContextManagementEnabledForMessages = () => true
   responsesUtilsDependencies.isContextManagementEnabledForResponses = () =>
     false
+  loadCodexProviderModels.mockClear()
+  providerResponsesDependencies.loadCodexProviderModels =
+    loadCodexProviderModels
   fetchMock.mockClear()
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
     fetchMock as unknown as typeof fetch
@@ -100,10 +150,105 @@ beforeEach(() => {
 afterEach(() => {
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
   providerConfig = null
+  state.codexAccessToken = originalCodexAccessToken
+  state.codexAccountId = originalCodexAccountId
+  providerResponsesDependencies.loadCodexProviderModels =
+    originalLoadCodexProviderModels
   Object.assign(responsesUtilsDependencies, defaultResponsesUtilsDependencies)
 })
 
 describe("provider Responses context management", () => {
+  test("loads bounded Codex provider truth before direct Responses generation", async () => {
+    providerConfig = {
+      apiKey: "unused",
+      authType: "oauth2",
+      baseUrl: "https://chatgpt.com/backend-api",
+      name: "codex",
+      type: "openai-responses",
+    }
+    state.codexAccessToken = "codex-token"
+    state.codexAccountId = "codex-account"
+
+    const response = await createApp().request("/v1/responses", {
+      body: JSON.stringify({ input: "hello", model: "codex/gpt-test" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get("x-copilot-api-codex-catalog-source")).toBe(
+      "official",
+    )
+    expect(loadCodexProviderModels).toHaveBeenCalledTimes(1)
+    expect(loadCodexProviderModels.mock.calls[0]?.[0]).toBeInstanceOf(
+      AbortSignal,
+    )
+  })
+
+  test("rejects direct Codex Responses effort outside the descriptor", async () => {
+    providerConfig = {
+      apiKey: "unused",
+      authType: "oauth2",
+      baseUrl: "https://chatgpt.com/backend-api",
+      name: "codex",
+      type: "openai-responses",
+    }
+    state.codexAccessToken = "codex-token"
+    state.codexAccountId = "codex-account"
+
+    const response = await createApp().request("/v1/responses", {
+      body: JSON.stringify({
+        input: "hello",
+        model: "codex/gpt-test",
+        reasoning: { effort: "xhigh" },
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      error: {
+        message:
+          "Reasoning effort 'xhigh' is not supported by Codex model 'gpt-test'",
+        type: "invalid_request_error",
+      },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("does not exempt explicit none from Codex descriptor validation", async () => {
+    providerConfig = {
+      apiKey: "unused",
+      authType: "oauth2",
+      baseUrl: "https://chatgpt.com/backend-api",
+      name: "codex",
+      type: "openai-responses",
+    }
+    state.codexAccessToken = "codex-token"
+    state.codexAccountId = "codex-account"
+
+    const response = await createApp().request("/v1/responses", {
+      body: JSON.stringify({
+        input: "hello",
+        model: "codex/gpt-test",
+        reasoning: { effort: "none" },
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      error: {
+        message:
+          "Reasoning effort 'none' is not supported by Codex model 'gpt-test'",
+        type: "invalid_request_error",
+      },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   test("emits an error when a provider Responses stream ends without a typed terminal", async () => {
     fetchMock.mockImplementationOnce(() =>
       Promise.resolve(

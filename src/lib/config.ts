@@ -5,6 +5,10 @@ import { isDeepStrictEqual } from "node:util"
 
 import { PATHS } from "./paths"
 import {
+  normalizeGatewayReasoningEffort,
+  type GatewayReasoningEffort,
+} from "./reasoning-effort"
+import {
   DEFAULT_RESPONSES_WEBSOCKET_RESOURCE_LIMITS,
   type ResponsesWebSocketResourceLimits,
 } from "./responses-websocket-limits"
@@ -21,10 +25,7 @@ export interface AppConfig {
   extraPrompts?: Record<string, string>
   contextManagement?: ContextManagementConfig
   modelResponsesApiCompactThresholds?: Record<string, number>
-  modelReasoningEfforts?: Record<
-    string,
-    "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
-  >
+  modelReasoningEfforts?: Record<string, GatewayReasoningEffort>
   useMessagesApi?: boolean
   useResponsesApiWebSocket?: boolean
   responsesWebSocketCapacityWaitMs?: number
@@ -955,10 +956,12 @@ export function getModelResponsesApiCompactThreshold(
 
 export function getReasoningEffortForModel(
   model: string,
-): "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" {
+): GatewayReasoningEffort {
   const config = getConfig()
-  const userEffort = config.modelReasoningEfforts?.[model]
-  if (userEffort !== undefined) {
+  const userEffort = normalizeGatewayReasoningEffort(
+    config.modelReasoningEfforts?.[model],
+  )
+  if (userEffort) {
     return userEffort
   }
   return isGpt53OrAbove(model) ? "xhigh" : "high"

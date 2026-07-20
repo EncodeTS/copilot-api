@@ -1,5 +1,7 @@
 // Anthropic API Types
 
+import type { MessageReasoningEffort } from "~/lib/reasoning-effort"
+
 export interface AnthropicMessagesPayload {
   model: string
   messages: Array<AnthropicInputMessage>
@@ -34,7 +36,7 @@ export interface AnthropicMessagesPayload {
       }
   service_tier?: "auto" | "standard_only"
   output_config?: {
-    effort?: "low" | "medium" | "high" | "xhigh" | "max"
+    effort?: MessageReasoningEffort
     format?: BetaJSONOutputFormat | null
   }
   metadata?: {

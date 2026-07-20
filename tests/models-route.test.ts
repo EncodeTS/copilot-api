@@ -34,9 +34,17 @@ const { codexClientModelsDependencies } = await import(
 const { clearCodexCatalogCache, loadInstalledCodexCatalog } = await import(
   "../src/services/codex/installed-catalog"
 )
+const { clearCodexProviderCatalogCache } = await import(
+  "../src/services/codex/get-models"
+)
 const { modelRoutes } = await import("../src/routes/models/route")
+const { providerModelRoutes } = await import(
+  "../src/routes/provider/models/route"
+)
 
 const originalFetch = globalThis.fetch
+let codexModelsUnavailable = false
+let slowProviderAborted = false
 
 const createProviderConfig = (
   name: string,
@@ -131,7 +139,7 @@ const createCodexCatalog = () => ({
   ],
 })
 
-const fetchMock = mock((url: string | URL | Request, _init?: RequestInit) => {
+const fetchMock = mock((url: string | URL | Request, init?: RequestInit) => {
   const requestUrl =
     typeof url === "string" ? url
     : url instanceof URL ? url.toString()
@@ -139,6 +147,45 @@ const fetchMock = mock((url: string | URL | Request, _init?: RequestInit) => {
 
   if (requestUrl === "https://bad.example/v1/models") {
     return Promise.resolve(new Response("upstream failed", { status: 502 }))
+  }
+
+  if (requestUrl === "https://abort.example/v1/models") {
+    const error = new Error("upstream aborted")
+    error.name = "AbortError"
+    return Promise.reject(error)
+  }
+
+  if (requestUrl === "https://slow.example/v1/models") {
+    return new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal
+      const timeout = setTimeout(() => {
+        const error = new Error("slow provider test timed out")
+        error.name = "AbortError"
+        reject(error)
+      }, 50)
+      const abort = () => {
+        clearTimeout(timeout)
+        slowProviderAborted = true
+        reject(
+          signal?.reason instanceof Error ?
+            signal.reason
+          : new Error("aggregate request aborted"),
+        )
+      }
+      if (signal?.aborted) {
+        abort()
+      } else {
+        signal?.addEventListener("abort", abort, { once: true })
+      }
+    })
+  }
+
+  if (requestUrl.startsWith("https://chatgpt.com/backend-api/codex/models")) {
+    return Promise.resolve(
+      codexModelsUnavailable ?
+        new Response("temporarily unavailable", { status: 503 })
+      : Response.json(bundledCodexCatalog),
+    )
   }
 
   const providerModelIds: Record<string, string> = {
@@ -169,6 +216,7 @@ const fetchMock = mock((url: string | URL | Request, _init?: RequestInit) => {
 function createApp() {
   const app = new Hono()
   app.route("/v1/models", modelRoutes)
+  app.route("/:provider/v1/models", providerModelRoutes)
   return app
 }
 
@@ -177,9 +225,12 @@ beforeEach(() => {
   modelMappings = {}
   providerConfigs = {}
   bundledCodexCatalog = createCodexCatalog()
+  codexModelsUnavailable = false
+  slowProviderAborted = false
   state.models = undefined
   fetchMock.mockClear()
   clearCodexCatalogCache()
+  clearCodexProviderCatalogCache()
   codexClientModelsDependencies.loadBundledCatalog = (version) =>
     Promise.resolve(version === "0.144.1" ? bundledCodexCatalog : null)
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
@@ -193,6 +244,7 @@ afterEach(() => {
   state.codexAccountId = undefined
   codexClientModelsDependencies.loadBundledCatalog = loadInstalledCodexCatalog
   clearCodexCatalogCache()
+  clearCodexProviderCatalogCache()
 })
 
 describe("model routes", () => {
@@ -309,7 +361,44 @@ describe("model routes", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
-  test("adds built-in Codex provider models without calling upstream", async () => {
+  test("forwards aggregate cancellation to non-Codex discovery", async () => {
+    enabledProviders = ["slow"]
+    providerConfigs = {
+      slow: createProviderConfig("slow", "https://slow.example"),
+    }
+    const controller = new AbortController()
+    const responsePromise = createApp().request(
+      new Request("http://localhost/v1/models", {
+        signal: controller.signal,
+      }),
+    )
+    await Promise.resolve()
+
+    controller.abort(new Error("aggregate disconnected"))
+    const response = await responsePromise
+
+    expect(slowProviderAborted).toBeTrue()
+    expect(response.status).toBe(500)
+    expect(await response.json()).toEqual({
+      error: { message: "aggregate disconnected", type: "error" },
+    })
+  })
+
+  test("does not convert an abort-class provider failure into an empty list", async () => {
+    enabledProviders = ["abort"]
+    providerConfigs = {
+      abort: createProviderConfig("abort", "https://abort.example"),
+    }
+
+    const response = await createApp().request("/v1/models")
+
+    expect(response.status).toBe(500)
+    expect(await response.json()).toEqual({
+      error: { message: "upstream aborted", type: "error" },
+    })
+  })
+
+  test("derives Codex provider models from the official catalog", async () => {
     enabledProviders = ["codex"]
     providerConfigs = {
       codex: {
@@ -320,14 +409,133 @@ describe("model routes", () => {
         type: "openai-responses",
       },
     }
+    state.codexAccessToken = "codex-access-token"
+    state.codexAccountId = "account-123"
 
     const response = await createApp().request("/v1/models")
 
     expect(response.status).toBe(200)
     const body = (await response.json()) as { data: Array<{ id: string }> }
-    expect(body.data.map((model) => model.id)).toContain("codex/gpt-5.4")
     expect(body.data.map((model) => model.id)).toContain("codex/gpt-5.6-sol")
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(response.headers.get("x-copilot-api-codex-catalog-source")).toBe(
+      "official",
+    )
+    expect(response.headers.get("x-copilot-api-codex-catalog-freshness")).toBe(
+      "fresh",
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  test("does not feed Copilot capabilities back into Codex provider truth", async () => {
+    state.models = createGpt56CopilotModels()
+    enabledProviders = ["codex"]
+    providerConfigs = {
+      codex: {
+        apiKey: "codex-token",
+        authType: "oauth2",
+        baseUrl: "https://chatgpt.com/backend-api",
+        name: "codex",
+        type: "openai-responses",
+      },
+    }
+    state.codexAccessToken = "codex-access-token"
+    state.codexAccountId = "account-123"
+
+    const response = await createApp().request("/v1/models")
+    const body = (await response.json()) as {
+      data: Array<{
+        capabilities: {
+          limits: { max_context_window_tokens: number }
+          supports: { reasoning_effort: Array<string> }
+        }
+        id: string
+      }>
+    }
+    const copilot = body.data.find(({ id }) => id === "gpt-5.6-sol")
+    const codex = body.data.find(({ id }) => id === "codex/gpt-5.6-sol")
+
+    expect(copilot?.capabilities.limits.max_context_window_tokens).toBe(
+      1_050_000,
+    )
+    expect(codex?.capabilities.limits.max_context_window_tokens).toBe(372_000)
+    expect(copilot?.capabilities.supports.reasoning_effort).toEqual([
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ])
+    expect(codex?.capabilities.supports.reasoning_effort).toEqual([
+      "low",
+      "max",
+      "ultra",
+    ])
+  })
+
+  test("labels the static Codex catalog when official discovery fails", async () => {
+    enabledProviders = ["codex"]
+    providerConfigs = {
+      codex: {
+        apiKey: "codex-token",
+        authType: "oauth2",
+        baseUrl: "https://chatgpt.com/backend-api",
+        name: "codex",
+        type: "openai-responses",
+      },
+    }
+    state.codexAccessToken = "codex-access-token"
+    state.codexAccountId = "account-123"
+    codexModelsUnavailable = true
+
+    const response = await createApp().request("/v1/models")
+
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as {
+      data: Array<{
+        capabilities: { supports: { reasoning_effort?: Array<string> } }
+        id: string
+      }>
+    }
+    expect(body.data.map((model) => model.id)).toContain("codex/gpt-5.4")
+    expect(
+      body.data.find(({ id }) => id === "codex/gpt-5.6-sol")?.capabilities
+        .supports.reasoning_effort,
+    ).toEqual(["minimal", "low", "medium", "high", "xhigh"])
+    expect(response.headers.get("x-copilot-api-codex-catalog-source")).toBe(
+      "static_fallback",
+    )
+    expect(response.headers.get("x-copilot-api-codex-catalog-freshness")).toBe(
+      "degraded",
+    )
+    expect(
+      response.headers.get("x-copilot-api-codex-catalog-diagnostics"),
+    ).toBe(
+      "official_unavailable,static_capability_degraded,static_effort_filtered",
+    )
+  })
+
+  test("returns official unqualified models from the Codex provider route", async () => {
+    providerConfigs = {
+      codex: {
+        apiKey: "codex-token",
+        authType: "oauth2",
+        baseUrl: "https://chatgpt.com/backend-api",
+        name: "codex",
+        type: "openai-responses",
+      },
+    }
+    state.codexAccessToken = "codex-access-token"
+    state.codexAccountId = "account-123"
+
+    const response = await createApp().request("/codex/v1/models")
+
+    expect(response.status).toBe(200)
+    const body = (await response.json()) as { data: Array<{ id: string }> }
+    expect(body.data.map(({ id }) => id)).toEqual(["gpt-5.6-sol"])
+    expect(response.headers.get("x-copilot-api-codex-catalog-source")).toBe(
+      "official",
+    )
   })
 
   test("keeps Codex provider-only clients on the official models upstream", async () => {
@@ -398,7 +606,7 @@ describe("model routes", () => {
       (model?.supported_reasoning_levels as Array<{ effort: string }>).map(
         ({ effort }) => effort,
       ),
-    ).toEqual(["low", "max", "ultra"])
+    ).toEqual(["low", "max"])
     expect(fetchMock).not.toHaveBeenCalled()
   })
 

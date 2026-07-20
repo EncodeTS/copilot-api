@@ -721,6 +721,11 @@ These endpoints mimic the OpenAI API structure.
 | `GET /v1/models`               | `GET`  | Lists Copilot models plus enabled provider models using `provider/model-id` IDs. Codex clients receive their own version-matched bundled descriptors with live Copilot context limits; unavailable or mismatched client catalogs safely fall back to an empty remote list. |
 | `POST /v1/embeddings`          | `POST` | Creates an embedding vector representing the input text.                                                                                                                                                                                                                   |
 
+Codex provider availability comes from the official Codex catalog. If that
+discovery is temporarily unavailable, responses use a bounded last-known-good
+or static fallback and report the effective source and freshness in
+`x-copilot-api-codex-catalog-*` headers.
+
 ### Codex Backend Proxy Endpoints
 
 These endpoints require an active Codex login. Each endpoint is available both without a version prefix and under `/v1`.
@@ -744,6 +749,10 @@ These endpoints are designed to be compatible with the Anthropic Messages API.
 | `POST /:provider/v1/messages`              | `POST` | Proxies Anthropic Messages requests to the configured Anthropic provider, translates them through an OpenAI-compatible provider, or translates them through an OpenAI Responses provider. |
 | `GET /:provider/v1/models`                 | `GET`  | Proxies model listing requests to the configured provider.                                                                                                                                |
 | `POST /:provider/v1/messages/count_tokens` | `POST` | Calculates tokens locally for provider route requests.                                                                                                                                    |
+
+For the built-in Codex provider, the models route derives its OpenAI-style list
+from official descriptors and reports last-known-good or static fallback use in
+the same catalog diagnostic headers.
 
 ### Usage Monitoring Endpoints
 

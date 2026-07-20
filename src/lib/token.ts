@@ -57,10 +57,19 @@ export const stopCodexRefreshLoop = () => {
 }
 
 function applyCodexCredentials(credentials: CodexCredentials): void {
+  const credentialsChanged =
+    state.codexAccessToken !== credentials.accessToken
+    || state.codexRefreshToken !== credentials.refreshToken
+    || state.codexExpiresAt !== credentials.expiresAt
+    || state.codexAccountId !== credentials.accountId
+  const previousRevision = state.codexCredentialRevision ?? 0
   state.codexAccessToken = credentials.accessToken
   state.codexRefreshToken = credentials.refreshToken
   state.codexExpiresAt = credentials.expiresAt
   state.codexAccountId = credentials.accountId
+  if (credentialsChanged) {
+    state.codexCredentialRevision = previousRevision + 1
+  }
 
   consola.debug("Codex credentials loaded successfully")
   if (state.showToken) {

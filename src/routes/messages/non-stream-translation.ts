@@ -1,4 +1,9 @@
 import type { ToolContentSupportType } from "~/lib/config"
+import {
+  GATEWAY_REASONING_EFFORTS,
+  normalizeMessageReasoningEffort,
+  type GatewayReasoningEffort,
+} from "~/lib/reasoning-effort"
 import type { Model } from "~/services/copilot/get-models"
 
 import { state } from "~/lib/state"
@@ -65,7 +70,7 @@ interface TranslateToOpenAIOptions {
   supportPdf?: boolean
   toolContentSupportType?: Array<ToolContentSupportType>
   validateReasoningEffort?: boolean
-  reasoningEffortSupport?: Array<string>
+  reasoningEffortSupport?: Array<GatewayReasoningEffort>
 }
 
 type MappableContentBlock =
@@ -110,7 +115,7 @@ export function translateToOpenAI(
 function getReasoningEffort(
   payload: AnthropicMessagesPayload,
   options: TranslateToOpenAIOptions,
-): string | undefined {
+): GatewayReasoningEffort | undefined {
   if (payload.thinking?.type === "disabled") {
     if (!options.validateReasoningEffort) {
       return undefined
@@ -121,20 +126,12 @@ function getReasoningEffort(
       return undefined
     }
 
-    const disabledFallbackOrder = [
-      "none",
-      "minimal",
-      "low",
-      "medium",
-      "high",
-      "xhigh",
-    ]
-    return disabledFallbackOrder.find((effort) =>
+    return GATEWAY_REASONING_EFFORTS.find((effort) =>
       supportedEfforts.includes(effort),
     )
   }
 
-  const effort = payload.output_config?.effort
+  const effort = normalizeMessageReasoningEffort(payload.output_config?.effort)
   if (!effort) {
     return undefined
   }

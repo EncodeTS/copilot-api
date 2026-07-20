@@ -51,3 +51,24 @@ test("chat completions handler forwards the Hono request abort signal", async ()
   expect(response.status).toBe(200)
   expect(upstreamSignal).toBe(controller.signal)
 })
+
+test("chat completions rejects unknown runtime reasoning effort", async () => {
+  const createChatCompletions = mock(originalCreateChatCompletions)
+  chatCompletionsHandlerDependencies.createChatCompletions =
+    createChatCompletions
+  const app = new Hono()
+  app.post("/", handleCompletion)
+
+  const response = await app.request("/", {
+    body: JSON.stringify({
+      messages: [{ role: "user", content: "hello" }],
+      model: "gpt-test",
+      reasoning_effort: "future-hyper",
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })
+
+  expect(response.status).toBe(400)
+  expect(createChatCompletions).not.toHaveBeenCalled()
+})

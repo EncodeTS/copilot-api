@@ -7,6 +7,7 @@ import type {
   AnthropicResponse,
 } from "../src/routes/messages/anthropic-types"
 import type { ResponsesResult } from "../src/services/copilot/create-responses"
+import type { CodexProviderCatalogSnapshot } from "../src/services/codex/get-models"
 
 const actualConfigModule = await import("../src/lib/config")
 const actualModelsModule = await import("../src/lib/models")
@@ -60,6 +61,9 @@ await mock.module("~/lib/token-usage", () => ({
 const { providerMessageRoutes } = await import(
   "../src/routes/provider/messages/route"
 )
+const { providerMessagesDependencies } = await import(
+  "../src/routes/provider/messages/handler"
+)
 const { messageRoutes } = await import("../src/routes/messages/route")
 const { state } = await import("../src/lib/state")
 const { responsesUtilsDependencies } = await import(
@@ -69,6 +73,42 @@ const { responsesUtilsDependencies } = await import(
 const originalCodexAccessToken = state.codexAccessToken
 const originalCodexAccountId = state.codexAccountId
 const defaultResponsesUtilsDependencies = { ...responsesUtilsDependencies }
+const originalLoadCodexProviderModels =
+  providerMessagesDependencies.loadCodexProviderModels
+
+const codexCatalogSnapshot: CodexProviderCatalogSnapshot = {
+  catalog: {
+    data: [
+      {
+        capabilities: {
+          family: "gpt-search",
+          limits: { max_prompt_tokens: 372_000 },
+          object: "model_capabilities",
+          supports: {
+            reasoning_effort: ["low", "max", "ultra"],
+            streaming: true,
+            tool_calls: true,
+          },
+          type: "chat",
+        },
+        id: "gpt-search",
+        model_picker_enabled: true,
+        name: "GPT Search",
+        object: "model",
+        vendor: "openai",
+        version: "codex-official",
+      },
+    ],
+    object: "list",
+  },
+  diagnostics: [],
+  fetchedAt: 1,
+  freshness: "fresh",
+  source: "official",
+}
+const loadCodexProviderModels = mock((_signal?: AbortSignal) =>
+  Promise.resolve(codexCatalogSnapshot),
+)
 
 const makeResponsesResult = (
   overrides: Partial<ResponsesResult> = {},
@@ -416,6 +456,8 @@ beforeEach(() => {
   responsesUtilsDependencies.isContextManagementEnabledForMessages = () => true
   responsesUtilsDependencies.isContextManagementEnabledForResponses = () =>
     false
+  loadCodexProviderModels.mockClear()
+  providerMessagesDependencies.loadCodexProviderModels = loadCodexProviderModels
   fetchMock.mockClear()
   providerUsageRecorder.mockClear()
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
@@ -427,6 +469,8 @@ afterEach(() => {
   state.codexAccessToken = originalCodexAccessToken
   state.codexAccountId = originalCodexAccountId
   Object.assign(responsesUtilsDependencies, defaultResponsesUtilsDependencies)
+  providerMessagesDependencies.loadCodexProviderModels =
+    originalLoadCodexProviderModels
   providerConfigs = {}
   messageApiWebSearchModel = undefined
   responsesResultOverride = undefined
@@ -707,6 +751,147 @@ describe("provider messages web_search", () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  test("loads the official Codex catalog and preserves omitted effort", async () => {
+    configureCodexProvider()
+
+    const response = await createApp().request("/codex/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(createCodexMessagesPayload()),
+    })
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get("x-copilot-api-codex-catalog-source")).toBe(
+      "official",
+    )
+    expect(loadCodexProviderModels).toHaveBeenCalledTimes(1)
+    expect(loadCodexProviderModels.mock.calls[0]?.[0]).toBeInstanceOf(
+      AbortSignal,
+    )
+    const [, init] = fetchMock.mock.calls[0]
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      reasoning?: { effort?: string }
+    }
+    expect(upstreamBody.reasoning).toBeDefined()
+    expect(upstreamBody.reasoning).not.toHaveProperty("effort")
+  })
+
+  test("rejects explicit Codex effort outside the selected descriptor", async () => {
+    configureCodexProvider()
+
+    const response = await createApp().request("/codex/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(
+        createCodexMessagesPayload({
+          output_config: { effort: "xhigh" },
+        }),
+      ),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      error: {
+        message:
+          "Reasoning effort 'xhigh' is not supported by Codex model 'gpt-search'",
+        type: "invalid_request_error",
+      },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("rejects disabled thinking when descriptor does not allow none", async () => {
+    configureCodexProvider()
+
+    const response = await createApp().request("/codex/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(
+        createCodexMessagesPayload({ thinking: { type: "disabled" } }),
+      ),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      error: {
+        message:
+          "Reasoning effort 'none' is not supported by Codex model 'gpt-search'",
+        type: "invalid_request_error",
+      },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("forwards none only when the selected descriptor allows it", async () => {
+    configureCodexProvider()
+    const supportsNone = structuredClone(codexCatalogSnapshot)
+    supportsNone.catalog.data[0].capabilities.supports.reasoning_effort = [
+      "none",
+      "low",
+    ]
+    loadCodexProviderModels.mockResolvedValueOnce(supportsNone)
+
+    const response = await createApp().request("/codex/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(
+        createCodexMessagesPayload({ thinking: { type: "disabled" } }),
+      ),
+    })
+
+    expect(response.status).toBe(200)
+    const [, init] = fetchMock.mock.calls[0]
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      reasoning?: { effort?: string }
+    }
+    expect(upstreamBody.reasoning?.effort).toBe("none")
+  })
+
+  test("rejects unknown runtime Codex effort values", async () => {
+    configureCodexProvider()
+
+    const response = await createApp().request("/codex/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-search",
+        output_config: { effort: "future-hyper" },
+      }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      error: {
+        message: "Invalid Codex reasoning effort",
+        type: "invalid_request_error",
+      },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("forwards explicit Codex ultra effort allowed by the descriptor", async () => {
+    configureCodexProvider()
+
+    const response = await createApp().request("/codex/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(
+        createCodexMessagesPayload({
+          output_config: { effort: "ultra" },
+        }),
+      ),
+    })
+
+    expect(response.status).toBe(200)
+    const [, init] = fetchMock.mock.calls[0]
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      reasoning?: { effort?: string }
+    }
+    expect(upstreamBody.reasoning?.effort).toBe("ultra")
+  })
+
   test("runs codex web_search through streaming Responses", async () => {
     configureCodexProvider()
 
@@ -731,9 +916,11 @@ describe("provider messages web_search", () => {
     expect(url).toBe("https://codex.example/backend-api/codex/responses")
 
     const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      reasoning?: { effort?: string }
       stream?: boolean
     }
     expect(upstreamBody.stream).toBe(true)
+    expect(upstreamBody.reasoning).not.toHaveProperty("effort")
 
     const upstreamHeaders = new Headers((init as RequestInit).headers)
     expect(upstreamHeaders.get("accept")).toBe("text/event-stream")

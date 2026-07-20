@@ -16,7 +16,9 @@ import type { CodexModelsResponse } from "~/services/codex/installed-catalog"
 import { codexStartupCatalogManager } from "~/services/codex/startup-catalog"
 import {
   forwardCodexModels,
-  getModels as getCodexModels,
+  getCodexProviderCatalogHeaders,
+  loadCodexProviderModels,
+  type CodexProviderCatalogSnapshot,
 } from "~/services/codex/get-models"
 import {
   createProviderProxyResponse,
@@ -127,50 +129,73 @@ function normalizeProviderModel(
 async function getProviderModels(
   provider: string,
   requestHeaders: Headers,
-): Promise<Array<ClientModel>> {
+  signal?: AbortSignal,
+): Promise<{
+  codexCatalog?: CodexProviderCatalogSnapshot
+  models: Array<ClientModel>
+}> {
   try {
     const providerConfig = await resolveProviderConfig(provider)
     if (!providerConfig) {
-      return []
+      return { models: [] }
     }
 
     if (providerConfig.name === "codex") {
-      const codexModels = getCodexModels().data
-      return codexModels
-        .map((model) => normalizeProviderModel(providerConfig.name, model))
-        .filter((model): model is ClientModel => model !== null)
+      const codexCatalog = await loadCodexProviderModels(signal)
+      return {
+        codexCatalog,
+        models: codexCatalog.catalog.data
+          .map((model) => normalizeProviderModel(providerConfig.name, model))
+          .filter((model): model is ClientModel => model !== null),
+      }
     }
 
-    const response = await forwardProviderModels(providerConfig, requestHeaders)
+    const response = await forwardProviderModels(
+      providerConfig,
+      requestHeaders,
+      signal,
+    )
     if (!response.ok) {
       logger.warn("models.provider.skip_non_ok", {
         provider,
         statusCode: response.status,
       })
-      return []
+      return { models: [] }
     }
 
     const body = await response.json()
     if (!isRecord(body) || !Array.isArray(body.data)) {
       logger.warn("models.provider.skip_invalid_body", { provider })
-      return []
+      return { models: [] }
     }
 
-    return body.data
-      .map((model) => normalizeProviderModel(providerConfig.name, model))
-      .filter((model): model is ClientModel => model !== null)
+    return {
+      models: body.data
+        .map((model) => normalizeProviderModel(providerConfig.name, model))
+        .filter((model): model is ClientModel => model !== null),
+    }
   } catch (error) {
+    if (
+      signal?.aborted
+      || (error instanceof Error && error.name === "AbortError")
+    ) {
+      throw error
+    }
     logger.warn("models.provider.skip_error", {
       provider,
       error,
     })
-    return []
+    return { models: [] }
   }
 }
 
 async function getAggregatedModels(
   requestHeaders: Headers,
-): Promise<Array<ClientModel>> {
+  signal?: AbortSignal,
+): Promise<{
+  codexCatalog?: CodexProviderCatalogSnapshot
+  models: Array<ClientModel>
+}> {
   const copilotModels =
     state.models ?
       projectGeneralCopilotModels(state.models.data, getModelMappings()).map(
@@ -179,21 +204,29 @@ async function getAggregatedModels(
     : []
   const providerModelsByProvider = await Promise.all(
     listEnabledProviders().map((provider) =>
-      getProviderModels(provider, requestHeaders),
+      getProviderModels(provider, requestHeaders, signal),
     ),
   )
 
-  const models = [...copilotModels, ...providerModelsByProvider.flat()]
+  const models = [
+    ...copilotModels,
+    ...providerModelsByProvider.flatMap(({ models }) => models),
+  ]
 
   const seenModelIds = new Set<string>()
-  return models.filter((model) => {
-    if (seenModelIds.has(model.id)) {
-      return false
-    }
+  return {
+    codexCatalog: providerModelsByProvider.find(({ codexCatalog }) =>
+      Boolean(codexCatalog),
+    )?.codexCatalog,
+    models: models.filter((model) => {
+      if (seenModelIds.has(model.id)) {
+        return false
+      }
 
-    seenModelIds.add(model.id)
-    return true
-  })
+      seenModelIds.add(model.id)
+      return true
+    }),
+  }
 }
 
 function createCodexCatalogHttpResponse(
@@ -225,7 +258,11 @@ modelRoutes.get("/", async (c) => {
     if (isCodexClientUserAgent(userAgent)) {
       if (!state.models && (await resolveProviderConfig("codex"))) {
         return createProviderProxyResponse(
-          await forwardCodexModels(c.req.url, c.req.raw.headers),
+          await forwardCodexModels(
+            c.req.url,
+            c.req.raw.headers,
+            c.req.raw.signal,
+          ),
         )
       }
 
@@ -243,9 +280,19 @@ modelRoutes.get("/", async (c) => {
       )
     }
 
-    const models = await getAggregatedModels(c.req.raw.headers)
+    const { codexCatalog, models } = await getAggregatedModels(
+      c.req.raw.headers,
+      c.req.raw.signal,
+    )
 
     c.header("vary", "User-Agent")
+    if (codexCatalog) {
+      for (const [name, value] of Object.entries(
+        getCodexProviderCatalogHeaders(codexCatalog),
+      )) {
+        c.header(name, value)
+      }
+    }
     return c.json({
       object: "list",
       data: models,

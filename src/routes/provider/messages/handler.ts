@@ -15,9 +15,11 @@ import type {
   ChatCompletionsPayload,
 } from "~/services/copilot/create-chat-completions"
 import type {
+  ResponsesPayload,
   ResponsesResult,
   ResponsesStream,
 } from "~/services/copilot/create-responses"
+import type { Model } from "~/services/copilot/get-models"
 
 import {
   type ModelConfig,
@@ -37,6 +39,7 @@ import {
   debugLazy,
 } from "~/lib/logger"
 import { resolveProviderModel } from "~/lib/provider-resolver"
+import { normalizeMessageReasoningEffort } from "~/lib/reasoning-effort"
 import type { StreamTransport } from "~/lib/stream-lifecycle"
 import { resolveBridgeToolSearchName } from "~/lib/tool-search"
 import {
@@ -81,11 +84,14 @@ import {
   applyResponsesApiContextManagement,
   compactInputByLatestCompaction,
 } from "~/routes/responses/utils"
-import { getModels as getCodexModels } from "~/services/codex/get-models"
 import {
   forwardCodexResponses,
   resolveCodexResponsesTransport,
 } from "~/services/codex/create-responses"
+import {
+  getCodexProviderCatalogHeaders,
+  loadCodexProviderModels,
+} from "~/services/codex/get-models"
 import {
   forwardProviderChatCompletions,
   forwardProviderMessages,
@@ -93,6 +99,57 @@ import {
 } from "~/services/providers/provider-proxy"
 
 const logger = createHandlerLogger("provider-messages-handler")
+
+export const providerMessagesDependencies = {
+  loadCodexProviderModels,
+}
+
+const applyCodexProviderReasoningEffort = (
+  source: AnthropicMessagesPayload,
+  target: ResponsesPayload,
+  selectedModel: Model | undefined,
+): string | null => {
+  const outputConfig: unknown = source.output_config
+  const disabled = source.thinking?.type === "disabled"
+  if (
+    !disabled
+    && (!isRecord(outputConfig) || !Object.hasOwn(outputConfig, "effort"))
+  ) {
+    if (target.reasoning) {
+      delete target.reasoning.effort
+    }
+    return null
+  }
+
+  const effort =
+    disabled ? "none"
+    : isRecord(outputConfig) ?
+      normalizeMessageReasoningEffort(outputConfig.effort)
+    : null
+  if (!effort) {
+    return "Invalid Codex reasoning effort"
+  }
+  if (!selectedModel) {
+    return `Cannot validate reasoning effort for unavailable Codex model '${source.model}'`
+  }
+  if (!selectedModel.capabilities.supports.reasoning_effort?.includes(effort)) {
+    return `Reasoning effort '${effort}' is not supported by Codex model '${source.model}'`
+  }
+
+  target.reasoning = { ...target.reasoning, effort }
+  return null
+}
+
+const codexReasoningError = (c: Context, message: string): Response =>
+  c.json(
+    {
+      error: {
+        message,
+        type: "invalid_request_error",
+      },
+    },
+    400,
+  )
 
 export async function handleProviderMessages(
   c: Context<Env, "/:provider">,
@@ -154,6 +211,23 @@ export async function handleProviderMessagesForProvider(
         )
       }
 
+      const codexCatalog =
+        forwardingConfig.name === "codex" ?
+          await providerMessagesDependencies.loadCodexProviderModels(
+            c.req.raw.signal,
+          )
+        : undefined
+      if (codexCatalog) {
+        for (const [name, value] of Object.entries(
+          getCodexProviderCatalogHeaders(codexCatalog),
+        )) {
+          c.header(name, value)
+        }
+      }
+      const selectedCodexModel = codexCatalog?.catalog.data.find(
+        (model) => model.id === payload.model,
+      )
+
       if (hasWebSearchServerTool(payload)) {
         if (isWebSearchOnlyRequest(payload)) {
           return await handleOpenAIResponsesProviderWebSearchMessages(c, {
@@ -161,6 +235,7 @@ export async function handleProviderMessagesForProvider(
             payload,
             provider,
             providerConfig: forwardingConfig,
+            selectedCodexModel,
           })
         }
 
@@ -172,6 +247,7 @@ export async function handleProviderMessagesForProvider(
         payload,
         provider,
         providerConfig: forwardingConfig,
+        selectedCodexModel,
       })
     }
 
@@ -245,11 +321,24 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
     payload: AnthropicMessagesPayload
     provider: string
     providerConfig: ResolvedProviderConfig
+    selectedCodexModel?: Model
   },
 ): Promise<Response> => {
-  const { modelConfig, payload, provider, providerConfig } = options
+  const { modelConfig, payload, provider, providerConfig, selectedCodexModel } =
+    options
   applyWebSearchFallbackHeaders(c, payload, logger)
   const responsesPayload = prepareWebSearchResponsesPayload(payload)
+  const reasoningError =
+    providerConfig.name === "codex" ?
+      applyCodexProviderReasoningEffort(
+        payload,
+        responsesPayload,
+        selectedCodexModel,
+      )
+    : null
+  if (reasoningError) {
+    return codexReasoningError(c, reasoningError)
+  }
 
   debugJson(logger, "provider.messages.responses.web_search.request", {
     payload: responsesPayload,
@@ -341,19 +430,28 @@ const handleOpenAIResponsesProviderMessages = async (
     payload: AnthropicMessagesPayload
     provider: string
     providerConfig: ResolvedProviderConfig
+    selectedCodexModel?: Model
   },
 ): Promise<Response> => {
-  const { modelConfig, payload, provider, providerConfig } = options
-  const selectedModel =
-    providerConfig.name === "codex" ?
-      getCodexModels().data.find((model) => model.id === payload.model)
-    : undefined
+  const { modelConfig, payload, provider, providerConfig, selectedCodexModel } =
+    options
   const wantsStream = payload.stream === true
   const responsesPayload = translateAnthropicMessagesToResponsesPayload(
     payload,
     undefined,
     { model: payload.model, provider },
   )
+  const reasoningError =
+    providerConfig.name === "codex" ?
+      applyCodexProviderReasoningEffort(
+        payload,
+        responsesPayload,
+        selectedCodexModel,
+      )
+    : null
+  if (reasoningError) {
+    return codexReasoningError(c, reasoningError)
+  }
 
   if (providerConfig.name === "codex" && !wantsStream) {
     responsesPayload.stream = true
@@ -367,7 +465,7 @@ const handleOpenAIResponsesProviderMessages = async (
   ) {
     const contextManagementDecision = applyResponsesApiContextManagement(
       responsesPayload,
-      selectedModel?.capabilities.limits,
+      selectedCodexModel?.capabilities.limits,
       {
         source: "messages",
       },

@@ -76,6 +76,7 @@ import {
   parseLegacyOpenAIReasoningCarrierSignature,
   type ReasoningCarrierEndpoint,
 } from "./reasoning-carrier"
+import { normalizeMessageReasoningEffort } from "~/lib/reasoning-effort"
 import { normalizeToolSchema } from "./non-stream-translation"
 import { assertResponsesResultUsable } from "./responses-result"
 import { parseFunctionCallArguments } from "./tool-arguments"
@@ -89,7 +90,8 @@ export const REASONING_SUMMARY_SEPARATOR = "\u00a0\n\n"
 const REASONING_SUMMARY_SEPARATOR_PATTERN = /\u00a0\n\n|\u2063\n\n/
 
 const resolveReasoningEffort = (payload: AnthropicMessagesPayload) =>
-  payload.output_config?.effort ?? getReasoningEffortForModel(payload.model)
+  normalizeMessageReasoningEffort(payload.output_config?.effort)
+  ?? getReasoningEffortForModel(payload.model)
 
 export const hasTrailingAssistantPrefill = (
   payload: AnthropicMessagesPayload,

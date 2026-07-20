@@ -12,6 +12,11 @@ import {
 } from "~/lib/compact"
 import { getReasoningEffortForModel } from "~/lib/config"
 import { normalizeSdkModelId } from "~/lib/models"
+import {
+  normalizeGatewayReasoningEffort,
+  normalizeMessageReasoningEffort,
+  type GatewayReasoningEffort,
+} from "~/lib/reasoning-effort"
 
 import type {
   AnthropicCacheControl,
@@ -482,8 +487,8 @@ const filterAssistantThinkingBlocks = (
 const resolveEffortForThinkingBudget = (
   budgetTokens: number | undefined,
   maxThinkingBudget: number | undefined,
-  supportedEfforts: Array<string> | undefined,
-): string | undefined => {
+  supportedEfforts: Array<GatewayReasoningEffort> | undefined,
+): GatewayReasoningEffort | undefined => {
   if (
     typeof budgetTokens !== "number"
     || typeof maxThinkingBudget !== "number"
@@ -559,8 +564,8 @@ export const prepareMessagesApiPayload = (
     const maxThinkingBudget =
       selectedModel.capabilities.supports.max_thinking_budget
     const reasoningEffort = selectedModel.capabilities.supports.reasoning_effort
-    let effort: string =
-      payload.output_config?.effort
+    let effort: GatewayReasoningEffort =
+      normalizeGatewayReasoningEffort(payload.output_config?.effort)
       ?? resolveEffortForThinkingBudget(
         requestedThinkingBudget,
         maxThinkingBudget,
@@ -571,16 +576,15 @@ export const prepareMessagesApiPayload = (
       effort = "low"
     }
     if (reasoningEffort && !reasoningEffort.includes(effort)) {
-      effort = reasoningEffort.at(-1) as
-        | "low"
-        | "medium"
-        | "high"
-        | "xhigh"
-        | "max"
+      effort =
+        reasoningEffort.findLast((candidate) =>
+          Boolean(normalizeMessageReasoningEffort(candidate)),
+        ) ?? "low"
     }
+    const messageEffort = normalizeMessageReasoningEffort(effort) ?? "low"
     payload.output_config = {
       ...payload.output_config,
-      effort: effort as "low" | "medium" | "high" | "xhigh" | "max",
+      effort: messageEffort,
     }
   }
 

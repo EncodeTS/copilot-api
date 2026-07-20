@@ -20,6 +20,7 @@ import {
 } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
 import { logDiagnosticEvent } from "~/lib/logger"
+import type { GatewayReasoningEffort } from "~/lib/reasoning-effort"
 import { responsesDiagnosticsLogger } from "~/lib/responses-diagnostic-logger"
 import {
   createResponsesTransportErrorDiagnostic,
@@ -145,15 +146,7 @@ export type ResponseIncludable =
   | "message.output_text.logprobs"
 
 export interface Reasoning {
-  effort?:
-    | "none"
-    | "minimal"
-    | "low"
-    | "medium"
-    | "high"
-    | "xhigh"
-    | "max"
-    | null
+  effort?: GatewayReasoningEffort | null
   summary?: "auto" | "concise" | "detailed" | null
   context?: "auto" | "current_turn" | "all_turns" | null
 }

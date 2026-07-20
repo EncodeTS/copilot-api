@@ -180,7 +180,7 @@ describe("responses handler token usage", () => {
       },
     ]
 
-    for (const effort of ["low", "medium", "high", "xhigh", "max"]) {
+    for (const effort of ["low", "medium", "high", "xhigh", "max", "ultra"]) {
       const response = await createApp().request("/v1/responses", {
         body: JSON.stringify({
           input,
@@ -218,6 +218,29 @@ describe("responses handler token usage", () => {
       method: "POST",
     })
     expect(createResponses.mock.calls.at(-1)?.[0].reasoning).toBeUndefined()
+  })
+
+  test("rejects unknown runtime Responses reasoning effort values", async () => {
+    const response = await createApp().request("/v1/responses", {
+      body: JSON.stringify({
+        input: "hello",
+        model: "gpt-test",
+        reasoning: { effort: "future-hyper" },
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      error: {
+        code: "unsupported_value",
+        message: "Unsupported Responses reasoning effort",
+        param: "reasoning.effort",
+        type: "invalid_request_error",
+      },
+    })
+    expect(createResponses).not.toHaveBeenCalled()
   })
 
   test("forwards the Hono request abort signal to the upstream lifecycle", async () => {

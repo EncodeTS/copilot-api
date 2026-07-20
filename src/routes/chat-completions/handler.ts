@@ -5,6 +5,7 @@ import { streamSSE, type SSEMessage } from "hono/streaming"
 
 import { resolveMappedModel } from "~/lib/config"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
+import { normalizeGatewayReasoningEffort } from "~/lib/reasoning-effort"
 import { state } from "~/lib/state"
 import {
   createCopilotTokenUsageRecorder,
@@ -29,6 +30,27 @@ export const chatCompletionsHandlerDependencies = {
 
 export async function handleCompletion(c: Context) {
   let payload = await c.req.json<ChatCompletionsPayload>()
+  if (Object.hasOwn(payload, "reasoning_effort")) {
+    if (payload.reasoning_effort === null) {
+      delete payload.reasoning_effort
+    } else {
+      const effort = normalizeGatewayReasoningEffort(payload.reasoning_effort)
+      if (!effort) {
+        return c.json(
+          {
+            error: {
+              code: "unsupported_value",
+              message: "Unsupported Chat Completions reasoning effort",
+              param: "reasoning_effort",
+              type: "invalid_request_error",
+            },
+          },
+          400,
+        )
+      }
+      payload.reasoning_effort = effort
+    }
+  }
   const requestedModel = payload.model
   payload.model = resolveMappedModel(payload.model)
   if (payload.model !== requestedModel) {

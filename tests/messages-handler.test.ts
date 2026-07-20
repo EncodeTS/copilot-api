@@ -3,6 +3,7 @@ import { Hono } from "hono"
 
 import type { AnthropicMessagesPayload } from "../src/routes/messages/anthropic-types"
 import type { Model } from "../src/services/copilot/get-models"
+import type { GatewayReasoningEffort } from "../src/lib/reasoning-effort"
 
 import {
   compactSummaryPromptStart,
@@ -21,6 +22,7 @@ let responsesApiWebSocketEnabled = true
 let modelMappings: Record<string, string> = {}
 type SelectedModel = {
   id: string
+  reasoningEffort?: Array<GatewayReasoningEffort>
   supported_endpoints?: Array<string>
 }
 
@@ -43,7 +45,11 @@ const findEndpointModel = mock((_: string): Model | undefined =>
         family: "test",
         limits: {},
         object: "model_capabilities",
-        supports: {},
+        supports: {
+          ...(selectedModel.reasoningEffort ?
+            { reasoning_effort: selectedModel.reasoningEffort }
+          : {}),
+        },
         tokenizer: "o200k_base",
         type: "chat",
       },
@@ -179,6 +185,96 @@ afterEach(() => {
 })
 
 describe("messages handler orchestration", () => {
+  const effortFlowCases = [
+    {
+      endpoints: ["/v1/messages"],
+      handler: handleWithMessagesApi,
+      responseText: "messages",
+    },
+    {
+      endpoints: ["/responses"],
+      handler: handleWithResponsesApi,
+      responseText: "responses",
+    },
+    {
+      endpoints: ["/chat/completions"],
+      handler: handleWithChatCompletions,
+      responseText: "chat",
+    },
+  ] as const
+
+  test("normalizes legal explicit effort once before every flow", async () => {
+    for (const { endpoints, handler, responseText } of effortFlowCases) {
+      selectedModel = {
+        id: "original-model",
+        reasoningEffort: ["max"],
+        supported_endpoints: [...endpoints],
+      }
+
+      const response = await createApp().request("/", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(
+          createPayload({ output_config: { effort: "max" } }),
+        ),
+      })
+
+      expect(response.status).toBe(200)
+      expect(await response.text()).toBe(responseText)
+      expect(handler.mock.calls.at(-1)?.[1].output_config?.effort).toBe("max")
+    }
+  })
+
+  test("preserves omitted effort before every flow", async () => {
+    for (const { endpoints, handler } of effortFlowCases) {
+      selectedModel = {
+        id: "original-model",
+        reasoningEffort: ["max"],
+        supported_endpoints: [...endpoints],
+      }
+
+      const response = await createApp().request("/", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(createPayload()),
+      })
+
+      expect(response.status).toBe(200)
+      expect(handler.mock.calls.at(-1)?.[1].output_config).toBeUndefined()
+    }
+  })
+
+  test("rejects invalid explicit effort before selecting any flow", async () => {
+    for (const { endpoints } of effortFlowCases) {
+      selectedModel = {
+        id: "original-model",
+        reasoningEffort: ["max"],
+        supported_endpoints: [...endpoints],
+      }
+
+      const response = await createApp().request("/", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...createPayload(),
+          output_config: { effort: "future-hyper" },
+        }),
+      })
+
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual({
+        type: "error",
+        error: {
+          type: "invalid_request_error",
+          message: "Unsupported Messages output_config.effort",
+        },
+      })
+    }
+    expect(handleWithMessagesApi).not.toHaveBeenCalled()
+    expect(handleWithResponsesApi).not.toHaveBeenCalled()
+    expect(handleWithChatCompletions).not.toHaveBeenCalled()
+  })
+
   test("resolves mapped identity before shared generation and count preparation", async () => {
     modelMappings = { "original-model": "messages-model" }
     selectedModel = {

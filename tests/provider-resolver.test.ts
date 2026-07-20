@@ -191,4 +191,14 @@ describe("provider resolver", () => {
       baseUrl: "https://chatgpt.com/backend-api",
     })
   })
+
+  test("advances the Codex credential revision only when credentials change", () => {
+    const tempDir = createTempDir()
+    const output = runScript(
+      tempDir,
+      'const { state } = await import("./src/lib/state"); const { persistCodexCredentials } = await import("./src/lib/token"); const first = { accessToken: "token-a", accountId: "account-a", expiresAt: 123456789, refreshToken: "refresh-a" }; await persistCodexCredentials(first); const firstRevision = state.codexCredentialRevision; await persistCodexCredentials(first); const unchangedRevision = state.codexCredentialRevision; await persistCodexCredentials({ ...first, accessToken: "token-b" }); console.log(JSON.stringify([firstRevision, unchangedRevision, state.codexCredentialRevision]));',
+    )
+
+    expect(JSON.parse(output)).toEqual([1, 1, 2])
+  })
 })

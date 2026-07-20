@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test"
 
 import type { ResponsesPayload } from "../src/services/copilot/create-responses"
 
-import { getModels as getCodexModels } from "../src/services/codex/get-models"
+import { getStaticCodexModels } from "../src/services/codex/get-models"
 import {
   applyResponsesApiContextManagement,
   resolveResponsesCompactThreshold,
@@ -44,7 +44,7 @@ test("falls back from context and output limits when prompt limit is missing", (
 })
 
 test("matches official Codex effective context thresholds", () => {
-  const models = getCodexModels().data
+  const models = getStaticCodexModels().data
   const expectedThresholds: Record<string, number> = {
     "gpt-5.4": 240_000,
     "gpt-5.4-mini": 240_000,

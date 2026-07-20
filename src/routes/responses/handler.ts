@@ -15,6 +15,7 @@ import {
 import { responsesDiagnosticsLogger } from "~/lib/responses-diagnostic-logger"
 import { summarizeResponsesPayload } from "~/lib/responses-diagnostics"
 import { getResponsesEndpointCapabilities } from "~/lib/responses-capabilities"
+import { normalizeGatewayReasoningEffort } from "~/lib/reasoning-effort"
 import { routeProviderModelAlias } from "~/routes/provider/model-router"
 import { state } from "~/lib/state"
 import {
@@ -53,6 +54,28 @@ export const responsesHandlerDependencies = {
 
 export const handleResponses = async (c: Context) => {
   const payload = await c.req.json<ResponsesPayload>()
+  if (
+    typeof payload.reasoning === "object"
+    && payload.reasoning !== null
+    && Object.hasOwn(payload.reasoning, "effort")
+    && payload.reasoning.effort !== null
+  ) {
+    const effort = normalizeGatewayReasoningEffort(payload.reasoning.effort)
+    if (!effort) {
+      return c.json(
+        {
+          error: {
+            code: "unsupported_value",
+            message: "Unsupported Responses reasoning effort",
+            param: "reasoning.effort",
+            type: "invalid_request_error",
+          },
+        },
+        400,
+      )
+    }
+    payload.reasoning.effort = effort
+  }
   const requestedModel = payload.model
   payload.model = responsesHandlerDependencies.resolveMappedModel(payload.model)
   if (payload.model !== requestedModel) {

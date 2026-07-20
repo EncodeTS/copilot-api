@@ -3,6 +3,10 @@ import consola from "consola"
 import { copilotBaseUrl, copilotModelsHeaders } from "~/lib/api-config"
 
 import { HTTPError } from "~/lib/error"
+import {
+  normalizeGatewayReasoningEfforts,
+  type GatewayReasoningEffort,
+} from "~/lib/reasoning-effort"
 import { state } from "~/lib/state"
 
 export const getModels = async () => {
@@ -19,7 +23,31 @@ export const getModels = async () => {
     throw new HTTPError("Failed to get models", response)
   }
 
-  return (await response.json()) as ModelsResponse
+  const models = (await response.json()) as ModelsResponse
+  return {
+    ...models,
+    data: models.data.map(normalizeModelReasoningEfforts),
+  }
+}
+
+const normalizeModelReasoningEfforts = (model: Model): Model => {
+  const supports = model.capabilities.supports
+  if (!Object.hasOwn(supports, "reasoning_effort")) {
+    return model
+  }
+
+  return {
+    ...model,
+    capabilities: {
+      ...model.capabilities,
+      supports: {
+        ...supports,
+        reasoning_effort: normalizeGatewayReasoningEfforts(
+          supports.reasoning_effort,
+        ).efforts,
+      },
+    },
+  }
 }
 
 export interface ModelsResponse {
@@ -49,7 +77,7 @@ interface ModelSupports {
   structured_outputs?: boolean
   vision?: boolean
   adaptive_thinking?: boolean
-  reasoning_effort?: Array<string>
+  reasoning_effort?: Array<GatewayReasoningEffort>
 }
 
 interface ModelCapabilities {
@@ -57,7 +85,7 @@ interface ModelCapabilities {
   limits: ModelLimits
   object: string
   supports: ModelSupports
-  tokenizer: string
+  tokenizer?: string
   type: string
 }
 
@@ -67,7 +95,7 @@ export interface Model {
   model_picker_enabled: boolean
   name: string
   object: string
-  preview: boolean
+  preview?: boolean
   vendor: string
   version: string
   policy?: {
