@@ -657,6 +657,9 @@ Copilot API 现在使用子命令结构，主要命令包括：
   - **配置可选值：** `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。
 - **useMessagesApi：** 当为 `true` 时，支持 Copilot 原生 `/v1/messages` 的 Claude 系模型会走 Messages API；否则回退到 `/chat/completions`。设为 `false` 可禁用 Messages API 路由，始终使用 `/chat/completions`。默认值为 `true`。
 - **useResponsesApiWebSocket：** 当为 `true` 时，Responses API 请求会优先对声明了 `ws:/responses` 的模型使用 Copilot websocket transport；仅声明 `/responses` 的模型仍走 HTTP。设为 `false` 可禁用 websocket 路由，并在模型支持 `/responses` 时使用 HTTP `/responses`。默认值为 `true`。当请求带有稳定的 reasoning recovery session ID 时，空闲 WebSocket 只会在 token、model、session 与 subagent identity 均相同的范围内复用；缺少稳定 session 的请求仍按 request ID 隔离，并发请求始终使用独立 socket。
+- **Responses WebSocket 资源上限：** 连接池是进程级且有硬边界。`responsesWebSocketGlobalConnectionLimit` 默认 `128`；`responsesWebSocketPerCapacityKeyConnectionLimit` 按上游 origin/account 指纹默认 `32`；`responsesWebSocketIdleConnectionLimit` 默认 `32`；`responsesWebSocketDedicatedConnectionLimit` 默认 `64`。LRU 只会淘汰 `requestCount=0` 的空闲池连接。`responsesWebSocketCapacityWaitMs` 默认 `250`，而且只允许在请求发送前等待；容量耗尽会返回 typed not-sent failure，底层连接池本身绝不会决定 HTTP fallback。`responsesWebSocketIdleTimeoutMs` 默认 `60000`。
+  - 接收队列分别受 `responsesWebSocketMaxQueuedFrames`（`4096`）、`responsesWebSocketMaxFrameBytes`（`33554432`）和 `responsesWebSocketMaxQueuedBytes`（`67108864`）限制。字符串按 UTF-8 字节计算，二进制 frame 按 `byteLength` 计算。溢出时只关闭对应 socket（code `1009`），输出一次不含 frame 内容的 terminal error，并清理 pool、active 和 queue 计数。
+  - `GET /admin/config/responses-websocket` 返回有效上限和不含内容的进程级计数。已知网络或代理变化后，可向 `POST /admin/config/responses-websocket/clear` 发送 `{"reason":"network_change"}` 或 `{"reason":"proxy_change"}`。普通 close/error 会自动移除自身连接；清池绝不会授权重试 sent-unknown 或 frame-seen 请求。
 - **旧会话 reasoning 恢复：** 如果 Copilot 在重放加密 reasoning 时返回 `input item does not belong to this connection`，gateway 会只移除历史 `reasoning` 输入项，并通过 HTTP 重试一次。原始请求始终保持不变并先执行；其他错误不会触发重试，WebSocket 一旦已有任何 frame 转发给客户端也不会恢复重试。
   - 如果请求带有稳定 session ID，gateway 只会在进程内缓存被拒绝 reasoning 的 SHA-256 指纹。后续 turn 会预先移除这些已知不兼容项，同时保留新生成的 reasoning。缓存限制为 256 个 scope、每个 scope 2,048 个指纹、24 小时空闲 TTL；进程重启后可能需要重新学习一次。
 - **Stream lifecycle 加固：** Responses stream failure 会被分类为 client cancellation、upstream disconnect 或 timeout，并通过不含敏感数据的 transport diagnostics 仅记录一次 `stream.lifecycle`。通用 HTTP fallback 严格受 WebSocket send state 约束：只有在 `send()` 前失败的 WebSocket attempt 才能 fallback 一次；WebSocket 在 `send()` 后发生的 failure，以及所有 HTTP transport failure，即使尚未产生首个 downstream event 也会直接终止，从而避免重复生成与重复计费。上面的旧会话精确 ownership error 仍可在尚未向客户端转发任何 WebSocket frame 时执行一次净化后的 HTTP recovery。
@@ -744,10 +747,12 @@ curl http://localhost:4141/admin/config/model-mappings \
 
 这些端点用于本地管理操作，只接受 `auth.adminApiKey`。
 
-| 端点                                | 方法   | 说明                                                                 |
-| ----------------------------------- | ------ | -------------------------------------------------------------------- |
-| `GET /admin/config/model-mappings`  | `GET`  | 返回当前 `config.json` 路径以及生效中的 `modelMappings` 映射。       |
-| `POST /admin/config/model-mappings` | `POST` | 只更新 `config.json` 里的 `modelMappings` 字段，并回传更新后的结果。 |
+| 端点                                           | 方法   | 说明                                                                                    |
+| ---------------------------------------------- | ------ | --------------------------------------------------------------------------------------- |
+| `GET /admin/config/model-mappings`             | `GET`  | 返回当前 `config.json` 路径以及生效中的 `modelMappings` 映射。                          |
+| `POST /admin/config/model-mappings`            | `POST` | 只更新 `config.json` 里的 `modelMappings` 字段，并回传更新后的结果。                    |
+| `GET /admin/config/responses-websocket`        | `GET`  | 返回有效的 WebSocket 资源上限，以及不含请求内容的 pool/queue 诊断。                     |
+| `POST /admin/config/responses-websocket/clear` | `POST` | 仅在显式声明已知 `network_change` 或 `proxy_change` 后关闭池内 WebSocket 连接。          |
 
 ## 使用示例
 

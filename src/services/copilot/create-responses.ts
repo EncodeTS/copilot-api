@@ -12,6 +12,7 @@ import {
   prepareInteractionHeaders,
 } from "~/lib/api-config"
 import { COMPACT_REQUEST, type CompactType } from "~/lib/compact"
+import { getResponsesWebSocketResourceLimits } from "~/lib/config"
 import {
   logCopilotQuotaSnapshots,
   logCopilotRateLimits,
@@ -42,6 +43,7 @@ import {
 import { state } from "~/lib/state"
 import {
   createPooledWebSocketStream,
+  createPooledWebSocketIdentity,
   createWebSocketUrl,
   isWebSocketNotSentError,
   type PooledWebSocketRequest,
@@ -1066,18 +1068,19 @@ export const prepareResponsesWebSocketRequest = (
 
   return {
     headers: websocketHeaders,
-    poolKey: buildResponsesWebSocketPoolKey(payload, {
+    identity: buildResponsesWebSocketIdentity(payload, {
       ...options,
       websocketHeaders,
     }),
     signal: options.signal,
     timeouts: options.timeouts,
     payload: buildResponsesWebSocketPayload(payload, initiator),
+    resourceLimits: getResponsesWebSocketResourceLimits(),
     url: buildResponsesWebSocketUrl(copilotBaseUrl(state)),
   }
 }
 
-export const buildResponsesWebSocketPoolKey = (
+export const buildResponsesWebSocketIdentity = (
   payload: ResponsesPayload,
   {
     reasoningRecoverySessionId,
@@ -1092,7 +1095,13 @@ export const buildResponsesWebSocketPoolKey = (
     vision?: boolean
     websocketHeaders?: Record<string, string>
   },
-): string => {
+) => {
+  const accountIdentity =
+    state.userName ?? state.githubToken ?? state.copilotToken
+  const accountFingerprint =
+    accountIdentity ?
+      createHash("sha256").update(accountIdentity).digest("hex").slice(0, 16)
+    : "missing-account"
   const tokenFingerprint =
     state.copilotToken ?
       createHash("sha256").update(state.copilotToken).digest("hex").slice(0, 16)
@@ -1110,16 +1119,19 @@ export const buildResponsesWebSocketPoolKey = (
   const headerFingerprint =
     createResponsesWebSocketHeaderFingerprint(websocketHeaders)
 
-  return [
-    tokenFingerprint,
-    payload.model,
-    sessionKey,
-    subagentKey,
-    visionKey,
-    headerFingerprint,
-  ]
-    .map(encodePoolKeyPart)
-    .join("|")
+  return createPooledWebSocketIdentity({
+    accountFingerprint,
+    origin: copilotBaseUrl(state),
+    poolScope: [
+      tokenFingerprint,
+      payload.model,
+      sessionKey,
+      subagentKey,
+      visionKey,
+      headerFingerprint,
+    ],
+    provider: "copilot",
+  })
 }
 
 const VOLATILE_WEBSOCKET_POOL_HEADERS = new Set([
@@ -1517,8 +1529,6 @@ const getHeaderValue = (
 
   return match?.[1]
 }
-
-const encodePoolKeyPart = (value: string): string => encodeURIComponent(value)
 
 const createResponsesWebSocketStreamChunk = (
   data: string,

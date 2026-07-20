@@ -4,6 +4,10 @@ import fs from "node:fs"
 import { isDeepStrictEqual } from "node:util"
 
 import { PATHS } from "./paths"
+import {
+  DEFAULT_RESPONSES_WEBSOCKET_RESOURCE_LIMITS,
+  type ResponsesWebSocketResourceLimits,
+} from "./responses-websocket-limits"
 
 export interface AppConfig {
   configSchemaVersion?: number
@@ -23,6 +27,15 @@ export interface AppConfig {
   >
   useMessagesApi?: boolean
   useResponsesApiWebSocket?: boolean
+  responsesWebSocketCapacityWaitMs?: number
+  responsesWebSocketDedicatedConnectionLimit?: number
+  responsesWebSocketGlobalConnectionLimit?: number
+  responsesWebSocketIdleConnectionLimit?: number
+  responsesWebSocketIdleTimeoutMs?: number
+  responsesWebSocketMaxFrameBytes?: number
+  responsesWebSocketMaxQueuedBytes?: number
+  responsesWebSocketMaxQueuedFrames?: number
+  responsesWebSocketPerCapacityKeyConnectionLimit?: number
   anthropicApiKey?: string
   useResponsesApiWebSearch?: boolean
   // Copilot rejects Anthropic's web_search server tool on /v1/messages, so a
@@ -1162,6 +1175,68 @@ export function isMessagesApiEnabled(): boolean {
 export function isResponsesApiWebSocketEnabled(): boolean {
   const config = getConfig()
   return config.useResponsesApiWebSocket ?? true
+}
+
+export function getResponsesWebSocketResourceLimits(): ResponsesWebSocketResourceLimits {
+  const defaults = DEFAULT_RESPONSES_WEBSOCKET_RESOURCE_LIMITS
+  const globalConnectionLimit = getIntegerConfig(
+    "responsesWebSocketGlobalConnectionLimit",
+    defaults.globalConnectionLimit,
+    { max: 4096, min: 1 },
+  )
+
+  return {
+    capacityWaitMs: getIntegerConfig(
+      "responsesWebSocketCapacityWaitMs",
+      defaults.capacityWaitMs,
+      { max: 30_000, min: 0 },
+    ),
+    dedicatedConnectionLimit: Math.min(
+      globalConnectionLimit,
+      getIntegerConfig(
+        "responsesWebSocketDedicatedConnectionLimit",
+        defaults.dedicatedConnectionLimit,
+        { max: 4096, min: 0 },
+      ),
+    ),
+    globalConnectionLimit,
+    idleConnectionLimit: Math.min(
+      globalConnectionLimit,
+      getIntegerConfig(
+        "responsesWebSocketIdleConnectionLimit",
+        defaults.idleConnectionLimit,
+        { max: 4096, min: 0 },
+      ),
+    ),
+    idleTimeoutMs: getIntegerConfig(
+      "responsesWebSocketIdleTimeoutMs",
+      defaults.idleTimeoutMs,
+      { max: 3_600_000, min: 1 },
+    ),
+    maxFrameBytes: getIntegerConfig(
+      "responsesWebSocketMaxFrameBytes",
+      defaults.maxFrameBytes,
+      { max: 64 * MEBIBYTE_BYTES, min: 1 },
+    ),
+    maxQueuedBytes: getIntegerConfig(
+      "responsesWebSocketMaxQueuedBytes",
+      defaults.maxQueuedBytes,
+      { max: 256 * MEBIBYTE_BYTES, min: 1 },
+    ),
+    maxQueuedFrames: getIntegerConfig(
+      "responsesWebSocketMaxQueuedFrames",
+      defaults.maxQueuedFrames,
+      { max: 1_000_000, min: 1 },
+    ),
+    perCapacityKeyConnectionLimit: Math.min(
+      globalConnectionLimit,
+      getIntegerConfig(
+        "responsesWebSocketPerCapacityKeyConnectionLimit",
+        defaults.perCapacityKeyConnectionLimit,
+        { max: 4096, min: 1 },
+      ),
+    ),
+  }
 }
 
 export function isResponsesImageOptimizationEnabled(): boolean {

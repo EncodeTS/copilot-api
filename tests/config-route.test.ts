@@ -27,6 +27,30 @@ const setModelMappings = mock((nextModelMappings: Record<string, string>) => {
   modelMappings = nextModelMappings
   return modelMappings
 })
+const clearResponsesWebSocketConnections = mock(() => 2)
+const getPooledWebSocketDiagnostics = mock(() => ({
+  activeRequests: 1,
+  connections: 3,
+  dedicatedConnections: 1,
+  idleConnections: 1,
+  overflows: 4,
+  poolHits: 5,
+  poolMisses: 6,
+  pooledConnections: 2,
+  queuedBytes: 7,
+  queuedFrames: 8,
+}))
+const getResponsesWebSocketResourceLimits = mock(() => ({
+  capacityWaitMs: 250,
+  dedicatedConnectionLimit: 64,
+  globalConnectionLimit: 128,
+  idleConnectionLimit: 32,
+  idleTimeoutMs: 60_000,
+  maxFrameBytes: 33_554_432,
+  maxQueuedBytes: 67_108_864,
+  maxQueuedFrames: 4096,
+  perCapacityKeyConnectionLimit: 32,
+}))
 
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
@@ -53,7 +77,95 @@ beforeEach(() => {
   getModelMappings.mockClear()
   setModelMappings.mockClear()
   refreshStartupCatalog.mockClear()
+  clearResponsesWebSocketConnections.mockClear()
+  getPooledWebSocketDiagnostics.mockClear()
+  getResponsesWebSocketResourceLimits.mockClear()
   configRouteDependencies.refreshStartupCatalog = refreshStartupCatalog
+  configRouteDependencies.clearResponsesWebSocketConnections =
+    clearResponsesWebSocketConnections
+  configRouteDependencies.getPooledWebSocketDiagnostics =
+    getPooledWebSocketDiagnostics
+  configRouteDependencies.getResponsesWebSocketResourceLimits =
+    getResponsesWebSocketResourceLimits
+})
+
+describe("Responses websocket config routes", () => {
+  test("returns resource limits and a content-free runtime snapshot", async () => {
+    const response = await createApp().request(
+      "/admin/config/responses-websocket",
+    )
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({
+      configPath: actualPathsModule.PATHS.CONFIG_PATH,
+      diagnostics: getPooledWebSocketDiagnostics(),
+      limits: getResponsesWebSocketResourceLimits(),
+    })
+  })
+
+  test("clears pooled connections for a known network change", async () => {
+    const response = await createApp().request(
+      "/admin/config/responses-websocket/clear",
+      {
+        body: JSON.stringify({ reason: "network_change" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    )
+
+    expect(response.status).toBe(200)
+    expect(clearResponsesWebSocketConnections).toHaveBeenCalledWith(
+      "network_change",
+    )
+    expect(await response.json()).toEqual({
+      clearedConnections: 2,
+      diagnostics: getPooledWebSocketDiagnostics(),
+    })
+  })
+
+  test("rejects arbitrary clear reasons", async () => {
+    const response = await createApp().request(
+      "/admin/config/responses-websocket/clear",
+      {
+        body: JSON.stringify({ reason: "conversation text" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    )
+
+    expect(response.status).toBe(400)
+    expect(clearResponsesWebSocketConnections).not.toHaveBeenCalled()
+  })
+
+  test("requires an explicit network or proxy clear reason", async () => {
+    const response = await createApp().request(
+      "/admin/config/responses-websocket/clear",
+      {
+        body: JSON.stringify({}),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      },
+    )
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({
+      error: { type: "invalid_request_error" },
+    })
+    expect(clearResponsesWebSocketConnections).not.toHaveBeenCalled()
+  })
+
+  test("rejects a missing clear request body", async () => {
+    const response = await createApp().request(
+      "/admin/config/responses-websocket/clear",
+      { method: "POST" },
+    )
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toMatchObject({
+      error: { type: "invalid_request_error" },
+    })
+    expect(clearResponsesWebSocketConnections).not.toHaveBeenCalled()
+  })
 })
 
 describe("config model mappings route", () => {

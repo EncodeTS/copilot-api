@@ -1,18 +1,46 @@
 import consola from "consola"
-import { setTimeout as delay } from "node:timers/promises"
 import { getProxyForUrl } from "proxy-from-env"
 import { WebSocket } from "undici"
 
+import type { ResponsesWebSocketResourceLimits } from "~/lib/responses-websocket-limits"
 import {
-  resolveUpstreamLifecycleTimeouts,
   UpstreamLifecycleTimeoutError,
   type UpstreamLifecycleTimeouts,
 } from "~/lib/upstream-lifecycle"
+import { type PooledWebSocketIdentity } from "~/services/responses-websocket-identity"
+import {
+  acquirePooledWebSocketConnection,
+  clearPooledWebSocketRegistry,
+  getWebSocketConnectionRegistryDiagnostics,
+  WebSocketConnectionCapacityError,
+  type OpeningWebSocket,
+  type PooledWebSocketLease,
+} from "~/services/responses-websocket-registry"
+import {
+  createBoundedWebSocketMessageStream,
+  getWebSocketReceiveQueueDiagnostics,
+  WebSocketQueueOverflowError,
+  type WebSocketQueueOverflowDetails,
+} from "~/services/responses-websocket-receive-queue"
+import {
+  closeResponsesWebSocket,
+  createResponsesWebSocketError,
+  toResponsesWebSocketAbortError,
+  toResponsesWebSocketError,
+  type ResponsesWebSocketErrorEvent,
+} from "~/services/responses-websocket-runtime"
+
+export {
+  createPooledWebSocketIdentity,
+  type PooledWebSocketIdentity,
+  type PooledWebSocketIdentityParts,
+} from "~/services/responses-websocket-identity"
 
 export interface PooledWebSocketRequest<TPayload> {
   headers: Record<string, string>
+  identity: PooledWebSocketIdentity
   payload: TPayload
-  poolKey: string
+  resourceLimits: ResponsesWebSocketResourceLimits
   signal?: AbortSignal
   timeouts?: UpstreamLifecycleTimeouts
   url: string
@@ -20,7 +48,6 @@ export interface PooledWebSocketRequest<TPayload> {
 
 export interface PooledWebSocketStreamOptions<TChunk> {
   createChunk: (data: string) => TChunk
-  idleTimeoutMs?: number
   isReusableTerminalChunk?: (chunk: TChunk) => boolean
   isTerminalChunk: (chunk: TChunk) => boolean
   openErrorMessage: string
@@ -29,32 +56,25 @@ export interface PooledWebSocketStreamOptions<TChunk> {
   unavailableErrorMessage?: string
 }
 
-type WebSocketErrorEvent = Parameters<
-  NonNullable<InstanceType<typeof WebSocket>["onerror"]>
->[0]
-
-const DEFAULT_WEBSOCKET_IDLE_TIMEOUT_MS = 60_000
-
-const websocketPool = new Map<string, PooledWebSocketEntry>()
-const websocketActiveRequests = new Map<string, number>()
-
-interface PooledWebSocketEntry {
-  closed: boolean
-  idleTimer: ReturnType<typeof setTimeout> | null
-  requestCount: number
-  websocketPromise: Promise<InstanceType<typeof WebSocket>>
-}
-
-interface PooledWebSocketRequestTarget {
-  entry: PooledWebSocketEntry
-  pooled: boolean
-  reused: boolean
+export interface PooledWebSocketDiagnostics {
+  activeRequests: number
+  connections: number
+  dedicatedConnections: number
+  idleConnections: number
+  overflows: number
+  poolHits: number
+  poolMisses: number
+  pooledConnections: number
+  queuedBytes: number
+  queuedFrames: number
 }
 
 export type WebSocketRequestSendState =
   | "not-sent"
   | "sent-unknown"
   | "frame-seen"
+
+export type PooledWebSocketClearReason = "network_change" | "proxy_change"
 
 export class PooledWebSocketRequestError extends Error {
   readonly sendState: WebSocketRequestSendState
@@ -66,6 +86,42 @@ export class PooledWebSocketRequestError extends Error {
   }
 }
 
+export class PooledWebSocketCapacityError extends PooledWebSocketRequestError {
+  readonly code = "websocket_capacity_exceeded"
+
+  constructor() {
+    super(
+      "not-sent",
+      new Error("Responses websocket connection capacity is exhausted"),
+    )
+    this.name = "PooledWebSocketCapacityError"
+  }
+}
+
+export class PooledWebSocketQueueOverflowError extends PooledWebSocketRequestError {
+  readonly code = "websocket_queue_overflow"
+  readonly frameBytes: number
+  readonly maxFrameBytes: number
+  readonly maxQueuedBytes: number
+  readonly maxQueuedFrames: number
+  readonly queuedBytes: number
+  readonly queuedFrames: number
+
+  constructor(
+    sendState: WebSocketRequestSendState,
+    cause: WebSocketQueueOverflowError,
+  ) {
+    super(sendState, cause)
+    this.name = "PooledWebSocketQueueOverflowError"
+    this.frameBytes = cause.frameBytes
+    this.maxFrameBytes = cause.maxFrameBytes
+    this.maxQueuedBytes = cause.maxQueuedBytes
+    this.maxQueuedFrames = cause.maxQueuedFrames
+    this.queuedBytes = cause.queuedBytes
+    this.queuedFrames = cause.queuedFrames
+  }
+}
+
 export const isWebSocketNotSentError = (
   error: unknown,
 ): error is PooledWebSocketRequestError =>
@@ -73,14 +129,26 @@ export const isWebSocketNotSentError = (
 
 export const createWebSocketUrl = (url: string): string => {
   const websocketUrl = new URL(url)
-
   if (websocketUrl.protocol === "https:") {
     websocketUrl.protocol = "wss:"
   } else if (websocketUrl.protocol === "http:") {
     websocketUrl.protocol = "ws:"
   }
-
   return websocketUrl.toString()
+}
+
+export const getPooledWebSocketDiagnostics =
+  (): PooledWebSocketDiagnostics => ({
+    ...getWebSocketConnectionRegistryDiagnostics(),
+    ...getWebSocketReceiveQueueDiagnostics(),
+  })
+
+export const clearPooledWebSocketConnections = (
+  reason: PooledWebSocketClearReason,
+): number => {
+  const clearedConnections = clearPooledWebSocketRegistry()
+  emitWebSocketDiagnostic("pool_cleared", { clearedConnections, reason })
+  return clearedConnections
 }
 
 export const createPooledWebSocketStream = <TPayload, TChunk>(
@@ -92,36 +160,49 @@ const runPooledWebSocketRequest = async function* <TPayload, TChunk>(
   request: PooledWebSocketRequest<TPayload>,
   options: PooledWebSocketStreamOptions<TChunk>,
 ): AsyncIterable<TChunk> {
-  const { entry, pooled, reused } = getPooledWebSocketRequestTarget(
-    request,
-    options,
-  )
+  let lease: PooledWebSocketLease | undefined
   let reachedTerminal = false
-  let frameSeen = false
+  let receivedFrame = false
   let sendAttempted = false
-  const release = acquirePooledWebSocketEntry(
-    request.poolKey,
-    entry,
-    pooled,
-    options,
-  )
 
   try {
-    const websocket = await getReadyPooledWebSocket(
-      request.poolKey,
-      entry,
-      pooled,
-      reused,
-      options,
-    )
+    lease = await acquirePooledWebSocketConnection({
+      identity: request.identity,
+      limits: request.resourceLimits,
+      onClose: (diagnostic) => {
+        emitWebSocketDiagnostic("connection_closed", { ...diagnostic })
+      },
+      open: (connectTimeoutMs) =>
+        openWebSocket({
+          connectTimeoutMs,
+          headers: request.headers,
+          openErrorMessage: options.openErrorMessage,
+          signal: request.signal,
+          url: request.url,
+        }),
+      signal: request.signal,
+      timeouts: request.timeouts,
+    })
+    const websocket = await lease.ready(options.unavailableErrorMessage)
+    emitWebSocketDiagnostic("request_started", {
+      connectionAgeMs: lease.connectionAgeMs(),
+      pooled: lease.pooled,
+      readyState: websocket.readyState,
+      reused: lease.reused,
+    })
     sendAttempted = true
     websocket.send(JSON.stringify(request.payload))
 
-    for await (const data of createWebSocketMessageStream(websocket, options, {
+    for await (const data of createBoundedWebSocketMessageStream(websocket, {
+      limits: request.resourceLimits,
+      onFrame: () => {
+        receivedFrame = true
+      },
+      onOverflow: logQueueOverflow,
       signal: request.signal,
+      streamErrorMessage: options.streamErrorMessage,
       timeouts: request.timeouts,
     })) {
-      frameSeen = true
       const chunk = options.createChunk(data)
       const isTerminal = options.isTerminalChunk(chunk)
       if (isTerminal) {
@@ -130,244 +211,68 @@ const runPooledWebSocketRequest = async function* <TPayload, TChunk>(
           options.isReusableTerminalChunk
           && !options.isReusableTerminalChunk(chunk)
         ) {
-          removePooledWebSocketEntry(request.poolKey, entry)
+          lease.retire()
         }
       }
       yield chunk
-
       if (isTerminal) {
         return
       }
     }
 
-    removePooledWebSocketEntry(request.poolKey, entry)
+    lease.retire()
     throw new Error(options.terminalChunkMissingMessage)
   } catch (error) {
-    removePooledWebSocketEntry(request.poolKey, entry)
-    throw new PooledWebSocketRequestError(
-      frameSeen ? "frame-seen"
+    lease?.retire()
+    if (error instanceof PooledWebSocketRequestError) {
+      throw error
+    }
+    if (error instanceof WebSocketConnectionCapacityError) {
+      emitWebSocketDiagnostic("capacity_rejected", {})
+      throw new PooledWebSocketCapacityError()
+    }
+    const sendState =
+      receivedFrame ? "frame-seen"
       : sendAttempted ? "sent-unknown"
-      : "not-sent",
-      toError(error),
+      : "not-sent"
+    if (error instanceof WebSocketQueueOverflowError) {
+      throw new PooledWebSocketQueueOverflowError(sendState, error)
+    }
+    throw new PooledWebSocketRequestError(
+      sendState,
+      toResponsesWebSocketError(error),
     )
   } finally {
-    if (!reachedTerminal) {
-      removePooledWebSocketEntry(request.poolKey, entry)
+    if (lease && !reachedTerminal) {
+      lease.retire()
     }
-    release()
+    lease?.release()
   }
 }
 
-const getPooledWebSocketRequestTarget = <TPayload, TChunk>(
-  request: PooledWebSocketRequest<TPayload>,
-  options: PooledWebSocketStreamOptions<TChunk>,
-): PooledWebSocketRequestTarget => {
-  if (getPooledWebSocketActiveRequestCount(request.poolKey) > 0) {
-    return {
-      entry: createPooledWebSocketEntry(request, options),
-      pooled: false,
-      reused: false,
-    }
-  }
-
-  const existing = websocketPool.get(request.poolKey)
-  if (existing && !existing.closed) {
-    consola.debug("websocket from pool")
-    clearPooledWebSocketIdleTimer(existing)
-    return {
-      entry: existing,
-      pooled: true,
-      reused: true,
-    }
-  }
-
-  const entry = createPooledWebSocketEntry(request, options)
-  websocketPool.set(request.poolKey, entry)
-  return {
-    entry,
-    pooled: true,
-    reused: false,
-  }
+const logQueueOverflow = (details: WebSocketQueueOverflowDetails): void => {
+  emitWebSocketDiagnostic("queue_overflow", {
+    frameBytes: details.frameBytes,
+    maxFrameBytes: details.maxFrameBytes,
+    maxQueuedBytes: details.maxQueuedBytes,
+    maxQueuedFrames: details.maxQueuedFrames,
+    socketQueuedBytes: details.queuedBytes,
+    socketQueuedFrames: details.queuedFrames,
+  })
 }
 
-const createPooledWebSocketEntry = <TPayload, TChunk>(
-  request: PooledWebSocketRequest<TPayload>,
-  options: PooledWebSocketStreamOptions<TChunk>,
-): PooledWebSocketEntry => {
-  const entry: PooledWebSocketEntry = {
-    closed: false,
-    idleTimer: null,
-    requestCount: 0,
-    websocketPromise: openWebSocket({
-      connectTimeoutMs: resolveUpstreamLifecycleTimeouts(request.timeouts)
-        .websocketConnectMs,
-      headers: request.headers,
-      openErrorMessage: options.openErrorMessage,
-      signal: request.signal,
-      url: request.url,
-    }),
-  }
-
-  entry.websocketPromise
-    .then((websocket) => {
-      websocket.addEventListener("close", () => {
-        removePooledWebSocketEntry(request.poolKey, entry)
-      })
-      websocket.addEventListener("error", () => {
-        removePooledWebSocketEntry(request.poolKey, entry)
-      })
-    })
-    .catch(() => {
-      removePooledWebSocketEntry(request.poolKey, entry)
-    })
-
-  return entry
-}
-
-const acquirePooledWebSocketEntry = <TChunk>(
-  poolKey: string,
-  entry: PooledWebSocketEntry,
-  pooled: boolean,
-  options: PooledWebSocketStreamOptions<TChunk>,
-): (() => void) => {
-  clearPooledWebSocketIdleTimer(entry)
-  incrementPooledWebSocketActiveRequestCount(poolKey)
-  entry.requestCount += 1
-
-  let released = false
-  return () => {
-    if (released) {
-      return
-    }
-
-    released = true
-    entry.requestCount -= 1
-
-    decrementPooledWebSocketActiveRequestCount(poolKey)
-    if (entry.closed || entry.requestCount > 0) {
-      return
-    }
-
-    if (pooled && websocketPool.get(poolKey) === entry) {
-      schedulePooledWebSocketIdleClose(poolKey, entry, options)
-      return
-    }
-
-    removePooledWebSocketEntry(poolKey, entry)
-  }
-}
-
-const getReadyPooledWebSocket = async (
-  poolKey: string,
-  entry: PooledWebSocketEntry,
-  pooled: boolean,
-  reused: boolean,
-  options?: { unavailableErrorMessage?: string },
-): Promise<InstanceType<typeof WebSocket>> => {
-  const unavailableErrorMessage =
-    options?.unavailableErrorMessage
-    ?? "Websocket connection became unavailable before the request started"
-
-  if (entry.closed) {
-    throw new Error(unavailableErrorMessage)
-  }
-
-  const websocket = await entry.websocketPromise
-  if (reused) {
-    await delay(0)
-  }
-  if (entry.closed || (pooled && websocketPool.get(poolKey) !== entry)) {
-    throw new Error(unavailableErrorMessage)
-  }
-
-  if (websocket.readyState !== WebSocket.OPEN) {
-    removePooledWebSocketEntry(poolKey, entry)
-    throw new Error(unavailableErrorMessage)
-  }
-
-  return websocket
-}
-
-const schedulePooledWebSocketIdleClose = <TChunk>(
-  poolKey: string,
-  entry: PooledWebSocketEntry,
-  options: PooledWebSocketStreamOptions<TChunk>,
+const emitWebSocketDiagnostic = (
+  event: string,
+  fields: Record<string, boolean | null | number | string>,
 ): void => {
-  clearPooledWebSocketIdleTimer(entry)
-  entry.idleTimer = setTimeout(() => {
-    removePooledWebSocketEntry(poolKey, entry)
-  }, options.idleTimeoutMs ?? DEFAULT_WEBSOCKET_IDLE_TIMEOUT_MS)
-  unrefTimer(entry.idleTimer)
+  consola.debug("responses.websocket", {
+    ...getPooledWebSocketDiagnostics(),
+    ...fields,
+    event,
+  })
 }
 
-const clearPooledWebSocketIdleTimer = (entry: PooledWebSocketEntry): void => {
-  if (entry.idleTimer) {
-    clearTimeout(entry.idleTimer)
-    entry.idleTimer = null
-  }
-}
-
-const getPooledWebSocketActiveRequestCount = (poolKey: string): number =>
-  websocketActiveRequests.get(poolKey) ?? 0
-
-const incrementPooledWebSocketActiveRequestCount = (poolKey: string): void => {
-  websocketActiveRequests.set(
-    poolKey,
-    getPooledWebSocketActiveRequestCount(poolKey) + 1,
-  )
-}
-
-const decrementPooledWebSocketActiveRequestCount = (poolKey: string): void => {
-  const nextCount = getPooledWebSocketActiveRequestCount(poolKey) - 1
-  if (nextCount <= 0) {
-    websocketActiveRequests.delete(poolKey)
-    return
-  }
-
-  websocketActiveRequests.set(poolKey, nextCount)
-}
-
-const removePooledWebSocketEntry = (
-  poolKey: string,
-  entry: PooledWebSocketEntry,
-): void => {
-  if (websocketPool.get(poolKey) === entry) {
-    websocketPool.delete(poolKey)
-  }
-
-  if (entry.closed) {
-    return
-  }
-
-  entry.closed = true
-  clearPooledWebSocketIdleTimer(entry)
-  entry.websocketPromise.then(closeWebSocket).catch(() => {})
-}
-
-const unrefTimer = (timer: ReturnType<typeof setTimeout>): void => {
-  if (
-    typeof timer === "object"
-    && "unref" in timer
-    && typeof timer.unref === "function"
-  ) {
-    timer.unref()
-  }
-}
-
-const createWebSocketError = (
-  message: string,
-  event?: Pick<WebSocketErrorEvent, "error" | "message">,
-): Error => {
-  const reason = event?.error ?? event?.message
-  if (reason === undefined || reason === "") {
-    return new Error(message)
-  }
-
-  const cause = toError(reason)
-  return new Error(`${message}: ${cause.message}`, { cause })
-}
-
-const openWebSocket = async ({
+const openWebSocket = ({
   connectTimeoutMs,
   headers,
   openErrorMessage,
@@ -379,276 +284,56 @@ const openWebSocket = async ({
   openErrorMessage: string
   signal?: AbortSignal
   url: string
-}): Promise<InstanceType<typeof WebSocket>> =>
-  await new Promise((resolve, reject) => {
-    const proxy = typeof Bun === "undefined" ? undefined : getProxyUrl(url)
-    const init = { headers, ...(proxy ? { proxy } : {}) }
-    const websocket = new WebSocket(url, init)
-    const connectTimer = setTimeout(() => {
-      fail(
-        new UpstreamLifecycleTimeoutError(
-          "WebSocket connect",
-          connectTimeoutMs,
-        ),
-      )
-    }, connectTimeoutMs)
-    unrefTimer(connectTimer)
-
-    const cleanup = () => {
-      clearTimeout(connectTimer)
-      websocket.removeEventListener("open", onOpen)
-      websocket.removeEventListener("error", onError)
-      websocket.removeEventListener("close", onClose)
-      signal?.removeEventListener("abort", onAbort)
-    }
-
-    const fail = (error: Error) => {
-      cleanup()
-      closeWebSocket(websocket)
-      reject(error)
-    }
-
-    const onOpen = () => {
-      cleanup()
-      resolve(websocket)
-    }
-
-    const onError = (event: WebSocketErrorEvent) => {
-      fail(createWebSocketError(openErrorMessage, event))
-    }
-
-    const onClose = () => fail(new Error(openErrorMessage))
-    const onAbort = () => fail(toAbortError(signal?.reason))
-
-    websocket.addEventListener("open", onOpen)
-    websocket.addEventListener("error", onError)
-    websocket.addEventListener("close", onClose)
-    if (signal?.aborted) {
-      onAbort()
-      return
-    }
-    signal?.addEventListener("abort", onAbort, { once: true })
-  })
-
-const createWebSocketMessageStream = async function* <TChunk>(
-  websocket: InstanceType<typeof WebSocket>,
-  options: PooledWebSocketStreamOptions<TChunk>,
-  lifecycle: {
-    signal?: AbortSignal
-    timeouts?: UpstreamLifecycleTimeouts
-  },
-): AsyncIterable<string> {
-  const queue: Array<Promise<string>> = []
-  let closed = false
-  let error: Error | null = null
-  let notify: (() => void) | null = null
-  let receivedFrame = false
-  const timeouts = resolveUpstreamLifecycleTimeouts(lifecycle.timeouts)
-  const startedAt = Date.now()
-
-  const wake = () => {
-    notify?.()
-    notify = null
-  }
-
-  const onMessage = (event: { data: unknown }) => {
-    receivedFrame = true
-    queue.push(normalizeWebSocketMessageData(event.data))
-    wake()
-  }
-
-  const onClose = () => {
-    consola.debug("WebSocket closed")
-    closed = true
-    wake()
-  }
-
-  const onError = (event: WebSocketErrorEvent) => {
-    error = createWebSocketError(options.streamErrorMessage, event)
-    consola.debug("WebSocket transport error:", error.message)
-    wake()
-  }
-
-  websocket.addEventListener("message", onMessage)
-  websocket.addEventListener("close", onClose)
-  websocket.addEventListener("error", onError)
-
-  try {
-    while (true) {
-      const totalElapsedMs = Date.now() - startedAt
-      if (totalElapsedMs >= timeouts.websocketTotalMs) {
-        throw new UpstreamLifecycleTimeoutError(
-          "WebSocket total",
-          timeouts.websocketTotalMs,
-        )
-      }
-
-      const item = queue.shift()
-      if (item) {
-        yield await item
-        continue
-      }
-
-      if (error) {
-        throw toError(error)
-      }
-
-      if (closed) {
-        break
-      }
-
-      const activityPhase =
-        receivedFrame ? "WebSocket inactivity" : "WebSocket first frame"
-      const activityTimeoutMs =
-        receivedFrame ?
-          timeouts.websocketInactivityMs
-        : timeouts.websocketFirstFrameMs
-      const totalRemainingMs = timeouts.websocketTotalMs - totalElapsedMs
-      const totalExpiresFirst = totalRemainingMs <= activityTimeoutMs
-
-      await waitForWebSocketWake({
-        phase: totalExpiresFirst ? "WebSocket total" : activityPhase,
-        reportedTimeoutMs:
-          totalExpiresFirst ? timeouts.websocketTotalMs : activityTimeoutMs,
-        signal: lifecycle.signal,
-        timeoutMs: Math.min(activityTimeoutMs, totalRemainingMs),
-        setNotify: (nextNotify) => {
-          notify = nextNotify
-        },
-      })
-    }
-  } finally {
-    websocket.removeEventListener("message", onMessage)
-    websocket.removeEventListener("close", onClose)
-    websocket.removeEventListener("error", onError)
-  }
-}
-
-const waitForWebSocketWake = async ({
-  phase,
-  reportedTimeoutMs,
-  setNotify,
-  signal,
-  timeoutMs,
-}: {
-  phase: string
-  reportedTimeoutMs?: number
-  setNotify: (notify: () => void) => void
-  signal?: AbortSignal
-  timeoutMs?: number
-}): Promise<void> =>
-  await new Promise<void>((resolve, reject) => {
-    let settled = false
-    let timer: ReturnType<typeof setTimeout> | undefined
-
-    const cleanup = () => {
-      if (timer) {
-        clearTimeout(timer)
-      }
-      signal?.removeEventListener("abort", onAbort)
-    }
-    const settle = (callback: () => void) => {
-      if (settled) {
-        return
-      }
-      settled = true
-      cleanup()
-      callback()
-    }
-    const onAbort = () => settle(() => reject(toAbortError(signal?.reason)))
-
-    setNotify(() => settle(resolve))
-    if (signal?.aborted) {
-      onAbort()
-      return
-    }
-    signal?.addEventListener("abort", onAbort, { once: true })
-
-    if (timeoutMs !== undefined) {
-      timer = setTimeout(() => {
-        settle(() =>
-          reject(
-            new UpstreamLifecycleTimeoutError(
-              phase,
-              reportedTimeoutMs ?? timeoutMs,
-            ),
+}): OpeningWebSocket => {
+  const proxy = typeof Bun === "undefined" ? undefined : getProxyUrl(url)
+  const init = { headers, ...(proxy ? { proxy } : {}) }
+  const websocket = new WebSocket(url, init)
+  const websocketPromise = new Promise<InstanceType<typeof WebSocket>>(
+    (resolve, reject) => {
+      const connectTimer = setTimeout(() => {
+        fail(
+          new UpstreamLifecycleTimeoutError(
+            "WebSocket connect",
+            connectTimeoutMs,
           ),
         )
-      }, timeoutMs)
-      unrefTimer(timer)
-    }
-  })
+      }, connectTimeoutMs)
+      connectTimer.unref?.()
 
-const normalizeWebSocketMessageData = async (
-  data: unknown,
-): Promise<string> => {
-  if (typeof data === "string") {
-    return data
-  }
+      const cleanup = () => {
+        clearTimeout(connectTimer)
+        websocket.removeEventListener("open", onOpen)
+        websocket.removeEventListener("error", onError)
+        websocket.removeEventListener("close", onClose)
+        signal?.removeEventListener("abort", onAbort)
+      }
+      const fail = (error: Error) => {
+        cleanup()
+        closeResponsesWebSocket(websocket)
+        reject(error)
+      }
+      const onOpen = () => {
+        cleanup()
+        resolve(websocket)
+      }
+      const onError = (event: ResponsesWebSocketErrorEvent) => {
+        fail(createResponsesWebSocketError(openErrorMessage, event))
+      }
+      const onClose = () => fail(new Error(openErrorMessage))
+      const onAbort = () => fail(toResponsesWebSocketAbortError(signal?.reason))
 
-  if (data instanceof ArrayBuffer) {
-    return new TextDecoder().decode(data)
-  }
-
-  if (ArrayBuffer.isView(data)) {
-    const view = data
-    return new TextDecoder().decode(
-      new Uint8Array(
-        view.buffer as ArrayBuffer,
-        view.byteOffset,
-        view.byteLength,
-      ),
-    )
-  }
-
-  if (isTextReadable(data)) {
-    return await data.text()
-  }
-
-  return String(data)
-}
-
-const isTextReadable = (
-  value: unknown,
-): value is { text: () => Promise<string> } => {
-  if (!value || typeof value !== "object" || !("text" in value)) {
-    return false
-  }
-
-  return typeof (value as { text?: unknown }).text === "function"
-}
-
-const toError = (value: unknown): Error => {
-  if (value instanceof Error) {
-    return value
-  }
-
-  return new Error(String(value))
-}
-
-const toAbortError = (reason: unknown): Error => {
-  if (reason instanceof Error) {
-    return reason
-  }
-
-  const error = new Error(
-    typeof reason === "string" ? reason
-    : typeof reason === "number" || typeof reason === "boolean" ? String(reason)
-    : "Upstream request aborted",
+      websocket.addEventListener("open", onOpen)
+      websocket.addEventListener("error", onError)
+      websocket.addEventListener("close", onClose)
+      if (signal?.aborted) {
+        onAbort()
+        return
+      }
+      signal?.addEventListener("abort", onAbort, { once: true })
+    },
   )
-  error.name = "AbortError"
-  return error
+  return { websocket, websocketPromise }
 }
 
-const closeWebSocket = (websocket: InstanceType<typeof WebSocket>): void => {
-  if (
-    websocket.readyState === WebSocket.CONNECTING
-    || websocket.readyState === WebSocket.OPEN
-  ) {
-    websocket.close()
-  }
-}
-
-const getProxyUrl = (url: string): string => {
-  return getProxyForUrl(url.replace(/^wss:/, "https:").replace(/^ws:/, "http:"))
-}
+const getProxyUrl = (url: string): string =>
+  getProxyForUrl(url.replace(/^wss:/, "https:").replace(/^ws:/, "http:"))

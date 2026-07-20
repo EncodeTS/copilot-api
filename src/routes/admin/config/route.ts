@@ -4,16 +4,24 @@ import { z } from "zod"
 import { forwardError } from "~/lib/error"
 import {
   getModelMappings,
+  getResponsesWebSocketResourceLimits,
   ModelMappingsValidationError,
   setModelMappings,
 } from "~/lib/config"
 import { PATHS } from "~/lib/paths"
 import { state } from "~/lib/state"
 import { codexStartupCatalogManager } from "~/services/codex/startup-catalog"
+import {
+  clearPooledWebSocketConnections,
+  getPooledWebSocketDiagnostics,
+} from "~/services/responses-websocket"
 
 export const configRoutes = new Hono()
 
 export const configRouteDependencies = {
+  clearResponsesWebSocketConnections: clearPooledWebSocketConnections,
+  getPooledWebSocketDiagnostics,
+  getResponsesWebSocketResourceLimits,
   refreshStartupCatalog: ({
     modelMappings,
   }: {
@@ -27,6 +35,45 @@ export const configRouteDependencies = {
 
 const modelMappingsRequestSchema = z.object({
   modelMappings: z.record(z.string(), z.string()),
+})
+
+const responsesWebSocketClearRequestSchema = z.object({
+  reason: z.enum(["network_change", "proxy_change"]),
+})
+
+configRoutes.get("/responses-websocket", (c) => {
+  return c.json({
+    configPath: PATHS.CONFIG_PATH,
+    diagnostics: configRouteDependencies.getPooledWebSocketDiagnostics(),
+    limits: configRouteDependencies.getResponsesWebSocketResourceLimits(),
+  })
+})
+
+configRoutes.post("/responses-websocket/clear", async (c) => {
+  const parseResult = responsesWebSocketClearRequestSchema.safeParse(
+    await c.req.json().catch(() => null),
+  )
+  if (!parseResult.success) {
+    return c.json(
+      {
+        error: {
+          message:
+            parseResult.error.issues[0]?.message ?? "Invalid request body.",
+          type: "invalid_request_error",
+        },
+      },
+      400,
+    )
+  }
+
+  const clearedConnections =
+    configRouteDependencies.clearResponsesWebSocketConnections(
+      parseResult.data.reason,
+    )
+  return c.json({
+    clearedConnections,
+    diagnostics: configRouteDependencies.getPooledWebSocketDiagnostics(),
+  })
 })
 
 configRoutes.get("/model-mappings", (c) => {

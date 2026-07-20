@@ -35,6 +35,15 @@ interface ConfigFileShape {
   responsesPayloadBudgetBytes?: number
   responsesPayloadRetryBudgetBytes?: number
   responsesPayloadSendHardLimitBytes?: number
+  responsesWebSocketCapacityWaitMs?: number
+  responsesWebSocketDedicatedConnectionLimit?: number
+  responsesWebSocketGlobalConnectionLimit?: number
+  responsesWebSocketIdleConnectionLimit?: number
+  responsesWebSocketIdleTimeoutMs?: number
+  responsesWebSocketMaxFrameBytes?: number
+  responsesWebSocketMaxQueuedBytes?: number
+  responsesWebSocketMaxQueuedFrames?: number
+  responsesWebSocketPerCapacityKeyConnectionLimit?: number
   responsesApiContextManagementModels?: Array<string>
   useFunctionApplyPatch?: boolean
   useResponsesApiWebSocket?: boolean
@@ -250,6 +259,63 @@ describe("builtin provider config", () => {
     expect(persisted.responsesImageMaxInputImageBytes).toBeUndefined()
     expect(persisted.responsesImageOptimization).toBeUndefined()
     expect(persisted.responsesPayloadBudgetBytes).toBeUndefined()
+  })
+
+  test("applies bounded Responses websocket defaults without persisting them", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = path.join(tempDir, "config.json")
+
+    const output = runScript(
+      tempDir,
+      'const config = await import("./src/lib/config"); console.log(JSON.stringify(config.getResponsesWebSocketResourceLimits()));',
+    )
+
+    expect(JSON.parse(output)).toEqual({
+      capacityWaitMs: 250,
+      dedicatedConnectionLimit: 64,
+      globalConnectionLimit: 128,
+      idleConnectionLimit: 32,
+      idleTimeoutMs: 60_000,
+      maxFrameBytes: 33_554_432,
+      maxQueuedBytes: 67_108_864,
+      maxQueuedFrames: 4096,
+      perCapacityKeyConnectionLimit: 32,
+    })
+    const persisted = readConfigFile(configPath)
+    expect(persisted.responsesWebSocketGlobalConnectionLimit).toBeUndefined()
+    expect(persisted.responsesWebSocketMaxQueuedBytes).toBeUndefined()
+  })
+
+  test("normalizes Responses websocket limits against the global budget", () => {
+    const tempDir = createTempConfigDir()
+    writeConfigFile(tempDir, {
+      responsesWebSocketCapacityWaitMs: -1,
+      responsesWebSocketDedicatedConnectionLimit: 12,
+      responsesWebSocketGlobalConnectionLimit: 4,
+      responsesWebSocketIdleConnectionLimit: 9,
+      responsesWebSocketIdleTimeoutMs: 0,
+      responsesWebSocketMaxFrameBytes: 0,
+      responsesWebSocketMaxQueuedBytes: -1,
+      responsesWebSocketMaxQueuedFrames: 0,
+      responsesWebSocketPerCapacityKeyConnectionLimit: 8,
+    })
+
+    const output = runScript(
+      tempDir,
+      'const config = await import("./src/lib/config"); console.log(JSON.stringify(config.getResponsesWebSocketResourceLimits()));',
+    )
+
+    expect(JSON.parse(output)).toEqual({
+      capacityWaitMs: 250,
+      dedicatedConnectionLimit: 4,
+      globalConnectionLimit: 4,
+      idleConnectionLimit: 4,
+      idleTimeoutMs: 60_000,
+      maxFrameBytes: 33_554_432,
+      maxQueuedBytes: 67_108_864,
+      maxQueuedFrames: 4096,
+      perCapacityKeyConnectionLimit: 4,
+    })
   })
 
   test("migrates the legacy Responses image budget defaults", () => {

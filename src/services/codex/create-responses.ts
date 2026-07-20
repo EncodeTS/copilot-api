@@ -14,7 +14,10 @@ import type {
   ResponsesTransport,
 } from "~/services/copilot/create-responses"
 
-import { isResponsesApiWebSocketEnabled as isConfiguredResponsesApiWebSocketEnabled } from "~/lib/config"
+import {
+  getResponsesWebSocketResourceLimits,
+  isResponsesApiWebSocketEnabled as isConfiguredResponsesApiWebSocketEnabled,
+} from "~/lib/config"
 import { HTTPError } from "~/lib/error"
 import {
   fetchWithUpstreamLifecycle,
@@ -22,6 +25,7 @@ import {
 } from "~/lib/upstream-lifecycle"
 import { state } from "~/lib/state"
 import {
+  createPooledWebSocketIdentity,
   createPooledWebSocketStream,
   createWebSocketUrl,
   type PooledWebSocketRequest,
@@ -229,8 +233,9 @@ export function prepareCodexResponsesWebSocketRequest(
 
   return {
     headers,
+    identity: buildCodexResponsesWebSocketIdentity(payload, headers, baseUrl),
     payload: buildCodexResponsesWebSocketPayload(payload),
-    poolKey: buildCodexResponsesWebSocketPoolKey(payload, headers, baseUrl),
+    resourceLimits: getResponsesWebSocketResourceLimits(),
     signal: options.signal,
     timeouts: options.timeouts,
     url: buildCodexResponsesWebSocketUrl(baseUrl),
@@ -416,11 +421,15 @@ const getTextBlock = (
   return typeof text === "string" ? text : undefined
 }
 
-const buildCodexResponsesWebSocketPoolKey = (
+const buildCodexResponsesWebSocketIdentity = (
   payload: ResponsesPayload,
   headers: Record<string, string>,
   baseUrl: string,
-): string => {
+) => {
+  const accountFingerprint = createHash("sha256")
+    .update(state.codexAccountId ?? "missing-account")
+    .digest("hex")
+    .slice(0, 16)
   const authFingerprint = createHash("sha256")
     .update(
       `${state.codexAccessToken ?? "missing-token"}:${state.codexAccountId ?? "missing-account"}`,
@@ -438,15 +447,17 @@ const buildCodexResponsesWebSocketPoolKey = (
     .digest("hex")
     .slice(0, 16)
 
-  return [
-    "codex",
-    resolveCodexResponsesUrl(baseUrl),
-    payload.model,
-    authFingerprint,
-    headerFingerprint,
-  ]
-    .map(encodePoolKeyPart)
-    .join("|")
+  return createPooledWebSocketIdentity({
+    accountFingerprint,
+    origin: resolveCodexResponsesUrl(baseUrl),
+    poolScope: [
+      resolveCodexResponsesUrl(baseUrl),
+      payload.model,
+      authFingerprint,
+      headerFingerprint,
+    ],
+    provider: "codex",
+  })
 }
 
 const forwardCodexResponsesOverWebSocket = (
@@ -569,5 +580,3 @@ const getErrorMessage = (error: unknown): string => {
 
   return String(error)
 }
-
-const encodePoolKeyPart = (value: string): string => encodeURIComponent(value)

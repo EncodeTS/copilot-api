@@ -15,7 +15,7 @@ import {
 import { COMPACT_REQUEST } from "../src/lib/compact"
 import { state } from "../src/lib/state"
 import {
-  buildResponsesWebSocketPoolKey,
+  buildResponsesWebSocketIdentity,
   buildResponsesWebSocketPayload,
   buildResponsesWebSocketUrl,
   createResponses,
@@ -699,18 +699,18 @@ describe("createResponses", () => {
       input: "hello",
       model: "gpt-test",
     }
-    const mainKey = buildResponsesWebSocketPoolKey(basePayload, {
+    const mainKey = buildResponsesWebSocketIdentity(basePayload, {
       requestId: "request-1",
-    })
-    const subagentKey = buildResponsesWebSocketPoolKey(basePayload, {
+    }).poolKey
+    const subagentKey = buildResponsesWebSocketIdentity(basePayload, {
       requestId: "request-1",
       subagentMarker: {
         agent_id: "agent-1",
         agent_type: "Explore",
         session_id: "sub-session",
       },
-    })
-    const otherModelKey = buildResponsesWebSocketPoolKey(
+    }).poolKey
+    const otherModelKey = buildResponsesWebSocketIdentity(
       {
         ...basePayload,
         model: "gpt-other",
@@ -718,7 +718,7 @@ describe("createResponses", () => {
       {
         requestId: "request-1",
       },
-    )
+    ).poolKey
 
     expect(new Set([mainKey, subagentKey, otherModelKey]).size).toBe(3)
     expect(mainKey).toContain("gpt-test")
@@ -737,8 +737,8 @@ describe("createResponses", () => {
         "X-Session-Affinity": "affinity-1",
       },
     }
-    const first = buildResponsesWebSocketPoolKey(payload, baseOptions)
-    const volatileOnly = buildResponsesWebSocketPoolKey(payload, {
+    const first = buildResponsesWebSocketIdentity(payload, baseOptions).poolKey
+    const volatileOnly = buildResponsesWebSocketIdentity(payload, {
       ...baseOptions,
       requestId: "request-2",
       websocketHeaders: {
@@ -746,21 +746,21 @@ describe("createResponses", () => {
         Authorization: "Bearer token-2",
         "X-Request-Id": "request-2",
       },
-    })
-    const otherAffinity = buildResponsesWebSocketPoolKey(payload, {
+    }).poolKey
+    const otherAffinity = buildResponsesWebSocketIdentity(payload, {
       ...baseOptions,
       websocketHeaders: {
         ...baseOptions.websocketHeaders,
         "X-Session-Affinity": "affinity-2",
       },
-    })
-    const otherUserAgent = buildResponsesWebSocketPoolKey(payload, {
+    }).poolKey
+    const otherUserAgent = buildResponsesWebSocketIdentity(payload, {
       ...baseOptions,
       websocketHeaders: {
         ...baseOptions.websocketHeaders,
         "User-Agent": "opencode/2",
       },
-    })
+    }).poolKey
 
     expect(volatileOnly).toBe(first)
     expect(otherAffinity).not.toBe(first)
