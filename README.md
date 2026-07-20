@@ -204,9 +204,6 @@ Here is an example `.claude/settings.json` file:
     "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false",
     "CLAUDE_CODE_DISABLE_TERMINAL_TITLE": "true",
     "CLAUDE_CODE_ENABLE_AWAY_SUMMARY": "0"
-  },
-  "permissions": {
-    "deny": ["mcp__ide__executeCode"]
   }
 }
 ```
@@ -215,6 +212,7 @@ Here is an example `.claude/settings.json` file:
 - Setting CLAUDE_CODE_ATTRIBUTION_HEADER to 0 can prevent Claude code from adding billing and version information in system prompts, thereby avoiding prompt cache invalidation.
 - Turning off CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION and CLAUDE_CODE_ENABLE_AWAY_SUMMARY can prevent quota from being consumed unnecessarily.
 - Claude Code WebSearch is supported for pure search requests. For Copilot, keep the global `messageApiWebSearchModel` set to a Responses-capable GPT model or a `provider/model` alias. For provider routes, use a native Anthropic provider or an `openai-responses` provider. Add `WebSearch` to `permissions.deny` only if you want to forbid this traffic.
+- `mcp__ide__executeCode` is capability-aware: native Messages and Responses flows preserve the tool, including a forced tool choice, when the selected model supports those routes. The Chat Completions fallback filters the eager tool and rejects requests that force it. Add it to `permissions.deny` only if you explicitly want to disable IDE code execution across models.
 - If using a non-Claude model, do not enable ENABLE_TOOL_SEARCH. If using the Claude model, can enable ENABLE_TOOL_SEARCH. The current Claude Code uses the client tool search mode. In this mode, loading defer tools requires an additional request each time.
 - `CLAUDE_CODE_AUTO_COMPACT_WINDOW`: Set the context capacity in tokens used for auto-compaction calculations. Defaults to the model's context window: 200K for standard models or 1M for extended context models. Use a lower value like `500000` on a 1M model (e.g., `claude-opus-4-6[1m]`) to treat the window as 500K for compaction purposes. The value is capped at the model's actual context window. `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is applied as a percentage of this value. Setting this variable decouples the compaction threshold from the status line's `used_percentage`, which always uses the model's full context window.
 

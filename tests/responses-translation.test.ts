@@ -14,7 +14,6 @@ import type {
 } from "~/services/copilot/create-responses"
 
 import {
-  REASONING_SUMMARY_SEPARATOR,
   translateAnthropicMessagesToResponsesPayload,
   translateResponsesResultToAnthropic,
 } from "~/routes/messages/responses-translation"
@@ -104,20 +103,25 @@ const translateThinking = (thinking: string): ResponseInputReasoning => {
 }
 
 describe("translateAnthropicMessagesToResponsesPayload", () => {
-  it("restores marked summary boundaries and preserves unmarked history", () => {
+  it("restores NBSP and legacy U+2063 summary boundaries", () => {
     const firstSummary =
       "**Preparing to search online**\n\nI need to use web.run."
     const secondSummary = "**Running the search**"
+
+    for (const separator of ["\u00a0\n\n", "\u2063\n\n"]) {
+      expect(
+        translateThinking(firstSummary + separator + secondSummary).summary,
+      ).toEqual([
+        { type: "summary_text", text: firstSummary },
+        { type: "summary_text", text: secondSummary },
+      ])
+    }
+  })
+
+  it("preserves unmarked reasoning history as one summary", () => {
     const unmarkedThinking =
       "**Preparing**\n\nDescription\n\n**A bold body line**\n\nMore text"
-    const marked = translateThinking(
-      firstSummary + REASONING_SUMMARY_SEPARATOR + secondSummary,
-    )
 
-    expect(marked.summary).toEqual([
-      { type: "summary_text", text: firstSummary },
-      { type: "summary_text", text: secondSummary },
-    ])
     expect(translateThinking(unmarkedThinking).summary).toEqual([
       { type: "summary_text", text: unmarkedThinking },
     ])
@@ -1693,11 +1697,14 @@ describe("translateResponsesResultToAnthropic", () => {
 
     expect(thinkingBlock.type).toBe("thinking")
     if (thinkingBlock.type === "thinking") {
-      expect(thinkingBlock.thinking).toBe(
+      const thinking = thinkingBlock.thinking
+      expect(thinking).toBe(
         "**Thinking about the task**\n\nReviewing the request."
-          + REASONING_SUMMARY_SEPARATOR
+          + "\u00a0\n\n"
           + "**Preparing the tool call**",
       )
+      expect(thinking.match(/\u00a0\n\n/g)).toHaveLength(1)
+      expect(thinking).not.toContain("\u2063\n\n")
     }
 
     expect(toolUseBlock.type).toBe("tool_use")

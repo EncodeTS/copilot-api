@@ -22,7 +22,6 @@ import {
   createResponsesStreamState,
   translateResponsesStreamEvent,
 } from "~/routes/messages/responses-stream-translation"
-import { REASONING_SUMMARY_SEPARATOR } from "~/routes/messages/responses-translation"
 
 const createFunctionCallAddedEvent = (): ResponseOutputItemAddedEvent => ({
   type: "response.output_item.added",
@@ -675,7 +674,7 @@ describe("translateResponsesStreamEvent reasoning summaries", () => {
       index: 0,
       delta: {
         type: "thinking_delta",
-        thinking: REASONING_SUMMARY_SEPARATOR,
+        thinking: "\u00a0\n\n",
       },
     })
   })
@@ -758,11 +757,13 @@ describe("translateResponsesStreamEvent reasoning summaries", () => {
 
     expect(thinking).toBe(
       "**Preparing the request**"
-        + REASONING_SUMMARY_SEPARATOR
+        + "\u00a0\n\n"
         + "**Running the tool**"
-        + REASONING_SUMMARY_SEPARATOR
+        + "\u00a0\n\n"
         + "**Finishing**",
     )
+    expect(thinking.match(/\u00a0\n\n/g)).toHaveLength(2)
+    expect(thinking).not.toContain("\u2063\n\n")
   })
 })
 
