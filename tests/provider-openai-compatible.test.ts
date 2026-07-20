@@ -365,6 +365,126 @@ describe("openai-compatible provider messages", () => {
     })
   })
 
+  test("preserves final usage after provider metadata-only chunks", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          [
+            'data: {"id":"chatcmpl-metadata","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[{"index":0,"delta":{},"finish_reason":"stop","logprobs":null}]}',
+            'data: {"id":"chatcmpl-metadata","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[]}',
+            'data: {"id":"chatcmpl-metadata","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[],"usage":{"prompt_tokens":8544,"completion_tokens":174,"total_tokens":8718}}',
+            "data: [DONE]",
+            "",
+          ].join("\n\n"),
+          {
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain('"input_tokens":8544,"output_tokens":174')
+    expect(body.match(/event: message_delta/gu)).toHaveLength(1)
+    expect(body.match(/event: message_stop/gu)).toHaveLength(1)
+  })
+
+  test("flushes provider metadata-delayed completion at EOF", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          [
+            'data: {"id":"chatcmpl-metadata-eof","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[{"index":0,"delta":{},"finish_reason":"stop","logprobs":null}]}',
+            'data: {"id":"chatcmpl-metadata-eof","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[]}',
+            "",
+          ].join("\n\n"),
+          {
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain(
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":0,"output_tokens":0}}',
+    )
+    expect(body.match(/event: message_delta/gu)).toHaveLength(1)
+    expect(body.match(/event: message_stop/gu)).toHaveLength(1)
+    expect(body).not.toContain("event: error")
+  })
+
+  test("does not stop before a provider error after metadata", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          [
+            'data: {"id":"chatcmpl-metadata-error","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[{"index":0,"delta":{},"finish_reason":"stop","logprobs":null}]}',
+            'data: {"id":"chatcmpl-metadata-error","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[]}',
+            'event: error\ndata: {"message":"metadata stream failed","type":"api_error"}',
+            "",
+          ].join("\n\n"),
+          {
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("event: error")
+    expect(body).toContain('"message":"metadata stream failed"')
+    expect(body).not.toContain("event: message_stop")
+  })
+
   test("translates OpenAI-compatible stream errors to Anthropic error events", async () => {
     fetchMock.mockImplementationOnce(() =>
       Promise.resolve(

@@ -711,6 +711,112 @@ describe("OpenAI usage-only stream translation", () => {
     expect(translatedStream.at(-1)).toEqual({ type: "message_stop" })
   })
 
+  test("defers completion across metadata-only chunks until final usage", () => {
+    const streamState: AnthropicStreamState = {
+      messageStartSent: false,
+      contentBlockIndex: 0,
+      contentBlockOpen: false,
+      toolCalls: {},
+      thinkingBlockOpen: false,
+    }
+    const finishChunk: ChatCompletionChunk = {
+      id: "cmpl-metadata",
+      object: "chat.completion.chunk",
+      created: 1677652288,
+      model: "kimi-k3",
+      choices: [
+        {
+          index: 0,
+          delta: {},
+          finish_reason: "stop",
+          logprobs: null,
+        },
+      ],
+    }
+    const metadataChunk: ChatCompletionChunk = {
+      ...finishChunk,
+      choices: [],
+    }
+    const usageChunk: ChatCompletionChunk = {
+      ...metadataChunk,
+      usage: {
+        prompt_tokens: 8_544,
+        completion_tokens: 174,
+        total_tokens: 8_718,
+      },
+    }
+
+    translateChunkToAnthropicEvents(finishChunk, streamState)
+    expect(translateChunkToAnthropicEvents(metadataChunk, streamState)).toEqual(
+      [],
+    )
+    expect(translateChunkToAnthropicEvents(usageChunk, streamState)).toEqual([
+      {
+        type: "message_delta",
+        delta: {
+          stop_reason: "end_turn",
+          stop_sequence: null,
+        },
+        usage: {
+          input_tokens: 8_544,
+          output_tokens: 174,
+        },
+      },
+      { type: "message_stop" },
+    ])
+    expect(flushPendingAnthropicStreamEvents(streamState)).toEqual([])
+  })
+
+  test("flushes a metadata-delayed completion exactly once at EOF", () => {
+    const streamState: AnthropicStreamState = {
+      messageStartSent: false,
+      contentBlockIndex: 0,
+      contentBlockOpen: false,
+      toolCalls: {},
+      thinkingBlockOpen: false,
+    }
+    const finishChunk: ChatCompletionChunk = {
+      id: "cmpl-metadata-eof",
+      object: "chat.completion.chunk",
+      created: 1677652288,
+      model: "kimi-k3",
+      choices: [
+        {
+          index: 0,
+          delta: {},
+          finish_reason: "stop",
+          logprobs: null,
+        },
+      ],
+    }
+
+    translateChunkToAnthropicEvents(finishChunk, streamState)
+    expect(
+      translateChunkToAnthropicEvents(
+        {
+          ...finishChunk,
+          choices: [],
+        },
+        streamState,
+      ),
+    ).toEqual([])
+    expect(flushPendingAnthropicStreamEvents(streamState)).toEqual([
+      {
+        type: "message_delta",
+        delta: {
+          stop_reason: "end_turn",
+          stop_sequence: null,
+        },
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+        },
+      },
+      { type: "message_stop" },
+    ])
+    expect(flushPendingAnthropicStreamEvents(streamState)).toEqual([])
+  })
+
   test("should close a thinking-only block before finishing", () => {
     const streamState: AnthropicStreamState = {
       messageStartSent: false,

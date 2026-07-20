@@ -19,7 +19,9 @@ export function translateChunkToAnthropicEvents(
   const events: Array<AnthropicStreamEventData> = []
 
   if (chunk.choices.length === 0) {
-    completePendingMessage(state, events, chunk)
+    if (chunk.usage) {
+      completePendingMessage(state, events, chunk)
+    }
     return events
   }
 

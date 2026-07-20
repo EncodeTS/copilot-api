@@ -613,6 +613,188 @@ test("messages Messages flow records Copilot AIU from streaming message delta", 
   })
 })
 
+test("messages Chat Completions flow preserves usage after metadata-only chunks", async () => {
+  createChatCompletions.mockResolvedValueOnce(
+    createMessagesStream([
+      {
+        data: JSON.stringify({
+          choices: [
+            {
+              delta: {},
+              finish_reason: "stop",
+              index: 0,
+              logprobs: null,
+            },
+          ],
+          created: 0,
+          id: "chatcmpl-metadata",
+          model: "gpt-test",
+          object: "chat.completion.chunk",
+        }),
+        event: "message",
+      },
+      {
+        data: JSON.stringify({
+          choices: [],
+          created: 0,
+          id: "chatcmpl-metadata",
+          model: "gpt-test",
+          object: "chat.completion.chunk",
+        }),
+        event: "message",
+      },
+      {
+        data: JSON.stringify({
+          choices: [],
+          created: 0,
+          id: "chatcmpl-metadata",
+          model: "gpt-test",
+          object: "chat.completion.chunk",
+          usage: {
+            completion_tokens: 174,
+            prompt_tokens: 8_544,
+            total_tokens: 8_718,
+          },
+        }),
+        event: "message",
+      },
+    ]) as unknown as ChatCompletionResponse,
+  )
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithChatCompletions(c, payload, {
+      logger,
+      requestId: "request-metadata-usage",
+    }),
+  )
+
+  const body = await (await app.request("/", { method: "POST" })).text()
+
+  expect(body).toContain('"input_tokens":8544,"output_tokens":174')
+  expect(body.match(/event: message_delta/gu)).toHaveLength(1)
+  expect(body.match(/event: message_stop/gu)).toHaveLength(1)
+})
+
+test("messages Chat Completions flow flushes metadata-delayed completion at EOF", async () => {
+  createChatCompletions.mockResolvedValueOnce(
+    createMessagesStream([
+      {
+        data: JSON.stringify({
+          choices: [
+            {
+              delta: {},
+              finish_reason: "stop",
+              index: 0,
+              logprobs: null,
+            },
+          ],
+          created: 0,
+          id: "chatcmpl-metadata-eof",
+          model: "gpt-test",
+          object: "chat.completion.chunk",
+        }),
+        event: "message",
+      },
+      {
+        data: JSON.stringify({
+          choices: [],
+          created: 0,
+          id: "chatcmpl-metadata-eof",
+          model: "gpt-test",
+          object: "chat.completion.chunk",
+        }),
+        event: "message",
+      },
+    ]) as unknown as ChatCompletionResponse,
+  )
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithChatCompletions(c, payload, {
+      logger,
+      requestId: "request-metadata-eof",
+    }),
+  )
+
+  const response = await app.request("/", { method: "POST" })
+  expect(response.status).toBe(200)
+  const body = await response.text()
+
+  expect(body).toContain(
+    'data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":0,"output_tokens":0}}',
+  )
+  expect(body.match(/event: message_delta/gu)).toHaveLength(1)
+  expect(body.match(/event: message_stop/gu)).toHaveLength(1)
+  expect(body).not.toContain("event: error")
+})
+
+test("messages Chat Completions flow does not stop before an error after metadata", async () => {
+  createChatCompletions.mockResolvedValueOnce(
+    createThrowingStream(
+      [
+        {
+          data: JSON.stringify({
+            choices: [
+              {
+                delta: {},
+                finish_reason: "stop",
+                index: 0,
+                logprobs: null,
+              },
+            ],
+            created: 0,
+            id: "chatcmpl-metadata-error",
+            model: "gpt-test",
+            object: "chat.completion.chunk",
+          }),
+          event: "message",
+        },
+        {
+          data: JSON.stringify({
+            choices: [],
+            created: 0,
+            id: "chatcmpl-metadata-error",
+            model: "gpt-test",
+            object: "chat.completion.chunk",
+          }),
+          event: "message",
+        },
+      ],
+      "metadata stream reset",
+    ) as unknown as ChatCompletionResponse,
+  )
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithChatCompletions(c, payload, {
+      logger,
+      requestId: "request-metadata-error",
+    }),
+  )
+
+  const body = await (await app.request("/", { method: "POST" })).text()
+
+  expect(body).toContain("event: error")
+  expect(body).toContain("metadata stream reset")
+  expect(body).not.toContain("event: message_stop")
+})
+
 test("messages Chat Completions flow emits error event when upstream stream throws", async () => {
   createChatCompletions.mockImplementationOnce(
     (payload: ChatCompletionsPayload): Promise<ChatCompletionResponse> => {

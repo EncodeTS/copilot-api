@@ -146,6 +146,7 @@ export const handlePreparedChatCompletions = async (
     let usage: UsageTokens = {}
     let eventCount = 0
     let lastEventType: string | null = null
+    let finishReasonSeen = false
     let terminalSeen = false
     let streamFailed = false
     const streamState: AnthropicStreamState = {
@@ -189,7 +190,7 @@ export const handlePreparedChatCompletions = async (
           })
           break
         }
-        terminalSeen ||= chunk.choices.some((choice) =>
+        finishReasonSeen ||= chunk.choices.some((choice) =>
           Boolean(choice.finish_reason),
         )
         if (chunk.usage || chunk.copilot_usage) {
@@ -211,10 +212,11 @@ export const handlePreparedChatCompletions = async (
           })
           eventCount += 1
           lastEventType = event.type
+          terminalSeen ||= event.type === "message_stop"
         }
       }
 
-      if (!terminalSeen && !streamFailed) {
+      if (!finishReasonSeen && !streamFailed) {
         await emitAnthropicStreamError(stream, logger, {
           diagnostics: {
             elapsedMs: Date.now() - streamStartedAt,
