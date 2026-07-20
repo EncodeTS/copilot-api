@@ -250,6 +250,7 @@ export interface Message {
   reasoning_text?: string | null
   reasoning_opaque?: string | null
   copilot_cache_control?: CopilotCacheControl
+  audio?: { id: string } | null
 }
 
 export interface ToolCall {
@@ -261,7 +262,7 @@ export interface ToolCall {
   }
 }
 
-export type ContentPart = TextPart | ImagePart | FilePart
+export type ContentPart = TextPart | ImagePart | FilePart | InputAudioPart
 
 export interface CacheControl {
   type: "ephemeral"
@@ -288,9 +289,25 @@ export interface ImagePart {
 
 export interface FilePart {
   type: "file"
-  file: {
-    file_data: string
-    filename?: string
+  file:
+    | {
+        file_data: string
+        file_id?: never
+        filename?: string
+      }
+    | {
+        file_data?: never
+        file_id: string
+        filename?: string
+      }
+  cache_control?: CacheControl
+}
+
+export interface InputAudioPart {
+  type: "input_audio"
+  input_audio: {
+    data: string
+    format: "wav" | "mp3"
   }
   cache_control?: CacheControl
 }

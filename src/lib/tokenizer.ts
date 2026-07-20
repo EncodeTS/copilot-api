@@ -56,11 +56,14 @@ const calculateContentPartsTokens = (
     if (part.type === "image_url") {
       tokens += encoder.encode(part.image_url.url).length + 85
     } else if (part.type === "file") {
-      tokens += encoder.encode(part.file.file_data).length
+      if (typeof part.file.file_data === "string") {
+        tokens += encoder.encode(part.file.file_data).length
+      }
+      // file_id is an opaque media carrier and never enters the text encoder.
       if (part.file.filename) {
         tokens += encoder.encode(part.file.filename).length
       }
-    } else if (part.text) {
+    } else if (part.type === "text" && part.text) {
       tokens += encoder.encode(part.text).length
     }
   }

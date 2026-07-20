@@ -9,7 +9,6 @@ import {
   selectDeferredToolsByNames,
   shouldEnableResponsesToolSearch,
 } from "~/lib/tool-search"
-import { HTTPError } from "~/lib/error"
 import {
   getExtraPromptForModel,
   getReasoningEffortForModel,
@@ -49,6 +48,9 @@ import {
 
 import {
   isAnthropicDocumentBlock,
+  isAnthropicDocumentContainerBlock,
+  isAnthropicFileDocumentBlock,
+  isAnthropicFileImageBlock,
   isAnthropicCustomTool,
   isAnthropicImageBlock,
   isAnthropicTextBlock,
@@ -57,6 +59,8 @@ import {
   type AnthropicAssistantMessage,
   type AnthropicCustomTool,
   type AnthropicDocumentBlock,
+  type AnthropicFileDocumentBlock,
+  type AnthropicFileImageBlock,
   type AnthropicResponse,
   type AnthropicImageBlock,
   type AnthropicMessage,
@@ -70,6 +74,7 @@ import {
   type AnthropicUserContentBlock,
   type AnthropicUserMessage,
 } from "./anthropic-types"
+import { createMessagesInvalidRequestError } from "./invalid-request-error"
 import {
   decodeVersionedReasoningCarrier,
   encodeVersionedReasoningCarrier,
@@ -80,6 +85,7 @@ import { normalizeMessageReasoningEffort } from "~/lib/reasoning-effort"
 import { normalizeToolSchema } from "./non-stream-translation"
 import { assertResponsesResultUsable } from "./responses-result"
 import { parseFunctionCallArguments } from "./tool-arguments"
+import { validateAnthropicToolResultContent } from "./tool-result-content"
 
 const MESSAGE_TYPE = "message"
 const COMPACTION_SIGNATURE_PREFIX = "cm1#"
@@ -456,15 +462,54 @@ const translateUserContentBlock = (
       return [createTextContent(block.text, Boolean(block.cache_control))]
     }
     case "image": {
-      return [createImageContent(block, Boolean(block.cache_control))]
+      return [convertCanonicalImageBlock(block, Boolean(block.cache_control))]
     }
     case "document": {
-      return [createFileContent(block, Boolean(block.cache_control))]
+      return [
+        convertCanonicalDocumentBlock(block, Boolean(block.cache_control)),
+      ]
     }
     default: {
       return []
     }
   }
+}
+
+const convertCanonicalImageBlock = (
+  block: unknown,
+  cacheBreakpoint = false,
+): ResponseInputImage => {
+  const candidate = block as AnthropicToolResultContentBlock
+  if (isAnthropicImageBlock(candidate)) {
+    return createImageContent(candidate, cacheBreakpoint)
+  }
+  if (isAnthropicFileImageBlock(block)) {
+    return createFileImageContent(block, cacheBreakpoint)
+  }
+  throw createMessagesInvalidRequestError(
+    "Malformed Anthropic image source is not supported by the Responses translation path.",
+  )
+}
+
+const convertCanonicalDocumentBlock = (
+  block: unknown,
+  cacheBreakpoint = false,
+): ResponseInputFile => {
+  const candidate = block as AnthropicToolResultContentBlock
+  if (isAnthropicDocumentBlock(candidate)) {
+    return createFileContent(candidate, cacheBreakpoint)
+  }
+  if (isAnthropicFileDocumentBlock(block)) {
+    return createFileDocumentContent(block, cacheBreakpoint)
+  }
+  if (isAnthropicDocumentContainerBlock(block)) {
+    throw createMessagesInvalidRequestError(
+      "Anthropic document text/content sources are not supported by the Responses translation path.",
+    )
+  }
+  throw createMessagesInvalidRequestError(
+    "Malformed Anthropic document source is not supported by the Responses translation path.",
+  )
 }
 
 const translateAssistantContentBlock = (
@@ -571,6 +616,18 @@ const createImageContent = (
   }
 }
 
+const createFileImageContent = (
+  block: AnthropicFileImageBlock,
+  cacheBreakpoint = false,
+): ResponseInputImage => ({
+  type: "input_image",
+  file_id: block.source.file_id,
+  detail: "auto",
+  ...(cacheBreakpoint ?
+    { prompt_cache_breakpoint: { mode: "explicit" as const } }
+  : {}),
+})
+
 const createFileContent = (
   block: AnthropicDocumentBlock,
   cacheBreakpoint = false,
@@ -595,6 +652,17 @@ const createFileContent = (
     ...cache,
   }
 }
+
+const createFileDocumentContent = (
+  block: AnthropicFileDocumentBlock,
+  cacheBreakpoint = false,
+): ResponseInputFile => ({
+  type: "input_file",
+  file_id: block.source.file_id,
+  ...(cacheBreakpoint ?
+    { prompt_cache_breakpoint: { mode: "explicit" as const } }
+  : {}),
+})
 
 const createReasoningContent = (
   block: AnthropicThinkingBlock,
@@ -760,6 +828,8 @@ const createToolCallOutput = (
   block: AnthropicToolResultBlock,
   state: TranslationState,
 ): ResponseFunctionCallOutputItem | ResponseToolSearchOutputItem => {
+  validateAnthropicToolResultContent(block.content)
+
   const toolUseName = state.toolUseNameById.get(block.tool_use_id)
   if (state.toolSearchEnabled && isBridgeToolSearchName(toolUseName ?? "")) {
     return createToolSearchOutput(block, state.originalTools)
@@ -851,7 +921,7 @@ const resolveDeferredTool = (
     return tool
   }
 
-  throw createInvalidRequestError(
+  throw createMessagesInvalidRequestError(
     `Tool reference '${toolName}' has no corresponding deferred tool definition`,
   )
 }
@@ -859,23 +929,6 @@ const resolveDeferredTool = (
 const uniqueToolNames = (toolNames: Array<string>): Array<string> => [
   ...new Set(toolNames),
 ]
-
-const createInvalidRequestError = (message: string): HTTPError =>
-  new HTTPError(
-    message,
-    new Response(
-      JSON.stringify({
-        error: {
-          message,
-          type: "invalid_request_error",
-        },
-      }),
-      {
-        status: 400,
-        headers: { "content-type": "application/json" },
-      },
-    ),
-  )
 
 const translateSystemPrompt = (
   system: string | Array<AnthropicTextBlock> | undefined,
@@ -1371,76 +1424,66 @@ const convertToolResultContent = (
     return cacheBreakpoint ? [createTextContent(content, true)] : content
   }
 
-  if (Array.isArray(content)) {
-    const result: Array<ResponseInputContent> = []
-    for (const block of content) {
-      switch (block.type) {
-        case "text": {
-          if (!isAnthropicTextBlock(block)) {
-            result.push(createTextContent(JSON.stringify(block)))
-            break
-          }
-          result.push(
-            createTextContent(block.text, Boolean(block.cache_control)),
-          )
+  const result: Array<ResponseInputContent> = []
+  for (const block of content) {
+    switch (block.type) {
+      case "text": {
+        if (!isAnthropicTextBlock(block)) {
+          result.push(createTextContent(JSON.stringify(block)))
           break
         }
-        case "image": {
-          if (!isAnthropicImageBlock(block)) {
-            result.push(createTextContent(JSON.stringify(block)))
-            break
-          }
-          result.push(createImageContent(block, Boolean(block.cache_control)))
+        result.push(createTextContent(block.text, Boolean(block.cache_control)))
+        break
+      }
+      case "image": {
+        result.push(
+          convertCanonicalImageBlock(block, Boolean(block.cache_control)),
+        )
+        break
+      }
+      case "document": {
+        result.push(
+          convertCanonicalDocumentBlock(block, Boolean(block.cache_control)),
+        )
+        break
+      }
+      case "tool_reference": {
+        if (!isAnthropicToolReferenceBlock(block)) {
+          result.push(createTextContent(JSON.stringify(block)))
           break
         }
-        case "document": {
-          if (!isAnthropicDocumentBlock(block)) {
-            result.push(createTextContent(JSON.stringify(block)))
-            break
-          }
-          result.push(createFileContent(block, Boolean(block.cache_control)))
-          break
-        }
-        case "tool_reference": {
-          if (!isAnthropicToolReferenceBlock(block)) {
-            result.push(createTextContent(JSON.stringify(block)))
-            break
-          }
-          result.push(
-            createTextContent(
-              `Tool ${block.tool_name} loaded`,
-              Boolean(block.cache_control),
-            ),
-          )
-          break
-        }
-        default: {
-          result.push(
-            createTextContent(
-              JSON.stringify(block),
-              Boolean((block as { cache_control?: unknown }).cache_control),
-            ),
-          )
-          break
-        }
+        result.push(
+          createTextContent(
+            `Tool ${block.tool_name} loaded`,
+            Boolean(block.cache_control),
+          ),
+        )
+        break
+      }
+      default: {
+        result.push(
+          createTextContent(
+            JSON.stringify(block),
+            Boolean((block as { cache_control?: unknown }).cache_control),
+          ),
+        )
+        break
       }
     }
-
-    if (cacheBreakpoint) {
-      const lastCacheableBlock = result.findLast(
-        (block) =>
-          block.type === "input_text"
-          || block.type === "input_image"
-          || block.type === "input_file",
-      )
-      if (lastCacheableBlock) {
-        lastCacheableBlock.prompt_cache_breakpoint = { mode: "explicit" }
-      }
-    }
-    return result
   }
 
-  return ""
+  if (cacheBreakpoint) {
+    const lastCacheableBlock = result.findLast(
+      (block) =>
+        block.type === "input_text"
+        || block.type === "input_image"
+        || block.type === "input_file",
+    )
+    if (lastCacheableBlock) {
+      lastCacheableBlock.prompt_cache_breakpoint = { mode: "explicit" }
+    }
+  }
+  return result
 }
 
 const isSupportAllTurns = (payload: AnthropicMessagesPayload): boolean => {

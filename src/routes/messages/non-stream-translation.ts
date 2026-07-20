@@ -19,7 +19,10 @@ import {
 
 import {
   isAnthropicDocumentBlock,
+  isAnthropicDocumentContainerBlock,
   isAnthropicCustomTool,
+  isAnthropicFileDocumentBlock,
+  isAnthropicFileImageBlock,
   isAnthropicImageBlock,
   isAnthropicTextBlock,
   isAnthropicToolReferenceBlock,
@@ -38,7 +41,9 @@ import {
   type AnthropicUserContentBlock,
   type AnthropicUserMessage,
 } from "./anthropic-types"
+import { createMessagesInvalidRequestError } from "./invalid-request-error"
 import { parseFunctionCallArguments } from "./tool-arguments"
+import { validateAnthropicToolResultContent } from "./tool-result-content"
 import { mapOpenAIStopReasonToAnthropic } from "./utils"
 
 // Compatible with opencode, it will filter out blocks where the thinking text is empty, so we need add a default thinking text
@@ -77,6 +82,11 @@ type MappableContentBlock =
   | AnthropicUserContentBlock
   | AnthropicAssistantContentBlock
   | AnthropicToolResultContentBlock
+
+interface MapContentOptions {
+  preserveUnknownToolResult?: boolean
+  supportPdf?: boolean
+}
 
 // Payload translation
 export function translateToOpenAI(
@@ -262,22 +272,21 @@ function handleToolResultBlock(
   block: AnthropicToolResultBlock,
   capabilities: TranslationCapabilities,
 ): ToolResultMessages {
-  if (typeof block.content === "string") {
-    return {
-      toolMessage: createToolMessage(block.tool_use_id, block.content),
-    }
-  }
+  const validatedContent = validateAnthropicToolResultContent(block.content)
 
-  if (!Array.isArray(block.content)) {
+  if (typeof validatedContent === "string") {
     return {
-      toolMessage: createToolMessage(block.tool_use_id, ""),
+      toolMessage: createToolMessage(block.tool_use_id, validatedContent),
     }
   }
 
   const support = getToolContentSupport(capabilities)
-  const hasImage = block.content.some((block) => block.type === "image")
-  const hasDocument = block.content.some((block) => block.type === "document")
-  const content = mapContent(block.content, {
+  const hasImage = validatedContent.some((block) => block.type === "image")
+  const hasDocument = validatedContent.some(
+    (block) => block.type === "document",
+  )
+  const content = mapContent(validatedContent, {
+    preserveUnknownToolResult: true,
     supportPdf: capabilities.supportPdf,
   })
 
@@ -356,6 +365,7 @@ function createToolResultUserMessage(
     text: `Tool result for ${block.tool_use_id}:`,
   }
   const content = mapContent(block.content, {
+    preserveUnknownToolResult: true,
     supportPdf,
   })
   if (Array.isArray(content)) {
@@ -446,7 +456,7 @@ function handleAssistantMessage(
 
 function mapContent(
   content: string | Array<MappableContentBlock>,
-  options: { supportPdf?: boolean } = {},
+  options: MapContentOptions = {},
 ): string | Array<ContentPart> | null {
   if (typeof content === "string") {
     return content
@@ -467,32 +477,51 @@ function mapContent(
         break
       }
       case "image": {
-        if (!isAnthropicImageBlock(block)) {
-          contentParts.push(createUnknownContentTextPart(block))
+        if (isAnthropicImageBlock(block)) {
+          contentParts.push({
+            type: "image_url",
+            image_url: {
+              url:
+                block.source.type === "url" ?
+                  block.source.url
+                : `data:${block.source.media_type};base64,${block.source.data}`,
+            },
+          })
           break
         }
-        contentParts.push({
-          type: "image_url",
-          image_url: {
-            url:
-              block.source.type === "url" ?
-                block.source.url
-              : `data:${block.source.media_type};base64,${block.source.data}`,
-          },
-        })
-        break
+        if (isAnthropicFileImageBlock(block)) {
+          throw createMessagesInvalidRequestError(
+            "Chat Completions cannot express file-backed image inputs",
+          )
+        }
+        throw createMessagesInvalidRequestError(
+          "Invalid Anthropic image source",
+        )
       }
       case "document": {
-        if (!isAnthropicDocumentBlock(block)) {
-          contentParts.push(createUnknownContentTextPart(block))
+        if (isAnthropicDocumentBlock(block)) {
+          contentParts.push(
+            options.supportPdf ?
+              createDocumentFilePart(block)
+            : createDocumentTextPart(),
+          )
           break
         }
-        contentParts.push(
-          options.supportPdf ?
-            createDocumentFilePart(block)
-          : createDocumentTextPart(),
+        if (isAnthropicFileDocumentBlock(block)) {
+          contentParts.push({
+            type: "file",
+            file: { file_id: block.source.file_id },
+          })
+          break
+        }
+        if (isAnthropicDocumentContainerBlock(block)) {
+          throw createMessagesInvalidRequestError(
+            "Chat Completions cannot express text or content document sources",
+          )
+        }
+        throw createMessagesInvalidRequestError(
+          "Invalid Anthropic document source",
         )
-        break
       }
       case "tool_reference": {
         if (!isAnthropicToolReferenceBlock(block)) {
@@ -506,6 +535,9 @@ function mapContent(
         break
       }
       default: {
+        if (options.preserveUnknownToolResult) {
+          contentParts.push(createUnknownContentTextPart(block))
+        }
         break
       }
     }

@@ -160,6 +160,7 @@ export type ResponseContextManagementItem =
   ResponseContextManagementCompactionItem
 
 export interface ResponseInputMessage {
+  id?: string
   type?: "message"
   role: "user" | "assistant" | "system" | "developer"
   content?: string | Array<ResponseInputContent>
@@ -224,6 +225,40 @@ export interface ResponseInputAdditionalTools {
   type: "additional_tools"
 }
 
+export interface ResponseInputComputerCallOutput {
+  type: "computer_call_output"
+  call_id: string
+  output: ResponseComputerCallOutputScreenshot
+  id?: string | null
+  status?: "in_progress" | "completed" | "incomplete" | null
+}
+
+export interface ResponseComputerCallOutputScreenshot {
+  type: "computer_screenshot"
+  file_id?: string | null
+  image_url?: string | null
+}
+
+export interface ResponseInputImageGenerationCall {
+  id: string
+  type: "image_generation_call"
+  result: string | null
+  status: "in_progress" | "completed" | "generating" | "failed"
+}
+
+export interface ResponseInputCodeInterpreterCall {
+  id: string
+  type: "code_interpreter_call"
+  code: string | null
+  container_id: string
+  outputs: Array<ResponseCodeInterpreterOutput> | null
+  status: "in_progress" | "completed" | "incomplete" | "interpreting" | "failed"
+}
+
+export type ResponseCodeInterpreterOutput =
+  | { type: "logs"; logs: string }
+  | { type: "image"; url: string }
+
 export type ResponseInputItem =
   | ResponseInputMessage
   | ResponseFunctionToolCallItem
@@ -234,6 +269,9 @@ export type ResponseInputItem =
   | ResponseInputCompaction
   | ResponseInputCompactionTrigger
   | ResponseInputAdditionalTools
+  | ResponseInputComputerCallOutput
+  | ResponseInputImageGenerationCall
+  | ResponseInputCodeInterpreterCall
   | Record<string, unknown>
 
 export type ResponseInputContent =
@@ -252,12 +290,13 @@ export interface ResponseInputImage {
   type: "input_image"
   image_url?: string | null
   file_id?: string | null
-  detail: "low" | "high" | "auto"
+  detail: "low" | "high" | "auto" | "original"
   prompt_cache_breakpoint?: { mode: "explicit" } | null
 }
 
 export interface ResponseInputFile {
   type: "input_file"
+  detail?: "auto" | "low" | "high"
   file_data?: string | null
   file_id?: string | null
   filename?: string | null

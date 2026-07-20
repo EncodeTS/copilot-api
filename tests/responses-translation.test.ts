@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer"
 
 import { requestContext } from "~/lib/request-context"
 import { createMcpToolSearchSentinel } from "~/lib/tool-search"
+import { HTTPError } from "~/lib/error"
 import type { AnthropicMessagesPayload } from "~/routes/messages/anthropic-types"
 import type {
   ResponseFunctionCallOutputItem,
@@ -674,6 +675,222 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
     ])
   })
 
+  it("maps canonical file-backed image and document sources", () => {
+    const payload = {
+      max_tokens: 128,
+      messages: [
+        {
+          content: [
+            {
+              cache_control: { type: "ephemeral" },
+              source: { file_id: "file_image", type: "file" },
+              type: "image",
+            },
+            {
+              cache_control: { type: "ephemeral" },
+              source: { file_id: "file_document", type: "file" },
+              type: "document",
+            },
+          ],
+          role: "user",
+        },
+      ],
+      model: "gpt-5.6-sol",
+    } satisfies AnthropicMessagesPayload
+
+    expect(translateAnthropicMessagesToResponsesPayload(payload).input).toEqual(
+      [
+        {
+          content: [
+            {
+              detail: "auto",
+              file_id: "file_image",
+              prompt_cache_breakpoint: { mode: "explicit" },
+              type: "input_image",
+            },
+            {
+              file_id: "file_document",
+              prompt_cache_breakpoint: { mode: "explicit" },
+              type: "input_file",
+            },
+          ],
+          role: "user",
+          type: "message",
+        },
+      ],
+    )
+  })
+
+  it("maps canonical file-backed tool-result media without JSON text", () => {
+    const payload = {
+      max_tokens: 128,
+      messages: [
+        {
+          content: [
+            { id: "tool_1", input: {}, name: "inspect", type: "tool_use" },
+          ],
+          role: "assistant",
+        },
+        {
+          content: [
+            {
+              content: [
+                {
+                  source: { file_id: "file_image", type: "file" },
+                  type: "image",
+                },
+                {
+                  source: { file_id: "file_document", type: "file" },
+                  type: "document",
+                },
+              ],
+              tool_use_id: "tool_1",
+              type: "tool_result",
+            },
+          ],
+          role: "user",
+        },
+      ],
+      model: "gpt-5.6-sol",
+    } satisfies AnthropicMessagesPayload
+
+    const result = translateAnthropicMessagesToResponsesPayload(payload)
+    expect(result.input).toContainEqual({
+      call_id: "tool_1",
+      output: [
+        { detail: "auto", file_id: "file_image", type: "input_image" },
+        { file_id: "file_document", type: "input_file" },
+      ],
+      status: "completed",
+      type: "function_call_output",
+    })
+  })
+
+  it("fails closed on canonical text/content document sources", async () => {
+    const payloads: Array<AnthropicMessagesPayload> = [
+      {
+        max_tokens: 128,
+        messages: [
+          {
+            content: [
+              {
+                source: {
+                  data: "document text",
+                  media_type: "text/plain",
+                  type: "text",
+                },
+                type: "document",
+              },
+            ],
+            role: "user",
+          },
+        ],
+        model: "gpt-5.6-sol",
+      },
+      {
+        max_tokens: 128,
+        messages: [
+          {
+            content: [
+              {
+                source: {
+                  content: [{ text: "document text", type: "text" }],
+                  type: "content",
+                },
+                type: "document",
+              },
+            ],
+            role: "user",
+          },
+        ],
+        model: "gpt-5.6-sol",
+      },
+    ]
+
+    for (const payload of payloads) {
+      let thrown: unknown
+      try {
+        translateAnthropicMessagesToResponsesPayload(payload)
+      } catch (error) {
+        thrown = error
+      }
+      expect(thrown).toBeInstanceOf(HTTPError)
+      const response = (thrown as HTTPError).response
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual({
+        error: {
+          message:
+            "Anthropic document text/content sources are not supported by the Responses translation path.",
+          type: "invalid_request_error",
+        },
+      })
+    }
+  })
+
+  it("fails closed on text documents nested in tool results", () => {
+    const payload = {
+      max_tokens: 128,
+      messages: [
+        {
+          content: [
+            {
+              content: [
+                {
+                  source: {
+                    data: "document text",
+                    media_type: "text/plain",
+                    type: "text",
+                  },
+                  type: "document",
+                },
+              ],
+              tool_use_id: "tool_1",
+              type: "tool_result",
+            },
+          ],
+          role: "user",
+        },
+      ],
+      model: "gpt-5.6-sol",
+    } satisfies AnthropicMessagesPayload
+
+    expect(() => translateAnthropicMessagesToResponsesPayload(payload)).toThrow(
+      HTTPError,
+    )
+  })
+
+  it("fails closed on malformed Anthropic image and document sources", () => {
+    const payloads = ["image", "document"].map(
+      (type) =>
+        ({
+          max_tokens: 128,
+          messages: [{ content: [{ source: {}, type }], role: "user" }],
+          model: "gpt-5.6-sol",
+        }) as unknown as AnthropicMessagesPayload,
+    )
+    payloads.push({
+      max_tokens: 128,
+      messages: [
+        {
+          content: [
+            {
+              source: { content: [null], type: "content" },
+              type: "document",
+            },
+          ],
+          role: "user",
+        },
+      ],
+      model: "gpt-5.6-sol",
+    } as unknown as AnthropicMessagesPayload)
+
+    for (const payload of payloads) {
+      expect(() =>
+        translateAnthropicMessagesToResponsesPayload(payload),
+      ).toThrow(HTTPError)
+    }
+  })
+
   it("preserves Anthropic URL image and document sources", () => {
     const result = translateAnthropicMessagesToResponsesPayload({
       model: "gpt-5.6-sol",
@@ -753,6 +970,70 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
         status: "completed",
       },
     ])
+  })
+
+  it("rejects malformed tool-result content with a structured 400", async () => {
+    const malformedContents: Array<unknown> = [
+      null,
+      [null],
+      { text: "not an array", type: "text" },
+      [{ type: "text" }],
+      [{ type: "tool_reference" }],
+      [
+        {
+          source: { media_type: "image/png", type: "base64" },
+          type: "image",
+        },
+      ],
+      [
+        {
+          source: {
+            data: "AQID",
+            media_type: "application/pdf",
+            type: "base64",
+          },
+          type: "image",
+        },
+      ],
+      [{ source: { type: "file" }, type: "document" }],
+    ]
+
+    for (const content of malformedContents) {
+      const payload = {
+        max_tokens: 128,
+        messages: [
+          {
+            content: [
+              {
+                content,
+                tool_use_id: "call_malformed",
+                type: "tool_result",
+              },
+            ],
+            role: "user",
+          },
+        ],
+        model: "gpt-5.6-sol",
+      } as unknown as AnthropicMessagesPayload
+
+      let thrown: unknown
+      try {
+        translateAnthropicMessagesToResponsesPayload(payload)
+      } catch (error) {
+        thrown = error
+      }
+
+      expect(thrown).toBeInstanceOf(HTTPError)
+      const response = (thrown as HTTPError).response
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual({
+        error: {
+          message:
+            "Anthropic tool_result content must be a string or an array of typed content blocks.",
+          type: "invalid_request_error",
+        },
+      })
+    }
   })
 
   it("maps a tool-result cache marker onto its Responses output content", () => {

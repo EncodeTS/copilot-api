@@ -95,6 +95,44 @@ export interface AnthropicDocumentBlock {
   cache_control?: AnthropicCacheControl | null
 }
 
+export interface AnthropicDocumentContainerBlock {
+  type: "document"
+  source:
+    | {
+        type: "text"
+        media_type: "text/plain"
+        data: string
+      }
+    | {
+        type: "content"
+        content:
+          | string
+          | Array<
+              AnthropicTextBlock | AnthropicImageBlock | AnthropicFileImageBlock
+            >
+      }
+  title?: string | null
+  cache_control?: AnthropicCacheControl | null
+}
+
+export interface AnthropicFileSource {
+  type: "file"
+  file_id: string
+}
+
+export interface AnthropicFileImageBlock {
+  type: "image"
+  source: AnthropicFileSource
+  cache_control?: AnthropicCacheControl | null
+}
+
+export interface AnthropicFileDocumentBlock {
+  type: "document"
+  source: AnthropicFileSource
+  title?: string | null
+  cache_control?: AnthropicCacheControl | null
+}
+
 export interface AnthropicToolReferenceBlock {
   type: "tool_reference"
   tool_name: string
@@ -110,22 +148,32 @@ export interface AnthropicUnknownToolResultContentBlock {
 export type AnthropicToolResultContentBlock =
   | AnthropicTextBlock
   | AnthropicImageBlock
+  | AnthropicFileImageBlock
   | AnthropicDocumentBlock
+  | AnthropicFileDocumentBlock
+  | AnthropicDocumentContainerBlock
   | AnthropicToolReferenceBlock
   | AnthropicUnknownToolResultContentBlock
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
 
+const ANTHROPIC_IMAGE_MEDIA_TYPES = new Set([
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+])
+
 export const isAnthropicTextBlock = (
-  block: AnthropicToolResultContentBlock,
+  block: unknown,
 ): block is AnthropicTextBlock =>
-  block.type === "text" && typeof block.text === "string"
+  isRecord(block) && block.type === "text" && typeof block.text === "string"
 
 export const isAnthropicImageBlock = (
-  block: AnthropicToolResultContentBlock,
+  block: unknown,
 ): block is AnthropicImageBlock => {
-  if (block.type !== "image" || !isRecord(block.source)) {
+  if (!isRecord(block) || block.type !== "image" || !isRecord(block.source)) {
     return false
   }
 
@@ -133,13 +181,18 @@ export const isAnthropicImageBlock = (
       typeof block.source.url === "string"
     : block.source.type === "base64"
         && typeof block.source.media_type === "string"
+        && ANTHROPIC_IMAGE_MEDIA_TYPES.has(block.source.media_type)
         && typeof block.source.data === "string"
 }
 
 export const isAnthropicDocumentBlock = (
-  block: AnthropicToolResultContentBlock,
+  block: unknown,
 ): block is AnthropicDocumentBlock => {
-  if (block.type !== "document" || !isRecord(block.source)) {
+  if (
+    !isRecord(block)
+    || block.type !== "document"
+    || !isRecord(block.source)
+  ) {
     return false
   }
 
@@ -150,10 +203,62 @@ export const isAnthropicDocumentBlock = (
         && typeof block.source.data === "string"
 }
 
+export const isAnthropicDocumentContainerBlock = (
+  block: unknown,
+): block is AnthropicDocumentContainerBlock => {
+  if (
+    !isRecord(block)
+    || block.type !== "document"
+    || !isRecord(block.source)
+  ) {
+    return false
+  }
+  if (block.source.type === "text") {
+    return (
+      block.source.media_type === "text/plain"
+      && typeof block.source.data === "string"
+    )
+  }
+  return (
+    block.source.type === "content"
+    && (typeof block.source.content === "string"
+      || (Array.isArray(block.source.content)
+        && block.source.content.every(
+          (contentBlock) =>
+            isAnthropicTextBlock(contentBlock)
+            || isAnthropicImageBlock(contentBlock)
+            || isAnthropicFileImageBlock(contentBlock),
+        )))
+  )
+}
+
+export const isAnthropicFileSource = (
+  source: unknown,
+): source is AnthropicFileSource =>
+  isRecord(source)
+  && source.type === "file"
+  && typeof source.file_id === "string"
+
+export const isAnthropicFileImageBlock = (
+  block: unknown,
+): block is AnthropicFileImageBlock =>
+  isRecord(block)
+  && block.type === "image"
+  && isAnthropicFileSource(block.source)
+
+export const isAnthropicFileDocumentBlock = (
+  block: unknown,
+): block is AnthropicFileDocumentBlock =>
+  isRecord(block)
+  && block.type === "document"
+  && isAnthropicFileSource(block.source)
+
 export const isAnthropicToolReferenceBlock = (
-  block: AnthropicToolResultContentBlock,
+  block: unknown,
 ): block is AnthropicToolReferenceBlock =>
-  block.type === "tool_reference" && typeof block.tool_name === "string"
+  isRecord(block)
+  && block.type === "tool_reference"
+  && typeof block.tool_name === "string"
 
 export interface AnthropicToolResultBlock {
   type: "tool_result"
@@ -180,7 +285,10 @@ export interface AnthropicThinkingBlock {
 export type AnthropicUserContentBlock =
   | AnthropicTextBlock
   | AnthropicImageBlock
+  | AnthropicFileImageBlock
   | AnthropicDocumentBlock
+  | AnthropicFileDocumentBlock
+  | AnthropicDocumentContainerBlock
   | AnthropicToolResultBlock
 
 export type AnthropicAssistantContentBlock =
