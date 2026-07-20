@@ -244,8 +244,7 @@ export function configureDesktopProvider(
 }
 
 export interface ConfigureProviderStatusDependencies
-  extends ProviderConfigDependencies,
-    AuthStatusDependencies {}
+  extends ProviderConfigDependencies, AuthStatusDependencies {}
 
 export async function configureProviderWithAuthStatus(
   input: ProviderAuthInput,

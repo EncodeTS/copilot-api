@@ -9,6 +9,9 @@
     "esModuleInterop": true,
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
+    "paths": {
+      "~/*": ["../src/*"]
+    },
     "isolatedModules": true,
     "noEmit": true,
     "forceConsistentCasingInFileNames": true,

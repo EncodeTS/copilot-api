@@ -34,9 +34,6 @@
   ],
   "compilerOptions": {
     "composite": true,
-    "paths": {
-      "~/*": ["../src/*"]
-    },
     "types": ["electron-vite/node", "node", "bun"]
   }
 }
