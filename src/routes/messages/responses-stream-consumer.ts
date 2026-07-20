@@ -7,6 +7,7 @@ import type { StreamTransport } from "~/lib/stream-lifecycle"
 import {
   normalizeOptionalToken,
   normalizeResponsesUsage,
+  type TokenUsageRecorder,
   type UsageTokens,
 } from "~/lib/token-usage"
 import { resolveBridgeToolSearchName } from "~/lib/tool-search"
@@ -33,7 +34,7 @@ interface ResponsesStreamConsumerBase {
   logger: ConsolaInstance
   output: AnthropicStreamOutput
   payload: AnthropicMessagesPayload
-  recordUsage: (usage: UsageTokens) => void
+  recordUsage: TokenUsageRecorder
   signal?: AbortSignal
   transport: StreamTransport
   upstreamResponse: ResponsesStream

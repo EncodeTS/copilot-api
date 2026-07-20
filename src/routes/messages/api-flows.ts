@@ -18,6 +18,7 @@ import {
   normalizeOptionalToken,
   normalizeResponsesUsage,
   type TokenUsageEndpoint,
+  type TokenUsageRecorder,
   type UsageTokens,
 } from "~/lib/token-usage"
 import { parseUserIdMetadata } from "~/lib/utils"
@@ -475,11 +476,12 @@ const createCopilotUsageRecorder = (options: {
   fallbackSessionId?: string
   model: string
   payload: AnthropicMessagesPayload
-}): ((usage: UsageTokens) => void) =>
+}): TokenUsageRecorder =>
   createCopilotTokenUsageRecorder({
     endpoint: options.endpoint,
     fallbackSessionId: options.fallbackSessionId,
     model: options.model,
+    outcome: "completed",
     sessionId: getMetadataSessionId(options.payload),
   })
 

@@ -16,7 +16,13 @@ import {
 } from "~/lib/oauth/codex"
 import { CODEX_API_BASE_URL } from "~/services/codex/create-responses"
 import { getCopilotToken } from "~/services/github/get-copilot-token"
-import { getCopilotUsage } from "~/services/github/get-copilot-usage"
+import {
+  CopilotUsageFetchError,
+  getCopilotUsage,
+  getCopilotUsageScopeId,
+  invalidateCopilotUsageScope,
+  resolveCopilotAccountType,
+} from "~/services/github/get-copilot-usage"
 import { getDeviceCode } from "~/services/github/get-device-code"
 import { getGitHubUser } from "~/services/github/get-user"
 import { pollAccessToken } from "~/services/github/poll-access-token"
@@ -26,6 +32,11 @@ import { state } from "./state"
 
 let copilotRefreshLoopController: AbortController | null = null
 let codexRefreshLoopController: AbortController | null = null
+
+export const tokenUserDependencies = {
+  criticalUsageTimeoutMs: 750,
+  getGitHubUser,
+}
 
 export const stopCopilotRefreshLoop = () => {
   if (!copilotRefreshLoopController) {
@@ -334,15 +345,59 @@ export async function setupGitHubToken(
 }
 
 export async function logUser() {
-  const user = await getGitHubUser()
+  const previousUserName = state.userName
+  const user = await tokenUserDependencies.getGitHubUser()
+  const githubToken = state.githubToken
+  const currentUsageScope =
+    githubToken ? getCopilotUsageScopeId(githubToken) : null
+  const accountChanged =
+    previousUserName !== undefined && previousUserName !== user.login
+  if (accountChanged && githubToken) {
+    invalidateCopilotUsageScope(githubToken)
+  }
+  if (
+    !currentUsageScope
+    || state.copilotUsageScope !== currentUsageScope
+    || accountChanged
+  ) {
+    state.copilotApiUrl = undefined
+    state.copilotUsageScope = currentUsageScope ?? undefined
+    state.tokenBasedBilling = undefined
+    // Without a validated current-account endpoint, use the public individual
+    // endpoint as a safe availability fallback and never reuse the prior account.
+    state.accountType = "individual"
+  }
   state.userName = user.login
   consola.info(`Logged in as ${user.login}`)
 
-  const copilotUser = await getCopilotUsage()
-  if (!copilotUser) {
-    throw new Error("GitHub token not found")
-  }
+  try {
+    // Endpoint selection remains synchronous when GitHub responds. The usage
+    // fetch owns a strict timeout, so quota/display enrichment cannot hang
+    // startup; a changed credential falls back to the safe public endpoint.
+    const copilotUser = await getCopilotUsage(undefined, {
+      expectedLogin: user.login,
+      maxAttempts: 1,
+      requestTimeoutMs: tokenUserDependencies.criticalUsageTimeoutMs,
+    })
+    if (!copilotUser) {
+      consola.warn("Copilot usage enrichment skipped: token unavailable")
+      return
+    }
 
-  state.copilotApiUrl = copilotUser.endpoints.api
-  state.tokenBasedBilling = copilotUser.token_based_billing
+    state.copilotApiUrl = copilotUser.endpoints.api
+    state.accountType = resolveCopilotAccountType(copilotUser)
+    state.tokenBasedBilling = copilotUser.token_based_billing
+  } catch (error) {
+    if (
+      error instanceof CopilotUsageFetchError
+      && (error.code === "unauthorized" || error.code === "forbidden")
+    ) {
+      state.accountType = "individual"
+      state.copilotApiUrl = undefined
+      state.tokenBasedBilling = undefined
+    }
+    consola.warn(
+      "Copilot usage enrichment unavailable; using safe public account endpoint",
+    )
+  }
 }

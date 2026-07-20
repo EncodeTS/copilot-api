@@ -15,6 +15,7 @@ import { resolveProviderModel } from "~/lib/provider-resolver"
 import {
   createProviderTokenUsageRecorder,
   normalizeOpenAIUsage,
+  type TokenUsageRecorder,
   type UsageTokens,
 } from "~/lib/token-usage"
 import type {
@@ -169,10 +170,11 @@ const createProviderChatCompletionsUsageRecorder = (
   provider: string,
   modelConfig: ModelConfig | undefined,
   pricingCurrency: string | undefined,
-) =>
+): TokenUsageRecorder =>
   createProviderTokenUsageRecorder({
     endpoint: "chat_completions",
     model: payload.model,
+    outcome: "completed",
     pricing: modelConfig?.pricing,
     pricingCurrency,
     providerName: provider,
@@ -183,7 +185,7 @@ const streamProviderChatCompletions = (
   upstreamResponse: Response,
   options: {
     provider: string
-    recordUsage: (usage: UsageTokens) => void
+    recordUsage: TokenUsageRecorder
   },
 ): Response => {
   logger.debug("provider.chat_completions.streaming", {

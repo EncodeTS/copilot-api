@@ -72,6 +72,7 @@ const en: Locale = {
     tokenUsageModel: 'Model',
     tokenUsageModelBreakdown: 'Model breakdown',
     tokenUsageOutput: 'Output',
+    tokenUsageOutcome: 'Outcome',
     tokenUsagePage: 'Page {{page}} / {{total}}',
     tokenUsagePeriodDay: 'Day',
     tokenUsagePeriodMonth: '30 days',

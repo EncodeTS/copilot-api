@@ -71,6 +71,7 @@ const zh: Locale = {
     tokenUsageModel: '模型',
     tokenUsageModelBreakdown: '模型明细',
     tokenUsageOutput: '输出',
+    tokenUsageOutcome: '结果',
     tokenUsagePage: '第 {{page}} / {{total}} 页',
     tokenUsagePeriodDay: '日',
     tokenUsagePeriodMonth: '近 30 天',

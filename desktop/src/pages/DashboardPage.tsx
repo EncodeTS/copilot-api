@@ -8,12 +8,14 @@ import {
 } from '../components/TokenUsageMetric'
 import { useLanguage } from '../contexts/LanguageContext'
 import {
+  getCopilotUsageLastSuccessAt,
   getNonEmptyUsageText,
   getPremiumUsedText,
   hasCopilotQuotaValue,
   shouldShowCopilotQuotaUsage,
   shouldShowCopilotUsageSummary,
 } from '../lib/copilot-usage-display'
+import { createDashboardRefreshOrchestrator } from '../lib/dashboard-refresh-controller'
 import { formatTokenCost, formatTokenCosts } from '../lib/token-usage-format'
 import ModelMappingsPage from './ModelMappingsPage'
 import type {
@@ -55,6 +57,17 @@ interface Model {
   id: string
   [key: string]: unknown
 }
+
+type DashboardRefreshData =
+  | {
+      kind: 'copilot'
+      modelsData: unknown
+      usageData: unknown
+    }
+  | {
+      kind: 'provider'
+      modelsData: unknown
+    }
 
 type TranslateFn = ReturnType<typeof useLanguage>['t']
 type DashboardTab = 'dashboard' | 'tokenUsage' | 'advancedConfig' | 'logs'
@@ -283,8 +296,9 @@ export default function DashboardPage({
   const [logs, setLogs] = useState<string[]>([])
   const logEndRef = useRef<HTMLDivElement>(null)
   const intentionalStop = useRef(false)
-  const tokenUsageRequestId = useRef(0)
-  const tokenUsageEventsRequestId = useRef(0)
+  const dashboardRefreshOrchestrator = useRef(
+    createDashboardRefreshOrchestrator(),
+  )
 
   const portNum = parseInt(port, 10)
   const openaiUrl = `http://localhost:${portNum}/v1`
@@ -311,6 +325,7 @@ export default function DashboardPage({
   useEffect(() => {
     const unsubscribe = window.electronAPI.onServerStatus((status) => {
       if (!status.running) {
+        dashboardRefreshOrchestrator.current.invalidateAll()
         if (!intentionalStop.current) {
           setServerError(status.error ?? t('dashboard.serverUnexpectedStop'))
           setStarted(false)
@@ -401,6 +416,7 @@ export default function DashboardPage({
   }
 
   const handleStop = async () => {
+    dashboardRefreshOrchestrator.current.invalidateAll()
     intentionalStop.current = true
     setStopping(true)
     await window.electronAPI.stopServer()
@@ -424,6 +440,7 @@ export default function DashboardPage({
       return
     }
 
+    dashboardRefreshOrchestrator.current.invalidateAll()
     intentionalStop.current = true
     setRestarting(true)
     setStartError('')
@@ -435,6 +452,10 @@ export default function DashboardPage({
       if (status.running) {
         if (status.port) setPort(String(status.port))
         setStarted(true)
+        if (started) {
+          void fetchData()
+          void fetchTokenUsageData(tokenUsagePeriod, tokenUsageEventsPage)
+        }
       } else {
         setStarted(false)
         setUsage(null)
@@ -468,107 +489,109 @@ export default function DashboardPage({
     onChangeAuth()
   }
 
-  const fetchData = async () => {
-    setLoading(true)
-    try {
-      // Proxy HTTP requests through IPC so the main process bypasses renderer CORS.
-      if (authMode === 'copilot') {
-        const [usageData, modelsData] = await Promise.all([
-          window.electronAPI.fetchUsage(),
-          window.electronAPI.fetchModels(),
-        ])
-        if (usageData) setUsage(usageData as UsageInfo)
-        if (modelsData) {
-          const d = modelsData as { data: Model[] }
-          setModels(d.data ?? [])
-        }
-        setLastDashboardRefreshAt(Date.now())
-        return
-      }
+  const fetchData = () =>
+    dashboardRefreshOrchestrator.current.run<DashboardRefreshData>(
+      'dashboard',
+      {
+        apply: (data) => {
+          if (data.kind === 'copilot') {
+            if (data.usageData) {
+              const nextUsage = data.usageData as UsageInfo
+              setUsage(nextUsage)
+              const lastSuccessAt = getCopilotUsageLastSuccessAt(nextUsage)
+              if (lastSuccessAt !== null) {
+                setLastDashboardRefreshAt(lastSuccessAt)
+              }
+            }
+            if (data.modelsData) {
+              const modelsResponse = data.modelsData as { data: Model[] }
+              setModels(modelsResponse.data ?? [])
+            }
+            return
+          }
 
-      setUsage(null)
-      const modelsData = await window.electronAPI.fetchModels()
-      if (modelsData) {
-        const d = modelsData as { data: Model[] }
-        setModels(d.data ?? [])
-      }
-      setLastDashboardRefreshAt(Date.now())
-    } catch {
-      // The server may still be initializing.
-    } finally {
-      setLoading(false)
-    }
-  }
+          setUsage(null)
+          if (data.modelsData) {
+            const modelsResponse = data.modelsData as { data: Model[] }
+            setModels(modelsResponse.data ?? [])
+            setLastDashboardRefreshAt(Date.now())
+          }
+        },
+        load: async () => {
+          // IPC bypasses renderer CORS for the local gateway endpoints.
+          if (authMode === 'copilot') {
+            const [usageData, modelsData] = await Promise.all([
+              window.electronAPI.fetchUsage(),
+              window.electronAPI.fetchModels(),
+            ])
+            return { kind: 'copilot', modelsData, usageData }
+          }
+
+          return {
+            kind: 'provider',
+            modelsData: await window.electronAPI.fetchModels(),
+          }
+        },
+        setLoading,
+      },
+    )
 
   const fetchTokenUsageEvents = async (
     period: TokenUsagePeriod,
     page: number,
   ) => {
-    const requestId = ++tokenUsageEventsRequestId.current
-    setTokenUsageEventsLoading(true)
-    try {
-      const tokenUsageEventsData =
-        await window.electronAPI.fetchTokenUsageEvents(
+    await dashboardRefreshOrchestrator.current.run('token_usage_events', {
+      apply: (tokenUsageEventsData) => {
+        if (tokenUsageEventsData) {
+          setTokenUsageEvents(tokenUsageEventsData as TokenUsageEventsPage)
+        }
+      },
+      load: () =>
+        window.electronAPI.fetchTokenUsageEvents(
           period,
           page,
           TOKEN_USAGE_EVENTS_PAGE_SIZE,
-        )
-      if (
-        requestId === tokenUsageEventsRequestId.current
-        && tokenUsageEventsData
-      ) {
-        setTokenUsageEvents(tokenUsageEventsData as TokenUsageEventsPage)
-      }
-    } catch {
-      // The server may still be initializing.
-    } finally {
-      if (requestId === tokenUsageEventsRequestId.current) {
-        setTokenUsageEventsLoading(false)
-      }
-    }
+        ),
+      setLoading: setTokenUsageEventsLoading,
+    })
   }
 
   const fetchTokenUsageData = async (
     period: TokenUsagePeriod = tokenUsagePeriod,
     page: number = tokenUsageEventsPage,
   ) => {
-    const requestId = ++tokenUsageRequestId.current
-    const eventsRequestId = ++tokenUsageEventsRequestId.current
-    setTokenUsageLoading(true)
-    setTokenUsageEventsLoading(true)
-    try {
-      const [tokenUsageData, tokenUsageDailyData, tokenUsageEventsData] =
-        await Promise.all([
-          window.electronAPI.fetchTokenUsage(period),
-          window.electronAPI.fetchTokenUsageDaily(period),
+    await Promise.all([
+      dashboardRefreshOrchestrator.current.run('token_usage_summary', {
+        apply: ([tokenUsageData, tokenUsageDailyData]) => {
+          if (tokenUsageData) {
+            setTokenUsage(tokenUsageData as TokenUsageSummary)
+          }
+          if (tokenUsageDailyData) {
+            setTokenUsageDaily(tokenUsageDailyData as TokenUsageDailySummary)
+          }
+        },
+        load: () =>
+          Promise.all([
+            window.electronAPI.fetchTokenUsage(period),
+            window.electronAPI.fetchTokenUsageDaily(period),
+          ]),
+        setLoading: setTokenUsageLoading,
+      }),
+      dashboardRefreshOrchestrator.current.run('token_usage_events', {
+        apply: (tokenUsageEventsData) => {
+          if (tokenUsageEventsData) {
+            setTokenUsageEvents(tokenUsageEventsData as TokenUsageEventsPage)
+          }
+        },
+        load: () =>
           window.electronAPI.fetchTokenUsageEvents(
             period,
             page,
             TOKEN_USAGE_EVENTS_PAGE_SIZE,
           ),
-        ])
-      if (requestId === tokenUsageRequestId.current && tokenUsageData) {
-        setTokenUsage(tokenUsageData as TokenUsageSummary)
-      }
-      if (requestId === tokenUsageRequestId.current && tokenUsageDailyData) {
-        setTokenUsageDaily(tokenUsageDailyData as TokenUsageDailySummary)
-      }
-      if (
-        eventsRequestId === tokenUsageEventsRequestId.current
-        && tokenUsageEventsData
-      ) {
-        setTokenUsageEvents(tokenUsageEventsData as TokenUsageEventsPage)
-      }
-    } catch {
-      // The server may still be initializing.
-    } finally {
-      if (requestId === tokenUsageRequestId.current) {
-        setTokenUsageLoading(false)
-      }
-      if (eventsRequestId === tokenUsageEventsRequestId.current) {
-        setTokenUsageEventsLoading(false)
-      }
-    }
+        setLoading: setTokenUsageEventsLoading,
+      }),
+    ])
   }
 
   const handleTokenUsagePeriodChange = (nextPeriod: TokenUsagePeriod) => {
@@ -1387,7 +1410,7 @@ function TokenUsagePanel({
             <div
               className={`h-64 overflow-auto ${eventsLoading ? 'opacity-60' : ''}`}
             >
-              <table className="w-full min-w-[1060px] text-left text-[13px]">
+              <table className="w-full min-w-[1160px] text-left text-[13px]">
                 <thead className="sticky top-0 bg-surface text-ink-faint">
                   <tr className="border-b border-line-soft">
                     <th className="px-2.5 py-1.5 font-semibold">
@@ -1404,6 +1427,9 @@ function TokenUsagePanel({
                     </th>
                     <th className="px-2.5 py-1.5 font-semibold">
                       {t('dashboard.tokenUsageTrace')}
+                    </th>
+                    <th className="px-2.5 py-1.5 font-semibold">
+                      {t('dashboard.tokenUsageOutcome')}
                     </th>
                     <th className="px-2.5 py-1.5 text-right font-semibold">
                       {t('dashboard.tokenUsageInput')}
@@ -1798,6 +1824,7 @@ function TokenUsageModelRow({ model }: { model: TokenUsageModelSummary }) {
 }
 
 function TokenUsageEventRow({ event }: { event: TokenUsageEventRecord }) {
+  const outcome = event.outcome ?? 'completed'
   return (
     <tr className="border-b border-line-soft last:border-b-0">
       <td
@@ -1829,6 +1856,16 @@ function TokenUsageEventRow({ event }: { event: TokenUsageEventRecord }) {
         title={event.trace_id}
       >
         {event.trace_id}
+      </td>
+      <td
+        className={`max-w-[150px] truncate px-2.5 py-1.5 font-medium ${
+          outcome === 'completed' ?
+            'text-green-700 dark:text-green-400'
+          : 'text-orange-700 dark:text-orange-400'
+        }`}
+        title={[event.terminal, event.error_code].filter(Boolean).join(' · ')}
+      >
+        {outcome}
       </td>
       <td className="px-2.5 py-1.5 text-right text-ink-soft">
         {formatTokenCount(event.input_tokens)}

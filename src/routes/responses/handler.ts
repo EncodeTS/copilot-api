@@ -106,6 +106,7 @@ export const handleResponses = async (c: Context) => {
     endpoint: "responses",
     fallbackSessionId,
     model: payload.model,
+    outcome: "completed",
   })
 
   if (!responsesHandlerDependencies.isResponsesApiWebSearchEnabled()) {

@@ -134,13 +134,46 @@ export interface TokenUsageEventRecord {
   user_id: string
   source: 'copilot' | 'provider'
   endpoint: string
+  error_code?:
+    | 'aborted'
+    | 'authentication_error'
+    | 'bad_request'
+    | 'caller_aborted'
+    | 'connection_error'
+    | 'invalid_request'
+    | 'invalid_response'
+    | 'max_output_tokens'
+    | 'overloaded'
+    | 'permission_error'
+    | 'rate_limited'
+    | 'response_failed'
+    | 'timeout'
+    | 'unknown_error'
+    | 'upstream_disconnect'
+    | 'upstream_error'
+    | 'upstream_timeout'
+    | null
   provider_name: string | null
   model: string
+  outcome?:
+    'aborted' | 'completed' | 'failed' | 'incomplete' | 'transport_error'
   input_tokens: number
   output_tokens: number
   cache_read_input_tokens: number
   cache_creation_input_tokens: number
   cost: TokenUsageEventCost | null
+  terminal?:
+    | 'aborted'
+    | 'done'
+    | 'eof'
+    | 'error'
+    | 'message_stop'
+    | 'response.completed'
+    | 'response.failed'
+    | 'response.incomplete'
+    | 'transport_error'
+    | 'unknown_terminal'
+    | null
   total_tokens: number
 }
 

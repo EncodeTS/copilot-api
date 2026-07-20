@@ -78,6 +78,7 @@ export async function handleCompletion(c: Context) {
     endpoint: "chat_completions",
     fallbackSessionId: sessionId,
     model: payload.model,
+    outcome: "completed",
   })
 
   const response =

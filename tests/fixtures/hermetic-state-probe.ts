@@ -46,6 +46,7 @@ recordTokenUsageEvent({
   endpoint: "responses",
   input_tokens: 2,
   model: "fixture-model",
+  outcome: "completed",
   output_tokens: 1,
   source: "copilot",
 })

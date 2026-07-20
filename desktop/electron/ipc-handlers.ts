@@ -154,10 +154,8 @@ export function registerIpcHandlers(
     pollAccessToken(deviceCode)
       .then(async (token) => {
         await saveToken(token)
-        const [, accountType] = await Promise.all([
-          getGitHubUser(token),
-          getCopilotAccountType(token),
-        ])
+        const login = await getGitHubUser(token)
+        const accountType = await getCopilotAccountType(token, login)
         // Detect and persist the account type automatically after sign-in
         const settings = await readSettings()
         await writeSettings({ ...settings, accountType })
@@ -182,10 +180,8 @@ export function registerIpcHandlers(
   // Auth: Save token directly
   ipcMain.handle('auth:save-token', async (_event, token: string) => {
     try {
-      const [, accountType] = await Promise.all([
-        getGitHubUser(token),
-        getCopilotAccountType(token),
-      ])
+      const login = await getGitHubUser(token)
+      const accountType = await getCopilotAccountType(token, login)
       await saveToken(token)
       // Detect and persist the account type automatically
       const settings = await readSettings()

@@ -2,17 +2,23 @@ import { requestContext, generateTraceId } from "~/lib/request-context"
 import { state } from "~/lib/state"
 import type { TokenUsagePricingConfig } from "~/lib/config"
 
-import { EventBus } from "../event-bus"
 import { resolveTokenUsageCost } from "./pricing"
 import {
   enqueueTokenUsageWrite,
   hasAnyToken,
   normalizeOptionalToken,
   normalizeToken,
+  normalizeTokenUsageErrorCode,
+  normalizeTokenUsageOutcome,
+  normalizeTokenUsageTerminal,
   resolveTotalTokens,
   type PersistedTokenUsageEvent,
   type TokenUsageEndpoint,
+  type TokenUsageEnqueueResult,
+  type TokenUsageErrorCode,
+  type TokenUsageOutcome,
   type TokenUsageSource,
+  type TokenUsageTerminal,
   type UsageTokens,
 } from "./store"
 
@@ -20,11 +26,15 @@ export { normalizeResponsesUsage } from "./normalize-responses"
 
 export {
   closeUsageStore,
+  getTokenUsageWriteQueueStatus,
   getTokenUsageDailySummary,
   getTokenUsageEventsPage,
   getTokenUsageSummary,
   normalizeOptionalToken,
   normalizeToken,
+  TOKEN_USAGE_ERROR_CODE_VALUES,
+  TOKEN_USAGE_OUTCOME_VALUES,
+  TOKEN_USAGE_TERMINAL_VALUES,
 } from "./store"
 
 export type {
@@ -33,32 +43,59 @@ export type {
   TokenUsageCost,
   TokenUsageEventCost,
   TokenUsageEndpoint,
+  TokenUsageEnqueueResult,
+  TokenUsageErrorCode,
   TokenUsageEventRecord,
   TokenUsageEventsPage,
   TokenUsageModelSummary,
+  TokenUsageOutcome,
   TokenUsagePeriod,
   TokenUsageSource,
   TokenUsageSummary,
+  TokenUsageTerminal,
   TokenUsageTotals,
+  TokenUsageWriteQueueStatus,
   UsageTokens,
 } from "./store"
 
 export interface TokenUsageEventInput extends UsageTokens {
   endpoint: TokenUsageEndpoint
+  errorCode?: TokenUsageErrorCode | null
   fallbackSessionId?: string | null
   model: string
+  outcome: TokenUsageOutcome
   pricing?: TokenUsagePricingConfig | null
   pricingCurrency?: string | null
   providerName?: string | null
   sessionId?: string | null
   source: TokenUsageSource
+  terminal?: TokenUsageTerminal | null
   traceId?: string | null
 }
+
+export interface TokenUsageRecordMetadata {
+  errorCode?: TokenUsageErrorCode | null
+  outcome?: TokenUsageOutcome
+  terminal?: TokenUsageTerminal | null
+}
+
+export type TokenUsageRecorder = (
+  usage: UsageTokens,
+  metadata?: TokenUsageRecordMetadata,
+) => TokenUsageRecordResult
+
+export type TokenUsageRecordResult =
+  | TokenUsageEnqueueResult
+  | "already_recorded"
+  | "ignored_empty"
+  | "retry_exhausted"
+  | "retry_mismatch"
 
 interface TokenUsageRecorderOptions {
   endpoint: TokenUsageEndpoint
   fallbackSessionId?: string | null
   model: string
+  outcome: TokenUsageOutcome
   pricing?: TokenUsagePricingConfig | null
   pricingCurrency?: string | null
   providerName?: string | null
@@ -76,12 +113,6 @@ type ProviderTokenUsageRecorderOptions = Omit<
   TokenUsageRecorderOptions,
   "source"
 >
-
-interface TokenUsageEventMap {
-  "token_usage.recorded": PersistedTokenUsageEvent
-}
-
-const tokenUsageEventBus = new EventBus<TokenUsageEventMap>()
 
 function resolveTraceId(traceId: string | null | undefined): string {
   return (
@@ -127,8 +158,10 @@ function toPersistedEvent(
     created_at_ms: now.getTime(),
     created_at_utc: now.toISOString(),
     endpoint: input.endpoint,
+    error_code: normalizeTokenUsageErrorCode(input.errorCode),
     input_tokens: normalizeToken(input.input_tokens),
     model: input.model.trim() || "unknown",
+    outcome: normalizeTokenUsageOutcome(input.outcome),
     output_tokens: normalizeToken(input.output_tokens),
     provider_name: input.providerName?.trim() || null,
     session_id: resolveTokenUsageSessionId(
@@ -136,6 +169,7 @@ function toPersistedEvent(
       input.fallbackSessionId,
     ),
     source: input.source,
+    terminal: normalizeTokenUsageTerminal(input.terminal),
     total_nano_aiu:
       input.total_nano_aiu === undefined || input.total_nano_aiu === null ?
         null
@@ -147,31 +181,77 @@ function toPersistedEvent(
   }
 }
 
-tokenUsageEventBus.subscribe("token_usage.recorded", enqueueTokenUsageWrite)
-
-export function recordTokenUsageEvent(input: TokenUsageEventInput): void {
+export function recordTokenUsageEvent(
+  input: TokenUsageEventInput,
+): TokenUsageRecordResult {
   const event = toPersistedEvent(input)
   if (!event) {
-    return
+    return "ignored_empty"
   }
 
-  tokenUsageEventBus.publish("token_usage.recorded", event)
+  return enqueueTokenUsageWrite(event)
 }
 
 export function createTokenUsageRecorder(
   options: TokenUsageRecorderOptions,
-): (usage: UsageTokens) => void {
-  return (usage) => {
-    recordTokenUsageEvent({
+): TokenUsageRecorder {
+  // A recorder is request-scoped. The first non-zero terminal usage wins so
+  // retrying caller cleanup cannot duplicate one request in the ledger.
+  let recorded = false
+  let rejectedFingerprint: string | null = null
+  let retryConsumed = false
+  return (usage, metadata) => {
+    if (recorded) {
+      return "already_recorded"
+    }
+    const fingerprint = createRecorderFingerprint(usage, metadata, options)
+    if (rejectedFingerprint !== null) {
+      if (fingerprint !== rejectedFingerprint) {
+        return "retry_mismatch"
+      }
+      if (retryConsumed) {
+        return "retry_exhausted"
+      }
+      retryConsumed = true
+    }
+    const result = recordTokenUsageEvent({
       ...usage,
       ...options,
+      ...metadata,
     })
+    recorded = result === "accepted"
+    if (
+      !recorded
+      && result !== "ignored_empty"
+      && rejectedFingerprint === null
+    ) {
+      rejectedFingerprint = fingerprint
+    }
+    return result
   }
+}
+
+function createRecorderFingerprint(
+  usage: UsageTokens,
+  metadata: TokenUsageRecordMetadata | undefined,
+  options: TokenUsageRecorderOptions,
+): string {
+  return JSON.stringify([
+    normalizeToken(usage.cache_creation_input_tokens),
+    normalizeToken(usage.cache_read_input_tokens),
+    normalizeToken(usage.input_tokens),
+    normalizeToken(usage.output_tokens),
+    normalizeToken(usage.total_nano_aiu),
+    normalizeOptionalToken(usage.total_tokens) ?? null,
+    normalizeTokenUsageOutcome(metadata?.outcome ?? options.outcome),
+    normalizeTokenUsageTerminal(metadata?.terminal),
+    normalizeTokenUsageErrorCode(metadata?.errorCode),
+  ])
 }
 
 export function createCopilotTokenUsageRecorder(
   options: CopilotTokenUsageRecorderOptions,
-): (usage: UsageTokens) => void {
+): TokenUsageRecorder {
   return createTokenUsageRecorder({
     ...options,
     source: "copilot",
@@ -180,7 +260,7 @@ export function createCopilotTokenUsageRecorder(
 
 export function createProviderTokenUsageRecorder(
   options: ProviderTokenUsageRecorderOptions,
-): (usage: UsageTokens) => void {
+): TokenUsageRecorder {
   return createTokenUsageRecorder({
     ...options,
     source: "provider",

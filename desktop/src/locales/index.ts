@@ -72,6 +72,7 @@ export interface Locale {
     tokenUsageModel: string
     tokenUsageModelBreakdown: string
     tokenUsageOutput: string
+    tokenUsageOutcome: string
     tokenUsagePage: string
     tokenUsagePeriodDay: string
     tokenUsagePeriodMonth: string

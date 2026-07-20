@@ -16,6 +16,7 @@ import type { StreamTransport } from "~/lib/stream-lifecycle"
 import {
   createProviderTokenUsageRecorder,
   normalizeResponsesUsage,
+  type TokenUsageRecorder,
   type UsageTokens,
 } from "~/lib/token-usage"
 import {
@@ -178,13 +179,14 @@ const createProviderResponsesUsageRecorder = (
   provider: string,
   modelConfig: ModelConfig | undefined,
   pricingCurrency: string | undefined,
-): ((usage: UsageTokens) => void) => {
+): TokenUsageRecorder => {
   const sessionAffinity =
     requestContext.getStore()?.sessionAffinity?.trim() || null
 
   return createProviderTokenUsageRecorder({
     endpoint: "responses",
     model: payload.model,
+    outcome: "completed",
     pricing: modelConfig?.pricing,
     pricingCurrency,
     providerName: provider,
@@ -198,7 +200,7 @@ const streamProviderResponses = async (
   options: {
     normalizeCodex: boolean
     provider: string
-    recordUsage: (usage: UsageTokens) => void
+    recordUsage: TokenUsageRecorder
     transport: StreamTransport
   },
 ): Promise<Response> => {

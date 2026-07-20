@@ -12,6 +12,7 @@ export interface State {
   codexAccountId?: string
 
   accountType: string
+  copilotUsageScope?: string
   models?: ModelsResponse
   vsCodeVersion?: string
 

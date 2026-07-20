@@ -22,7 +22,7 @@ import {
   createCopilotTokenUsageRecorder,
   normalizeOptionalToken,
   normalizeResponsesUsage,
-  type UsageTokens,
+  type TokenUsageRecorder,
 } from "~/lib/token-usage"
 import {
   generateRequestIdFromPayload,
@@ -72,11 +72,12 @@ export const webSearchFlowDependencies = {
     payload: AnthropicMessagesPayload,
     sessionId?: string,
     webSearchModel?: string,
-  ): ((usage: UsageTokens) => void) =>
+  ): TokenUsageRecorder =>
     createCopilotTokenUsageRecorder({
       endpoint: "responses",
       fallbackSessionId: sessionId,
       model: webSearchModel ?? payload.model,
+      outcome: "completed",
       sessionId: parseUserIdMetadata(payload.metadata?.user_id).sessionId,
     }),
 }
@@ -386,7 +387,7 @@ const createUsageRecorder = (
   payload: AnthropicMessagesPayload,
   sessionId?: string,
   webSearchModel?: string,
-): ((usage: UsageTokens) => void) =>
+): TokenUsageRecorder =>
   webSearchFlowDependencies.createUsageRecorder(
     payload,
     sessionId,

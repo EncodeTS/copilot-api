@@ -45,6 +45,7 @@ import {
   normalizeAnthropicUsage,
   normalizeOpenAIUsage,
   normalizeResponsesUsage,
+  type TokenUsageRecorder,
   type UsageTokens,
 } from "~/lib/token-usage"
 import { parseUserIdMetadata } from "~/lib/utils"
@@ -1389,10 +1390,11 @@ const createProviderMessagesUsageRecorder = (
   provider: string,
   modelConfig: ModelConfig | undefined,
   pricingCurrency: string | undefined,
-) =>
+): TokenUsageRecorder =>
   createProviderTokenUsageRecorder({
     endpoint: "provider_messages",
     model: payload.model,
+    outcome: "completed",
     pricing: modelConfig?.pricing,
     pricingCurrency,
     providerName: provider,

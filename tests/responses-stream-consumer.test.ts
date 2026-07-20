@@ -16,7 +16,7 @@ import type {
 test("Copilot Responses consumer owns terminal, usage, and incremental output", async () => {
   const logger = createLogger()
   const { messages, output } = createOutput()
-  const recordUsage = mock((_usage: UsageTokens) => {})
+  const recordUsage = mock((_usage: UsageTokens) => "accepted" as const)
   const response = createResponsesResult()
   response.usage = {
     input_tokens: 12,
@@ -60,7 +60,7 @@ test("Copilot Responses consumer owns terminal, usage, and incremental output", 
 test("Provider Responses consumer keeps parser, DONE, and usage semantics private", async () => {
   const logger = createLogger()
   const { messages, output } = createOutput()
-  const recordUsage = mock((_usage: UsageTokens) => {})
+  const recordUsage = mock((_usage: UsageTokens) => "accepted" as const)
   const response = createResponsesResult()
   response.usage = {
     input_tokens: 12,
@@ -103,7 +103,7 @@ test("Provider Responses consumer keeps parser, DONE, and usage semantics privat
 test("Provider Responses consumer owns incomplete-stream error and recording", async () => {
   const logger = createLogger()
   const { messages, output } = createOutput()
-  const recordUsage = mock((_usage: UsageTokens) => {})
+  const recordUsage = mock((_usage: UsageTokens) => "accepted" as const)
   const response = createResponsesResult()
 
   await consumeResponsesStream({
@@ -132,7 +132,7 @@ test("Provider Responses consumer owns incomplete-stream error and recording", a
 test("Provider Responses consumer turns a partial source failure into one Anthropic error", async () => {
   const logger = createLogger()
   const { messages, output } = createOutput()
-  const recordUsage = mock((_usage: UsageTokens) => {})
+  const recordUsage = mock((_usage: UsageTokens) => "accepted" as const)
   const response = createResponsesResult()
 
   await consumeResponsesStream({
@@ -161,7 +161,7 @@ test("Provider Responses consumer turns a partial source failure into one Anthro
 test("Provider Responses consumer stops pulling after a typed terminal", async () => {
   const logger = createLogger()
   const { messages, output } = createOutput()
-  const recordUsage = mock((_usage: UsageTokens) => {})
+  const recordUsage = mock((_usage: UsageTokens) => "accepted" as const)
   const response = createResponsesResult()
   response.usage = {
     input_tokens: 8,
@@ -203,7 +203,7 @@ test("Provider Responses consumer stops pulling after a typed terminal", async (
 test("Provider Responses consumer releases an already-aborted source without fabricating an error", async () => {
   const logger = createLogger()
   const { messages, output } = createOutput()
-  const recordUsage = mock((_usage: UsageTokens) => {})
+  const recordUsage = mock((_usage: UsageTokens) => "accepted" as const)
   const controller = new AbortController()
   controller.abort(new Error("client disconnected before stream read"))
   const source = createInspectableStream([
@@ -233,7 +233,7 @@ test("Provider Responses consumer releases an already-aborted source without fab
 test("Provider Responses consumer releases the source when the caller aborts after partial output", async () => {
   const logger = createLogger()
   const messages: Array<{ data: string; event?: string }> = []
-  const recordUsage = mock((_usage: UsageTokens) => {})
+  const recordUsage = mock((_usage: UsageTokens) => "accepted" as const)
   const controller = new AbortController()
   const response = createResponsesResult()
   const source = createInspectableStream([
@@ -277,7 +277,7 @@ test("Provider Responses consumer releases the source when the caller aborts aft
 test("Provider Responses consumer keeps release diagnostics content-safe", async () => {
   const logger = createLogger()
   const { messages, output } = createOutput()
-  const recordUsage = mock((_usage: UsageTokens) => {})
+  const recordUsage = mock((_usage: UsageTokens) => "accepted" as const)
   const controller = new AbortController()
   controller.abort(new Error("client disconnected"))
   const source = createInspectableStream([], {
