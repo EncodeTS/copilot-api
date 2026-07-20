@@ -9,6 +9,10 @@ import {
   type SqliteDatabase,
 } from "~/lib/sqlite"
 
+import { normalizeOptionalToken, normalizeToken } from "./normalize-number"
+
+export { normalizeOptionalToken, normalizeToken } from "./normalize-number"
+
 export type TokenUsageSource = "copilot" | "provider"
 
 export type TokenUsageEndpoint =
@@ -234,21 +238,6 @@ function ensureColumn(
   if (!hasColumn) {
     db.exec(`ALTER TABLE token_usage_events ADD COLUMN ${name} ${definition}`)
   }
-}
-
-export function normalizeToken(value: number | null | undefined): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return 0
-  }
-  return Math.max(0, Math.floor(value))
-}
-
-export function normalizeOptionalToken(
-  value: number | null | undefined,
-): number | undefined {
-  return value === null || value === undefined ?
-      undefined
-    : normalizeToken(value)
 }
 
 export function hasAnyToken(tokens: UsageTokens): boolean {
