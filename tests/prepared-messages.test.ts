@@ -380,57 +380,68 @@ test("Chat estimation observes caller cancellation without invoking the tokenize
   expect(getTokenCount).not.toHaveBeenCalled()
 })
 
-test("Chat estimation interrupts active encoding in a warmed worker", async () => {
-  state.models = {
-    object: "list",
-    data: [dualModel],
-  } as typeof state.models
-  const warmSource: AnthropicMessagesPayload = {
-    max_tokens: 128,
-    messages: [
-      { role: "user", content: "x".repeat(20_000) },
-      { role: "assistant", content: '{"value":' },
-    ],
-    model: dualModel.id,
-  }
-  await countPreparedCopilotMessages(
-    prepareCopilotMessagesRequest(warmSource),
-    {
-      signal: new AbortController().signal,
-    },
-  )
+for (const cancellation of [
+  {
+    label: "Error",
+    reason: () => new Error("cancel active Chat count"),
+  },
+  {
+    label: "string",
+    reason: () => "cancel active Chat count",
+  },
+]) {
+  test(`Chat estimation forwards active ${cancellation.label} cancellation to the tokenizer`, async () => {
+    state.models = {
+      object: "list",
+      data: [dualModel],
+    } as typeof state.models
+    const invocation = Promise.withResolvers<AbortSignal | undefined>()
+    preparedMessagesCountDependencies.getTokenCount = (
+      _payload,
+      _model,
+      options,
+    ) => {
+      const signal = options?.signal
+      invocation.resolve(signal)
+      return new Promise((_resolve, reject) => {
+        if (!signal) return
+        const rejectFromSignal = () => {
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+          reject(signal.reason)
+        }
+        if (signal.aborted) {
+          rejectFromSignal()
+          return
+        }
+        signal.addEventListener("abort", rejectFromSignal, { once: true })
+      })
+    }
+    const controller = new AbortController()
+    const pendingCount = countPreparedCopilotMessages(
+      prepareCopilotMessagesRequest({
+        max_tokens: 128,
+        messages: [
+          { role: "user", content: "Return JSON" },
+          { role: "assistant", content: '{"value":' },
+        ],
+        model: dualModel.id,
+      }),
+      { signal: controller.signal },
+    )
 
-  let randomState = 123_456_789
-  const randomText = new Array<string>(500_000)
-  for (let index = 0; index < randomText.length; index += 1) {
-    randomState = (1_103_515_245 * randomState + 12_345) >>> 0
-    randomText[index] = String.fromCharCode(32 + (randomState % 95))
-  }
-  const source: AnthropicMessagesPayload = {
-    max_tokens: 128,
-    messages: [
-      { role: "user", content: randomText.join("") },
-      { role: "assistant", content: '{"value":' },
-    ],
-    model: dualModel.id,
-  }
+    expect(await invocation.promise).toBe(controller.signal)
+    const reason = cancellation.reason()
+    controller.abort(reason)
+    let thrown: unknown
+    try {
+      await pendingCount
+    } catch (error) {
+      thrown = error
+    }
 
-  const controller = new AbortController()
-  const reason = "cancelled during count"
-  const timer = setTimeout(() => controller.abort(reason), 20)
-  let thrown: unknown
-  try {
-    await countPreparedCopilotMessages(prepareCopilotMessagesRequest(source), {
-      signal: controller.signal,
-    })
-  } catch (error) {
-    thrown = error
-  } finally {
-    clearTimeout(timer)
-  }
-
-  expect(thrown).toBe(reason)
-})
+    expect(thrown).toBe(reason)
+  })
+}
 
 test("worker-backed Chat estimation preserves exact token counts", async () => {
   state.models = {

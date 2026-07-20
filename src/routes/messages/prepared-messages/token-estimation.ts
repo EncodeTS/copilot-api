@@ -1,6 +1,10 @@
 import { scheduler } from "node:timers/promises"
 
-import { getTextTokenCount } from "~/lib/tokenizer"
+import {
+  getTextTokenCount,
+  type TokenizerSchedulingOptions,
+  type TokenizerYieldControl,
+} from "~/lib/tokenizer"
 import type { ResponsesPayload } from "~/services/copilot/create-responses"
 import type { Model } from "~/services/copilot/get-models"
 
@@ -8,6 +12,7 @@ const RESPONSES_ESTIMATE_SAFETY_FACTOR = 1.07
 const RESPONSES_ESTIMATE_MAX_NODES = 10_000
 const RESPONSES_ESTIMATE_MAX_DEPTH = 128
 const RESPONSES_ESTIMATE_TEXT_CHUNK_CODE_UNITS = 16_384
+const yieldToScheduler: TokenizerYieldControl = () => scheduler.yield()
 
 interface SemanticTokenStats {
   objectCount: number
@@ -19,6 +24,7 @@ interface SemanticTokenTraversal {
   nodeLimit: number
   nodesVisited: number
   signal?: AbortSignal
+  yieldControl: TokenizerYieldControl
 }
 
 const getSafeTextChunkEnd = (
@@ -38,6 +44,7 @@ const getSafeTextChunkEnd = (
 const countTextTokensResponsively = async (
   text: string,
   selectedModel: Model,
+  yieldControl: TokenizerYieldControl,
   signal?: AbortSignal,
 ): Promise<number> => {
   let offset = 0
@@ -55,7 +62,7 @@ const countTextTokensResponsively = async (
     )
     offset = chunkEnd
     if (offset < text.length) {
-      await scheduler.yield()
+      await yieldControl()
     }
   }
   signal?.throwIfAborted()
@@ -106,6 +113,7 @@ const countSemanticTokens = async (
       tokens: await countTextTokensResponsively(
         text,
         selectedModel,
+        traversal.yieldControl,
         traversal.signal,
       ),
     }
@@ -141,6 +149,7 @@ const countSemanticTokens = async (
       tokens += await countTextTokensResponsively(
         key,
         selectedModel,
+        traversal.yieldControl,
         traversal.signal,
       )
     }
@@ -160,13 +169,14 @@ const countSemanticTokens = async (
 export const estimateResponsesInputTokens = async (
   payload: ResponsesPayload,
   selectedModel: Model,
-  options: { signal?: AbortSignal } = {},
+  options: TokenizerSchedulingOptions = {},
 ): Promise<number> => {
   const traversal: SemanticTokenTraversal = {
     depthLimit: RESPONSES_ESTIMATE_MAX_DEPTH,
     nodeLimit: RESPONSES_ESTIMATE_MAX_NODES,
     nodesVisited: 0,
     signal: options.signal,
+    yieldControl: options.yieldControl ?? yieldToScheduler,
   }
   const fields: Array<[unknown, boolean?]> = [
     [payload.context_management],

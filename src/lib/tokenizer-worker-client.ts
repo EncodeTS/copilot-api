@@ -5,7 +5,9 @@ import type { SupportedEncoding } from "~/lib/tokenizer-encodings"
 const WORKER_IDLE_TIMEOUT_MS = 5_000
 
 interface TokenizerJob {
+  accounted: boolean
   abort: () => void
+  codeUnits: number
   encoding: SupportedEncoding
   id: number
   reject: (reason?: unknown) => void
@@ -20,11 +22,79 @@ interface TokenizerWorkerResponse {
   id: number
 }
 
+export interface TokenizerWorkerTransport {
+  onError: (listener: (error: Error) => void) => void
+  onExit: (listener: (code: number) => void) => void
+  onMessage: (listener: (value: unknown) => void) => void
+  postMessage: (value: unknown) => void
+  terminate: () => Promise<number>
+  unref: () => void
+}
+
+export const tokenizerWorkerClientDependencies: {
+  createWorker: (url: URL) => TokenizerWorkerTransport
+} = {
+  createWorker: (url) => {
+    const worker = new Worker(url)
+    return {
+      onError: (listener) => {
+        worker.on("error", listener)
+      },
+      onExit: (listener) => {
+        worker.on("exit", listener)
+      },
+      onMessage: (listener) => {
+        worker.on("message", listener)
+      },
+      postMessage: (value) => {
+        worker.postMessage(value)
+      },
+      terminate: () => worker.terminate(),
+      unref: () => {
+        worker.unref()
+      },
+    }
+  },
+}
+
+/** Aggregate worker load only; no tokenized text or job identity is exposed. */
+export interface TokenizerWorkerLoadSnapshot {
+  readonly activeJobs: number
+  readonly pendingCodeUnits: number
+  readonly pendingJobs: number
+  readonly queuedJobs: number
+}
+
 let activeJob: TokenizerJob | undefined
 let idleTimer: NodeJS.Timeout | undefined
 let nextJobId = 1
-let worker: Worker | undefined
+let pendingCodeUnits = 0
+let pendingJobs = 0
+let worker: TokenizerWorkerTransport | undefined
 const queue = new Array<TokenizerJob>()
+
+export const getTokenizerWorkerLoadSnapshot =
+  (): TokenizerWorkerLoadSnapshot => ({
+    activeJobs: activeJob ? 1 : 0,
+    pendingCodeUnits,
+    pendingJobs,
+    queuedJobs: queue.length,
+  })
+
+export const closeIdleTokenizerWorker = async (): Promise<void> => {
+  if (
+    activeJob
+    || queue.length > 0
+    || pendingJobs !== 0
+    || pendingCodeUnits !== 0
+  ) {
+    throw new Error("Cannot close tokenizer worker while jobs are pending")
+  }
+  clearIdleTimer()
+  const idleWorker = worker
+  worker = undefined
+  if (idleWorker) await idleWorker.terminate()
+}
 
 export const countTextsInTokenizerWorker = (
   texts: Array<string>,
@@ -34,7 +104,9 @@ export const countTextsInTokenizerWorker = (
   signal.throwIfAborted()
   return new Promise((resolve, reject) => {
     const job: TokenizerJob = {
+      accounted: false,
       abort: () => {},
+      codeUnits: texts.reduce((total, text) => total + text.length, 0),
       encoding,
       id: nextJobId++,
       reject,
@@ -44,6 +116,7 @@ export const countTextsInTokenizerWorker = (
     }
     job.abort = () => cancelJob(job)
     signal.addEventListener("abort", job.abort, { once: true })
+    accountPendingJob(job)
     queue.push(job)
     startNextJob()
   })
@@ -56,45 +129,48 @@ const startNextJob = () => {
   const job = queue.shift()
   if (!job) return
   if (job.signal.aborted) {
-    cleanupJob(job)
+    finishPendingJob(job)
     rejectWithAbortReason(job)
     startNextJob()
     return
   }
 
   activeJob = job
-  const activeWorker = getWorker()
-  activeWorker.postMessage({
-    encoding: job.encoding,
-    id: job.id,
-    texts: job.texts,
-  })
+  try {
+    const activeWorker = getWorker()
+    activeWorker.postMessage({
+      encoding: job.encoding,
+      id: job.id,
+      texts: job.texts,
+    })
+  } catch (error) {
+    failActiveJob(error instanceof Error ? error : new Error(String(error)))
+    terminateWorker()
+  }
 }
 
-const getWorker = (): Worker => {
+const getWorker = (): TokenizerWorkerTransport => {
   if (worker) return worker
 
-  const createdWorker = new Worker(getTokenizerWorkerUrl())
-  createdWorker.on("message", handleWorkerMessage)
-  createdWorker.on("error", (error) =>
-    handleWorkerFailure(createdWorker, error),
+  const createdWorker = tokenizerWorkerClientDependencies.createWorker(
+    getTokenizerWorkerUrl(),
   )
-  createdWorker.on("exit", (code) => {
-    if (worker !== createdWorker) return
-    worker = undefined
-    if (code !== 0) {
-      failActiveJob(new Error(`Tokenizer worker exited with code ${code}`))
-    }
-    startNextJob()
-  })
+  createdWorker.onMessage((value) => handleWorkerMessage(createdWorker, value))
+  createdWorker.onError((error) => handleWorkerFailure(createdWorker, error))
+  createdWorker.onExit((code) => handleWorkerExit(createdWorker, code))
   createdWorker.unref()
   worker = createdWorker
   return createdWorker
 }
 
-const handleWorkerMessage = (value: unknown) => {
+const handleWorkerMessage = (
+  sourceWorker: TokenizerWorkerTransport,
+  value: unknown,
+) => {
+  if (worker !== sourceWorker) return
   if (!isTokenizerWorkerResponse(value)) {
-    failActiveJob(
+    handleWorkerFailure(
+      sourceWorker,
       new TypeError("Tokenizer worker returned an invalid response"),
     )
     return
@@ -103,7 +179,7 @@ const handleWorkerMessage = (value: unknown) => {
 
   const job = activeJob
   activeJob = undefined
-  cleanupJob(job)
+  finishPendingJob(job)
   if (value.error !== undefined) {
     job.reject(new Error(value.error))
   } else if (value.counts) {
@@ -115,25 +191,45 @@ const handleWorkerMessage = (value: unknown) => {
   startNextJob()
 }
 
-const handleWorkerFailure = (failedWorker: Worker, error: Error) => {
+const handleWorkerFailure = (
+  failedWorker: TokenizerWorkerTransport,
+  error: Error,
+) => {
   if (worker !== failedWorker) return
   worker = undefined
   failActiveJob(error)
-  void failedWorker.terminate()
+  void failedWorker.terminate().finally(startNextJob)
+}
+
+const handleWorkerExit = (
+  exitedWorker: TokenizerWorkerTransport,
+  code: number,
+) => {
+  if (worker !== exitedWorker) return
+  worker = undefined
+  if (activeJob) {
+    failActiveJob(
+      new Error(
+        code === 0 ?
+          "Tokenizer worker exited before completing its active job"
+        : `Tokenizer worker exited with code ${code}`,
+      ),
+    )
+  }
   startNextJob()
 }
 
 const failActiveJob = (error: Error) => {
   const job = activeJob
   activeJob = undefined
-  if (job) cleanupJob(job)
+  if (job) finishPendingJob(job)
   job?.reject(error)
 }
 
 const cancelJob = (job: TokenizerJob) => {
   if (activeJob === job) {
     activeJob = undefined
-    cleanupJob(job)
+    finishPendingJob(job)
     rejectWithAbortReason(job)
     terminateWorker()
     return
@@ -142,13 +238,28 @@ const cancelJob = (job: TokenizerJob) => {
   const queuedIndex = queue.indexOf(job)
   if (queuedIndex >= 0) {
     queue.splice(queuedIndex, 1)
-    cleanupJob(job)
+    finishPendingJob(job)
     rejectWithAbortReason(job)
   }
 }
 
 const cleanupJob = (job: TokenizerJob) => {
   job.signal.removeEventListener("abort", job.abort)
+}
+
+const accountPendingJob = (job: TokenizerJob) => {
+  if (job.accounted) return
+  job.accounted = true
+  pendingJobs += 1
+  pendingCodeUnits += job.codeUnits
+}
+
+const finishPendingJob = (job: TokenizerJob) => {
+  cleanupJob(job)
+  if (!job.accounted) return
+  job.accounted = false
+  pendingJobs -= 1
+  pendingCodeUnits -= job.codeUnits
 }
 
 const rejectWithAbortReason = (job: TokenizerJob) => {

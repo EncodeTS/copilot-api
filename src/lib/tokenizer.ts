@@ -14,6 +14,13 @@ interface Encoder {
   encode: (text: string) => Array<number>
 }
 
+export type TokenizerYieldControl = () => Promise<void>
+// An injected yield is a cancellation checkpoint and therefore requires the
+// AbortSignal whose reason must be preserved.
+export type TokenizerSchedulingOptions =
+  | { signal?: AbortSignal; yieldControl?: never }
+  | { signal: AbortSignal; yieldControl: TokenizerYieldControl }
+
 // Cache loaded encoders to avoid repeated imports
 const encodingCache = new Map<string, Encoder>()
 const RESPONSIVE_ENCODING_THRESHOLD = 16_384
@@ -360,6 +367,7 @@ const createResponsiveEncoder = async (
   constants: ReturnType<typeof getModelConstants>,
   tokenizer: string,
   signal: AbortSignal,
+  yieldControl?: TokenizerYieldControl,
 ): Promise<Encoder> => {
   const texts = new Set<string>()
   let totalCodeUnits = 0
@@ -383,11 +391,19 @@ const createResponsiveEncoder = async (
 
   const supportedEncoding =
     isSupportedEncoding(tokenizer) ? tokenizer : "o200k_base"
-  const counts = await countTextsInTokenizerWorker(
+  const countsPromise = countTextsInTokenizerWorker(
     textList,
     supportedEncoding,
     signal,
   )
+  if (yieldControl) {
+    // Observe cancellation while the injected yield owns control so a rejected
+    // worker promise cannot surface as unhandled before this function resumes.
+    void countsPromise.catch(() => undefined)
+    await yieldControl()
+    signal.throwIfAborted()
+  }
+  const counts = await countsPromise
   const countByText = new Map(
     textList.map((text, index) => [text, counts[index]]),
   )
@@ -403,7 +419,7 @@ const createResponsiveEncoder = async (
 export const getTokenCount = async (
   payload: ChatCompletionsPayload,
   model: Model,
-  options: { signal?: AbortSignal } = {},
+  options: TokenizerSchedulingOptions = {},
 ): Promise<{ input: number; output: number }> => {
   options.signal?.throwIfAborted()
   // Get tokenizer string
@@ -430,6 +446,7 @@ export const getTokenCount = async (
         constants,
         tokenizer,
         options.signal,
+        options.yieldControl,
       )
     : encoder
   // gpt count token https://github.com/openai/openai-cookbook/blob/main/examples/How_to_count_tokens_with_tiktoken.ipynb
