@@ -18,6 +18,7 @@ import { messageRoutes } from "./routes/messages/route"
 import { modelRoutes } from "./routes/models/route"
 import { providerMessageRoutes } from "./routes/provider/messages/route"
 import { providerModelRoutes } from "./routes/provider/models/route"
+import { providerResponsesRoutes } from "./routes/provider/responses/route"
 import { responsesRoutes } from "./routes/responses/route"
 import { tokenUsageRoute } from "./routes/token-usage/route"
 import { tokenRoute } from "./routes/token/route"
@@ -74,6 +75,7 @@ server.route("/v1/images", imageRoutes)
 // Anthropic compatible endpoints
 server.route("/v1/messages", messageRoutes)
 
-// Provider scoped Anthropic-compatible endpoints
+// Provider-scoped endpoints
 server.route("/:provider/v1/messages", providerMessageRoutes)
 server.route("/:provider/v1/models", providerModelRoutes)
+server.route("/:provider/v1/responses", providerResponsesRoutes)

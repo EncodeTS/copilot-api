@@ -1,0 +1,303 @@
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+
+import type { ResolvedProviderConfig } from "../src/lib/config"
+import type { ResponsesResult } from "../src/services/copilot/create-responses"
+
+const actualConfigModule = await import("../src/lib/config")
+const actualTokenUsageModule = await import("../src/lib/token-usage")
+
+let gatewayApiKeys: Array<string> = []
+let providerConfigs: Record<string, ResolvedProviderConfig> = {}
+
+await mock.module("~/lib/config", () => ({
+  ...actualConfigModule,
+  getConfig: () => ({
+    auth: { apiKeys: gatewayApiKeys },
+    contextManagement: { messages: false, responses: false },
+  }),
+  getModelResponsesApiCompactThreshold: () => undefined,
+  getProviderConfig: (provider: string) => providerConfigs[provider] ?? null,
+  getRawProviderConfig: (provider: string) => providerConfigs[provider] ?? null,
+  isContextManagementEnabledForMessages: () => false,
+  isContextManagementEnabledForResponses: () => false,
+  isResponsesApiWebSearchEnabled: () => true,
+  resolveMappedModel: (model: string) => model,
+}))
+
+await mock.module("~/lib/token-usage", () => ({
+  ...actualTokenUsageModule,
+  createProviderTokenUsageRecorder: () => () => {},
+}))
+
+const { server } = await import("../src/server")
+
+const originalFetch = globalThis.fetch
+
+const createResponsesResult = (model: string): ResponsesResult => ({
+  created_at: 1_784_000_000,
+  error: null,
+  id: "resp-provider-route",
+  incomplete_details: null,
+  instructions: null,
+  metadata: null,
+  model,
+  object: "response",
+  output: [],
+  output_text: "provider answer",
+  parallel_tool_calls: false,
+  status: "completed",
+  temperature: null,
+  tool_choice: "auto",
+  tools: [],
+  top_p: null,
+  usage: null,
+})
+
+const parseJsonRequestBody = (body: unknown): unknown => {
+  if (typeof body !== "string") {
+    throw new TypeError("Expected a JSON string request body")
+  }
+  return JSON.parse(body) as unknown
+}
+
+const fetchMock = mock((_url: string | URL | Request, init?: RequestInit) => {
+  const payload = parseJsonRequestBody(init?.body) as { model: string }
+  return Promise.resolve(
+    new Response(JSON.stringify(createResponsesResult(payload.model)), {
+      headers: {
+        "content-type": "application/json",
+        "x-upstream": "responses-provider",
+      },
+      status: 201,
+    }),
+  )
+})
+
+const requestProviderResponses = (
+  path: string,
+  payload: Record<string, unknown>,
+  headers: Record<string, string> = {},
+) =>
+  server.request(path, {
+    body: JSON.stringify(payload),
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": "gateway-key",
+      ...headers,
+    },
+    method: "POST",
+  })
+
+beforeEach(() => {
+  gatewayApiKeys = ["gateway-key"]
+  providerConfigs = {
+    openai: {
+      apiKey: "provider-key",
+      authType: "authorization",
+      baseUrl: "https://responses.example",
+      models: {
+        "gpt-test": {},
+      },
+      name: "openai",
+      type: "openai-responses",
+    },
+  }
+  fetchMock.mockClear()
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+})
+
+afterEach(() => {
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
+  gatewayApiKeys = []
+  providerConfigs = {}
+})
+
+describe("versioned provider Responses route", () => {
+  test("requires the gateway API key before forwarding", async () => {
+    const response = await server.request("/openai/v1/responses", {
+      body: JSON.stringify({ input: "hello", model: "gpt-test" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(401)
+    expect(await response.json()).toEqual({
+      error: {
+        message: "Unauthorized",
+        type: "authentication_error",
+      },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("forwards a non-streaming request to the named Responses provider", async () => {
+    const payload = {
+      input: "hello",
+      max_output_tokens: 128,
+      model: "gpt-test",
+    }
+    const response = await requestProviderResponses(
+      "/openai/v1/responses",
+      payload,
+      { "user-agent": "provider-route-test" },
+    )
+
+    expect(response.status).toBe(201)
+    expect(response.headers.get("x-upstream")).toBe("responses-provider")
+    expect(await response.json()).toEqual(createResponsesResult("gpt-test"))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe("https://responses.example/v1/responses")
+    expect(parseJsonRequestBody((init as RequestInit).body)).toEqual(payload)
+    expect(new Headers((init as RequestInit).headers)).toEqual(
+      new Headers({
+        accept: "application/json",
+        authorization: "Bearer provider-key",
+        "content-type": "application/json",
+        "user-agent": "provider-route-test",
+      }),
+    )
+  })
+
+  test("streams provider Responses events through the public route", async () => {
+    const completed = createResponsesResult("gpt-test")
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          [
+            'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"hello"}',
+            `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: completed })}`,
+            "",
+          ].join("\n\n"),
+          {
+            headers: { "content-type": "text/event-stream" },
+          },
+        ),
+      ),
+    )
+
+    const response = await requestProviderResponses(
+      "/openai/v1/responses",
+      { input: "hello", model: "gpt-test", stream: true },
+      { accept: "text/event-stream" },
+    )
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get("content-type")).toStartWith(
+      "text/event-stream",
+    )
+    const body = await response.text()
+    expect(body).toContain("event: response.output_text.delta")
+    expect(body).toContain('"delta":"hello"')
+    expect(body).toContain("event: response.completed")
+    expect(body).not.toContain("event: error")
+  })
+
+  test("rejects an unknown provider without contacting an upstream", async () => {
+    const response = await requestProviderResponses("/missing/v1/responses", {
+      input: "hello",
+      model: "gpt-test",
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      error: {
+        message:
+          "Provider 'missing' does not support the /v1/responses endpoint",
+        type: "invalid_request_error",
+      },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("rejects providers whose protocol type is not OpenAI Responses", async () => {
+    providerConfigs.openai = {
+      ...providerConfigs.openai,
+      type: "openai-compatible",
+    }
+
+    const response = await requestProviderResponses("/openai/v1/responses", {
+      input: "hello",
+      model: "gpt-test",
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      error: {
+        message:
+          "Provider 'openai' does not support the /v1/responses endpoint",
+        type: "invalid_request_error",
+      },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("forwards structured upstream errors and retry metadata", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "rate_limit_exceeded",
+              message: "slow down",
+              type: "requests",
+            },
+          }),
+          {
+            headers: {
+              "content-type": "application/json",
+              "retry-after": "3",
+              "x-request-id": "provider-request",
+            },
+            status: 429,
+          },
+        ),
+      ),
+    )
+
+    const response = await requestProviderResponses("/openai/v1/responses", {
+      input: "hello",
+      model: "gpt-test",
+    })
+
+    expect(response.status).toBe(429)
+    expect(response.headers.get("retry-after")).toBe("3")
+    expect(response.headers.get("x-request-id")).toBe("provider-request")
+    expect(await response.json()).toEqual({
+      error: {
+        code: "rate_limit_exceeded",
+        message: "slow down",
+        type: "requests",
+      },
+    })
+  })
+
+  test("keeps the root Responses route ahead of the provider route", async () => {
+    const response = await requestProviderResponses("/v1/responses", {
+      input: "hello",
+      model: "openai/gpt-test",
+    })
+
+    expect(response.status).toBe(201)
+    expect(await response.json()).toEqual(createResponsesResult("gpt-test"))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  test("does not add provider-scoped legacy, alpha-search, or image routes", async () => {
+    const paths = [
+      "/openai/responses",
+      "/openai/v1/alpha/search",
+      "/openai/v1/images/generations",
+    ]
+
+    for (const path of paths) {
+      const response = await requestProviderResponses(path, {
+        model: "gpt-test",
+      })
+      expect(response.status).toBe(404)
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
