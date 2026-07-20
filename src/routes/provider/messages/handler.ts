@@ -37,6 +37,7 @@ import {
   debugLazy,
 } from "~/lib/logger"
 import { resolveProviderModel } from "~/lib/provider-resolver"
+import type { StreamTransport } from "~/lib/stream-lifecycle"
 import { resolveBridgeToolSearchName } from "~/lib/tool-search"
 import {
   createProviderTokenUsageRecorder,
@@ -80,7 +81,10 @@ import {
   compactInputByLatestCompaction,
 } from "~/routes/responses/utils"
 import { getModels as getCodexModels } from "~/services/codex/get-models"
-import { forwardCodexResponses } from "~/services/codex/create-responses"
+import {
+  forwardCodexResponses,
+  resolveCodexResponsesTransport,
+} from "~/services/codex/create-responses"
 import {
   forwardProviderChatCompletions,
   forwardProviderMessages,
@@ -378,11 +382,17 @@ const handleOpenAIResponsesProviderMessages = async (
   })
 
   if (providerConfig.name === "codex") {
+    const transport = resolveCodexResponsesTransport()
+    const streamControl =
+      wantsStream && transport === "http" ?
+        createProviderResponsesStreamControl(c.req.raw.signal)
+      : undefined
+    const upstreamSignal = streamControl?.signal ?? c.req.raw.signal
     const upstreamResponse = await forwardCodexResponses(
       responsesPayload,
       c.req.raw.headers,
       providerConfig.baseUrl,
-      { signal: c.req.raw.signal },
+      { signal: upstreamSignal, transport },
     )
 
     if (isResponsesStream(upstreamResponse)) {
@@ -394,6 +404,9 @@ const handleOpenAIResponsesProviderMessages = async (
           pricingCurrency: providerConfig.pricingCurrency,
           provider,
           providerConfig,
+          releaseUpstream: streamControl?.release,
+          signal: upstreamSignal,
+          transport,
           upstreamResponse,
         })
       }
@@ -424,11 +437,16 @@ const handleOpenAIResponsesProviderMessages = async (
     })
   }
 
+  const streamControl =
+    responsesPayload.stream ?
+      createProviderResponsesStreamControl(c.req.raw.signal)
+    : undefined
+  const upstreamSignal = streamControl?.signal ?? c.req.raw.signal
   const upstreamResponse = await forwardProviderResponses(
     providerConfig,
     responsesPayload,
     c.req.raw.headers,
-    c.req.raw.signal,
+    upstreamSignal,
   )
 
   if (!upstreamResponse.ok) {
@@ -444,7 +462,10 @@ const handleOpenAIResponsesProviderMessages = async (
       pricingCurrency: providerConfig.pricingCurrency,
       provider,
       providerConfig,
-      upstreamResponse: events(upstreamResponse),
+      releaseUpstream: streamControl?.release,
+      signal: upstreamSignal,
+      transport: "http",
+      upstreamResponse: events(upstreamResponse, upstreamSignal),
     })
   }
 
@@ -943,6 +964,9 @@ const streamResponsesProviderMessages = ({
   pricingCurrency,
   provider,
   providerConfig,
+  releaseUpstream,
+  signal,
+  transport,
   upstreamResponse,
 }: {
   c: Context
@@ -951,6 +975,9 @@ const streamResponsesProviderMessages = ({
   pricingCurrency: string | undefined
   provider: string
   providerConfig: ResolvedProviderConfig
+  releaseUpstream?: (reason: unknown) => Promise<void> | void
+  signal: AbortSignal
+  transport: StreamTransport
   upstreamResponse: ResponsesStream
 }): Response => {
   logger.debug("provider.messages.responses.streaming", {
@@ -971,9 +998,29 @@ const streamResponsesProviderMessages = ({
       provider,
       providerConfig,
       recordUsage,
+      releaseUpstream,
+      signal,
+      transport,
       upstreamResponse,
     }),
   )
+}
+
+const createProviderResponsesStreamControl = (
+  callerSignal: AbortSignal,
+): {
+  release: (reason: unknown) => void
+  signal: AbortSignal
+} => {
+  const controller = new AbortController()
+  return {
+    release: (reason) => {
+      if (!controller.signal.aborted) {
+        controller.abort(reason)
+      }
+    },
+    signal: AbortSignal.any([callerSignal, controller.signal]),
+  }
 }
 
 const isResponsesStream = (value: unknown): value is ResponsesStream => {

@@ -100,6 +100,78 @@ const createResponsesResult = () => ({
   },
 })
 
+const createOpenResponsesSseTransport = (
+  responseEvents: Array<Record<string, unknown>>,
+): { cancelCount: () => number; response: Response } => {
+  const encoder = new TextEncoder()
+  let cancelCount = 0
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(
+        encoder.encode(
+          `${responseEvents
+            .map(
+              (event) =>
+                `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}`,
+            )
+            .join("\n\n")}\n\n`,
+        ),
+      )
+    },
+    cancel() {
+      cancelCount += 1
+    },
+  })
+
+  return {
+    cancelCount: () => cancelCount,
+    response: new Response(body, {
+      headers: {
+        "content-type": "text/event-stream",
+      },
+    }),
+  }
+}
+
+const configureOpenAIResponsesProvider = (): void => {
+  providerConfig = {
+    apiKey: "provider-key",
+    authType: "authorization",
+    baseUrl: "https://responses.example",
+    models: {
+      "gpt-resp": {},
+    },
+    name: "dash",
+    type: "openai-responses",
+  }
+}
+
+const requestStreamingResponsesProviderMessages = (
+  signal?: AbortSignal,
+): Promise<Response> =>
+  Promise.resolve(
+    createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-resp",
+        stream: true,
+      }),
+      signal,
+    }),
+  )
+
+const normalizedResponsesUsage = {
+  cache_read_input_tokens: 2,
+  input_tokens: 10,
+  output_tokens: 4,
+  total_tokens: 16,
+}
+
 beforeEach(() => {
   providerConfig = {
     name: "dashscope",
@@ -880,17 +952,97 @@ describe("openai-compatible provider messages", () => {
 })
 
 describe("openai-responses provider messages", () => {
-  test("records usage from Responses provider streams", async () => {
-    providerConfig = {
-      apiKey: "provider-key",
-      authType: "authorization",
-      baseUrl: "https://responses.example",
-      models: {
-        "gpt-resp": {},
+  test("releases the real provider HTTP transport after a typed terminal", async () => {
+    configureOpenAIResponsesProvider()
+
+    let upstreamSignal: AbortSignal | null = null
+    const transport = createOpenResponsesSseTransport([
+      {
+        response: createResponsesResult(),
+        sequence_number: 0,
+        type: "response.created",
       },
-      name: "dash",
-      type: "openai-responses",
+      {
+        response: createResponsesResult(),
+        sequence_number: 1,
+        type: "response.completed",
+      },
+    ])
+    fetchMock.mockImplementationOnce((_url, init) => {
+      upstreamSignal = init?.signal ?? null
+      return Promise.resolve(transport.response)
+    })
+
+    const response = await requestStreamingResponsesProviderMessages()
+
+    const body = await response.text()
+    expect(body.match(/event: message_stop/gu)).toHaveLength(1)
+    expect(body).not.toContain("event: error")
+    expect(upstreamSignal).not.toBeNull()
+    expect((upstreamSignal as unknown as AbortSignal).aborted).toBe(true)
+    expect(transport.cancelCount()).toBe(1)
+  })
+
+  test("forwards caller abort to the provider HTTP transport after partial output", async () => {
+    configureOpenAIResponsesProvider()
+
+    const decoder = new TextDecoder()
+    let upstreamSignal: AbortSignal | null = null
+    const transport = createOpenResponsesSseTransport([
+      {
+        response: createResponsesResult(),
+        sequence_number: 0,
+        type: "response.created",
+      },
+      {
+        content_index: 0,
+        delta: "partial",
+        item_id: "msg-test",
+        output_index: 0,
+        sequence_number: 1,
+        type: "response.output_text.delta",
+      },
+    ])
+    fetchMock.mockImplementationOnce((_url, init) => {
+      upstreamSignal = init?.signal ?? null
+      return Promise.resolve(transport.response)
+    })
+
+    const controller = new AbortController()
+    const abortReason = new Error("client disconnected after partial output")
+    const response = await requestStreamingResponsesProviderMessages(
+      controller.signal,
+    )
+
+    const reader = response.body!.getReader()
+    let body = ""
+    while (!body.includes('"text":"partial"')) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      body += decoder.decode(chunk.value as Uint8Array, { stream: true })
     }
+    controller.abort(abortReason)
+    try {
+      while (true) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        body += decoder.decode(chunk.value as Uint8Array, { stream: true })
+      }
+    } catch {
+      // The caller intentionally closed the downstream response.
+    }
+
+    expect(body).toContain('"text":"partial"')
+    expect(body).not.toContain("event: error")
+    expect(body).not.toContain("event: message_stop")
+    expect(upstreamSignal).not.toBeNull()
+    expect((upstreamSignal as unknown as AbortSignal).aborted).toBe(true)
+    expect((upstreamSignal as unknown as AbortSignal).reason).toBe(abortReason)
+    expect(transport.cancelCount()).toBe(1)
+  })
+
+  test("records usage from Responses provider streams", async () => {
+    configureOpenAIResponsesProvider()
 
     const encoder = new TextEncoder()
     let emittedUsage = false
@@ -922,41 +1074,126 @@ describe("openai-responses provider messages", () => {
       ),
     )
 
-    const app = createApp()
-    const response = await app.request("/dash/v1/messages", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        max_tokens: 128,
-        messages: [{ role: "user", content: "hello" }],
-        model: "gpt-resp",
-        stream: true,
-      }),
-    })
+    const response = await requestStreamingResponsesProviderMessages()
 
     expect(response.status).toBe(200)
     await response.text()
-    expect(providerUsageRecorder).toHaveBeenCalledWith({
-      cache_read_input_tokens: 2,
-      input_tokens: 10,
-      output_tokens: 4,
-      total_tokens: 16,
+    expect(providerUsageRecorder).toHaveBeenCalledWith(normalizedResponsesUsage)
+  })
+
+  test("turns a partial Responses provider failure into one Anthropic stream error", async () => {
+    configureOpenAIResponsesProvider()
+
+    const encoder = new TextEncoder()
+    let pullCount = 0
+    let upstreamSignal: AbortSignal | null = null
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pullCount === 0) {
+          pullCount += 1
+          controller.enqueue(
+            encoder.encode(
+              `event: response.output_text.delta\ndata: ${JSON.stringify({
+                content_index: 0,
+                delta: "partial",
+                item_id: "msg-test",
+                output_index: 0,
+                sequence_number: 1,
+                type: "response.output_text.delta",
+              })}\n\n`,
+            ),
+          )
+          return
+        }
+        controller.error(new Error("provider socket reset"))
+      },
     })
+    fetchMock.mockImplementationOnce((_url, init) => {
+      upstreamSignal = init?.signal ?? null
+      return Promise.resolve(
+        new Response(stream, {
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        }),
+      )
+    })
+
+    const response = await requestStreamingResponsesProviderMessages()
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain('"text":"partial"')
+    expect(body.match(/event: error/gu)).toHaveLength(1)
+    expect(body).toContain("provider socket reset")
+    expect(body).not.toContain("event: message_stop")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith({})
+    expect(upstreamSignal).not.toBeNull()
+    expect((upstreamSignal as unknown as AbortSignal).aborted).toBe(true)
+  })
+
+  test("maps a failed provider terminal to one error and records its usage", async () => {
+    configureOpenAIResponsesProvider()
+    const failedResponse = {
+      ...createResponsesResult(),
+      error: {
+        code: "server_error",
+        message: "provider failed after usage",
+      },
+      status: "failed",
+    }
+    const transport = createOpenResponsesSseTransport([
+      {
+        response: failedResponse,
+        sequence_number: 1,
+        type: "response.failed",
+      },
+    ])
+    fetchMock.mockImplementationOnce(() => Promise.resolve(transport.response))
+
+    const response = await requestStreamingResponsesProviderMessages()
+
+    const body = await response.text()
+    expect(body.match(/event: error/gu)).toHaveLength(1)
+    expect(body).toContain("provider failed after usage")
+    expect(body).not.toContain("event: message_stop")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(normalizedResponsesUsage)
+    expect(transport.cancelCount()).toBe(1)
+  })
+
+  test("maps an incomplete provider terminal to max_tokens and records its usage", async () => {
+    configureOpenAIResponsesProvider()
+    const incompleteResponse = {
+      ...createResponsesResult(),
+      incomplete_details: {
+        reason: "max_output_tokens",
+      },
+      status: "incomplete",
+    }
+    const transport = createOpenResponsesSseTransport([
+      {
+        response: incompleteResponse,
+        sequence_number: 1,
+        type: "response.incomplete",
+      },
+    ])
+    fetchMock.mockImplementationOnce(() => Promise.resolve(transport.response))
+
+    const response = await requestStreamingResponsesProviderMessages()
+
+    const body = await response.text()
+    expect(body.match(/event: message_stop/gu)).toHaveLength(1)
+    expect(body).toContain('"stop_reason":"max_tokens"')
+    expect(body).not.toContain("event: error")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(normalizedResponsesUsage)
+    expect(transport.cancelCount()).toBe(1)
   })
 
   test("rejects assistant prefill before calling a Responses provider", async () => {
-    providerConfig = {
-      apiKey: "provider-key",
-      authType: "authorization",
-      baseUrl: "https://responses.example",
-      models: {
-        "gpt-resp": {},
-      },
-      name: "dash",
-      type: "openai-responses",
-    }
+    configureOpenAIResponsesProvider()
 
     const response = await createApp().request("/dash/v1/messages", {
       method: "POST",
@@ -978,16 +1215,7 @@ describe("openai-responses provider messages", () => {
   })
 
   test("maps disabled thinking and failed Responses provider results", async () => {
-    providerConfig = {
-      apiKey: "provider-key",
-      authType: "authorization",
-      baseUrl: "https://responses.example",
-      models: {
-        "gpt-resp": {},
-      },
-      name: "dash",
-      type: "openai-responses",
-    }
+    configureOpenAIResponsesProvider()
     fetchMock.mockImplementationOnce((_url, init) => {
       const requestBody = JSON.parse(init?.body as string) as {
         reasoning?: { effort?: string }

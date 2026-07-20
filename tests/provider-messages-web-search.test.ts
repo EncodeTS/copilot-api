@@ -17,7 +17,8 @@ const actualTokenUsageModule = await import("../src/lib/token-usage")
 let providerConfigs: Record<string, ResolvedProviderConfig> = {}
 let messageApiWebSearchModel: string | undefined
 
-const noopTokenUsageRecorder = () => {}
+const providerUsageRecorder = mock((_usage: Record<string, unknown>) => {})
+const createProviderUsageRecorder = () => providerUsageRecorder
 const findEndpointModel = mock((model: string) => ({
   id: model,
   supported_endpoints: ["/v1/messages"],
@@ -53,7 +54,7 @@ await mock.module("~/lib/token", () => ({
 
 await mock.module("~/lib/token-usage", () => ({
   ...actualTokenUsageModule,
-  createProviderTokenUsageRecorder: () => noopTokenUsageRecorder,
+  createProviderTokenUsageRecorder: createProviderUsageRecorder,
 }))
 
 const { providerMessageRoutes } = await import(
@@ -246,9 +247,42 @@ const makeResponsesStreamResponse = (body: ResponsesResult) => {
   })
 }
 
+const makeOpenResponsesStreamResponse = (
+  responseEvents: Array<Record<string, unknown>>,
+): { cancelCount: () => number; response: Response } => {
+  const encoder = new TextEncoder()
+  let cancelCount = 0
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(
+        encoder.encode(
+          `${responseEvents
+            .map(
+              (event) =>
+                `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}`,
+            )
+            .join("\n\n")}\n\n`,
+        ),
+      )
+    },
+    cancel() {
+      cancelCount += 1
+    },
+  })
+
+  return {
+    cancelCount: () => cancelCount,
+    response: new Response(body, {
+      headers: { "content-type": "text/event-stream; charset=utf-8" },
+    }),
+  }
+}
+
 const originalFetch = globalThis.fetch
 let responsesResultOverride: ResponsesResult | undefined
-let responsesStreamFactory: ((body: ResponsesResult) => Response) | undefined
+let responsesStreamFactory:
+  | ((body: ResponsesResult, init?: RequestInit) => Response)
+  | undefined
 
 const fetchMock = mock((url: string | URL | Request, init?: RequestInit) => {
   const urlString =
@@ -284,7 +318,7 @@ const fetchMock = mock((url: string | URL | Request, init?: RequestInit) => {
     && requestPayload.stream === true
   ) {
     return Promise.resolve(
-      responsesStreamFactory?.(body) ?? makeResponsesStreamResponse(body),
+      responsesStreamFactory?.(body, init) ?? makeResponsesStreamResponse(body),
     )
   }
 
@@ -337,6 +371,25 @@ const createCodexMessagesPayload = (
   ...overrides,
 })
 
+const requestStreamingCodexProviderMessages = (
+  signal?: AbortSignal,
+): Promise<Response> =>
+  Promise.resolve(
+    createApp().request("/codex/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(createCodexMessagesPayload({ stream: true })),
+      signal,
+    }),
+  )
+
+const normalizedCodexResponsesUsage = {
+  cache_read_input_tokens: 0,
+  input_tokens: 12,
+  output_tokens: 7,
+  total_tokens: 19,
+}
+
 beforeEach(() => {
   providerConfigs = {
     search: {
@@ -364,6 +417,7 @@ beforeEach(() => {
   responsesUtilsDependencies.isContextManagementEnabledForResponses = () =>
     false
   fetchMock.mockClear()
+  providerUsageRecorder.mockClear()
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
     fetchMock as unknown as typeof fetch
 })
@@ -963,11 +1017,7 @@ describe("provider messages web_search", () => {
   test("keeps requested Codex streaming as Anthropic SSE", async () => {
     configureCodexProvider()
 
-    const response = await createApp().request("/codex/v1/messages", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(createCodexMessagesPayload({ stream: true })),
-    })
+    const response = await requestStreamingCodexProviderMessages()
 
     expect(response.status).toBe(200)
     expect(response.headers.get("content-type")).toContain("text/event-stream")
@@ -975,6 +1025,184 @@ describe("provider messages web_search", () => {
     expect(text).toContain("event: message_start")
     expect(text).toContain("Hello from Codex.")
     expect(text).toContain("event: message_stop")
+  })
+
+  test("releases Codex HTTP after a completed provider Messages terminal", async () => {
+    configureCodexProvider()
+    const completedResponse = makePlainResponsesResult()
+    const transport = makeOpenResponsesStreamResponse([
+      {
+        response: completedResponse,
+        sequence_number: 1,
+        type: "response.completed",
+      },
+    ])
+    let upstreamSignal: AbortSignal | null = null
+    responsesStreamFactory = (_body, init) => {
+      upstreamSignal = init?.signal ?? null
+      return transport.response
+    }
+
+    const response = await requestStreamingCodexProviderMessages()
+
+    const body = await response.text()
+    expect(body.match(/event: message_stop/gu)).toHaveLength(1)
+    expect(body).not.toContain("event: error")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      normalizedCodexResponsesUsage,
+    )
+    expect(upstreamSignal).not.toBeNull()
+    expect((upstreamSignal as unknown as AbortSignal).aborted).toBe(true)
+    expect(transport.cancelCount()).toBe(1)
+  })
+
+  test("releases Codex HTTP after an incomplete provider Messages terminal", async () => {
+    configureCodexProvider()
+    const incompleteResponse = {
+      ...makePlainResponsesResult(),
+      incomplete_details: { reason: "max_output_tokens" },
+      status: "incomplete",
+    }
+    const transport = makeOpenResponsesStreamResponse([
+      {
+        response: incompleteResponse,
+        sequence_number: 1,
+        type: "response.incomplete",
+      },
+    ])
+    responsesStreamFactory = () => transport.response
+
+    const response = await requestStreamingCodexProviderMessages()
+
+    const body = await response.text()
+    expect(body.match(/event: message_stop/gu)).toHaveLength(1)
+    expect(body).toContain('"stop_reason":"max_tokens"')
+    expect(body).not.toContain("event: error")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      normalizedCodexResponsesUsage,
+    )
+    expect(transport.cancelCount()).toBe(1)
+  })
+
+  test("releases Codex HTTP after a failed provider Messages terminal", async () => {
+    configureCodexProvider()
+    const failedResponse = {
+      ...makePlainResponsesResult(),
+      error: {
+        code: "server_error",
+        message: "Codex provider failed after usage",
+      },
+      status: "failed",
+    }
+    const transport = makeOpenResponsesStreamResponse([
+      {
+        response: failedResponse,
+        sequence_number: 1,
+        type: "response.failed",
+      },
+    ])
+    responsesStreamFactory = () => transport.response
+
+    const response = await requestStreamingCodexProviderMessages()
+
+    const body = await response.text()
+    expect(body.match(/event: error/gu)).toHaveLength(1)
+    expect(body).toContain("Codex provider failed after usage")
+    expect(body).not.toContain("event: message_stop")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      normalizedCodexResponsesUsage,
+    )
+    expect(transport.cancelCount()).toBe(1)
+  })
+
+  test("releases Codex HTTP after a provider Messages error event", async () => {
+    configureCodexProvider()
+    const transport = makeOpenResponsesStreamResponse([
+      {
+        code: "upstream_error",
+        message: "Codex provider stream error",
+        param: null,
+        sequence_number: 1,
+        type: "error",
+      },
+    ])
+    responsesStreamFactory = () => transport.response
+
+    const response = await requestStreamingCodexProviderMessages()
+
+    const body = await response.text()
+    expect(body.match(/event: error/gu)).toHaveLength(1)
+    expect(body).toContain("Codex provider stream error")
+    expect(body).not.toContain("event: message_stop")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith({})
+    expect(transport.cancelCount()).toBe(1)
+  })
+
+  test("forwards caller abort reason through Codex provider HTTP", async () => {
+    configureCodexProvider()
+    const transport = makeOpenResponsesStreamResponse([
+      {
+        response: {
+          ...makePlainResponsesResult(),
+          output: [],
+          output_text: "",
+          usage: null,
+        },
+        sequence_number: 0,
+        type: "response.created",
+      },
+      {
+        content_index: 0,
+        delta: "partial",
+        item_id: "msg-provider-message",
+        output_index: 0,
+        sequence_number: 1,
+        type: "response.output_text.delta",
+      },
+    ])
+    let upstreamSignal: AbortSignal | null = null
+    responsesStreamFactory = (_body, init) => {
+      upstreamSignal = init?.signal ?? null
+      return transport.response
+    }
+    const controller = new AbortController()
+    const abortReason = new Error("caller stopped Codex HTTP after partial")
+
+    const response = await requestStreamingCodexProviderMessages(
+      controller.signal,
+    )
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let body = ""
+    while (!body.includes('"text":"partial"')) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      body += decoder.decode(chunk.value as Uint8Array, { stream: true })
+    }
+    controller.abort(abortReason)
+    try {
+      while (true) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        body += decoder.decode(chunk.value as Uint8Array, { stream: true })
+      }
+    } catch {
+      // The caller intentionally closed the downstream response.
+    }
+
+    expect(body).toContain('"text":"partial"')
+    expect(body).not.toContain("event: error")
+    expect(body).not.toContain("event: message_stop")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith({})
+    expect(upstreamSignal).not.toBeNull()
+    expect((upstreamSignal as unknown as AbortSignal).aborted).toBe(true)
+    expect((upstreamSignal as unknown as AbortSignal).reason).toBe(abortReason)
+    expect(transport.cancelCount()).toBe(1)
   })
 
   test("fails non-stream Codex requests when the upstream stream errors", async () => {
