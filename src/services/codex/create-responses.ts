@@ -474,6 +474,7 @@ const createCodexResponsesWebSocketStream = (
   createCodexResponsesSafeStream(
     createPooledWebSocketStream(request, {
       createChunk: createCodexResponsesWebSocketStreamChunk,
+      isReusableTerminalChunk: (chunk) => chunk.event !== "error",
       isTerminalChunk: isTerminalCodexResponsesWebSocketChunk,
       openErrorMessage: "Failed to create codex responses websocket",
       streamErrorMessage: "Codex responses websocket stream error",

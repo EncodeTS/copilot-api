@@ -90,6 +90,19 @@ class MockWebSocket {
     })
   }
 
+  failLatestResponse(message: string): void {
+    if (!this.sent.at(-1)) {
+      throw new Error("No websocket request to fail")
+    }
+
+    this.emit("message", {
+      data: JSON.stringify({
+        error: { message },
+        type: "error",
+      }),
+    })
+  }
+
   private emit(event: string, payload: ListenerEvent): void {
     for (const listener of this.listeners.get(event) ?? []) {
       listener(payload)
@@ -356,27 +369,86 @@ test("forwardCodexResponses returns HTTP event streams when stream=true", async 
   expect(chunks[0]?.data).toContain('"type":"response.completed"')
 })
 
-test("forwardCodexResponses preserves response.completed while using websocket", async () => {
-  const response = await forwardCodexResponses(
-    {
-      input: "hello",
-      model: "gpt-5.4",
-      stream: true,
-    },
+test("forwardCodexResponses reuses the websocket after response.completed", async () => {
+  const payload = {
+    input: "hello",
+    model: "gpt-5.4",
+    stream: true,
+  } as const
+  const options = { transport: "websocket" } as const
+
+  const firstResponse = await forwardCodexResponses(
+    payload,
     new Headers(),
     undefined,
-    {
-      transport: "websocket",
-    },
+    options,
+  )
+  const firstChunks = await collectStreamChunks(
+    firstResponse as AsyncIterable<unknown>,
+  )
+
+  const secondResponse = await forwardCodexResponses(
+    payload,
+    new Headers(),
+    undefined,
+    options,
+  )
+  const secondChunks = await collectStreamChunks(
+    secondResponse as AsyncIterable<unknown>,
   )
 
   expect(fetchMock).not.toHaveBeenCalled()
-  const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
-
   expect(MockWebSocket.instances).toHaveLength(1)
-  expect(chunks).toHaveLength(1)
-  expect(chunks[0]?.event).toBe("response.completed")
-  expect(chunks[0]?.data).toContain('"type":"response.completed"')
+  expect(MockWebSocket.instances[0]?.sent).toHaveLength(2)
+  expect(firstChunks).toHaveLength(1)
+  expect(firstChunks[0]?.event).toBe("response.completed")
+  expect(firstChunks[0]?.data).toContain('"type":"response.completed"')
+  expect(secondChunks).toHaveLength(1)
+  expect(secondChunks[0]?.event).toBe("response.completed")
+})
+
+test("forwardCodexResponses opens a new websocket after an error terminal", async () => {
+  MockWebSocket.autoComplete = false
+  const payload = {
+    input: "hello",
+    model: "gpt-5.4",
+    stream: true,
+  } as const
+  const options = { transport: "websocket" } as const
+
+  const firstResponse = await forwardCodexResponses(
+    payload,
+    new Headers(),
+    undefined,
+    options,
+  )
+  const firstChunksPromise = collectStreamChunks(
+    firstResponse as AsyncIterable<unknown>,
+  )
+
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  MockWebSocket.instances[0]?.failLatestResponse("first request failed")
+
+  const firstChunks = await firstChunksPromise
+  expect(firstChunks).toHaveLength(1)
+  expect(firstChunks[0]?.event).toBe("error")
+
+  MockWebSocket.autoComplete = true
+  const secondResponse = await forwardCodexResponses(
+    payload,
+    new Headers(),
+    undefined,
+    options,
+  )
+  const secondChunks = await collectStreamChunks(
+    secondResponse as AsyncIterable<unknown>,
+  )
+
+  expect(MockWebSocket.instances).toHaveLength(2)
+  expect(MockWebSocket.instances[0]?.sent).toHaveLength(1)
+  expect(MockWebSocket.instances[1]?.sent).toHaveLength(1)
+  expect(secondChunks).toHaveLength(1)
+  expect(secondChunks[0]?.event).toBe("response.completed")
 })
 
 test("forwardCodexResponses emits an error event when the websocket closes without a terminal response", async () => {
