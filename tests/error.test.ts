@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import { Hono } from "hono"
 
 import {
@@ -6,6 +6,8 @@ import {
   HTTPError,
   LocalPayloadTooLargeError,
 } from "../src/lib/error"
+import { RequestBodyTooLargeError } from "../src/lib/request-body-policy"
+import { serverErrorHandler } from "../src/server"
 
 test("forwardError preserves a structured upstream error envelope", async () => {
   const upstreamBody = {
@@ -95,4 +97,58 @@ test("forwardError strips compression stack traces from local 413 responses", as
       message: "decode failed",
     },
   ])
+})
+
+test("forwardError preserves structured inbound body-limit errors", async () => {
+  const app = new Hono()
+  app.get("/", (c) => forwardError(c, new RequestBodyTooLargeError("encoded")))
+
+  const response = await app.request("/")
+
+  expect(response.status).toBe(413)
+  expect(await response.json()).toEqual({
+    error: {
+      code: "local_request_body_too_large",
+      message: "Encoded request body exceeds the local safety limit.",
+      stage: "encoded",
+      type: "payload_too_large",
+    },
+  })
+})
+
+test("serverErrorHandler preserves structured inbound body-limit errors", async () => {
+  const consoleError = spyOn(console, "error").mockImplementation(() => {})
+  const app = new Hono()
+  app.onError(serverErrorHandler)
+  app.get("/", () => {
+    throw new RequestBodyTooLargeError("decoded")
+  })
+
+  const response = await app.request("/")
+
+  expect(response.status).toBe(413)
+  expect(await response.json()).toMatchObject({
+    error: {
+      code: "local_request_body_too_large",
+      stage: "decoded",
+    },
+  })
+  expect(consoleError).not.toHaveBeenCalled()
+  consoleError.mockRestore()
+})
+
+test("serverErrorHandler keeps unexpected errors generic", async () => {
+  const consoleError = spyOn(console, "error").mockImplementation(() => {})
+  const app = new Hono()
+  app.onError(serverErrorHandler)
+  app.get("/", () => {
+    throw new Error("private failure details")
+  })
+
+  const response = await app.request("/")
+
+  expect(response.status).toBe(500)
+  expect(await response.text()).toBe("Internal Server Error")
+  expect(consoleError).toHaveBeenCalledTimes(1)
+  consoleError.mockRestore()
 })

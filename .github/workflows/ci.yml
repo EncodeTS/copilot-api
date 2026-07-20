@@ -62,6 +62,18 @@ jobs:
       - name: Build desktop server bundle
         run: bun run build:desktop
 
+      - name: Verify Node 22.13 zstd runtime contract
+        run: bun run smoke:zstd-runtime
+
+      - name: Select minimum supported Node runtime
+        uses: actions/setup-node@v6
+        with:
+          node-version: "20.20.0"
+          package-manager-cache: false
+
+      - name: Verify Node 20 zstd runtime contract
+        run: bun run smoke:zstd-runtime
+
   windows-codex:
     name: Windows Codex
     runs-on: windows-latest
@@ -164,6 +176,9 @@ jobs:
 
       - name: Build packaged-server dependency closure
         run: bun run --cwd desktop build:server
+
+      - name: Verify Electron zstd utility-process runtime
+        run: xvfb-run --auto-servernum bun run --cwd desktop smoke:server-zstd
 
       - name: Stage packaged-server layout
         shell: bash

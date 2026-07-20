@@ -1,4 +1,4 @@
-import { Hono } from "hono"
+import { Hono, type ErrorHandler } from "hono"
 import { cors } from "hono/cors"
 import { logger } from "hono/logger"
 import { readFileSync } from "node:fs"
@@ -7,8 +7,11 @@ import {
   createAuthMiddleware,
   getConfiguredAdminApiKeys,
 } from "./lib/request-auth"
-import { traceIdMiddleware } from "./lib/trace"
-import { zstdDecompressionMiddleware } from "./lib/zstd-request"
+import { traceIdMiddleware } from "~/lib/trace"
+import {
+  createRequestBodyErrorResponse,
+  requestBodyMiddleware,
+} from "~/lib/zstd-request"
 import { alphaSearchRoutes } from "./routes/alpha-search/route"
 import { completionRoutes } from "./routes/chat-completions/route"
 import { configRoutes } from "./routes/admin/config/route"
@@ -25,6 +28,18 @@ import { tokenRoute } from "./routes/token/route"
 import { usageRoute } from "./routes/usage/route"
 
 export const server = new Hono()
+
+export const serverErrorHandler: ErrorHandler = (error, c) => {
+  const requestBodyErrorResponse = createRequestBodyErrorResponse(c, error)
+  if (requestBodyErrorResponse !== null) {
+    return requestBodyErrorResponse
+  }
+
+  console.error(error)
+  return c.text("Internal Server Error", 500)
+}
+
+server.onError(serverErrorHandler)
 
 server.use(traceIdMiddleware)
 server.use(logger())
@@ -44,7 +59,7 @@ server.use(
     allowWhenNoApiKeys: false,
   }),
 )
-server.use(zstdDecompressionMiddleware)
+server.use(requestBodyMiddleware)
 
 server.get("/", (c) => c.text("Server running"))
 server.get("/usage-viewer", (c) => {

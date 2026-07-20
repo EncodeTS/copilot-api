@@ -3,6 +3,8 @@ import type { ContentfulStatusCode } from "hono/utils/http-status"
 
 import consola from "consola"
 
+import { createRequestBodyErrorResponse } from "~/lib/request-body-policy"
+
 export interface LocalPayloadTooLargeDetails {
   payloadBytes: number
   budgetBytes: number
@@ -64,6 +66,11 @@ export async function forwardError(
   c: Context,
   error: unknown,
 ): Promise<Response> {
+  const requestBodyErrorResponse = createRequestBodyErrorResponse(c, error)
+  if (requestBodyErrorResponse !== null) {
+    return requestBodyErrorResponse
+  }
+
   consola.error("Error occurred:", error)
 
   if (error instanceof LocalPayloadTooLargeError) {
