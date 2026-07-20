@@ -9,6 +9,7 @@ import {
   loadInstalledCodexCatalog,
   type CodexModelsResponse,
 } from "../src/services/codex/installed-catalog"
+import { isLiveTestEnabled } from "./fixtures/live-tests"
 
 const originalGetExecutableCandidates =
   codexCatalogLoaderDependencies.getExecutableCandidates
@@ -62,7 +63,8 @@ afterEach(() => {
 
 describe("installed Codex catalog", () => {
   const realCodexVersion = process.env.COPILOT_API_REAL_CODEX_VERSION
-  const realCodexIntegrationTest = realCodexVersion ? test : test.skip
+  const realCodexIntegrationTest =
+    realCodexVersion && isLiveTestEnabled() ? test : test.skip
 
   realCodexIntegrationTest(
     "loads the official Codex catalog through installed discovery",
