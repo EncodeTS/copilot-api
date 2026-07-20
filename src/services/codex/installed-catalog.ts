@@ -324,7 +324,16 @@ function parseCodexModelsOutput(output: string): CodexModelsResponse | null {
     ) {
       return null
     }
-    models.push(model as CodexModelInfo)
+    const parsedModel = model as CodexModelInfo
+    models.push({
+      ...parsedModel,
+      // Newer bundled catalogs can omit this legacy field, while older Codex
+      // clients still require it when parsing model_catalog_json.
+      supports_reasoning_summaries:
+        typeof parsedModel.supports_reasoning_summaries === "boolean" ?
+          parsedModel.supports_reasoning_summaries
+        : true,
+    })
   }
 
   return models.length > 0 ? { models } : null

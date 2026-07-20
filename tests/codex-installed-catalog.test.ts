@@ -20,6 +20,7 @@ const bundledCatalogObject: CodexModelsResponse = {
       slug: "gpt-5.6-sol",
       base_instructions: "bundled instructions",
       context_window: 372_000,
+      supports_reasoning_summaries: true,
     },
   ],
 }
@@ -103,6 +104,7 @@ describe("installed Codex catalog", () => {
           slug: "gpt-5.6-sol",
           base_instructions: "bundled instructions",
           context_window: 372_000,
+          supports_reasoning_summaries: true,
         },
       ],
     })
@@ -114,6 +116,45 @@ describe("installed Codex catalog", () => {
       "/mock/codex",
       ["debug", "models", "--bundled"],
     ])
+  })
+
+  test("backfills reasoning summary support omitted by newer bundled catalogs", async () => {
+    const catalogWithoutCompatibilityField = JSON.stringify({
+      models: [
+        {
+          slug: "gpt-5.6-sol",
+          base_instructions: "bundled instructions",
+          supported_reasoning_levels: [{ effort: "high" }],
+        },
+        {
+          slug: "gpt-5.4-mini",
+          base_instructions: "mini instructions",
+          supports_reasoning_summaries: false,
+        },
+      ],
+    })
+    codexCatalogLoaderDependencies.runCommand = (_executable, args) =>
+      Promise.resolve(
+        args[0] === "--version" ?
+          "codex-cli 0.145.0-alpha.18\n"
+        : catalogWithoutCompatibilityField,
+      )
+
+    expect(await loadInstalledCodexCatalog("0.145.0-alpha.18")).toEqual({
+      models: [
+        {
+          slug: "gpt-5.6-sol",
+          base_instructions: "bundled instructions",
+          supported_reasoning_levels: [{ effort: "high" }],
+          supports_reasoning_summaries: true,
+        },
+        {
+          slug: "gpt-5.4-mini",
+          base_instructions: "mini instructions",
+          supports_reasoning_summaries: false,
+        },
+      ],
+    })
   })
 
   test("skips installed executables whose version does not match", async () => {
