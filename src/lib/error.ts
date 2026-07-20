@@ -3,8 +3,8 @@ import type { ContentfulStatusCode } from "hono/utils/http-status"
 
 import consola from "consola"
 
+import { AuthRequestError } from "~/lib/auth-request"
 import { createRequestBodyErrorResponse } from "~/lib/request-body-policy"
-
 export interface LocalPayloadTooLargeDetails {
   payloadBytes: number
   budgetBytes: number
@@ -71,7 +71,11 @@ export async function forwardError(
     return requestBodyErrorResponse
   }
 
-  consola.error("Error occurred:", error)
+  if (error instanceof AuthRequestError) {
+    consola.error("Auth request failed:", error.message)
+  } else {
+    consola.error("Error occurred:", error)
+  }
 
   if (error instanceof LocalPayloadTooLargeError) {
     consola.error("Payload budget details:", error.details)
@@ -94,6 +98,21 @@ export async function forwardError(
         },
       },
       413,
+    )
+  }
+
+  if (error instanceof AuthRequestError) {
+    for (const [name, value] of Object.entries(error.headers)) {
+      c.header(name, value)
+    }
+    return c.json(
+      {
+        error: {
+          message: error.message,
+          type: "auth_error",
+        },
+      },
+      error.downstreamStatus as ContentfulStatusCode,
     )
   }
 

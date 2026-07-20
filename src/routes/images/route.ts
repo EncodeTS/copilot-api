@@ -26,7 +26,9 @@ async function handleCodexImages(
   operation: CodexImagesOperation,
 ): Promise<Response> {
   try {
-    const codexProviderConfig = await resolveProviderConfig("codex")
+    const codexProviderConfig = await resolveProviderConfig("codex", {
+      signal: c.req.raw.signal,
+    })
     if (!codexProviderConfig) {
       return c.json(
         {

@@ -29,7 +29,9 @@ export async function handleProviderCountTokensForProvider(
   normalizeSystemMessages(anthropicPayload)
   const modelId = anthropicPayload.model.trim()
 
-  const resolvedProviderModel = await resolveProviderModel(provider, modelId)
+  const resolvedProviderModel = await resolveProviderModel(provider, modelId, {
+    signal: c.req.raw.signal,
+  })
   if (!resolvedProviderModel) {
     return c.json(
       {

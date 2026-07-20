@@ -1,21 +1,49 @@
 import { getGitHubApiBaseUrl, githubUserHeaders } from "~/lib/api-config"
-import { HTTPError } from "~/lib/error"
+import {
+  AuthProtocolError,
+  createAuthRequestError,
+  fetchAuthJson,
+  requireAuthObject,
+  type AuthRequestOptions,
+} from "~/lib/auth-request"
 import { state } from "~/lib/state"
 
-export async function getGitHubUser(githubToken?: string) {
+export async function getGitHubUser(
+  githubToken?: string,
+  options?: AuthRequestOptions,
+) {
   const resolvedGithubToken = githubToken ?? state.githubToken
   if (!resolvedGithubToken) {
     throw new Error("GitHub token not found")
   }
 
   const authState = { ...state, githubToken: resolvedGithubToken }
-  const response = await fetch(`${getGitHubApiBaseUrl()}/user`, {
-    headers: githubUserHeaders(authState),
-  })
+  const response = await fetchAuthJson(
+    `${getGitHubApiBaseUrl()}/user`,
+    {
+      headers: githubUserHeaders(authState),
+    },
+    {
+      ...options,
+      action: "GitHub user request",
+    },
+  )
 
-  if (!response.ok) throw new HTTPError("Failed to get GitHub user", response)
+  if (!response.ok) {
+    throw createAuthRequestError({
+      action: "GitHub user request",
+      headers: response.headers,
+      status: response.status,
+    })
+  }
 
-  return (await response.json()) as GithubUserResponse
+  const payload = requireAuthObject(response, "GitHub user request")
+  if (typeof payload.login !== "string" || !payload.login) {
+    throw new AuthProtocolError(
+      "GitHub user response is missing required fields",
+    )
+  }
+  return payload as unknown as GithubUserResponse
 }
 
 // Trimmed for the sake of simplicity

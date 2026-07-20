@@ -18,8 +18,13 @@ function isMissingCodexCredentialsError(error: unknown): boolean {
   )
 }
 
+export interface ResolveProviderOptions {
+  signal?: AbortSignal
+}
+
 export async function resolveProviderConfig(
   providerName: string,
+  options: ResolveProviderOptions = {},
 ): Promise<ResolvedProviderConfig | null> {
   const normalizedProviderName = providerName.trim()
   if (!normalizedProviderName) {
@@ -33,7 +38,7 @@ export async function resolveProviderConfig(
     }
 
     try {
-      await setupCodexToken()
+      await setupCodexToken({ signal: options.signal })
     } catch (error) {
       if (isMissingCodexCredentialsError(error)) {
         return null
@@ -65,8 +70,9 @@ export interface ResolvedProviderModel {
 export async function resolveProviderModel(
   providerName: string,
   model: string,
+  options: ResolveProviderOptions = {},
 ): Promise<ResolvedProviderModel | null> {
-  const config = await resolveProviderConfig(providerName)
+  const config = await resolveProviderConfig(providerName, options)
   if (!config) return null
 
   const type = resolveEffectiveProviderType(config, model)

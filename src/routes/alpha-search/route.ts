@@ -12,7 +12,9 @@ export const alphaSearchRoutes = new Hono()
 
 alphaSearchRoutes.post("/", async (c) => {
   try {
-    const codexProviderConfig = await resolveProviderConfig("codex")
+    const codexProviderConfig = await resolveProviderConfig("codex", {
+      signal: c.req.raw.signal,
+    })
     if (!codexProviderConfig) {
       return c.json(
         {

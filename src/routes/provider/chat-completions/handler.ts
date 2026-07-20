@@ -41,6 +41,7 @@ export async function handleProviderChatCompletionsForProvider(
   const resolvedProviderModel = await resolveProviderModel(
     provider,
     payload.model,
+    { signal: c.req.raw.signal },
   )
   if (
     !resolvedProviderModel

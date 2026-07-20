@@ -1,6 +1,14 @@
 import { createHash } from "node:crypto"
 
 import { getGitHubApiBaseUrl, githubHeaders } from "~/lib/api-config"
+import {
+  AuthProtocolError,
+  AuthTransportError,
+  fetchAuthJson,
+  type AuthFetch,
+  type AuthJsonResponse,
+  type AuthRequestOptions,
+} from "~/lib/auth-request"
 import { state } from "~/lib/state"
 
 export type CopilotAccountType = "individual" | "business" | "enterprise"
@@ -18,6 +26,7 @@ export type CopilotUsageErrorCode =
 export class CopilotUsageFetchError extends Error {
   readonly cacheNeutral: boolean
   readonly code: CopilotUsageErrorCode
+  readonly kind: "aborted" | "permanent" | "retryable" | "timeout"
   readonly retryAfterMs: number | null
   readonly staleEligible: boolean
   readonly status: number | null
@@ -33,6 +42,11 @@ export class CopilotUsageFetchError extends Error {
     this.name = "CopilotUsageFetchError"
     this.cacheNeutral = input.cacheNeutral ?? false
     this.code = input.code
+    this.kind =
+      input.code === "aborted" ? "aborted"
+      : input.code === "timeout" ? "timeout"
+      : isTransientErrorCode(input.code) ? "retryable"
+      : "permanent"
     this.retryAfterMs = input.retryAfterMs ?? null
     this.staleEligible = input.staleEligible ?? false
     this.status = input.status ?? null
@@ -56,20 +70,14 @@ export interface CopilotUsageSnapshot {
   usage: CopilotUsageResponse
 }
 
-export interface GetCopilotUsageOptions {
+export interface GetCopilotUsageOptions extends AuthRequestOptions {
   expectedLogin?: string
   maxAttempts?: number
   requestTimeoutMs?: number
-  signal?: AbortSignal
 }
 
-type CopilotUsageFetch = (
-  input: string | URL | Request,
-  init?: RequestInit,
-) => Promise<Response>
-
 interface CopilotUsageFetchDependencies {
-  fetch: CopilotUsageFetch
+  fetch: AuthFetch
   maxAttempts: number
   maxRetryAfterMs: number
   maxScopes: number
@@ -116,6 +124,7 @@ interface CopilotUsageScopeState {
 
 interface ResolvedCopilotUsagePolicy {
   expectedLogin: string | null
+  fetch?: AuthFetch
   maxAttempts: number
   requestTimeoutMs: number
 }
@@ -130,6 +139,8 @@ interface InFlightUsageRefresh {
 
 const inFlightByRefreshKey = new Map<string, InFlightUsageRefresh>()
 const stateByScope = new Map<string, CopilotUsageScopeState>()
+const fetchIdentityByFunction = new WeakMap<AuthFetch, number>()
+let nextFetchIdentity = 0
 let nextUsageRefreshRevision = 0
 
 export function getCopilotUsageScopeId(githubToken: string): string {
@@ -196,6 +207,7 @@ function resolveUsagePolicy(
 ): ResolvedCopilotUsagePolicy {
   return {
     expectedLogin: options.expectedLogin?.trim().toLowerCase() || null,
+    fetch: options.fetch,
     maxAttempts: clampFiniteInteger(
       options.maxAttempts ?? copilotUsageFetchDependencies.maxAttempts,
       2,
@@ -204,6 +216,7 @@ function resolveUsagePolicy(
     ),
     requestTimeoutMs: clampFiniteInteger(
       options.requestTimeoutMs
+        ?? options.timeoutMs
         ?? copilotUsageFetchDependencies.requestTimeoutMs,
       5_000,
       1,
@@ -224,7 +237,18 @@ function getUsageRefreshKey(
     .update(String(policy.requestTimeoutMs))
     .update("\0")
     .update(policy.expectedLogin ?? "")
+    .update("\0")
+    .update(String(getFetchIdentity(policy.fetch)))
     .digest("base64url")
+}
+
+function getFetchIdentity(fetcher: AuthFetch | undefined): number {
+  if (!fetcher) return 0
+  const existing = fetchIdentityByFunction.get(fetcher)
+  if (existing !== undefined) return existing
+  const identity = ++nextFetchIdentity
+  fetchIdentityByFunction.set(fetcher, identity)
+  return identity
 }
 
 function createInFlightUsageRefresh(
@@ -479,7 +503,7 @@ async function fetchFreshCopilotUsage(
   signal: AbortSignal,
 ): Promise<CopilotUsageResponse> {
   const authState = { ...state, githubToken }
-  let response: Response | null = null
+  let response: AuthJsonResponse | null = null
 
   for (let attempt = 1; attempt <= policy.maxAttempts; attempt += 1) {
     try {
@@ -490,6 +514,7 @@ async function fetchFreshCopilotUsage(
         },
         policy.requestTimeoutMs,
         signal,
+        policy.fetch,
       )
     } catch (error) {
       const safeError = normalizeUsageFetchError(error)
@@ -525,16 +550,14 @@ async function fetchFreshCopilotUsage(
     throw createResponseError(response)
   }
 
-  let parsed: unknown
-  try {
-    parsed = await response.json()
-  } catch {
+  if (!response.jsonValid) {
     throw new CopilotUsageFetchError({
       code: "invalid_response",
       staleEligible: true,
       status: response.status,
     })
   }
+  const parsed = response.payload
 
   if (!isCopilotUsageResponse(parsed)) {
     throw new CopilotUsageFetchError({
@@ -624,7 +647,9 @@ function isCopilotUsageResponse(value: unknown): value is CopilotUsageResponse {
   )
 }
 
-function createResponseError(response: Response): CopilotUsageFetchError {
+function createResponseError(
+  response: Pick<AuthJsonResponse, "headers" | "status">,
+): CopilotUsageFetchError {
   const code: CopilotUsageErrorCode =
     response.status === 401 ? "unauthorized"
     : response.status === 403 ? "forbidden"
@@ -644,49 +669,36 @@ async function fetchCopilotUsageAttempt(
   init: RequestInit,
   requestTimeoutMs?: number,
   signal?: AbortSignal,
-): Promise<Response> {
-  const controller = new AbortController()
-  let timedOut = false
-  let sharedAborted = false
-  const timeoutMs = clampFiniteInteger(
-    requestTimeoutMs ?? copilotUsageFetchDependencies.requestTimeoutMs,
-    5_000,
-    1,
-    30_000,
-  )
-  const timeout = setTimeout(() => {
-    timedOut = true
-    controller.abort()
-  }, timeoutMs)
-  const onSharedAbort = () => {
-    sharedAborted = true
-    controller.abort()
-  }
-  if (signal?.aborted) {
-    onSharedAbort()
-  } else {
-    signal?.addEventListener("abort", onSharedAbort, { once: true })
-  }
-
+  fetcher?: AuthFetch,
+): Promise<AuthJsonResponse> {
   try {
-    const response = await copilotUsageFetchDependencies.fetch(input, {
-      ...init,
-      signal: controller.signal,
+    return await fetchAuthJson(input, init, {
+      action: "GitHub Copilot usage request",
+      fetch: fetcher ?? copilotUsageFetchDependencies.fetch,
+      signal,
+      timeoutMs: clampFiniteInteger(
+        requestTimeoutMs ?? copilotUsageFetchDependencies.requestTimeoutMs,
+        5_000,
+        1,
+        30_000,
+      ),
     })
-    if (sharedAborted || signal?.aborted) {
-      throw new CopilotUsageFetchError({ code: "aborted" })
+  } catch (error) {
+    if (error instanceof AuthTransportError) {
+      throw new CopilotUsageFetchError({
+        code:
+          error.kind === "aborted" ? "aborted"
+          : error.kind === "timeout" ? "timeout"
+          : "network_error",
+      })
     }
-    return response
-  } catch {
-    throw new CopilotUsageFetchError({
-      code:
-        sharedAborted || signal?.aborted ? "aborted"
-        : timedOut ? "timeout"
-        : "network_error",
-    })
-  } finally {
-    clearTimeout(timeout)
-    signal?.removeEventListener("abort", onSharedAbort)
+    if (error instanceof AuthProtocolError) {
+      throw new CopilotUsageFetchError({
+        code: "invalid_response",
+        staleEligible: error.retryDisposition === "retryable",
+      })
+    }
+    throw error
   }
 }
 
@@ -703,7 +715,7 @@ function isTransientStatus(status: number): boolean {
 }
 
 function resolveRetryDelayMs(
-  response: Response | null,
+  response: Pick<AuthJsonResponse, "headers"> | null,
   attempt: number,
 ): number {
   const maxDelayMs = clampFiniteInteger(
@@ -720,8 +732,10 @@ function resolveRetryDelayMs(
   return Math.min(maxDelayMs, Math.max(0, requestedDelayMs))
 }
 
-function parseRetryAfterMs(response: Response): number | null {
-  const retryAfter = response.headers.get("retry-after")?.trim()
+function parseRetryAfterMs(
+  response: Pick<AuthJsonResponse, "headers">,
+): number | null {
+  const retryAfter = response.headers["retry-after"]?.trim()
   if (!retryAfter) return null
 
   const retryAfterSeconds = Number(retryAfter)
@@ -752,7 +766,7 @@ export const getCopilotUsage = async (
 
 export const getCopilotAccountType = async (
   githubToken?: string,
-  options: Pick<GetCopilotUsageOptions, "expectedLogin"> = {},
+  options: GetCopilotUsageOptions = {},
 ): Promise<CopilotAccountType> => {
   const usage = await getCopilotUsage(githubToken, options)
   if (!usage) {

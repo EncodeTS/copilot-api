@@ -20,7 +20,9 @@ providerModelRoutes.get("/", async (c) => {
   const provider = c.req.param("provider") ?? ""
 
   try {
-    const providerConfig = await resolveProviderConfig(provider)
+    const providerConfig = await resolveProviderConfig(provider, {
+      signal: c.req.raw.signal,
+    })
     if (!providerConfig) {
       return c.json(
         {

@@ -285,6 +285,13 @@ describe('desktop provider auth', () => {
     let promptValue = ''
     let persistedAccessToken = ''
     let enableProvider: boolean | undefined
+    const loginController = new AbortController()
+    const flowOrder: Array<string> = []
+    const loginSession = {
+      credentialRevision: 'credential-revision-at-start',
+      lifecycleEpoch: 1,
+      signal: loginController.signal,
+    }
 
     const result = await loginCodexForDesktop(
       {
@@ -294,8 +301,15 @@ describe('desktop provider auth', () => {
         },
       },
       {
+        beginCodexLogin: async () => {
+          flowOrder.push('begin')
+          return loginSession
+        },
+        cancelCodexLogin: () => {},
         getEnabledProviders: () => ['codex'],
         loginCodex: async (options) => {
+          flowOrder.push('oauth')
+          expect(options.signal).toBe(loginSession.signal)
           options.onAuth({ url: 'https://auth.example' })
           promptValue = await options.onPrompt('Paste code')
           return {
@@ -306,8 +320,10 @@ describe('desktop provider auth', () => {
           }
         },
         persistCodexCredentials: async (credentials, options) => {
+          flowOrder.push('persist')
           persistedAccessToken = credentials.accessToken
           enableProvider = options?.enableProvider
+          expect(options?.loginSession).toBe(loginSession)
         },
       },
     )
@@ -316,6 +332,7 @@ describe('desktop provider auth', () => {
     expect(promptValue).toBe('callback-code')
     expect(persistedAccessToken).toBe('codex-access-token')
     expect(enableProvider).toBe(true)
+    expect(flowOrder).toEqual(['begin', 'oauth', 'persist'])
     expect(result).toEqual({
       mode: 'provider',
       providers: ['codex'],

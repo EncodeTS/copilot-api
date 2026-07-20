@@ -174,6 +174,7 @@ export async function handleProviderMessagesForProvider(
   const resolvedProviderModel = await resolveProviderModel(
     provider,
     payload.model,
+    { signal: c.req.raw.signal },
   )
   if (!resolvedProviderModel) {
     return c.json(

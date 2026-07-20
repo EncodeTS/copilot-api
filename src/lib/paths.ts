@@ -39,10 +39,7 @@ export async function ensurePaths(): Promise<void> {
 }
 
 async function ensureFile(filePath: string): Promise<void> {
-  try {
-    await fs.access(filePath, fs.constants.W_OK)
-  } catch {
-    await fs.writeFile(filePath, "")
-    await fs.chmod(filePath, 0o600)
-  }
+  const handle = await fs.open(filePath, "a", 0o600)
+  await handle.close()
+  await fs.chmod(filePath, 0o600)
 }

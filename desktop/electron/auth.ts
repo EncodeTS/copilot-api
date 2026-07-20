@@ -1,38 +1,37 @@
-import fs from 'node:fs/promises'
-import { PATHS, ensurePaths } from '../../src/lib/paths'
+import {
+  clearGitHubToken,
+  readGitHubToken,
+} from '../../src/lib/credential-store'
+import {
+  beginGitHubManualLogin,
+  cancelGitHubDeviceLogin,
+  cancelGitHubManualLogin,
+  persistGitHubManualToken,
+  startGitHubDeviceLogin,
+  type GitHubDeviceLoginSession,
+  type GitHubManualLoginSession,
+} from '../../src/lib/github-login'
+import type { AuthRequestOptions } from '../../src/lib/auth-request'
 import {
   getCopilotAccountType as fetchCopilotAccountType,
   type CopilotAccountType,
 } from '../../src/services/github/get-copilot-usage'
-import {
-  getDeviceCode,
-  type DeviceCodeResponse,
-} from '../../src/services/github/get-device-code'
 import { getGitHubUser as fetchGitHubUser } from '../../src/services/github/get-user'
-import { pollAccessToken } from '../../src/services/github/poll-access-token'
 
-export { getDeviceCode, pollAccessToken }
-export type { DeviceCodeResponse }
+export { cancelGitHubDeviceLogin, startGitHubDeviceLogin }
+export type { GitHubDeviceLoginSession }
 
-async function ensureTokenDir(): Promise<void> {
-  await ensurePaths()
-}
-
-export async function getGitHubUser(token: string): Promise<string> {
-  const user = await fetchGitHubUser(token)
+export async function getGitHubUser(
+  token: string,
+  options?: AuthRequestOptions,
+): Promise<string> {
+  const user = await fetchGitHubUser(token, options)
   return user.login
-}
-
-export async function saveToken(token: string): Promise<void> {
-  await ensureTokenDir()
-  await fs.writeFile(PATHS.GITHUB_TOKEN_PATH, token, 'utf8')
-  await fs.chmod(PATHS.GITHUB_TOKEN_PATH, 0o600)
 }
 
 export async function readToken(): Promise<string | null> {
   try {
-    const token = await fs.readFile(PATHS.GITHUB_TOKEN_PATH, 'utf8')
-    return token.trim() || null
+    return await readGitHubToken()
   } catch {
     return null
   }
@@ -40,8 +39,7 @@ export async function readToken(): Promise<string | null> {
 
 export async function clearToken(): Promise<void> {
   try {
-    await ensureTokenDir()
-    await fs.writeFile(PATHS.GITHUB_TOKEN_PATH, '', 'utf8')
+    await clearGitHubToken()
   } catch {
     // ignore
   }
@@ -49,11 +47,61 @@ export async function clearToken(): Promise<void> {
 
 export async function getCopilotAccountType(
   token: string,
-  expectedLogin?: string,
+  options?: AuthRequestOptions & { expectedLogin?: string },
 ): Promise<CopilotAccountType> {
   try {
-    return await fetchCopilotAccountType(token, { expectedLogin })
-  } catch {
+    return await fetchCopilotAccountType(token, options)
+  } catch (error) {
+    if (options?.signal?.aborted) throw error
     return 'individual'
+  }
+}
+
+export interface DesktopGitHubManualLoginDependencies {
+  beginLogin: (
+    options?: AuthRequestOptions,
+  ) => Promise<GitHubManualLoginSession>
+  cancelLogin: (session: GitHubManualLoginSession) => void
+  getAccountType: (
+    token: string,
+    options?: AuthRequestOptions & { expectedLogin?: string },
+  ) => Promise<CopilotAccountType>
+  getUser: (token: string, options?: AuthRequestOptions) => Promise<string>
+  persistToken: (
+    session: GitHubManualLoginSession,
+    token: string,
+  ) => Promise<void>
+}
+
+const defaultManualLoginDependencies: DesktopGitHubManualLoginDependencies = {
+  beginLogin: beginGitHubManualLogin,
+  cancelLogin: cancelGitHubManualLogin,
+  getAccountType: getCopilotAccountType,
+  getUser: getGitHubUser,
+  persistToken: persistGitHubManualToken,
+}
+
+export async function loginWithGitHubToken(
+  token: string,
+  dependencyOverrides: Partial<DesktopGitHubManualLoginDependencies> = {},
+): Promise<{ accountType: CopilotAccountType; userName: string }> {
+  const dependencies: DesktopGitHubManualLoginDependencies = {
+    ...defaultManualLoginDependencies,
+    ...dependencyOverrides,
+  }
+  const session = await dependencies.beginLogin()
+  try {
+    const userName = await dependencies.getUser(token, {
+      signal: session.signal,
+    })
+    const accountType = await dependencies.getAccountType(token, {
+      expectedLogin: userName,
+      signal: session.signal,
+    })
+    await dependencies.persistToken(session, token)
+    return { accountType, userName }
+  } catch (error) {
+    dependencies.cancelLogin(session)
+    throw error
   }
 }

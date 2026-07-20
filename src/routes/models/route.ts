@@ -129,13 +129,13 @@ function normalizeProviderModel(
 async function getProviderModels(
   provider: string,
   requestHeaders: Headers,
-  signal?: AbortSignal,
+  signal: AbortSignal,
 ): Promise<{
   codexCatalog?: CodexProviderCatalogSnapshot
   models: Array<ClientModel>
 }> {
   try {
-    const providerConfig = await resolveProviderConfig(provider)
+    const providerConfig = await resolveProviderConfig(provider, { signal })
     if (!providerConfig) {
       return { models: [] }
     }
@@ -176,7 +176,7 @@ async function getProviderModels(
     }
   } catch (error) {
     if (
-      signal?.aborted
+      signal.aborted
       || (error instanceof Error && error.name === "AbortError")
     ) {
       throw error
@@ -191,7 +191,7 @@ async function getProviderModels(
 
 async function getAggregatedModels(
   requestHeaders: Headers,
-  signal?: AbortSignal,
+  signal: AbortSignal,
 ): Promise<{
   codexCatalog?: CodexProviderCatalogSnapshot
   models: Array<ClientModel>
@@ -256,7 +256,12 @@ modelRoutes.get("/", async (c) => {
   try {
     const userAgent = c.req.header("user-agent")
     if (isCodexClientUserAgent(userAgent)) {
-      if (!state.models && (await resolveProviderConfig("codex"))) {
+      if (
+        !state.models
+        && (await resolveProviderConfig("codex", {
+          signal: c.req.raw.signal,
+        }))
+      ) {
         return createProviderProxyResponse(
           await forwardCodexModels(
             c.req.url,

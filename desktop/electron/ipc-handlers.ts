@@ -5,10 +5,11 @@ import { ipcMain, shell, BrowserWindow } from 'electron'
 import { normalizeApiKeys } from '../../src/lib/request-auth'
 import { PATHS } from '../../src/lib/paths'
 import {
-  getDeviceCode,
-  pollAccessToken,
+  cancelGitHubDeviceLogin,
+  startGitHubDeviceLogin,
+  type GitHubDeviceLoginSession,
   getGitHubUser,
-  saveToken,
+  loginWithGitHubToken,
   readToken,
   clearToken,
   getCopilotAccountType,
@@ -159,21 +160,30 @@ export function registerIpcHandlers(
   mainWindow: BrowserWindow,
   options: IpcHandlersOptions = {},
 ): void {
+  let activeGitHubLogin: GitHubDeviceLoginSession | null = null
   ipcMain.handle('auth:get-status', async () => getDesktopAuthStatus())
 
   // Auth: Start the OAuth device flow
   ipcMain.handle('auth:get-device-code', async () => {
-    const deviceCode = await getDeviceCode()
+    const loginSession = await startGitHubDeviceLogin()
+    activeGitHubLogin = loginSession
     // Poll in the background and notify the renderer when the token arrives
-    pollAccessToken(deviceCode)
+    loginSession.completion
       .then(async (token) => {
-        await saveToken(token)
-        const login = await getGitHubUser(token)
-        const accountType = await getCopilotAccountType(token, login)
+        if (activeGitHubLogin !== loginSession) return
+        const login = await getGitHubUser(token, {
+          signal: loginSession.signal,
+        })
+        if (activeGitHubLogin !== loginSession) return
+        const accountType = await getCopilotAccountType(token, {
+          expectedLogin: login,
+          signal: loginSession.signal,
+        })
+        if (activeGitHubLogin !== loginSession) return
         // Detect and persist the account type automatically after sign-in
         const settings = await readSettings()
         await writeSettings({ ...settings, accountType })
-        if (!mainWindow.isDestroyed()) {
+        if (activeGitHubLogin === loginSession && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('auth:success', {
             success: true,
             mode: 'copilot',
@@ -181,22 +191,27 @@ export function registerIpcHandlers(
         }
       })
       .catch((err: Error) => {
-        if (!mainWindow.isDestroyed()) {
+        if (activeGitHubLogin === loginSession && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('auth:success', {
             success: false,
             error: err.message,
           })
         }
       })
-    return deviceCode
+      .finally(() => {
+        if (activeGitHubLogin === loginSession) activeGitHubLogin = null
+      })
+    return loginSession.deviceCode
   })
 
   // Auth: Save token directly
   ipcMain.handle('auth:save-token', async (_event, token: string) => {
     try {
-      const login = await getGitHubUser(token)
-      const accountType = await getCopilotAccountType(token, login)
-      await saveToken(token)
+      if (activeGitHubLogin) {
+        cancelGitHubDeviceLogin(activeGitHubLogin)
+        activeGitHubLogin = null
+      }
+      const { accountType } = await loginWithGitHubToken(token)
       // Detect and persist the account type automatically
       const settings = await readSettings()
       await writeSettings({ ...settings, accountType })
@@ -236,6 +251,10 @@ export function registerIpcHandlers(
 
   // Auth: Log out
   ipcMain.handle('auth:logout', async () => {
+    if (activeGitHubLogin) {
+      cancelGitHubDeviceLogin(activeGitHubLogin)
+      activeGitHubLogin = null
+    }
     await clearToken()
   })
 

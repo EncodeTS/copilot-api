@@ -66,6 +66,7 @@ export async function handleProviderResponsesForProvider(
   const resolvedProviderModel = await resolveProviderModel(
     provider,
     payload.model,
+    { signal: c.req.raw.signal },
   )
   if (
     !resolvedProviderModel

@@ -10,7 +10,11 @@ import {
 } from '../../src/lib/config'
 import { loginCodex } from '../../src/lib/oauth/codex'
 import { QUICK_PROVIDER_CONFIGS } from '../../src/lib/quick-providers'
-import { persistCodexCredentials } from '../../src/lib/token'
+import {
+  beginCodexLogin,
+  cancelCodexLogin,
+  persistCodexCredentials,
+} from '../../src/lib/token'
 import type {
   AuthResult,
   AuthStatus,
@@ -39,6 +43,8 @@ export interface CodexDesktopLoginOptions {
 }
 
 interface CodexDesktopLoginDependencies {
+  beginCodexLogin?: typeof beginCodexLogin
+  cancelCodexLogin?: typeof cancelCodexLogin
   getEnabledProviders?: () => string[]
   loginCodex?: typeof loginCodex
   persistCodexCredentials?: typeof persistCodexCredentials
@@ -259,21 +265,33 @@ export async function loginCodexForDesktop(
   dependencies: CodexDesktopLoginDependencies = {},
 ): Promise<AuthResult> {
   const login = dependencies.loginCodex ?? loginCodex
+  const beginLogin = dependencies.beginCodexLogin ?? beginCodexLogin
+  const cancelLogin = dependencies.cancelCodexLogin ?? cancelCodexLogin
   const persistCredentials =
     dependencies.persistCodexCredentials ?? persistCodexCredentials
   const getEnabledProviders =
     dependencies.getEnabledProviders ?? getEnabledDesktopProviders
 
-  const credentials = await login({
-    onAuth(info) {
-      void options.openUrl(info.url)
-    },
-    onPrompt() {
-      return Promise.resolve(options.callbackUrlOrCode?.trim() ?? '')
-    },
-  })
+  const loginSession = await beginLogin()
+  try {
+    const credentials = await login({
+      onAuth(info) {
+        void options.openUrl(info.url)
+      },
+      onPrompt() {
+        return Promise.resolve(options.callbackUrlOrCode?.trim() ?? '')
+      },
+      signal: loginSession.signal,
+    })
 
-  await persistCredentials(credentials, { enableProvider: true })
+    await persistCredentials(credentials, {
+      enableProvider: true,
+      loginSession,
+    })
+  } catch (error) {
+    cancelLogin(loginSession)
+    throw error
+  }
 
   return {
     success: true,
