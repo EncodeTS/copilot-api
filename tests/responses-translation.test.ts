@@ -949,6 +949,137 @@ describe("translateAnthropicMessagesToResponsesPayload", () => {
     ])
   })
 
+  it("keeps workflow control tool definitions and history eager", () => {
+    const result = translateAnthropicMessagesToResponsesPayload({
+      model: "gpt-5.4",
+      max_tokens: 1024,
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "call_workflow",
+              name: "Workflow",
+              input: { action: "plan" },
+            },
+            {
+              type: "tool_use",
+              id: "call_report",
+              name: "ReportFindings",
+              input: { summary: "ready" },
+            },
+            {
+              type: "tool_use",
+              id: "call_fetch",
+              name: "mcp__fetch__fetch",
+              input: { url: "https://example.com" },
+            },
+          ],
+        },
+      ],
+      tools: [
+        {
+          name: "mcp__tool_search__search",
+          input_schema: { type: "object" },
+        },
+        {
+          name: "Workflow",
+          description: "Plan and run a workflow",
+          input_schema: { type: "object" },
+        },
+        {
+          name: "ReportFindings",
+          description: "Report workflow findings",
+          input_schema: { type: "object" },
+        },
+        {
+          name: "mcp__fetch__fetch",
+          description: "Fetch a URL",
+          input_schema: { type: "object" },
+        },
+      ],
+    })
+
+    expect(result.input).toEqual([
+      {
+        type: "function_call",
+        call_id: "call_workflow",
+        name: "Workflow",
+        arguments: '{"action":"plan"}',
+        status: "completed",
+      },
+      {
+        type: "function_call",
+        call_id: "call_report",
+        name: "ReportFindings",
+        arguments: '{"summary":"ready"}',
+        status: "completed",
+      },
+      {
+        type: "function_call",
+        call_id: "call_fetch",
+        name: "mcp__fetch__fetch",
+        namespace: "mcp__fetch__fetch",
+        arguments: '{"url":"https://example.com"}',
+        status: "completed",
+      },
+    ])
+    expect(result.tools).toEqual([
+      {
+        type: "tool_search",
+        execution: "client",
+        description:
+          "Load deferred tools by exact name before using them. Return only the searchable tool names you need for the next step.",
+        parameters: {
+          type: "object",
+          properties: {
+            names: {
+              type: "array",
+              description: "Exact deferred tool names to load.",
+              items: {
+                type: "string",
+                enum: ["mcp__fetch__fetch"],
+              },
+              minItems: 1,
+            },
+          },
+          required: ["names"],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: "function",
+        name: "Workflow",
+        description: "Plan and run a workflow",
+        parameters: { type: "object", properties: {} },
+        strict: false,
+      },
+      {
+        type: "function",
+        name: "ReportFindings",
+        description: "Report workflow findings",
+        parameters: { type: "object", properties: {} },
+        strict: false,
+      },
+      {
+        type: "namespace",
+        name: "mcp__fetch__fetch",
+        description: "Fetch a URL",
+        tools: [
+          {
+            type: "function",
+            name: "mcp__fetch__fetch",
+            parameters: { type: "object", properties: {} },
+            strict: false,
+            defer_loading: true,
+            description: "Fetch a URL",
+          },
+        ],
+      },
+    ])
+  })
+
   it("keeps deferred candidates as normal functions when the bridge tool is absent", () => {
     const result = translateAnthropicMessagesToResponsesPayload({
       model: "gpt-5.4",
