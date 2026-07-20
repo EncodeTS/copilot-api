@@ -15,6 +15,7 @@ AGENTS.local.md
 
 # build output
 dist/
+/coverage/
 
 .opencode/plans
 .opencode/package-lock.json

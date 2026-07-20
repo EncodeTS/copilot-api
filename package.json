@@ -39,6 +39,10 @@
     "prepack": "bun run build",
     "prepare": "node -e \"const fs=require('node:fs');if(fs.existsSync('.git')&&fs.statSync('.git').isDirectory())require('node:child_process').execFileSync('simple-git-hooks',{stdio:'inherit'})\"",
     "start": "NODE_USE_SYSTEM_CA=1 NODE_ENV=production bun run ./src/main.ts",
+    "test:coverage": "bun run test:coverage:root && bun run test:coverage:desktop",
+    "test:coverage:desktop": "bun --cwd=desktop run test:coverage",
+    "test:coverage:diff": "bun scripts/check-diff-coverage.ts",
+    "test:coverage:root": "bun test tests --coverage --coverage-reporter=lcov --coverage-dir=coverage/root",
     "typecheck": "tsc"
   },
   "simple-git-hooks": {

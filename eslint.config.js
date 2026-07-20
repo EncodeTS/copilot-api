@@ -11,7 +11,7 @@ import tseslint from "typescript-eslint"
 const configDir = dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig(
-  { ignores: ["plugin/**", "desktop/**", "scripts/**"] },
+  { ignores: ["plugin/**", "desktop/**", "scripts/**/*.mjs"] },
   { linterOptions: { reportUnusedDisableDirectives: "off" } },
   gitignore(),
   eslint.configs.recommended,
