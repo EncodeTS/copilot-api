@@ -1,5 +1,18 @@
 version: 2
 updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "08:30"
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    groups:
+      workflow-actions:
+        patterns:
+          - "*"
+
   - package-ecosystem: npm
     directory: /
     schedule:

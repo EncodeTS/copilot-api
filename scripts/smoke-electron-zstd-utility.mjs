@@ -6,8 +6,10 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
+import { parseElectronZstdSmokeSourceDist } from "./release/electron-zstd-smoke-command.mjs"
+
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-const sourceDist = path.resolve(process.argv[2] ?? path.join(repoRoot, "dist"))
+const sourceDist = path.resolve(parseElectronZstdSmokeSourceDist(process.argv))
 const stagedNodeModules = path.join(
   repoRoot,
   "desktop",

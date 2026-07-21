@@ -6,6 +6,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 import { createIsolatedRuntimeEnvironment } from "./lib/zstd-worker-harness.mjs"
+import { buildElectronZstdSmokeArguments } from "./release/electron-zstd-smoke-command.mjs"
 
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const requireFromDesktop = createRequire(
@@ -17,12 +18,17 @@ const electronScript = path.join(
   "scripts",
   "smoke-electron-zstd-utility.mjs",
 )
+const sourceDist = path.resolve(process.argv[2] ?? path.join(repoRoot, "dist"))
 const isolated = createIsolatedRuntimeEnvironment("electron-zstd-outer")
 
-const child = spawn(electronPath, [electronScript, ...process.argv.slice(2)], {
-  env: isolated.environment,
-  stdio: "inherit",
-})
+const child = spawn(
+  electronPath,
+  buildElectronZstdSmokeArguments(electronScript, sourceDist),
+  {
+    env: isolated.environment,
+    stdio: "inherit",
+  },
+)
 
 const exitCode = await new Promise((resolve, reject) => {
   child.once("error", reject)
