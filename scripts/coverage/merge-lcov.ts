@@ -15,17 +15,27 @@ function normalizeLcovSource(
   return sourceSeparator === "\\" ? source.replaceAll("\\", "/") : source
 }
 
+function canonicalizeLcovSources(
+  content: string,
+  sourceSeparator: LcovSourceSeparator,
+): string {
+  if (sourceSeparator !== "\\") return content
+  return content.replace(/^SF:(.+)$/gmu, (_match, source: string) => {
+    return `SF:${normalizeLcovSource(source, sourceSeparator)}`
+  })
+}
+
 function mergeLcovContents(
   inputs: string[],
   lastInputSources?: Set<string>,
+  sourceSeparator: LcovSourceSeparator = nativeLcovSourceSeparator,
 ): string {
-  if (lastInputSources && inputs.length > 0) {
-    const lastIndex = inputs.length - 1
-    inputs = inputs.map((input, index) =>
-      index === lastIndex ? filterLcovSources(input, lastInputSources) : input,
-    )
-  }
   return `${inputs
+    .map((input, index) =>
+      lastInputSources && index === inputs.length - 1 ?
+        filterLcovSources(input, lastInputSources, sourceSeparator)
+      : canonicalizeLcovSources(input, sourceSeparator),
+    )
     .map((input) => input.trim())
     .filter(Boolean)
     .join("\n")}\n`
@@ -35,6 +45,7 @@ export async function mergeLcovFiles(
   outputPath: string,
   inputPaths: string[],
   lastInputSources?: Set<string>,
+  sourceSeparator: LcovSourceSeparator = nativeLcovSourceSeparator,
 ): Promise<void> {
   if (inputPaths.length === 0) {
     throw new Error("merge-lcov requires at least one input file")
@@ -42,19 +53,26 @@ export async function mergeLcovFiles(
   const inputs = await Promise.all(
     inputPaths.map(async (path) => await readFile(path, "utf8")),
   )
-  await writeFile(outputPath, mergeLcovContents(inputs, lastInputSources))
+  await writeFile(
+    outputPath,
+    mergeLcovContents(inputs, lastInputSources, sourceSeparator),
+  )
 }
 
 export function mergeLcovFilesSync(
   outputPath: string,
   inputPaths: string[],
   lastInputSources?: Set<string>,
+  sourceSeparator: LcovSourceSeparator = nativeLcovSourceSeparator,
 ): void {
   if (inputPaths.length === 0) {
     throw new Error("merge-lcov requires at least one input file")
   }
   const inputs = inputPaths.map((path) => readFileSync(path, "utf8"))
-  writeFileSync(outputPath, mergeLcovContents(inputs, lastInputSources))
+  writeFileSync(
+    outputPath,
+    mergeLcovContents(inputs, lastInputSources, sourceSeparator),
+  )
 }
 
 export function filterLcovSources(

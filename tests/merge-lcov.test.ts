@@ -86,6 +86,35 @@ describe("LCOV merge helper", () => {
     expect(filterLcovSources(content, sources, "/")).toBe("")
   })
 
+  test("canonicalizes Windows source paths in every merged input", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "merge-lcov-windows-inputs-"),
+    )
+    roots.push(root)
+    const output = path.join(root, "main.info")
+    const boundary = path.join(root, "boundary.info")
+    await fs.writeFile(output, "SF:electron\\main.ts\nDA:1,1\nend_of_record\n")
+    await fs.writeFile(
+      boundary,
+      [
+        "SF:electron\\preload.ts\nDA:2,1\nend_of_record",
+        "SF:electron\\not-allowlisted.ts\nDA:3,1\nend_of_record",
+        "",
+      ].join("\n"),
+    )
+
+    await mergeLcovFiles(
+      output,
+      [output, boundary],
+      new Set(["electron/preload.ts"]),
+      "\\",
+    )
+
+    expect(await fs.readFile(output, "utf8")).toBe(
+      "SF:electron/main.ts\nDA:1,1\nend_of_record\nSF:electron/preload.ts\nDA:2,1\nend_of_record\n",
+    )
+  })
+
   test("writes allowlisted source paths without replacement interpolation", () => {
     expect(
       filterLcovSources(
