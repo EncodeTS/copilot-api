@@ -30,6 +30,24 @@ const imageFact = (buffer: Buffer, mimeType: string): MediaFact => {
 }
 
 describe("media image metadata", () => {
+  test("can inventory exact Base64 bytes without allocating an image-header probe", () => {
+    let base64Decodes = 0
+    const result = collectMediaFacts(
+      responsesImagePayload(makePng(32, 24), "image/png"),
+      {
+        onBase64Decode: () => {
+          base64Decodes += 1
+        },
+        probeImageHeaders: false,
+        protocol: "responses",
+      },
+    )
+
+    expect(base64Decodes).toBe(0)
+    expect(result.facts[0]?.base64?.decodedBytes).toBeGreaterThan(0)
+    expect(result.facts[0]?.image).toBeUndefined()
+  })
+
   test("probes PNG, JPEG, GIF, and WebP dimensions and frame counts", () => {
     const png = makePng(320, 240, { frames: 3 })
     const jpeg = makeJpeg(772, 258)

@@ -8,6 +8,7 @@ import type {
 
 import {
   calculateResponsesPayloadBytes,
+  imageBudgetLedgerDependencies,
   optimizeInputImagesForPayloadBudget,
   sanitizeAllInputImages,
   sanitizeOversizedInputImages,
@@ -154,6 +155,260 @@ describe("sanitizeOversizedInputImages", () => {
 })
 
 describe("optimizeInputImagesForPayloadBudget", () => {
+  test("uses one media traversal without decoding or cloning on the budget-only no-op path", async () => {
+    const imageUrl = imageDataUrl(128)
+    const payload = makePayload(imageUrl)
+    const input = payload.input
+
+    const result = await optimizeInputImagesForPayloadBudget(payload, {
+      budgetBytes: 1024,
+      maxPromptImageSize: 1024,
+      sendHardLimitBytes: 2048,
+    })
+
+    expect(result.changed).toBe(false)
+    expect(result.outboundPayload).toBe(payload)
+    expect(JSON.stringify(result)).not.toContain(imageUrl)
+    expect(payload.input).toBe(input)
+    expect(result.budgetInstrumentation).toEqual({
+      clones: 0,
+      decodedBuffers: 0,
+      ledgerMismatches: 0,
+      serializations: 1,
+      traversals: 1,
+    })
+  })
+
+  test("matches the legacy golden decision and bytes while cloning only on mutation", async () => {
+    const oldImageUrl = imageDataUrl(4096)
+    const latestImageUrl = imageDataUrl(128)
+    const payload = {
+      input: [
+        {
+          content: [
+            { text: "old", type: "input_text" },
+            { detail: "high", image_url: oldImageUrl, type: "input_image" },
+          ],
+          role: "user",
+        },
+        {
+          content: [
+            { text: "latest", type: "input_text" },
+            {
+              detail: "high",
+              image_url: latestImageUrl,
+              type: "input_image",
+            },
+          ],
+          role: "user",
+        },
+      ],
+      model: "gpt-test",
+    } as unknown as ResponsesPayload
+    const initialPayloadBytes = calculateResponsesPayloadBytes(payload)
+    expect(initialPayloadBytes).toBe(4535)
+
+    const result = await optimizeInputImagesForPayloadBudget(payload, {
+      budgetBytes: initialPayloadBytes - 1000,
+      compressionEnabled: false,
+      maxPromptImageSize: 999999,
+      sendHardLimitBytes: initialPayloadBytes - 1000,
+    })
+
+    expect({
+      changed: result.changed,
+      latestImageReplaced: result.latestImageReplaced,
+      replacedCount: result.replacedCount,
+      sendAllowed: result.sendAllowed,
+      targetMet: result.targetMet,
+    }).toEqual({
+      changed: true,
+      latestImageReplaced: false,
+      replacedCount: 1,
+      sendAllowed: true,
+      targetMet: true,
+    })
+    expect(result.finalPayloadBytes).toBe(2034)
+    expect(calculateResponsesPayloadBytes(payload)).toBe(4535)
+    expect(result.finalPayloadBytes).toBe(
+      Buffer.byteLength(JSON.stringify(result.outboundPayload), "utf8"),
+    )
+    expect(result.budgetInstrumentation).toMatchObject({
+      clones: 1,
+      decodedBuffers: 0,
+      serializations: 2,
+      traversals: 1,
+    })
+  })
+
+  test("falls back to final-byte truth when the incremental estimate mismatches", async () => {
+    const sharedImage = {
+      detail: "high",
+      image_url: imageDataUrl(4096),
+      type: "input_image",
+    }
+    const compressedImageUrl = `data:image/jpeg;base64,${"B".repeat(64)}`
+    const payload = {
+      input: [
+        { content: [sharedImage], role: "user" },
+        { content: [sharedImage], role: "user" },
+      ],
+      model: "gpt-test",
+    } as unknown as ResponsesPayload
+    const initialPayloadBytes = calculateResponsesPayloadBytes(payload)
+
+    const estimateSerializedValueBytes =
+      imageBudgetLedgerDependencies.estimateSerializedValueBytes
+    imageBudgetLedgerDependencies.estimateSerializedValueBytes = (value) => {
+      const bytes = estimateSerializedValueBytes(value)
+      return JSON.stringify(value).includes(compressedImageUrl) ?
+          bytes + 1
+        : bytes
+    }
+    let result: Awaited<ReturnType<typeof optimizeInputImagesForPayloadBudget>>
+    try {
+      result = await optimizeInputImagesForPayloadBudget(payload, {
+        budgetBytes: initialPayloadBytes - 100,
+        compressionAdapter: {
+          compress: () =>
+            Promise.resolve({
+              dataUrl: compressedImageUrl,
+              outputBytes: Buffer.byteLength(compressedImageUrl, "utf8"),
+            }),
+        },
+        compressionEnabled: true,
+        maxPromptImageSize: 999999,
+        sendHardLimitBytes: initialPayloadBytes,
+      })
+    } finally {
+      imageBudgetLedgerDependencies.estimateSerializedValueBytes =
+        estimateSerializedValueBytes
+    }
+
+    expect(result.changed).toBe(true)
+    expect(result.budgetInstrumentation.ledgerMismatches).toBeGreaterThan(0)
+    expect(result.budgetInstrumentation.traversals).toBeGreaterThan(1)
+    expect(result.finalPayloadBytes).toBe(
+      Buffer.byteLength(JSON.stringify(result.outboundPayload), "utf8"),
+    )
+    expect(result.targetMet).toBe(true)
+  })
+
+  test("protects every shared-object alias when one path is the latest image", async () => {
+    const sharedImage = {
+      detail: "high",
+      image_url: imageDataUrl(4096),
+      type: "input_image",
+    }
+    const payload = {
+      input: [
+        { content: [sharedImage], role: "user" },
+        { content: [sharedImage], role: "user" },
+      ],
+      model: "gpt-test",
+    } as unknown as ResponsesPayload
+    const original = JSON.stringify(payload)
+    const hardLimit = calculateResponsesPayloadBytes(payload) - 1024
+
+    const result = await optimizeInputImagesForPayloadBudget(payload, {
+      budgetBytes: hardLimit,
+      compressionEnabled: false,
+      maxPromptImageSize: 999999,
+      sendHardLimitBytes: hardLimit,
+    })
+
+    expect(result.changed).toBe(false)
+    expect(result.latestImageReplaced).toBe(false)
+    expect(result.preservedLatestCount).toBe(2)
+    expect(result.replacedCount).toBe(0)
+    expect(result.sendAllowed).toBe(false)
+    expect(JSON.stringify(payload)).toBe(original)
+    expect(JSON.stringify(result.outboundPayload)).toBe(original)
+    expect(
+      JSON.stringify(result.outboundPayload).match(/Local proxy omitted/g),
+    ).toBeNull()
+  })
+
+  test("replaces one allowed latest alias path without mutating the other wire path", async () => {
+    const sharedImage = {
+      detail: "high",
+      image_url: imageDataUrl(4096),
+      type: "input_image",
+    }
+    const payload = {
+      input: [
+        { content: [sharedImage], role: "user" },
+        { content: [sharedImage], role: "user" },
+      ],
+      model: "gpt-test",
+    } as unknown as ResponsesPayload
+    const original = JSON.stringify(payload)
+    const hardLimit = calculateResponsesPayloadBytes(payload) - 1000
+
+    const result = await optimizeInputImagesForPayloadBudget(payload, {
+      allowReplacingLatestImages: true,
+      budgetBytes: hardLimit,
+      compressionEnabled: false,
+      maxPromptImageSize: 999999,
+      sendHardLimitBytes: hardLimit,
+    })
+    const input = result.outboundPayload.input as Array<{
+      content: Array<{ image_url?: string; text?: string; type: string }>
+    }>
+    const firstContent = input[0]?.content ?? []
+    const secondContent = input[1]?.content ?? []
+
+    expect(result.replacedCount).toBe(1)
+    expect(result.latestImageReplaced).toBe(true)
+    expect(result.preservedLatestCount).toBe(1)
+    expect(result.sendAllowed).toBe(true)
+    expect(firstContent).toHaveLength(2)
+    expect(firstContent[0]?.image_url).not.toBe(sharedImage.image_url)
+    expect(firstContent[1]?.text).toContain("Local proxy omitted")
+    expect(secondContent).toHaveLength(1)
+    expect(secondContent[0]?.image_url).toBe(sharedImage.image_url)
+    expect(firstContent[0]).not.toBe(secondContent[0])
+    expect(JSON.stringify(payload)).toBe(original)
+    expect(
+      JSON.stringify(result.outboundPayload).match(/Local proxy omitted/g),
+    ).toHaveLength(1)
+  })
+
+  test("counts a compression adapter base64 decode in budget instrumentation", async () => {
+    const oldImageUrl = imageDataUrl(4096)
+    const payload = {
+      input: [
+        {
+          content: [
+            { detail: "high", image_url: oldImageUrl, type: "input_image" },
+          ],
+          role: "user",
+        },
+        { content: [{ text: "latest", type: "input_text" }], role: "user" },
+      ],
+      model: "gpt-test",
+    } as unknown as ResponsesPayload
+    const initialPayloadBytes = calculateResponsesPayloadBytes(payload)
+
+    const result = await optimizeInputImagesForPayloadBudget(payload, {
+      budgetBytes: initialPayloadBytes - 100,
+      compressionAdapter: {
+        compress: (input) => {
+          input.onBase64Decoded?.()
+          return Promise.resolve({
+            dataUrl: imageDataUrl(64),
+            outputBytes: 86,
+          })
+        },
+      },
+      compressionEnabled: true,
+      maxPromptImageSize: 999999,
+      sendHardLimitBytes: initialPayloadBytes,
+    })
+
+    expect(result.budgetInstrumentation.decodedBuffers).toBe(1)
+  })
+
   test("leaves payload unchanged when it is under budget and image limits", async () => {
     const imageUrl = imageDataUrl(8)
     const payload = makePayload(imageUrl)
@@ -230,9 +485,62 @@ describe("optimizeInputImagesForPayloadBudget", () => {
     expect(result.replacedCount).toBe(1)
     expect(result.latestImageReplaced).toBe(false)
     expect(result.sendAllowed).toBe(true)
-    expect(JSON.stringify(payload)).not.toContain(oldImageUrl)
-    expect(JSON.stringify(payload)).toContain(latestImageUrl)
-    expect(JSON.stringify(payload)).toContain("Local proxy omitted")
+    expect(JSON.stringify(result.outboundPayload)).not.toContain(oldImageUrl)
+    expect(JSON.stringify(result.outboundPayload)).toContain(latestImageUrl)
+    expect(JSON.stringify(result.outboundPayload)).toContain(
+      "Local proxy omitted",
+    )
+  })
+
+  test("preserves path order when multiple images in one content array are replaced", async () => {
+    const firstOldImageUrl = imageDataUrl(4096)
+    const secondOldImageUrl = imageDataUrl(4096)
+    const latestImageUrl = imageDataUrl(64)
+    const payload = {
+      input: [
+        {
+          content: [
+            {
+              detail: "high",
+              image_url: firstOldImageUrl,
+              type: "input_image",
+            },
+            {
+              detail: "high",
+              image_url: secondOldImageUrl,
+              type: "input_image",
+            },
+          ],
+          role: "user",
+        },
+        {
+          content: [
+            {
+              detail: "low",
+              image_url: latestImageUrl,
+              type: "input_image",
+            },
+          ],
+          role: "user",
+        },
+      ],
+      model: "gpt-test",
+    } as unknown as ResponsesPayload
+    const initialPayloadBytes = calculateResponsesPayloadBytes(payload)
+
+    const result = await optimizeInputImagesForPayloadBudget(payload, {
+      budgetBytes: initialPayloadBytes,
+      compressionEnabled: false,
+      maxPromptImageSize: 128,
+      sendHardLimitBytes: initialPayloadBytes,
+    })
+    const serialized = JSON.stringify(result.outboundPayload)
+
+    expect(result.replacedCount).toBe(2)
+    expect(serialized).not.toContain(firstOldImageUrl)
+    expect(serialized).not.toContain(secondOldImageUrl)
+    expect(serialized).toContain(latestImageUrl)
+    expect(serialized.match(/Local proxy omitted/g)).toHaveLength(2)
   })
 
   test("fails closed when only the latest image remains above the hard send limit", async () => {
@@ -303,8 +611,10 @@ describe("optimizeInputImagesForPayloadBudget", () => {
     expect(result.replacedCount).toBe(1)
     expect(result.latestImageReplaced).toBe(true)
     expect(result.sendAllowed).toBe(true)
-    expect(JSON.stringify(payload)).not.toContain(latestImageUrl)
-    expect(JSON.stringify(payload)).toContain("Local proxy omitted")
+    expect(JSON.stringify(result.outboundPayload)).not.toContain(latestImageUrl)
+    expect(JSON.stringify(result.outboundPayload)).toContain(
+      "Local proxy omitted",
+    )
   })
 
   test("compresses older images before replacing payload budget overflow", async () => {
@@ -360,10 +670,69 @@ describe("optimizeInputImagesForPayloadBudget", () => {
     expect(result.compressedCount).toBe(1)
     expect(result.replacedCount).toBe(0)
     expect(result.targetMet).toBe(true)
-    expect(JSON.stringify(payload)).not.toContain(oldImageUrl)
-    expect(JSON.stringify(payload)).toContain(compressedOldImageUrl)
-    expect(JSON.stringify(payload)).toContain(latestImageUrl)
+    expect(JSON.stringify(result.outboundPayload)).not.toContain(oldImageUrl)
+    expect(JSON.stringify(result.outboundPayload)).toContain(
+      compressedOldImageUrl,
+    )
+    expect(JSON.stringify(result.outboundPayload)).toContain(latestImageUrl)
     expect(calls).toEqual(["history_user:history-soft"])
+  })
+
+  test("classifies history and current-turn tool image paths in the shared inventory", async () => {
+    const toolOutput = (callId: string): ResponseFunctionCallOutputItem => ({
+      call_id: callId,
+      output: [
+        {
+          detail: "high",
+          image_url: imageDataUrl(1024),
+          type: "input_image",
+        },
+      ],
+      status: "completed",
+      type: "function_call_output",
+    })
+    const payload = {
+      input: [
+        toolOutput("history_tool"),
+        {
+          content: [
+            {
+              detail: "high",
+              image_url: imageDataUrl(2048),
+              type: "input_image",
+            },
+          ],
+          role: "user",
+        },
+        toolOutput("current_tool"),
+      ],
+      model: "gpt-test",
+    } satisfies ResponsesPayload
+    const calls: Array<string> = []
+    const original = JSON.stringify(payload)
+
+    const result = await optimizeInputImagesForPayloadBudget(payload, {
+      budgetBytes: 1,
+      compressionAdapter: {
+        compress: (input) => {
+          calls.push(`${input.group}:${input.profile.name}`)
+          return Promise.resolve(null)
+        },
+      },
+      compressionEnabled: true,
+      maxCompressionActions: 3,
+      maxPromptImageSize: 999999,
+      sendHardLimitBytes: calculateResponsesPayloadBytes(payload),
+    })
+
+    expect(calls).toEqual([
+      "history_tool_output:history-soft",
+      "current_turn_tool_output:latest-soft",
+      "latest_user_group:latest-soft",
+    ])
+    expect(result.changed).toBe(false)
+    expect(result.budgetInstrumentation.clones).toBe(0)
+    expect(JSON.stringify(payload)).toBe(original)
   })
 
   test("uses latest-soft compression when history-soft alone does not meet the budget", async () => {
@@ -676,7 +1045,7 @@ describe("optimizeInputImagesForPayloadBudget", () => {
 
     expect(result.sendAllowed).toBe(true)
     expect(result.oversizedResolvedCount).toBe(1)
-    expect(JSON.stringify(payload)).toContain(compressedImageUrl)
+    expect(JSON.stringify(result.outboundPayload)).toContain(compressedImageUrl)
   })
 
   test("reports unoptimizable file data separately from text and tool bytes", async () => {

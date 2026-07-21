@@ -83,6 +83,7 @@ const visitResponsesContentBlock = (
             protocol: "responses",
           },
           value.image_url,
+          collector.options,
         ),
       )
     }
@@ -134,8 +135,13 @@ const visitResponsesContentBlock = (
         protocol: "responses",
       }
       collector.add(
-        createDataUrlFact(factDescriptor, value.file_data)
-          ?? createRawBase64Fact(factDescriptor, value.file_data),
+        createDataUrlFact(factDescriptor, value.file_data, collector.options)
+          ?? createRawBase64Fact(
+            factDescriptor,
+            value.file_data,
+            undefined,
+            collector.options,
+          ),
       )
     }
     if (
@@ -153,6 +159,7 @@ const visitResponsesContentBlock = (
             protocol: "responses",
           },
           value.file_url,
+          collector.options,
         ),
       )
     }
@@ -244,6 +251,7 @@ const visitResponsesHistoryItem = (
             protocol: "responses",
           },
           item.output.image_url,
+          collector.options,
         ),
       )
     } else if (
@@ -293,6 +301,8 @@ const visitResponsesHistoryItem = (
           protocol: "responses",
         },
         item.result,
+        undefined,
+        collector.options,
       ),
     )
     return
@@ -329,6 +339,7 @@ const visitResponsesHistoryItem = (
             protocol: "responses",
           },
           output.url,
+          collector.options,
         ),
       )
     } else {

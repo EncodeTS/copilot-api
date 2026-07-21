@@ -197,6 +197,8 @@ export interface MediaFactLimits {
 }
 
 export interface CollectMediaFactsOptions {
+  onBase64Decode?: () => void
+  probeImageHeaders?: boolean
   protocol: MediaProtocol
 }
 

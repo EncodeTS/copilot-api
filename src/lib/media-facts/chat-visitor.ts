@@ -89,7 +89,9 @@ const visitChatContentBlock = (
       typeof imageUrl?.url === "string"
       && consume(collector, imageUrl.url, depth + 1, ancestors)
     ) {
-      collector.add(createUrlOrDataFact(factDescriptor, imageUrl.url))
+      collector.add(
+        createUrlOrDataFact(factDescriptor, imageUrl.url, collector.options),
+      )
     } else {
       collector.add(createInvalidValueFact(factDescriptor))
     }
@@ -129,8 +131,13 @@ const visitChatContentBlock = (
         protocol: "chat",
       }
       collector.add(
-        createDataUrlFact(factDescriptor, fileData)
-          ?? createRawBase64Fact(factDescriptor, fileData),
+        createDataUrlFact(factDescriptor, fileData, collector.options)
+          ?? createRawBase64Fact(
+            factDescriptor,
+            fileData,
+            undefined,
+            collector.options,
+          ),
       )
     } else if (hasFileId) {
       if (!consume(collector, fileId, depth + 1, ancestors)) return
@@ -165,6 +172,7 @@ const visitChatContentBlock = (
         },
         inputAudio.data,
         getAudioMimeType(inputAudio.format),
+        collector.options,
       ),
     )
   } else {

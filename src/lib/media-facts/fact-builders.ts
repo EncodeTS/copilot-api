@@ -5,6 +5,7 @@ import { probeImageMetadata } from "~/lib/media-facts/image-metadata"
 import type {
   FileDetail,
   ImageDetail,
+  CollectMediaFactsOptions,
   MediaFact,
   MediaFactDescriptor,
   MediaFactWarning,
@@ -24,6 +25,29 @@ const SAFE_MIME_TYPES = new Map<string, string>([
   ["image/png", "image/png"],
   ["image/webp", "image/webp"],
 ])
+
+type ImageProbeOptions = Pick<
+  CollectMediaFactsOptions,
+  "onBase64Decode" | "probeImageHeaders"
+>
+
+const createImageProbe = (
+  descriptor: MediaFactDescriptor,
+  encoded: string,
+  decodedBytes: number | undefined,
+  mimeType: string | undefined,
+  options?: ImageProbeOptions,
+) => {
+  if (
+    descriptor.mediaKind !== "image"
+    || decodedBytes === undefined
+    || options?.probeImageHeaders === false
+  ) {
+    return undefined
+  }
+  options?.onBase64Decode?.()
+  return probeImageMetadata(encoded, decodedBytes, mimeType)
+}
 
 const contentFreeFact = (
   descriptor: MediaFactDescriptor,
@@ -114,6 +138,7 @@ export const createRemoteUrlFact = (
 export const createDataUrlFact = (
   descriptor: MediaFactDescriptor,
   value: string,
+  options?: ImageProbeOptions,
 ): MediaFact | null => {
   const parsed = parseDataUrl(value)
   if (!parsed) return null
@@ -129,17 +154,13 @@ export const createDataUrlFact = (
   }
 
   const base64 = inspectBase64(parsed.payload)
-  const imageProbe =
-    (
-      descriptor.mediaKind === "image"
-      && base64.facts.decodedBytes !== undefined
-    ) ?
-      probeImageMetadata(
-        parsed.payload,
-        base64.facts.decodedBytes,
-        mime.mimeType,
-      )
-    : undefined
+  const imageProbe = createImageProbe(
+    descriptor,
+    parsed.payload,
+    base64.facts.decodedBytes,
+    mime.mimeType,
+    options,
+  )
   return {
     ...contentFreeFact(descriptor),
     base64: base64.facts,
@@ -158,8 +179,10 @@ export const createDataUrlFact = (
 export const createUrlOrDataFact = (
   descriptor: MediaFactDescriptor,
   value: string,
+  options?: ImageProbeOptions,
 ): MediaFact =>
-  createDataUrlFact(descriptor, value) ?? createRemoteUrlFact(descriptor, value)
+  createDataUrlFact(descriptor, value, options)
+  ?? createRemoteUrlFact(descriptor, value)
 
 export const createFileIdFact = (
   descriptor: MediaFactDescriptor,
@@ -204,16 +227,17 @@ export const createRawBase64Fact = (
   descriptor: MediaFactDescriptor,
   value: string,
   declaredMimeType?: string,
+  options?: ImageProbeOptions,
 ): MediaFact => {
   const base64 = inspectBase64(value)
   const mime = canonicalizeMimeType(declaredMimeType)
-  const imageProbe =
-    (
-      descriptor.mediaKind === "image"
-      && base64.facts.decodedBytes !== undefined
-    ) ?
-      probeImageMetadata(value, base64.facts.decodedBytes, mime.mimeType)
-    : undefined
+  const imageProbe = createImageProbe(
+    descriptor,
+    value,
+    base64.facts.decodedBytes,
+    mime.mimeType,
+    options,
+  )
   return {
     ...contentFreeFact(descriptor),
     base64: base64.facts,

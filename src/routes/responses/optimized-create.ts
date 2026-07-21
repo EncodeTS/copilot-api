@@ -47,6 +47,7 @@ type CreateResponses = typeof createCopilotResponses
 type CreateResponsesOptions = Parameters<CreateResponses>[1]
 
 const imageCompressionAdapters = new Map<string, ImageCompressionAdapter>()
+const ENCRYPTED_REASONING_INCLUDE = "reasoning.encrypted_content"
 
 export interface OptimizedResponsesCreateOptions {
   createResponses: CreateResponses
@@ -62,8 +63,6 @@ export const createOptimizedCopilotResponses = async (
   payload: ResponsesPayload,
   options: OptimizedResponsesCreateOptions,
 ): Promise<CreateResponsesReturn> => {
-  ensureEncryptedReasoningIncluded(payload)
-  const originalPayload = cloneResponsesPayload(payload)
   const firstPrepare = await prepareCopilotResponsesPayloadForSend(payload, {
     ...options,
     mode: "normal",
@@ -79,7 +78,10 @@ export const createOptimizedCopilotResponses = async (
   }
 
   try {
-    return await options.createResponses(payload, firstRequestOptions)
+    return await options.createResponses(
+      firstPrepare.payload,
+      firstRequestOptions,
+    )
   } catch (error) {
     if (
       !shouldRetryAfterPayloadTooLarge(error, firstRequestOptions.transport)
@@ -87,18 +89,14 @@ export const createOptimizedCopilotResponses = async (
       throw error
     }
 
-    const retryPayload = cloneResponsesPayload(originalPayload)
-    const retryPrepare = await prepareCopilotResponsesPayloadForSend(
-      retryPayload,
-      {
-        ...options,
-        mode: "retry",
-        requestOptions: {
-          ...options.requestOptions,
-          transport: "http",
-        },
+    const retryPrepare = await prepareCopilotResponsesPayloadForSend(payload, {
+      ...options,
+      mode: "retry",
+      requestOptions: {
+        ...options.requestOptions,
+        transport: "http",
       },
-    )
+    })
 
     if (
       !retryPrepare.imageBudget.changed
@@ -117,7 +115,7 @@ export const createOptimizedCopilotResponses = async (
       },
     )
 
-    return await options.createResponses(retryPayload, {
+    return await options.createResponses(retryPrepare.payload, {
       ...options.requestOptions,
       transport: "http",
     })
@@ -131,41 +129,48 @@ interface PrepareOptions extends OptimizedResponsesCreateOptions {
 export const prepareCopilotResponsesPayloadForSend = async (
   payload: ResponsesPayload,
   options: PrepareOptions,
-): Promise<{ imageBudget: ImagePayloadBudgetResult }> => {
+): Promise<{
+  imageBudget: ImagePayloadBudgetResult
+  payload: ResponsesPayload
+}> => {
   if (payload.service_tier !== undefined) {
     options.logger?.debug?.(
       "Removed unsupported Copilot Responses service_tier",
       payload.service_tier,
     )
   }
-  payload.service_tier = undefined
-  ensureEncryptedReasoningIncluded(payload)
+  const basePreparation = prepareResponsesPayloadCopyOnWrite(payload)
+  const preparedPayload = basePreparation.payload
   const sendHardLimitBytes = getResponsesSendHardLimitForTransport(
-    payload,
+    preparedPayload,
     getResponsesPayloadSendHardLimitBytes(),
     options.requestOptions,
   )
-  const imageBudget = await optimizeInputImagesForPayloadBudget(payload, {
-    allowNormalReplacement: isResponsesImageNormalReplacementAllowed(),
-    allowReplacingLatestImages:
-      isResponsesImageLatestReplacementAllowedOnHardLimit()
-      || (options.mode === "retry"
-        && isResponsesImageLatestReplacementAllowedOnRetry()),
-    budgetBytes:
-      options.mode === "retry" ?
-        getResponsesPayloadRetryBudgetBytes()
-      : getResponsesPayloadBudgetBytes(),
-    compressionAdapter: getConfiguredImageCompressionAdapter(payload),
-    compressionEnabled: isResponsesImageCompressionEnabled(),
-    enabled: isResponsesImageOptimizationEnabled(),
-    maxCompressionActions: getResponsesImageCompressionMaxActionsPerRequest(),
-    maxPromptImageSize:
-      options.maxInputImageBytesOverride
-      ?? getResponsesImageMaxInputImageBytes(),
-    nearBudgetRatio: getResponsesImageNearBudgetRatio(),
-    preserveLatestUserImageGroup: shouldPreserveLatestUserImageGroup(),
-    sendHardLimitBytes,
-  })
+  const imageBudget = await optimizeInputImagesForPayloadBudget(
+    preparedPayload,
+    {
+      allowNormalReplacement: isResponsesImageNormalReplacementAllowed(),
+      allowReplacingLatestImages:
+        isResponsesImageLatestReplacementAllowedOnHardLimit()
+        || (options.mode === "retry"
+          && isResponsesImageLatestReplacementAllowedOnRetry()),
+      budgetBytes:
+        options.mode === "retry" ?
+          getResponsesPayloadRetryBudgetBytes()
+        : getResponsesPayloadBudgetBytes(),
+      compressionAdapter: getConfiguredImageCompressionAdapter(preparedPayload),
+      compressionEnabled: isResponsesImageCompressionEnabled(),
+      enabled: isResponsesImageOptimizationEnabled(),
+      maxCompressionActions: getResponsesImageCompressionMaxActionsPerRequest(),
+      initialCloneCount: basePreparation.cloneCount,
+      maxPromptImageSize:
+        options.maxInputImageBytesOverride
+        ?? getResponsesImageMaxInputImageBytes(),
+      nearBudgetRatio: getResponsesImageNearBudgetRatio(),
+      preserveLatestUserImageGroup: shouldPreserveLatestUserImageGroup(),
+      sendHardLimitBytes,
+    },
+  )
 
   logImageBudgetResult(options.logger, imageBudget, options.mode)
 
@@ -209,8 +214,38 @@ export const prepareCopilotResponsesPayloadForSend = async (
     )
   }
 
-  return { imageBudget }
+  return { imageBudget, payload: imageBudget.outboundPayload }
 }
+
+const prepareResponsesPayloadCopyOnWrite = (
+  payload: ResponsesPayload,
+): { cloneCount: number; payload: ResponsesPayload } => {
+  const include = Array.isArray(payload.include) ? payload.include : []
+  const requiresMutation =
+    payload.service_tier !== undefined
+    || !include.includes(ENCRYPTED_REASONING_INCLUDE)
+    || hasToolSchemaPreparation(payload)
+  if (!requiresMutation) return { cloneCount: 0, payload }
+
+  const outboundPayload = structuredClone(payload)
+  if (outboundPayload.service_tier !== undefined) {
+    outboundPayload.service_tier = undefined
+  }
+  ensureEncryptedReasoningIncluded(outboundPayload)
+  return { cloneCount: 1, payload: outboundPayload }
+}
+
+const hasToolSchemaPreparation = (payload: ResponsesPayload): boolean =>
+  Boolean(payload.tools?.length)
+  || (Array.isArray(payload.input)
+    && payload.input.some(
+      (item) =>
+        typeof item === "object"
+        && item !== null
+        && "tools" in item
+        && Array.isArray(item.tools)
+        && item.tools.length > 0,
+    ))
 
 export const getResponsesSendHardLimitForTransport = (
   payload: ResponsesPayload,
@@ -443,6 +478,3 @@ const formatBytes = (bytes: number): string => {
   const mib = bytes / 1024 / 1024
   return `${mib.toFixed(mib >= 10 ? 1 : 2)}MiB`
 }
-
-const cloneResponsesPayload = (payload: ResponsesPayload): ResponsesPayload =>
-  structuredClone(payload)

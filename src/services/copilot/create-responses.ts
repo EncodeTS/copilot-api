@@ -753,7 +753,9 @@ export const createResponses = async (
   prepareForCompact(headers, compactType)
 
   // service_tier is not supported by github copilot
-  payload.service_tier = undefined
+  if (payload.service_tier !== undefined) {
+    payload.service_tier = undefined
+  }
   normalizeResponsesToolSchemas(payload)
   ensureEncryptedReasoningIncluded(payload)
 

@@ -19,6 +19,11 @@ import {
   isResponsesApiWebSocketEnabled as isConfiguredResponsesApiWebSocketEnabled,
 } from "~/lib/config"
 import { getResponsesEndpointCapabilities } from "~/lib/responses-capabilities"
+import {
+  collectMediaFacts,
+  type MediaFact,
+  type MediaPathSegment,
+} from "~/lib/media-facts"
 
 export const DEFAULT_RESPONSES_COMPACT_THRESHOLD_RATIO = 0.9
 export const MIN_RESPONSES_COMPACT_HEADROOM_TOKENS = 32_000
@@ -175,9 +180,11 @@ export interface ImagePayloadBudgetOptions {
   compressionEnabled?: boolean
   compressionAdapter?: ImageCompressionAdapter
   maxCompressionActions?: number
+  initialCloneCount?: number
 }
 
 export interface ImagePayloadBudgetResult {
+  budgetInstrumentation: ImagePayloadBudgetInstrumentation
   changed: boolean
   targetMet: boolean
   hardLimitMet: boolean
@@ -214,6 +221,7 @@ export interface ImagePayloadBudgetResult {
   remoteMediaLocatorCount: number
   fileIdCount: number
   nonImageDataUrlBytes: number
+  outboundPayload: ResponsesPayload
   textAndToolBytes: number
   unoptimizableMediaBytes: number
   bodyBytesOverBudget: number
@@ -225,6 +233,14 @@ export interface ImagePayloadBudgetResult {
     | "text_or_tool"
 }
 
+export interface ImagePayloadBudgetInstrumentation {
+  clones: number
+  decodedBuffers: number
+  ledgerMismatches: number
+  serializations: number
+  traversals: number
+}
+
 export interface ImageCompressionProfileSummary {
   attemptedCount: number
   compressedCount: number
@@ -234,7 +250,6 @@ export interface ImageCompressionProfileSummary {
 
 interface ImagePayloadBudgetCandidate {
   base64Bytes: number
-  content: Array<ResponseInputContent>
   contentIndex: number
   dataUrlBytes: number
   decodedBytes: number
@@ -242,9 +257,27 @@ interface ImagePayloadBudgetCandidate {
   inputIndex: number
   mimeType: string
   oversized: boolean
+  path: ReadonlyArray<MediaPathSegment>
   compressed?: boolean
   replaced?: boolean
-  record: ResponseInputImage
+}
+
+interface ImagePayloadBudgetInventory {
+  candidates: Array<ImagePayloadBudgetCandidate>
+  mediaStats: PayloadMediaStats
+}
+
+interface ImagePayloadBudgetLedger {
+  instrumentation: ImagePayloadBudgetInstrumentation
+  payloadBytes: number
+}
+
+interface ImagePayloadMutationContext {
+  candidates: Array<ImagePayloadBudgetCandidate>
+  cloned: boolean
+  maxPromptImageSize?: number
+  originalPayload: ResponsesPayload
+  payload: ResponsesPayload
 }
 
 export interface ImageCompressionProfile {
@@ -265,6 +298,7 @@ export interface ImageCompressionInput {
   decodedBytes: number
   group: ImageBudgetCandidateGroup
   mimeType: string
+  onBase64Decoded?: () => void
   profile: ImageCompressionProfile
 }
 
@@ -354,8 +388,6 @@ const DEFAULT_RESPONSES_IMAGE_NEAR_BUDGET_RATIO = 0.92
 
 const IMAGE_DATA_URL_PATTERN =
   /^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\r\n]+)$/u
-const DATA_URL_MIME_PATTERN = /^data:([^;,]+)(?:;[^,]*)?;base64,/iu
-const REMOTE_MEDIA_URL_PATTERN = /^(?:https?|file):\/\//iu
 
 const PROTECTED_IMAGE_GROUPS = new Set<ImageBudgetCandidateGroup>([
   "latest_user_group",
@@ -441,23 +473,44 @@ export const optimizeInputImagesForPayloadBudget = async (
       options.nearBudgetRatio
     : DEFAULT_RESPONSES_IMAGE_NEAR_BUDGET_RATIO
 
-  const initialPayloadBytes = calculateResponsesPayloadBytes(payload)
-  const candidates = collectImagePayloadBudgetCandidates(
+  const instrumentation = createImagePayloadBudgetInstrumentation(
+    options.initialCloneCount,
+  )
+  const initialPayloadBytes = serializeImageBudgetPayload(
+    payload,
+    instrumentation,
+  )
+  const inventory = collectImagePayloadBudgetInventory(
     payload,
     options.maxPromptImageSize,
+    instrumentation,
   )
+  const { candidates, mediaStats } = inventory
+  const ledger: ImagePayloadBudgetLedger = {
+    instrumentation,
+    payloadBytes: initialPayloadBytes,
+  }
+  const mutationContext: ImagePayloadMutationContext = {
+    candidates,
+    cloned: instrumentation.clones > 0,
+    maxPromptImageSize: options.maxPromptImageSize,
+    originalPayload: payload,
+    payload,
+  }
   const oversizedInputImageCount = candidates.filter(
     (candidate) => candidate.oversized,
   ).length
   const baseResult = createImagePayloadBudgetResult({
     budgetBytes,
+    budgetInstrumentation: instrumentation,
     candidates,
     changed: false,
     finalPayloadBytes: initialPayloadBytes,
     initialPayloadBytes,
     nearBudgetRatio,
+    mediaStats,
+    outboundPayload: payload,
     oversizedInputImageCount,
-    payload,
     replacedCount: 0,
     sendHardLimitBytes,
   })
@@ -494,7 +547,8 @@ export const optimizeInputImagesForPayloadBudget = async (
 
   if (compressionAvailable && options.compressionAdapter) {
     const historySoftResult = await applyCompressionProfile(
-      payload,
+      mutationContext,
+      ledger,
       candidates.filter((candidate) => !isProtectedCandidate(candidate)),
       HISTORY_COMPRESSION_PROFILES[0],
       options,
@@ -526,9 +580,9 @@ export const optimizeInputImagesForPayloadBudget = async (
     changed ||= compressedCount > 0
 
     if (
-      !isPayloadWithinTarget(payload, candidates, budgetBytes)
+      !isPayloadWithinTarget(ledger, candidates, budgetBytes)
       && shouldCompressProtectedCandidates(
-        payload,
+        ledger,
         candidates,
         budgetBytes,
         sendHardLimitBytes,
@@ -536,7 +590,8 @@ export const optimizeInputImagesForPayloadBudget = async (
       )
     ) {
       const latestSoftResult = await applyCompressionProfile(
-        payload,
+        mutationContext,
+        ledger,
         candidates.filter((candidate) => isProtectedCandidate(candidate)),
         LATEST_COMPRESSION_PROFILES[0],
         options,
@@ -569,11 +624,12 @@ export const optimizeInputImagesForPayloadBudget = async (
     }
 
     for (const profile of HISTORY_COMPRESSION_PROFILES.slice(1)) {
-      if (isPayloadWithinTarget(payload, candidates, budgetBytes)) {
+      if (isPayloadWithinTarget(ledger, candidates, budgetBytes)) {
         break
       }
       const profileResult = await applyCompressionProfile(
-        payload,
+        mutationContext,
+        ledger,
         candidates.filter((candidate) => !isProtectedCandidate(candidate)),
         profile,
         options,
@@ -605,11 +661,11 @@ export const optimizeInputImagesForPayloadBudget = async (
 
   if (
     !compressionAvailable
-    || !isPayloadWithinTarget(payload, candidates, budgetBytes)
+    || !isPayloadWithinTarget(ledger, candidates, budgetBytes)
   ) {
     const replacementCandidates = [...candidates].sort(compareImageCandidates)
     for (const candidate of replacementCandidates) {
-      const currentBytes = calculateResponsesPayloadBytes(payload)
+      const currentBytes = ledger.payloadBytes
       const hasUnsafeOversizedImage = hasUnsafeOversizedCandidates(candidates)
       if (
         currentBytes
@@ -636,7 +692,7 @@ export const optimizeInputImagesForPayloadBudget = async (
         continue
       }
 
-      replaceCandidateWithPlaceholder(candidate)
+      replaceCandidateWithPlaceholder(candidate, mutationContext, ledger)
       changed = true
       replacedCount += 1
       if (candidate.oversized) {
@@ -647,11 +703,12 @@ export const optimizeInputImagesForPayloadBudget = async (
 
   if (
     compressionAvailable
-    && !isPayloadWithinHardLimit(payload, candidates, sendHardLimitBytes)
+    && !isPayloadWithinHardLimit(ledger, candidates, sendHardLimitBytes)
   ) {
     for (const profile of LATEST_COMPRESSION_PROFILES.slice(1)) {
       const profileResult = await applyCompressionProfile(
-        payload,
+        mutationContext,
+        ledger,
         candidates.filter((candidate) => isProtectedCandidate(candidate)),
         profile,
         options,
@@ -678,19 +735,19 @@ export const optimizeInputImagesForPayloadBudget = async (
       )
       compressionActionsRemaining -= profileResult.attemptedCount
       changed ||= profileResult.compressedCount > 0
-      if (isPayloadWithinHardLimit(payload, candidates, sendHardLimitBytes)) {
+      if (isPayloadWithinHardLimit(ledger, candidates, sendHardLimitBytes)) {
         break
       }
     }
   }
 
   if (
-    !isPayloadWithinHardLimit(payload, candidates, sendHardLimitBytes)
+    !isPayloadWithinHardLimit(ledger, candidates, sendHardLimitBytes)
     && options.allowReplacingLatestImages === true
   ) {
     const replacementCandidates = [...candidates].sort(compareImageCandidates)
     for (const candidate of replacementCandidates) {
-      if (calculateResponsesPayloadBytes(payload) <= sendHardLimitBytes) {
+      if (ledger.payloadBytes <= sendHardLimitBytes) {
         break
       }
 
@@ -702,7 +759,7 @@ export const optimizeInputImagesForPayloadBudget = async (
         continue
       }
 
-      replaceCandidateWithPlaceholder(candidate)
+      replaceCandidateWithPlaceholder(candidate, mutationContext, ledger)
       changed = true
       replacedCount += 1
       if (candidate.oversized) {
@@ -711,7 +768,7 @@ export const optimizeInputImagesForPayloadBudget = async (
     }
   }
 
-  const finalPayloadBytes = calculateResponsesPayloadBytes(payload)
+  const finalPayloadBytes = ledger.payloadBytes
   const protectedOversizedCount = candidates.filter(
     (candidate) =>
       candidate.oversized
@@ -738,11 +795,14 @@ export const optimizeInputImagesForPayloadBudget = async (
 
   return createImagePayloadBudgetResult({
     budgetBytes,
+    budgetInstrumentation: instrumentation,
     candidates,
     changed,
     finalPayloadBytes,
     initialPayloadBytes,
     nearBudgetRatio,
+    mediaStats,
+    outboundPayload: mutationContext.payload,
     oversizedInputImageCount,
     compressionActionLimit,
     compressionAttemptedCount,
@@ -756,7 +816,6 @@ export const optimizeInputImagesForPayloadBudget = async (
     compressionStatusCounts,
     compressedCount,
     oversizedResolvedCount: resolvedOversizedCount,
-    payload,
     replacedCount,
     sendHardLimitBytes,
     unresolvedReason,
@@ -848,115 +907,141 @@ const replaceInputImageWithPlaceholder = (image: InputImageDataUrl): void => {
   delete image.record.file_id
 }
 
-const collectImagePayloadBudgetCandidates = (
+const createImagePayloadBudgetInstrumentation = (
+  initialCloneCount?: number,
+): ImagePayloadBudgetInstrumentation => ({
+  clones:
+    typeof initialCloneCount === "number" && initialCloneCount > 0 ?
+      Math.floor(initialCloneCount)
+    : 0,
+  decodedBuffers: 0,
+  ledgerMismatches: 0,
+  serializations: 0,
+  traversals: 0,
+})
+
+const serializeImageBudgetPayload = (
+  payload: ResponsesPayload,
+  instrumentation: ImagePayloadBudgetInstrumentation,
+): number => {
+  instrumentation.serializations += 1
+  return calculateResponsesPayloadBytes(payload)
+}
+
+const collectImagePayloadBudgetInventory = (
   payload: ResponsesPayload,
   maxPromptImageSize?: number,
-): Array<ImagePayloadBudgetCandidate> => {
+  instrumentation?: ImagePayloadBudgetInstrumentation,
+): ImagePayloadBudgetInventory => {
+  if (instrumentation) instrumentation.traversals += 1
   if (!Array.isArray(payload.input)) {
-    return []
+    return { candidates: [], mediaStats: createEmptyPayloadMediaStats() }
   }
 
-  const latestUserImageIndex = getLatestUserImageInputIndex(payload.input)
-  const latestImageInputIndex = getLatestImageInputIndex(payload.input)
+  const collection = collectMediaFacts(payload, {
+    onBase64Decode: () => {
+      if (instrumentation) instrumentation.decodedBuffers += 1
+    },
+    probeImageHeaders: false,
+    protocol: "responses",
+  })
   const candidates: Array<ImagePayloadBudgetCandidate> = []
+  const mediaStats = createEmptyPayloadMediaStats()
+  let latestImageInputIndex: number | undefined
+  let latestUserImageIndex: number | undefined
 
-  for (let inputIndex = 0; inputIndex < payload.input.length; inputIndex += 1) {
-    const item = payload.input[inputIndex]
-    const content = getImageContentArray(item)
-    if (!content) {
-      continue
-    }
-
-    for (
-      let contentIndex = 0;
-      contentIndex < content.length;
-      contentIndex += 1
-    ) {
-      const block = content[contentIndex]
-      if (!isResponseInputImage(block) || typeof block.image_url !== "string") {
-        continue
-      }
-
-      const parsed = parseImageDataUrl(block.image_url)
-      if (!parsed) {
-        continue
-      }
-
-      candidates.push({
-        ...parsed,
-        content,
-        contentIndex,
-        dataUrlBytes: Buffer.byteLength(block.image_url, "utf8"),
-        group: getImageCandidateGroup({
-          input: payload.input,
-          inputIndex,
-          item,
-          latestImageInputIndex,
-          latestUserImageIndex,
-        }),
-        inputIndex,
-        oversized: isImageOverLimit(parsed.decodedBytes, maxPromptImageSize),
-        record: block,
-      })
+  for (const fact of collection.facts) {
+    collectMediaFactStats(fact, mediaStats)
+    const candidate = createImagePayloadBudgetCandidate(
+      fact,
+      maxPromptImageSize,
+    )
+    if (!candidate) continue
+    candidates.push(candidate)
+    latestImageInputIndex = Math.max(
+      latestImageInputIndex ?? candidate.inputIndex,
+      candidate.inputIndex,
+    )
+    const item = payload.input[candidate.inputIndex]
+    if (isResponseInputMessage(item) && item.role === "user") {
+      latestUserImageIndex = Math.max(
+        latestUserImageIndex ?? candidate.inputIndex,
+        candidate.inputIndex,
+      )
     }
   }
 
-  return candidates
+  for (const candidate of candidates) {
+    candidate.group = getImageCandidateGroup({
+      inputIndex: candidate.inputIndex,
+      item: payload.input[candidate.inputIndex],
+      latestImageInputIndex,
+      latestUserImageIndex,
+    })
+  }
+  applyStrictestAliasProtection(payload, candidates)
+  finalizePayloadMediaStats(mediaStats)
+  return { candidates, mediaStats }
 }
 
-const getImageContentArray = (
-  item: ResponseInputItem,
-): Array<ResponseInputContent> | null => {
-  if (isResponseInputMessage(item) && Array.isArray(item.content)) {
-    return item.content
+const applyStrictestAliasProtection = (
+  payload: ResponsesPayload,
+  candidates: Array<ImagePayloadBudgetCandidate>,
+): void => {
+  const aliases = new Map<
+    ResponseInputImage,
+    Array<ImagePayloadBudgetCandidate>
+  >()
+  for (const candidate of candidates) {
+    const record = getCandidateRecord(payload, candidate)
+    if (!record) continue
+    const group = aliases.get(record) ?? []
+    group.push(candidate)
+    aliases.set(record, group)
   }
-
-  if (isResponseFunctionCallOutputItem(item) && Array.isArray(item.output)) {
-    return item.output
+  for (const group of aliases.values()) {
+    const strictest = group.reduce((selected, candidate) =>
+      (
+        IMAGE_REPLACEMENT_GROUP_PRIORITY[candidate.group]
+        > IMAGE_REPLACEMENT_GROUP_PRIORITY[selected.group]
+      ) ?
+        candidate
+      : selected,
+    )
+    for (const candidate of group) candidate.group = strictest.group
   }
-
-  return null
 }
 
-const getLatestUserImageInputIndex = (
-  input: Array<ResponseInputItem>,
-): number | undefined => {
-  for (let index = input.length - 1; index >= 0; index -= 1) {
-    const item = input[index]
-    if (!isResponseInputMessage(item) || item.role !== "user") {
-      continue
-    }
-    if (contentHasImageDataUrl(item.content)) {
-      return index
-    }
+const createImagePayloadBudgetCandidate = (
+  fact: Readonly<MediaFact>,
+  maxPromptImageSize?: number,
+): ImagePayloadBudgetCandidate | null => {
+  if (
+    fact.carrier !== "responses.input_image.image_url"
+    || fact.referenceKind !== "data-url"
+    || !fact.base64?.valid
+    || fact.base64.decodedBytes === undefined
+    || !fact.mimeType?.startsWith("image/")
+  ) {
+    return null
   }
-
-  return undefined
-}
-
-const getLatestImageInputIndex = (
-  input: Array<ResponseInputItem>,
-): number | undefined => {
-  for (let index = input.length - 1; index >= 0; index -= 1) {
-    const content = getImageContentArray(input[index])
-    if (contentHasImageDataUrl(content)) {
-      return index
-    }
+  const inputIndex = fact.path[1]
+  const contentIndex = fact.path.at(-2)
+  if (typeof inputIndex !== "number" || typeof contentIndex !== "number") {
+    return null
   }
-
-  return undefined
+  return {
+    base64Bytes: fact.base64.encodedUtf8Bytes,
+    contentIndex,
+    dataUrlBytes: fact.encodedUtf8Bytes,
+    decodedBytes: fact.base64.decodedBytes,
+    group: "unknown",
+    inputIndex,
+    mimeType: fact.mimeType,
+    oversized: isImageOverLimit(fact.base64.decodedBytes, maxPromptImageSize),
+    path: fact.path.slice(0, -1),
+  }
 }
-
-const contentHasImageDataUrl = (
-  content: string | Array<ResponseInputContent> | undefined | null,
-): boolean =>
-  Array.isArray(content)
-  && content.some(
-    (block) =>
-      isResponseInputImage(block)
-      && typeof block.image_url === "string"
-      && parseImageDataUrl(block.image_url) !== null,
-  )
 
 const getImageCandidateGroup = ({
   inputIndex,
@@ -964,7 +1049,6 @@ const getImageCandidateGroup = ({
   latestImageInputIndex,
   latestUserImageIndex,
 }: {
-  input: Array<ResponseInputItem>
   inputIndex: number
   item: ResponseInputItem
   latestImageInputIndex?: number
@@ -1001,10 +1085,17 @@ const parseImageDataUrl = (value: string): ParsedImageDataUrl | null => {
 
   const [, mimeType, base64Payload] = match
   const normalizedBase64 = base64Payload.replaceAll(/\s+/g, "")
+  const paddingCharacters =
+    normalizedBase64.endsWith("==") ? 2
+    : normalizedBase64.endsWith("=") ? 1
+    : 0
 
   return {
     base64Bytes: Buffer.byteLength(normalizedBase64, "utf8"),
-    decodedBytes: Buffer.from(normalizedBase64, "base64").byteLength,
+    decodedBytes: Math.max(
+      0,
+      Math.floor((normalizedBase64.length * 3) / 4) - paddingCharacters,
+    ),
     mimeType,
   }
 }
@@ -1067,9 +1158,19 @@ const hasUnsafeOversizedCandidates = (
 
 const replaceCandidateWithPlaceholder = (
   candidate: ImagePayloadBudgetCandidate,
+  context: ImagePayloadMutationContext,
+  ledger: ImagePayloadBudgetLedger,
 ): void => {
-  replaceInputImageWithPlaceholder(candidate)
-  const imageUrl = candidate.record.image_url
+  ensureMutableImagePayload(context, ledger.instrumentation)
+  const record = localizeCandidatePath(context.payload, candidate)
+  const content = getCandidateContent(context.payload, candidate)
+  if (!content || !record) return
+  const beforeBytes = serializedValueBytes(content)
+  replaceInputImageWithPlaceholder({
+    decodedBytes: candidate.decodedBytes,
+    record,
+  })
+  const imageUrl = record.image_url
   if (typeof imageUrl === "string") {
     const parsed = parseImageDataUrl(imageUrl)
     candidate.dataUrlBytes = Buffer.byteLength(imageUrl, "utf8")
@@ -1079,16 +1180,153 @@ const replaceCandidateWithPlaceholder = (
   }
   candidate.replaced = true
   candidate.oversized = false
-  insertImageOmissionMarker(candidate)
+  insertImageOmissionMarker(candidate, content)
+  shiftCandidatePathsAfterInsertion(context, candidate, content)
+  reconcileImagePayloadLedger(
+    context,
+    ledger,
+    ledger.payloadBytes + serializedValueBytes(content) - beforeBytes,
+  )
 }
 
 const insertImageOmissionMarker = (
   candidate: ImagePayloadBudgetCandidate,
+  content: Array<ResponseInputContent>,
 ): void => {
-  candidate.content.splice(candidate.contentIndex + 1, 0, {
+  content.splice(candidate.contentIndex + 1, 0, {
     text: createImageOmissionMarkerText(candidate.group),
     type: "input_text",
   })
+}
+
+const shiftCandidatePathsAfterInsertion = (
+  context: ImagePayloadMutationContext,
+  insertedAfter: ImagePayloadBudgetCandidate,
+  content: Array<ResponseInputContent>,
+): void => {
+  for (const candidate of context.candidates) {
+    if (
+      candidate === insertedAfter
+      || candidate.contentIndex <= insertedAfter.contentIndex
+      || getCandidateContent(context.payload, candidate) !== content
+    ) {
+      continue
+    }
+    candidate.contentIndex += 1
+    candidate.path = [...candidate.path.slice(0, -1), candidate.contentIndex]
+  }
+}
+
+const ensureMutableImagePayload = (
+  context: ImagePayloadMutationContext,
+  instrumentation: ImagePayloadBudgetInstrumentation,
+): void => {
+  if (context.cloned) return
+  context.payload = structuredClone(context.originalPayload)
+  context.cloned = true
+  instrumentation.clones += 1
+}
+
+const getCandidateRecord = (
+  payload: ResponsesPayload,
+  candidate: ImagePayloadBudgetCandidate,
+): ResponseInputImage | null => {
+  const value = getValueAtMediaPath(payload, candidate.path)
+  return isResponseInputImage(value as ResponseInputContent) ?
+      (value as ResponseInputImage)
+    : null
+}
+
+const getCandidateContent = (
+  payload: ResponsesPayload,
+  candidate: ImagePayloadBudgetCandidate,
+): Array<ResponseInputContent> | null => {
+  const value = getValueAtMediaPath(payload, candidate.path.slice(0, -1))
+  return Array.isArray(value) ? (value as Array<ResponseInputContent>) : null
+}
+
+const localizeCandidatePath = (
+  payload: ResponsesPayload,
+  candidate: ImagePayloadBudgetCandidate,
+): ResponseInputImage | null => {
+  let container: unknown = payload
+  for (const segment of candidate.path) {
+    if (typeof container !== "object" || container === null) return null
+    const parent = container as Record<string | number, unknown>
+    const child = parent[segment]
+    if (typeof child !== "object" || child === null) return null
+    const localized =
+      Array.isArray(child) ? Array.from(child as Array<unknown>) : { ...child }
+    parent[segment] = localized
+    container = localized
+  }
+  return isResponseInputImage(container as ResponseInputContent) ?
+      (container as ResponseInputImage)
+    : null
+}
+
+const getValueAtMediaPath = (
+  root: unknown,
+  path: ReadonlyArray<MediaPathSegment>,
+): unknown => {
+  let value = root
+  for (const segment of path) {
+    if (typeof value !== "object" || value === null) return undefined
+    value = (value as Record<string | number, unknown>)[segment]
+  }
+  return value
+}
+
+const serializedValueBytes = (value: unknown): number =>
+  imageBudgetLedgerDependencies.estimateSerializedValueBytes(value)
+
+export const imageBudgetLedgerDependencies = {
+  estimateSerializedValueBytes: (value: unknown): number =>
+    Buffer.byteLength(JSON.stringify(value), "utf8"),
+}
+
+const reconcileImagePayloadLedger = (
+  context: ImagePayloadMutationContext,
+  ledger: ImagePayloadBudgetLedger,
+  expectedBytes: number,
+): void => {
+  const actualBytes = serializeImageBudgetPayload(
+    context.payload,
+    ledger.instrumentation,
+  )
+  if (actualBytes !== expectedBytes) {
+    ledger.instrumentation.ledgerMismatches += 1
+    refreshImagePayloadCandidateSemantics(context, ledger.instrumentation)
+  }
+  ledger.payloadBytes = actualBytes
+}
+
+const refreshImagePayloadCandidateSemantics = (
+  context: ImagePayloadMutationContext,
+  instrumentation: ImagePayloadBudgetInstrumentation,
+): void => {
+  const refreshed = collectImagePayloadBudgetInventory(
+    context.payload,
+    context.maxPromptImageSize,
+    instrumentation,
+  ).candidates
+  const previousByPath = new Map(
+    context.candidates.map((candidate) => [
+      JSON.stringify(candidate.path),
+      candidate,
+    ]),
+  )
+  const merged = refreshed.map((candidate) => {
+    const previous = previousByPath.get(JSON.stringify(candidate.path))
+    if (!previous) return candidate
+    const state = {
+      compressed: previous.compressed,
+      replaced: previous.replaced,
+    }
+    Object.assign(previous, candidate, state)
+    return previous
+  })
+  context.candidates.splice(0, context.candidates.length, ...merged)
 }
 
 const createImageOmissionMarkerText = (
@@ -1209,7 +1447,8 @@ const mergeImageCompressionDiagnosticSamples = (
 }
 
 const applyCompressionProfile = async (
-  payload: ResponsesPayload,
+  context: ImagePayloadMutationContext,
+  ledger: ImagePayloadBudgetLedger,
   candidates: Array<ImagePayloadBudgetCandidate>,
   profile: ImageCompressionProfile,
   options: ImagePayloadBudgetOptions,
@@ -1236,7 +1475,8 @@ const applyCompressionProfile = async (
       continue
     }
 
-    const dataUrl = candidate.record.image_url
+    const currentRecord = getCandidateRecord(context.payload, candidate)
+    const dataUrl = currentRecord?.image_url
     if (typeof dataUrl !== "string") {
       continue
     }
@@ -1248,6 +1488,9 @@ const applyCompressionProfile = async (
         decodedBytes: candidate.decodedBytes,
         group: candidate.group,
         mimeType: candidate.mimeType,
+        onBase64Decoded: () => {
+          ledger.instrumentation.decodedBuffers += 1
+        },
         profile,
       }),
     )
@@ -1306,9 +1549,16 @@ const applyCompressionProfile = async (
     }
 
     incrementImageCompressionStatusCount(statusCounts, compressionResult.status)
-    candidate.record.image_url = output.dataUrl
+    ensureMutableImagePayload(context, ledger.instrumentation)
+    const record = localizeCandidatePath(context.payload, candidate)
+    if (!record) {
+      incrementImageCompressionStatusCount(statusCounts, "invalid_data_url")
+      continue
+    }
+    const beforeBytes = serializedValueBytes(record)
+    record.image_url = output.dataUrl
     if (profile.detail && profile.detail !== "keep-original") {
-      candidate.record.detail = profile.detail
+      record.detail = profile.detail
     }
     candidate.dataUrlBytes = outputDataUrlBytes
     candidate.decodedBytes = parsedOutput.decodedBytes
@@ -1320,8 +1570,13 @@ const applyCompressionProfile = async (
     )
     candidate.compressed = true
     compressedCount += 1
+    reconcileImagePayloadLedger(
+      context,
+      ledger,
+      ledger.payloadBytes + serializedValueBytes(record) - beforeBytes,
+    )
 
-    if (isPayloadWithinTarget(payload, candidates, options.budgetBytes)) {
+    if (isPayloadWithinTarget(ledger, candidates, options.budgetBytes)) {
       break
     }
   }
@@ -1348,13 +1603,13 @@ const createCompressionProfileSummary = (
 })
 
 const shouldCompressProtectedCandidates = (
-  payload: ResponsesPayload,
+  ledger: ImagePayloadBudgetLedger,
   candidates: Array<ImagePayloadBudgetCandidate>,
   budgetBytes: number,
   sendHardLimitBytes: number,
   nearBudgetRatio: number,
 ): boolean => {
-  const payloadBytes = calculateResponsesPayloadBytes(payload)
+  const payloadBytes = ledger.payloadBytes
   return (
     payloadBytes > budgetBytes * nearBudgetRatio
     || payloadBytes > budgetBytes
@@ -1366,19 +1621,19 @@ const shouldCompressProtectedCandidates = (
 }
 
 const isPayloadWithinTarget = (
-  payload: ResponsesPayload,
+  ledger: ImagePayloadBudgetLedger,
   candidates: Array<ImagePayloadBudgetCandidate>,
   budgetBytes = DEFAULT_RESPONSES_PAYLOAD_BUDGET_BYTES,
 ): boolean =>
-  calculateResponsesPayloadBytes(payload) <= budgetBytes
+  ledger.payloadBytes <= budgetBytes
   && !candidates.some((candidate) => candidate.oversized && !candidate.replaced)
 
 const isPayloadWithinHardLimit = (
-  payload: ResponsesPayload,
+  ledger: ImagePayloadBudgetLedger,
   candidates: Array<ImagePayloadBudgetCandidate>,
   sendHardLimitBytes: number,
 ): boolean =>
-  calculateResponsesPayloadBytes(payload) <= sendHardLimitBytes
+  ledger.payloadBytes <= sendHardLimitBytes
   && !candidates.some((candidate) => candidate.oversized && !candidate.replaced)
 
 const getReplacementTargetBytes = ({
@@ -1400,6 +1655,7 @@ const getReplacementTargetBytes = ({
 
 const createImagePayloadBudgetResult = ({
   budgetBytes,
+  budgetInstrumentation,
   candidates,
   changed,
   compressedCount = 0,
@@ -1413,15 +1669,17 @@ const createImagePayloadBudgetResult = ({
   compressionStatusCounts = {},
   finalPayloadBytes,
   initialPayloadBytes,
+  mediaStats,
+  outboundPayload,
   nearBudgetRatio,
   oversizedInputImageCount,
   oversizedResolvedCount = 0,
-  payload,
   replacedCount,
   sendHardLimitBytes,
   unresolvedReason,
 }: {
   budgetBytes: number
+  budgetInstrumentation: ImagePayloadBudgetInstrumentation
   candidates: Array<ImagePayloadBudgetCandidate>
   changed: boolean
   compressedCount?: number
@@ -1435,10 +1693,11 @@ const createImagePayloadBudgetResult = ({
   compressionStatusCounts?: ImageCompressionStatusCounts
   finalPayloadBytes: number
   initialPayloadBytes: number
+  mediaStats: PayloadMediaStats
+  outboundPayload: ResponsesPayload
   nearBudgetRatio: number
   oversizedInputImageCount: number
   oversizedResolvedCount?: number
-  payload: ResponsesPayload
   replacedCount: number
   sendHardLimitBytes: number
   unresolvedReason?: ImagePayloadBudgetUnresolvedReason
@@ -1465,7 +1724,6 @@ const createImagePayloadBudgetResult = ({
     (total, candidate) => total + candidate.dataUrlBytes,
     0,
   )
-  const mediaStats = collectPayloadMediaStats(payload)
   const textAndToolBytes = Math.max(
     0,
     finalPayloadBytes - inlineImageBytes - mediaStats.unoptimizableMediaBytes,
@@ -1485,9 +1743,10 @@ const createImagePayloadBudgetResult = ({
     undefined,
   )
 
-  return {
+  const result: Omit<ImagePayloadBudgetResult, "outboundPayload"> = {
     bodyBytesOverBudget: Math.max(0, finalPayloadBytes - budgetBytes),
     budgetBytes,
+    budgetInstrumentation: { ...budgetInstrumentation },
     candidateCount: candidates.length,
     changed,
     compressionActionLimit,
@@ -1536,19 +1795,20 @@ const createImagePayloadBudgetResult = ({
     unoptimizableMediaBytes: mediaStats.unoptimizableMediaBytes,
     unresolvedReason: resolvedUnresolvedReason,
   }
+  return Object.defineProperty(result, "outboundPayload", {
+    configurable: false,
+    enumerable: false,
+    value: outboundPayload,
+    writable: false,
+  }) as ImagePayloadBudgetResult
 }
 
-const collectPayloadMediaStats = (
-  payload: ResponsesPayload,
-): PayloadMediaStats => {
-  const stats = createEmptyPayloadMediaStats()
-  collectPayloadMediaStatsFromValue(payload, [], stats, new WeakSet<object>())
+const finalizePayloadMediaStats = (stats: PayloadMediaStats): void => {
   stats.unoptimizableMediaBytes =
     stats.inputFileDataBytes
     + stats.nonImageDataUrlBytes
     + stats.remoteMediaLocatorBytes
     + stats.fileIdBytes
-  return stats
 }
 
 const createEmptyPayloadMediaStats = (): PayloadMediaStats => ({
@@ -1562,72 +1822,29 @@ const createEmptyPayloadMediaStats = (): PayloadMediaStats => ({
   unoptimizableMediaBytes: 0,
 })
 
-const collectPayloadMediaStatsFromValue = (
-  value: unknown,
-  path: Array<string>,
-  stats: PayloadMediaStats,
-  seen: WeakSet<object>,
-): void => {
-  if (typeof value === "string") {
-    collectStringMediaStats(value, path, stats)
-    return
-  }
-
-  if (typeof value !== "object" || value === null) {
-    return
-  }
-
-  if (seen.has(value)) {
-    return
-  }
-  seen.add(value)
-
-  if (Array.isArray(value)) {
-    for (let index = 0; index < value.length; index += 1) {
-      collectPayloadMediaStatsFromValue(
-        value[index],
-        [...path, String(index)],
-        stats,
-        seen,
-      )
-    }
-    return
-  }
-
-  for (const [key, childValue] of Object.entries(value)) {
-    collectPayloadMediaStatsFromValue(childValue, [...path, key], stats, seen)
-  }
-}
-
-const collectStringMediaStats = (
-  value: string,
-  path: Array<string>,
+const collectMediaFactStats = (
+  fact: Readonly<MediaFact>,
   stats: PayloadMediaStats,
 ): void => {
-  const bytes = Buffer.byteLength(value, "utf8")
-
-  if (isFileDataPath(path)) {
+  const bytes = fact.encodedUtf8Bytes
+  if (fact.carrier === "responses.input_file.file_data") {
     stats.inputFileDataBytes += bytes
     recordLargestUnoptimizableKind(stats, "input_file.file_data", bytes)
     return
   }
-
-  if (isFileIdPath(path)) {
+  if (fact.referenceKind === "file-id") {
     stats.fileIdBytes += bytes
     stats.fileIdCount += 1
     recordLargestUnoptimizableKind(stats, "file_id", bytes)
     return
   }
-
-  if (isRemoteMediaLocatorPath(path) && REMOTE_MEDIA_URL_PATTERN.test(value)) {
+  if (fact.referenceKind === "remote-url") {
     stats.remoteMediaLocatorBytes += bytes
     stats.remoteMediaLocatorCount += 1
     recordLargestUnoptimizableKind(stats, "remote_media_url", bytes)
     return
   }
-
-  const mimeType = DATA_URL_MIME_PATTERN.exec(value)?.[1]?.toLowerCase()
-  if (mimeType && !mimeType.startsWith("image/")) {
+  if (fact.referenceKind === "data-url" && fact.mediaKind !== "image") {
     stats.nonImageDataUrlBytes += bytes
     recordLargestUnoptimizableKind(stats, "non_image_data_url", bytes)
   }
@@ -1645,17 +1862,6 @@ const recordLargestUnoptimizableKind = (
     stats.largestUnoptimizableBytes = bytes
     stats.largestUnoptimizableKind = kind
   }
-}
-
-const isFileDataPath = (path: Array<string>): boolean =>
-  path.at(-1) === "file_data"
-
-const isFileIdPath = (path: Array<string>): boolean => path.at(-1) === "file_id"
-
-const isRemoteMediaLocatorPath = (path: Array<string>): boolean => {
-  const key = path.at(-1)
-  const parent = path.at(-2)
-  return key === "image_url" || (key === "url" && parent === "image_url")
 }
 
 const getUnresolvedReason = ({

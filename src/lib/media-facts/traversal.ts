@@ -11,7 +11,7 @@ export const collectMediaFactsFromPayload = (
   value: unknown,
   options: CollectMediaFactsOptions,
 ): MediaFactCollection => {
-  const collector = new FactCollector()
+  const collector = new FactCollector(options)
   const rootVisit = collector.visit(value, 0)
   if (!rootVisit.accepted || !isRecord(value) || !rootVisit.ancestor) {
     return collector.result()

@@ -56,6 +56,30 @@ test("optimized Responses requests budget encrypted reasoning before dispatch", 
   expect(dispatchedPayload?.include).toContain("reasoning.encrypted_content")
 })
 
+test("does not clone an already prepared no-op payload before dispatch", async () => {
+  const payload: ResponsesPayload = {
+    include: ["reasoning.encrypted_content"],
+    input: "hello",
+    model: "gpt-test",
+  }
+  let dispatchedPayload: ResponsesPayload | undefined
+
+  await createOptimizedCopilotResponses(payload, {
+    createResponses: (outboundPayload) => {
+      dispatchedPayload = outboundPayload
+      return Promise.resolve(createResult(outboundPayload.model))
+    },
+    requestOptions: {
+      initiator: "user",
+      requestId: "request-no-op",
+      transport: "http",
+      vision: false,
+    },
+  })
+
+  expect(dispatchedPayload).toBe(payload)
+})
+
 test("websocket hard limit reserves the serialized envelope overhead", () => {
   const payload: ResponsesPayload = {
     include: ["reasoning.encrypted_content"],
@@ -86,7 +110,7 @@ test("websocket hard limit reserves the serialized envelope overhead", () => {
   ).toBe(configuredLimit)
 })
 
-test("does not retry payload-too-large when image optimization is not smaller", async () => {
+test("replans retry from the unchanged logical payload and skips a non-smaller retry", async () => {
   const olderImageUrl = `data:image/png;base64,${"A".repeat(32)}`
   const payload = {
     input: [
@@ -110,7 +134,9 @@ test("does not retry payload-too-large when image optimization is not smaller", 
     ],
     model: "gpt-test",
   } as ResponsesPayload
+  const pristinePayload = structuredClone(payload)
   const dispatchedPayloads: Array<ResponsesPayload> = []
+  const budgetLogs: Array<Record<string, unknown>> = []
 
   let caught: unknown
   try {
@@ -124,6 +150,15 @@ test("does not retry payload-too-large when image optimization is not smaller", 
           ),
         )
       },
+      logger: {
+        debug: () => undefined,
+        info: () => undefined,
+        warn: (_message: unknown, context: unknown) => {
+          if (context && typeof context === "object") {
+            budgetLogs.push(context as Record<string, unknown>)
+          }
+        },
+      } as never,
       maxInputImageBytesOverride: 8,
       requestOptions: {
         initiator: "user",
@@ -137,6 +172,11 @@ test("does not retry payload-too-large when image optimization is not smaller", 
   }
 
   expect(caught).toBeInstanceOf(HTTPError)
+  expect(payload).toEqual(pristinePayload)
   expect(dispatchedPayloads).toHaveLength(1)
   expect(JSON.stringify(dispatchedPayloads[0])).not.toContain(olderImageUrl)
+  expect(budgetLogs.map((entry) => entry.mode)).toEqual(["normal", "retry"])
+  expect(budgetLogs[0]?.initialPayloadBytes).toBe(
+    budgetLogs[1]?.initialPayloadBytes,
+  )
 })

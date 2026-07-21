@@ -187,9 +187,11 @@ function createReport(median: number, p95: number): BenchmarkReport {
       decodedBuffers: 0,
       frames: 0,
       queuedBytes: 0,
+      rssBytes: 0,
       serializations: 0,
       sockets: 0,
       tokenizerMediaBytes: 0,
+      traversals: 0,
     },
     metadata: {
       architecture: "arm64",

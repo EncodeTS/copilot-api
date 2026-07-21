@@ -16,6 +16,7 @@ export const benchmarkCounterDescriptors = [
     unit: "count",
   },
   { aggregation: "cumulative", name: "clones", unit: "count" },
+  { aggregation: "cumulative", name: "traversals", unit: "count" },
   {
     aggregation: "cumulative",
     name: "serializations",
@@ -25,6 +26,7 @@ export const benchmarkCounterDescriptors = [
   { aggregation: "peak", name: "sockets", unit: "count" },
   { aggregation: "peak", name: "frames", unit: "count" },
   { aggregation: "peak", name: "queuedBytes", unit: "bytes" },
+  { aggregation: "peak", name: "rssBytes", unit: "bytes" },
 ] as const satisfies readonly BenchmarkCounterDescriptor[]
 
 type CounterDescriptor = (typeof benchmarkCounterDescriptors)[number]
@@ -51,9 +53,11 @@ function emptyCounterSnapshot(): BenchmarkCounterSnapshot {
     decodedBuffers: 0,
     frames: 0,
     queuedBytes: 0,
+    rssBytes: 0,
     serializations: 0,
     sockets: 0,
     tokenizerMediaBytes: 0,
+    traversals: 0,
   }
 }
 

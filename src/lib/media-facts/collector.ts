@@ -6,6 +6,7 @@ import {
   type MediaFact,
   type MediaFactCollection,
   type MediaFactLimits,
+  type CollectMediaFactsOptions,
 } from "~/lib/media-facts/types"
 
 export interface Ancestor {
@@ -39,6 +40,11 @@ export class FactCollector {
   halted = false
   maxDepthVisited = 0
   nodesVisited = 0
+  readonly options: CollectMediaFactsOptions
+
+  constructor(options: CollectMediaFactsOptions) {
+    this.options = options
+  }
 
   visit(value: unknown, depth: number, ancestors?: Ancestor): VisitResult {
     if (this.halted) return { accepted: false }

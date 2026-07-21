@@ -54,6 +54,7 @@ const addAnthropicImageFact = (
             protocol: "anthropic",
           },
           block.source.url,
+          collector.options,
         ),
       )
     }
@@ -70,6 +71,7 @@ const addAnthropicImageFact = (
         },
         block.source.data,
         block.source.media_type,
+        collector.options,
       ),
     )
   }
@@ -93,6 +95,7 @@ const addAnthropicDocumentFact = (
             protocol: "anthropic",
           },
           block.source.url,
+          collector.options,
         ),
       )
     }
@@ -109,6 +112,7 @@ const addAnthropicDocumentFact = (
         },
         block.source.data,
         block.source.media_type,
+        collector.options,
       ),
     )
   }

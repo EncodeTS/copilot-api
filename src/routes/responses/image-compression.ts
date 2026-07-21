@@ -79,6 +79,7 @@ export const createSharpImageCompressionAdapter = (
           inputBytes: Buffer.byteLength(input.dataUrl, "utf8"),
         })
       }
+      input.onBase64Decoded?.()
 
       if (
         isAlreadyOptimizedForProfile(options.namespace, input, parsed.buffer)
