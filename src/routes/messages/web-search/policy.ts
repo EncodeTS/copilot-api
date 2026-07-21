@@ -10,10 +10,11 @@ import { normalizeMessageReasoningEffort } from "~/lib/reasoning-effort"
 import type { ResponsesPayload } from "~/services/copilot/create-responses"
 import type { Model } from "~/services/copilot/get-models"
 
-import type {
-  AnthropicMessagesPayload,
-  AnthropicTool,
-  AnthropicWebSearchTool,
+import {
+  isAnthropicCustomTool,
+  type AnthropicMessagesPayload,
+  type AnthropicTool,
+  type AnthropicWebSearchTool,
 } from "../anthropic-types"
 import type { RestoredWebSearchTurn } from "./carrier-sanitizer"
 import { translateAnthropicMessagesToResponsesPayload } from "../responses-translation"
@@ -91,6 +92,7 @@ export const applyWebSearchFallbackHeaders = (
     "x-copilot-api-web-search-carrier",
     "synthetic-without-encrypted-content",
   )
+  c.header("x-copilot-api-web-search-stream-mode", "buffered-synthetic-replay")
 
   if (fallbackPlan.downgradeReasons.length > 0) {
     const downgrade = fallbackPlan.downgradeReasons.join(",")
@@ -114,7 +116,7 @@ export type WebSearchRoute =
   | { kind: "unsupported"; message: string }
 
 export const WEB_SEARCH_MIXED_TOOLS_UNSUPPORTED_MESSAGE =
-  "Mixed web_search and client tools are not supported by the Responses fallback"
+  "Mixed web_search and client tools require a Responses or native Messages adapter"
 export const WEB_SEARCH_ROUTE_UNAVAILABLE_MESSAGE =
   "No faithful Web Search route is configured"
 export const WEB_SEARCH_PROVIDER_ADAPTER_UNSUPPORTED_MESSAGE =
@@ -130,10 +132,10 @@ export const resolveWebSearchRoute = (
   if (fallbackProviderAlias) {
     return { kind: "provider", alias: fallbackProviderAlias }
   }
-  if (!isWebSearchOnlyRequest(payload)) {
+  if (!hasWebSearchServerTool(payload)) {
     return {
       kind: "unsupported",
-      message: WEB_SEARCH_MIXED_TOOLS_UNSUPPORTED_MESSAGE,
+      message: WEB_SEARCH_ROUTE_UNAVAILABLE_MESSAGE,
     }
   }
   if (webSearchModel && responsesWebSearchEnabled) {
@@ -213,7 +215,7 @@ export const prepareWebSearchResponsesPayload = (
   const switchedPayload: AnthropicMessagesPayload = {
     ...payload,
     model: options.model ?? payload.model,
-    tools: [],
+    tools: payload.tools?.filter(isAnthropicCustomTool),
     stream: true,
   }
 
@@ -229,7 +231,10 @@ export const prepareWebSearchResponsesPayload = (
       "web_search_call.action.sources" as const,
     ]),
   ]
-  responsesPayload.tools = [buildResponsesWebSearchTool(config)]
+  responsesPayload.tools = [
+    ...(responsesPayload.tools ?? []),
+    buildResponsesWebSearchTool(config),
+  ]
   if (
     typeof config.maxUses === "number"
     && Number.isSafeInteger(config.maxUses)

@@ -412,6 +412,13 @@ const createApp = () => {
     providerResolver,
   })
   const searchFlow = createWebSearchFlow({
+    createResponses: (payload, options) =>
+      forwardCodexResponses(
+        payload,
+        new Headers(),
+        "https://provider.example",
+        options,
+      ),
     findEndpointModel,
     getMessageApiWebSearchModel: () => messageApiWebSearchModel,
     getResponsesTransportForModel: (selectedModel, options) =>
@@ -645,7 +652,7 @@ describe("provider messages web_search", () => {
     )
   })
 
-  test("rejects mixed top-level fallback tools before any upstream dispatch", async () => {
+  test("forwards mixed top-level fallback tools through Responses", async () => {
     messageApiWebSearchModel = "gpt-search"
 
     const response = await createApp().request("/v1/messages", {
@@ -662,8 +669,28 @@ describe("provider messages web_search", () => {
       }),
     })
 
-    expect(response.status).toBe(400)
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(response.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [, init] = fetchMock.mock.calls[0]
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      tools?: Array<Record<string, unknown>>
+    }
+    expect(upstreamBody.tools).toEqual([
+      {
+        type: "function",
+        name: "get_weather",
+        parameters: { type: "object", properties: {} },
+        strict: false,
+      },
+      {
+        type: "web_search",
+        filters: { allowed_domains: ["nodejs.org"] },
+        user_location: {
+          type: "approximate",
+          country: "US",
+        },
+      },
+    ])
   })
 
   test("runs pure Anthropic web_search through an openai-responses provider", async () => {
@@ -1437,7 +1464,7 @@ describe("provider messages web_search", () => {
     expect(text).toContain("event: message_stop")
   })
 
-  test("rejects mixed web_search and normal tools before Responses dispatch", async () => {
+  test("forwards mixed web_search and normal tools through Responses", async () => {
     const app = createApp()
     const response = await app.request("/search/v1/messages", {
       method: "POST",
@@ -1458,16 +1485,16 @@ describe("provider messages web_search", () => {
       }),
     })
 
-    expect(response.status).toBe(400)
-    expect(await response.json()).toEqual({
-      type: "error",
-      error: {
-        type: "invalid_request_error",
-        message:
-          "Mixed web_search and client tools are not supported by the Responses fallback",
-      },
-    })
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(response.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [, init] = fetchMock.mock.calls[0]
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      tools?: Array<Record<string, unknown>>
+    }
+    expect(upstreamBody.tools?.map((tool) => tool.type)).toEqual([
+      "function",
+      "web_search",
+    ])
   })
 
   test("passes mixed web_search and client tools unchanged to native Anthropic", async () => {

@@ -337,6 +337,7 @@ const handleWebSearchViaResponsesWithDependencies = async (
           errorMessagePrefix: "Web search responses stream",
           upstreamResponse: upstreamResult,
           logger,
+          signal: options.signal,
         })
       : upstreamResult
   } catch (error) {
@@ -358,6 +359,9 @@ const handleWebSearchViaResponsesWithDependencies = async (
         model: selectedModel?.id ?? responsesPayload.model,
       },
       requestId,
+      resumedPendingServerToolUseIds:
+        carrierSanitization.resumedPendingServerToolUseIds,
+      turnPhase: carrierSanitization.turnPhase,
     })
   } catch (error) {
     recordUsage(usage, getWebSearchUsageMetadata(result, "rejected"))

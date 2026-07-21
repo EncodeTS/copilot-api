@@ -82,7 +82,7 @@ describe("Web Search carrier sanitizer", () => {
 
     expect(payload.messages[1]).toEqual({ role: "assistant", content: [] })
     expect(sanitization.restoredTurns).toEqual([
-      { messageIndex: 1, outputItems },
+      { continuation: { kind: "complete" }, messageIndex: 1, outputItems },
     ])
 
     const translated = translateAnthropicMessagesToResponsesPayload(
@@ -147,7 +147,11 @@ describe("Web Search carrier sanitizer", () => {
     )
 
     expect(sanitization.restoredTurns).toEqual([
-      { messageIndex: 1, outputItems: multiOutput },
+      {
+        continuation: { kind: "complete" },
+        messageIndex: 1,
+        outputItems: multiOutput,
+      },
     ])
     if (!Array.isArray(translated.input)) throw new Error("invalid input")
     const restoredStart = translated.input.findIndex(

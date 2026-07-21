@@ -73,12 +73,14 @@ export const collectProviderResponsesStreamResult = async ({
   logger,
   providerConfig,
   recordUsage,
+  signal,
   upstreamResponse,
 }: {
   errorMessagePrefix: string
   logger: ConsolaInstance
   providerConfig: ResolvedProviderConfig
   recordUsage: TokenUsageRecorder
+  signal?: AbortSignal
   upstreamResponse: ResponsesStream
 }) => {
   try {
@@ -90,6 +92,7 @@ export const collectProviderResponsesStreamResult = async ({
           logCodexRateLimitsEvent(event)
         }
       },
+      signal,
       upstreamResponse,
     })
   } catch (error) {

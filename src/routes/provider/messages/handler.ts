@@ -87,6 +87,7 @@ import {
   normalizeWebSearchResponsesUsage,
   prepareWebSearchResponsesPayload,
   reconstructWebSearchResponse,
+  type WebSearchTurnPhase,
   WEB_SEARCH_PROVIDER_ADAPTER_UNSUPPORTED_MESSAGE,
 } from "~/routes/messages/web-search/fulfill"
 import {
@@ -357,18 +358,18 @@ async function handleProviderMessagesForProviderWithDependencies(
       )
 
       if (hasWebSearchServerTool(payload)) {
-        if (isWebSearchOnlyRequest(payload)) {
-          return await handleOpenAIResponsesProviderWebSearchMessages(c, {
-            dependencies,
-            modelConfig,
-            payload,
-            provider,
-            providerConfig: forwardingConfig,
-            restoredWebSearchTurns: carrierSanitization.restoredTurns,
-            selectedCodexModel,
-          })
-        }
-        return createWebSearchUnsupportedResponse(c)
+        return await handleOpenAIResponsesProviderWebSearchMessages(c, {
+          dependencies,
+          modelConfig,
+          payload,
+          provider,
+          providerConfig: forwardingConfig,
+          restoredWebSearchTurns: carrierSanitization.restoredTurns,
+          resumedPendingServerToolUseIds:
+            carrierSanitization.resumedPendingServerToolUseIds,
+          turnPhase: carrierSanitization.turnPhase,
+          selectedCodexModel,
+        })
       }
 
       return await handleOpenAIResponsesProviderMessages(c, {
@@ -464,7 +465,9 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
     provider: string
     providerConfig: ResolvedProviderConfig
     restoredWebSearchTurns: ReadonlyArray<RestoredWebSearchTurn>
+    resumedPendingServerToolUseIds: ReadonlyArray<string>
     selectedCodexModel?: Model
+    turnPhase: WebSearchTurnPhase
   },
 ): Promise<Response> => {
   const {
@@ -474,7 +477,9 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
     provider,
     providerConfig,
     restoredWebSearchTurns,
+    resumedPendingServerToolUseIds,
     selectedCodexModel,
+    turnPhase,
   } = options
   const recordUsage = createProviderMessagesUsageRecorder(
     payload,
@@ -518,6 +523,7 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
         logger,
         providerConfig,
         recordUsage,
+        signal: c.req.raw.signal,
         upstreamResponse,
       })
       return respondWebSearchProviderMessagesJson(c, {
@@ -526,6 +532,8 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
         payload,
         provider,
         recordUsage,
+        resumedPendingServerToolUseIds,
+        turnPhase,
       })
     }
 
@@ -535,6 +543,8 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
       payload,
       provider,
       recordUsage,
+      resumedPendingServerToolUseIds,
+      turnPhase,
     })
   }
 
@@ -563,6 +573,7 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
       logger,
       providerConfig,
       recordUsage,
+      signal: c.req.raw.signal,
       upstreamResponse: events(upstreamResponse),
     })
     return respondWebSearchProviderMessagesJson(c, {
@@ -571,6 +582,8 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
       payload,
       provider,
       recordUsage,
+      resumedPendingServerToolUseIds,
+      turnPhase,
     })
   }
 
@@ -581,6 +594,8 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
     payload,
     provider,
     recordUsage,
+    resumedPendingServerToolUseIds,
+    turnPhase,
   })
 }
 
@@ -1646,9 +1661,19 @@ const respondWebSearchProviderMessagesJson = (
     payload: AnthropicMessagesPayload
     provider: string
     recordUsage: TokenUsageRecorder
+    resumedPendingServerToolUseIds: ReadonlyArray<string>
+    turnPhase: WebSearchTurnPhase
   },
 ): Response => {
-  const { body, canonicalProvider, payload, provider, recordUsage } = options
+  const {
+    body,
+    canonicalProvider,
+    payload,
+    provider,
+    recordUsage,
+    resumedPendingServerToolUseIds,
+    turnPhase,
+  } = options
   const usage = normalizeWebSearchResponsesUsage(body)
   let reconstructed: ReturnType<typeof reconstructWebSearchResponse>
   try {
@@ -1660,6 +1685,8 @@ const respondWebSearchProviderMessagesJson = (
         model: payload.model.trim(),
       },
       requestId: body.id || `${provider}:${payload.model}`,
+      resumedPendingServerToolUseIds,
+      turnPhase,
     })
   } catch (error) {
     recordUsage(usage, getWebSearchUsageMetadata(body, "rejected"))

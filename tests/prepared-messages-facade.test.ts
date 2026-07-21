@@ -436,7 +436,11 @@ test("Web Search carrier sanitizer remains an independent destination hook", asy
     carrierSanitizer: {
       sanitize: (_payload, carrierContext) => {
         contexts.push(carrierContext)
-        return { restoredTurns: [] }
+        return {
+          restoredTurns: [],
+          resumedPendingServerToolUseIds: [],
+          turnPhase: "initial",
+        }
       },
     },
     handleWithMessagesApi: () => Promise.resolve(new Response("messages")),

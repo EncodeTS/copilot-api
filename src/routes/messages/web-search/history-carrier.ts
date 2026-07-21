@@ -1,3 +1,8 @@
+import {
+  isWebSearchToolContract,
+  type WebSearchToolContract,
+} from "./tool-contract"
+
 export const WEB_SEARCH_HISTORY_CARRIER_FIELD =
   "_copilot_api_web_search_history"
 export const WEB_SEARCH_HISTORY_CARRIER_PREFIX = "copilot-api-web-search-v1:"
@@ -19,10 +24,18 @@ const CARRIER_PAYLOAD_FIELDS = [
   "output_items",
   "source",
 ] as const
+const CARRIER_PAYLOAD_WITH_TOOL_CONTRACT_FIELDS = [
+  ...CARRIER_PAYLOAD_FIELDS,
+  "tool_contract",
+] as const
 const CARRIER_ENVELOPE_FIELDS = [
   ...CARRIER_PAYLOAD_FIELDS,
   "schema",
   "version",
+] as const
+const CARRIER_ENVELOPE_WITH_TOOL_CONTRACT_FIELDS = [
+  ...CARRIER_ENVELOPE_FIELDS,
+  "tool_contract",
 ] as const
 const CARRIER_SOURCE_FIELDS = [
   "adapter",
@@ -78,6 +91,7 @@ export interface WebSearchHistoryCarrierPayload {
   readonly source: WebSearchHistoryCarrierSource
   readonly output_items: ReadonlyArray<unknown>
   readonly continuation: WebSearchHistoryContinuation
+  readonly tool_contract?: WebSearchToolContract
 }
 
 export type WebSearchHistoryOutputItem = Readonly<Record<string, unknown>>
@@ -98,6 +112,7 @@ export type WebSearchHistoryCarrierValidationResult =
         | "invalid-envelope"
         | "invalid-output-items"
         | "invalid-source"
+        | "invalid-tool-contract"
         | "missing-web-search-call"
         | "too-large"
     }
@@ -198,13 +213,18 @@ const validateCanonicalCarrierPayload = (
   }
   const fields =
     Object.hasOwn(payload, "schema") || Object.hasOwn(payload, "version") ?
-      CARRIER_ENVELOPE_FIELDS
+      Object.hasOwn(payload, "tool_contract") ?
+        CARRIER_ENVELOPE_WITH_TOOL_CONTRACT_FIELDS
+      : CARRIER_ENVELOPE_FIELDS
+    : Object.hasOwn(payload, "tool_contract") ?
+      CARRIER_PAYLOAD_WITH_TOOL_CONTRACT_FIELDS
     : CARRIER_PAYLOAD_FIELDS
   if (!hasExactFields(payload, fields)) {
     return { valid: false, reason: "invalid-envelope" }
   }
   if (
-    fields === CARRIER_ENVELOPE_FIELDS
+    (fields === CARRIER_ENVELOPE_FIELDS
+      || fields === CARRIER_ENVELOPE_WITH_TOOL_CONTRACT_FIELDS)
     && (payload.schema !== WEB_SEARCH_HISTORY_SCHEMA || payload.version !== 1)
   ) {
     return { valid: false, reason: "invalid-envelope" }
@@ -255,6 +275,14 @@ const validateCanonicalCarrierPayload = (
   if (!isContinuation(payload.continuation)) {
     return { valid: false, reason: "invalid-continuation" }
   }
+  if (
+    (payload.continuation.kind === "complete"
+      && payload.tool_contract !== undefined)
+    || (payload.continuation.kind !== "complete"
+      && !isWebSearchToolContract(payload.tool_contract))
+  ) {
+    return { valid: false, reason: "invalid-tool-contract" }
+  }
   return { valid: true }
 }
 
@@ -295,6 +323,9 @@ const prepareWebSearchHistoryCarrier = (
     output_items:
       payload.output_items as ReadonlyArray<WebSearchHistoryOutputItem>,
     continuation: payload.continuation as WebSearchHistoryContinuation,
+    ...(payload.tool_contract !== undefined && {
+      tool_contract: payload.tool_contract as WebSearchToolContract,
+    }),
   }
   const serialized = JSON.stringify(envelope)
   if (
@@ -322,6 +353,8 @@ const classifyCanonicalFailure = (
       return "invalid-output-items"
     case "source":
       return "invalid-source"
+    case "tool_contract":
+      return "invalid-tool-contract"
     default:
       return "invalid-envelope"
   }

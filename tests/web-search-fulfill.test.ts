@@ -400,14 +400,17 @@ describe("resolveWebSearchRoute", () => {
     })
   })
 
-  it("rejects mixed web_search and client tools before fallback dispatch", () => {
+  it("routes mixed web_search and client tools to the Responses fallback", () => {
     const payload = makePayload({
       tools: [
         webSearchTool,
         { name: "get_weather", input_schema: { type: "object" } },
       ],
     })
-    expect(resolveWebSearchRoute(payload, opts).kind).toBe("unsupported")
+    expect(resolveWebSearchRoute(payload, opts)).toEqual({
+      kind: "responses",
+      model: "gpt-5-mini",
+    })
   })
 
   it("rejects when no web search model is configured", () => {

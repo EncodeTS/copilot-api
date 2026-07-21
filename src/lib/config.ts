@@ -63,7 +63,8 @@ export interface AppConfig {
   // A `provider/model` alias is passed straight through to that provider's
   // (websearch-capable) message API, while a plain GPT model runs the search
   // via /responses. Leave unset to disable (the tool is then stripped).
-  // Mixing web_search with other tools is not supported.
+  // Mixed client tools are retained only on Responses or native Messages
+  // adapters, where their continuation state can be represented faithfully.
   messageApiWebSearchModel?: string
   nativeMessagesOutboundHardEnforcement?: boolean
   nativeMessagesOutboundMaxBodyBytes?: number

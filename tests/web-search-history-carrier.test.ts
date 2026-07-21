@@ -17,6 +17,7 @@ import {
   WEB_SEARCH_HISTORY_CARRIER_PREFIX,
   type WebSearchHistoryCarrierPayload,
 } from "~/routes/messages/web-search/history-carrier"
+import { createWebSearchToolContract } from "~/routes/messages/web-search/tool-contract"
 
 const source = {
   destination: "responses",
@@ -32,6 +33,18 @@ const responsesContext = {
     model: source.model,
   },
 } as const
+const toolContract = createWebSearchToolContract([
+  {
+    type: "web_search_20250305",
+    name: "web_search",
+    max_uses: 3,
+  },
+  {
+    name: "inspect_runtime",
+    description: "Read the runtime version.",
+    input_schema: { type: "object", properties: {} },
+  },
+])
 
 const completeHistory = {
   source,
@@ -361,7 +374,11 @@ describe("Web Search history carrier contract", () => {
     ] as const
 
     for (const continuation of continuations) {
-      const payload = { ...completeHistory, continuation }
+      const payload = {
+        ...completeHistory,
+        continuation,
+        tool_contract: toolContract,
+      }
       const encoded = encodeWebSearchHistoryCarrier(payload)
 
       expect(
@@ -371,6 +388,32 @@ describe("Web Search history carrier contract", () => {
         envelope: { continuation },
       })
     }
+  })
+
+  test("requires a valid tool fingerprint only for pending continuations", () => {
+    const continuation = {
+      kind: "pause_turn" as const,
+      pending_server_tool_use_ids: ["srvtoolu_search_fixture"],
+    }
+    expect(
+      validateWebSearchHistoryCarrierPayload({
+        ...completeHistory,
+        continuation,
+      }),
+    ).toEqual({ valid: false, reason: "invalid-tool-contract" })
+    expect(
+      validateWebSearchHistoryCarrierPayload({
+        ...completeHistory,
+        continuation,
+        tool_contract: { algorithm: "sha256", digest: "A".repeat(64) },
+      }),
+    ).toEqual({ valid: false, reason: "invalid-tool-contract" })
+    expect(
+      validateWebSearchHistoryCarrierPayload({
+        ...completeHistory,
+        tool_contract: toolContract,
+      }),
+    ).toEqual({ valid: false, reason: "invalid-tool-contract" })
   })
 
   test("requires bounded unique continuation IDs within and across pending sets", () => {
@@ -408,6 +451,7 @@ describe("Web Search history carrier contract", () => {
         validateWebSearchHistoryCarrierPayload({
           ...completeHistory,
           continuation,
+          tool_contract: toolContract,
         }),
       ).toEqual({ valid: false, reason: "invalid-continuation" })
     }
