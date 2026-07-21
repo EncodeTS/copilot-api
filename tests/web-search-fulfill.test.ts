@@ -18,8 +18,8 @@ import {
   hasWebSearchServerTool,
   isWebSearchOnlyRequest,
   prepareWebSearchResponsesPayload,
+  reconstructWebSearchResponse,
   resolveWebSearchRoute,
-  stripWebSearchServerTool,
   webSearchFlowDependencies,
 } from "~/routes/messages/web-search/fulfill"
 
@@ -335,18 +335,6 @@ describe("web search tool detection", () => {
     expect(hasWebSearchServerTool(payload)).toBe(false)
     expect(isWebSearchOnlyRequest(payload)).toBe(false)
   })
-
-  it("strips only the web_search server tool", () => {
-    const payload = makePayload({
-      tools: [
-        webSearchTool,
-        { name: "get_weather", input_schema: { type: "object" } },
-      ],
-    })
-    stripWebSearchServerTool(payload)
-    expect(payload.tools).toHaveLength(1)
-    expect(payload.tools?.[0].name).toBe("get_weather")
-  })
 })
 
 describe("resolveWebSearchRoute", () => {
@@ -373,32 +361,32 @@ describe("resolveWebSearchRoute", () => {
     })
   })
 
-  it("strips when web_search is mixed with other tools", () => {
+  it("rejects mixed web_search and client tools before fallback dispatch", () => {
     const payload = makePayload({
       tools: [
         webSearchTool,
         { name: "get_weather", input_schema: { type: "object" } },
       ],
     })
-    expect(resolveWebSearchRoute(payload, opts).kind).toBe("strip")
+    expect(resolveWebSearchRoute(payload, opts).kind).toBe("unsupported")
   })
 
-  it("strips when no web search model is configured", () => {
+  it("rejects when no web search model is configured", () => {
     expect(
       resolveWebSearchRoute(makePayload(), {
         webSearchModel: undefined,
         responsesWebSearchEnabled: true,
       }).kind,
-    ).toBe("strip")
+    ).toBe("unsupported")
   })
 
-  it("strips a Copilot model when responses web search is disabled", () => {
+  it("rejects a Copilot model when responses web search is disabled", () => {
     expect(
       resolveWebSearchRoute(makePayload(), {
         webSearchModel: "gpt-5-mini",
         responsesWebSearchEnabled: false,
       }).kind,
-    ).toBe("strip")
+    ).toBe("unsupported")
   })
 })
 
@@ -425,7 +413,192 @@ describe("prepareWebSearchResponsesPayload", () => {
   })
 })
 
+describe("reconstructWebSearchResponse", () => {
+  it.each(["max_output_tokens", "max_tokens"])(
+    "maps incomplete %s to Anthropic max_tokens",
+    (reason) => {
+      const result = makeResponsesResult({
+        status: "incomplete",
+        incomplete_details: { reason } as never,
+      })
+
+      const { response } = reconstructWebSearchResponse(makePayload(), result, {
+        requestId: "req-limit",
+      })
+
+      expect(response.stop_reason).toBe("max_tokens")
+    },
+  )
+
+  it("fails closed for an incomplete reason without an Anthropic equivalent", () => {
+    const result = makeResponsesResult({
+      status: "incomplete",
+      incomplete_details: { reason: "tool_limit" } as never,
+    })
+
+    expect(() =>
+      reconstructWebSearchResponse(makePayload(), result, {
+        requestId: "req-unknown-incomplete",
+      }),
+    ).toThrow("no Anthropic stop-reason equivalent")
+  })
+
+  it("maps content filtering to refusal only with an explicit refusal item", () => {
+    const withoutRefusal = makeResponsesResult({
+      status: "incomplete",
+      incomplete_details: { reason: "content_filter" },
+    })
+    expect(() =>
+      reconstructWebSearchResponse(makePayload(), withoutRefusal, {
+        requestId: "req-filter-without-refusal",
+      }),
+    ).toThrow("no Anthropic stop-reason equivalent")
+
+    const withRefusal = makeResponsesResult({
+      status: "incomplete",
+      incomplete_details: { reason: "content_filter" },
+      output: [
+        {
+          id: "msg-refusal",
+          type: "message",
+          role: "assistant",
+          status: "incomplete",
+          content: [{ type: "refusal", refusal: "Cannot provide that." }],
+        },
+      ] as never,
+    })
+    const { response } = reconstructWebSearchResponse(
+      makePayload(),
+      withRefusal,
+      { requestId: "req-filter-refusal" },
+    )
+    expect(response.stop_reason).toBe("refusal")
+    expect(response.content).toEqual([
+      { type: "text", text: "Cannot provide that." },
+    ])
+  })
+
+  it("uses actual call items for usage and preserves normalized cache buckets", () => {
+    const result = makeResponsesResult({
+      output: [
+        {
+          type: "web_search_call",
+          action: { queries: ["first", "second", "third"] },
+        },
+        {
+          type: "web_search_call",
+          action: {},
+        },
+        {
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [{ type: "output_text", text: "answer", annotations: [] }],
+        },
+      ] as never,
+      usage: {
+        input_tokens: 20,
+        input_tokens_details: { cached_tokens: 6 },
+        output_tokens: 4,
+        total_tokens: 24,
+      },
+    })
+
+    const { response } = reconstructWebSearchResponse(makePayload(), result, {
+      requestId: "req-usage",
+    })
+
+    expect(response.usage).toEqual({
+      input_tokens: 14,
+      output_tokens: 4,
+      cache_read_input_tokens: 6,
+      server_tool_use: { web_search_requests: 2 },
+    })
+  })
+
+  it("reports zero calls as zero and never fabricates encrypted search content", () => {
+    const result = makeResponsesResult({
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [
+            { type: "output_text", text: "No search needed.", annotations: [] },
+          ],
+        },
+      ] as never,
+    })
+
+    const { response } = reconstructWebSearchResponse(makePayload(), result, {
+      requestId: "req-zero-calls",
+    })
+
+    expect(response.usage.server_tool_use?.web_search_requests).toBe(0)
+    expect(JSON.stringify(response)).not.toContain("encrypted_content")
+    expect(response.content.map((block) => block.type)).toEqual(["text"])
+  })
+})
+
 describe("handleWebSearchViaResponses", () => {
+  it("preserves explicit effort after validating the selected search model", async () => {
+    let sentPayload: ResponsesPayload | undefined
+    webSearchFlowDependencies.findEndpointModel = (() => ({
+      capabilities: {
+        limits: {},
+        supports: { reasoning_effort: ["low", "high"] },
+      },
+      id: "gpt-5-mini",
+      supported_endpoints: ["/responses"],
+    })) as never
+    webSearchFlowDependencies.createResponses = ((
+      payload: ResponsesPayload,
+    ) => {
+      sentPayload = payload
+      return Promise.resolve(makeResponsesResult())
+    }) as never
+    webSearchFlowDependencies.createUsageRecorder = (() => () => {}) as never
+
+    const { c } = makeContext()
+    await handleWebSearchViaResponses(
+      c,
+      makePayload({ output_config: { effort: "high" } }),
+      baseOptions,
+    )
+
+    expect(sentPayload?.reasoning?.effort).toBe("high")
+  })
+
+  it("rejects unsupported explicit effort before search dispatch", async () => {
+    let dispatched = false
+    webSearchFlowDependencies.findEndpointModel = (() => ({
+      capabilities: {
+        limits: {},
+        supports: { reasoning_effort: ["low"] },
+      },
+      id: "gpt-5-mini",
+      supported_endpoints: ["/responses"],
+    })) as never
+    webSearchFlowDependencies.createResponses = (() => {
+      dispatched = true
+      return Promise.resolve(makeResponsesResult())
+    }) as never
+
+    const { c } = makeContext()
+    let caught: unknown
+    try {
+      await handleWebSearchViaResponses(
+        c,
+        makePayload({ output_config: { effort: "high" } }),
+        baseOptions,
+      )
+    } catch (error) {
+      caught = error
+    }
+    expect(caught).toBeInstanceOf(HTTPError)
+    expect((caught as Error).message).toContain("not supported by search model")
+    expect(dispatched).toBe(false)
+  })
   it("enables HTTP fallback for a dual-endpoint search model", async () => {
     let allowHttpFallback: boolean | undefined
     let reasoningRecoverySessionId: string | undefined
@@ -501,6 +674,9 @@ describe("handleWebSearchViaResponses", () => {
     expect(sentPayload?.max_tool_calls).toBe(1)
     expect(captured.headers["x-copilot-api-web-search-mode"]).toBe(
       "direct-fallback",
+    )
+    expect(captured.headers["x-copilot-api-web-search-carrier"]).toBe(
+      "synthetic-without-encrypted-content",
     )
     expect(captured.headers["x-copilot-api-web-search-downgrade"]).toBe(
       "dynamic-filtering,response-inclusion",

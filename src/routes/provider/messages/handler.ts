@@ -72,12 +72,16 @@ import {
 } from "~/routes/messages/responses-translation"
 import {
   applyWebSearchFallbackHeaders,
+  applyWebSearchReasoningEffort,
   buildSyntheticStreamEvents,
+  createWebSearchUnsupportedResponse,
+  getWebSearchUsageMetadata,
   hasWebSearchServerTool,
   isWebSearchOnlyRequest,
+  normalizeWebSearchResponsesUsage,
   prepareWebSearchResponsesPayload,
   reconstructWebSearchResponse,
-  stripWebSearchServerTool,
+  WEB_SEARCH_PROVIDER_ADAPTER_UNSUPPORTED_MESSAGE,
 } from "~/routes/messages/web-search/fulfill"
 import { normalizeSystemMessages } from "~/routes/messages/preprocess"
 import {
@@ -238,8 +242,7 @@ export async function handleProviderMessagesForProvider(
             selectedCodexModel,
           })
         }
-
-        stripWebSearchServerTool(payload)
+        return createWebSearchUnsupportedResponse(c)
       }
 
       return await handleOpenAIResponsesProviderMessages(c, {
@@ -252,7 +255,14 @@ export async function handleProviderMessagesForProvider(
     }
 
     if (effectiveType === "openai-compatible") {
-      stripWebSearchServerTool(payload)
+      if (hasWebSearchServerTool(payload)) {
+        return createWebSearchUnsupportedResponse(
+          c,
+          isWebSearchOnlyRequest(payload) ?
+            WEB_SEARCH_PROVIDER_ADAPTER_UNSUPPORTED_MESSAGE
+          : undefined,
+        )
+      }
 
       return await handleOpenAICompatibleProviderMessages(c, {
         modelConfig,
@@ -341,7 +351,7 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
         responsesPayload,
         selectedCodexModel,
       )
-    : null
+    : applyWebSearchReasoningEffort(payload, responsesPayload, undefined)
   if (reasoningError) {
     return codexReasoningError(c, reasoningError)
   }
@@ -1441,11 +1451,18 @@ const respondWebSearchProviderMessagesJson = (
   },
 ): Response => {
   const { body, payload, provider, recordUsage } = options
-  recordProviderResponsesResultUsage(recordUsage, body)
-
-  const { extract, response } = reconstructWebSearchResponse(payload, body, {
-    requestId: body.id || `${provider}:${payload.model}`,
-  })
+  const usage = normalizeWebSearchResponsesUsage(body)
+  let reconstructed: ReturnType<typeof reconstructWebSearchResponse>
+  try {
+    reconstructed = reconstructWebSearchResponse(payload, body, {
+      requestId: body.id || `${provider}:${payload.model}`,
+    })
+  } catch (error) {
+    recordUsage(usage, getWebSearchUsageMetadata(body, "rejected"))
+    throw error
+  }
+  recordUsage(usage, getWebSearchUsageMetadata(body, "mapped"))
+  const { extract, response } = reconstructed
 
   debugJson(
     logger,

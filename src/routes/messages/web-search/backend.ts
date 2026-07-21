@@ -16,6 +16,8 @@ export interface WebSearchExtract {
   sources: Array<WebSearchSource>
   /** Search queries the backend actually ran. */
   queries: Array<string>
+  /** Number of web_search_call output items the backend actually emitted. */
+  callCount: number
 }
 
 export interface WebSearchToolConfig {
@@ -64,13 +66,22 @@ const isValidUrlCitation = (
 
 const collectTextParts = (
   blocks:
-    | Array<{ type?: string; text?: string; annotations?: Array<unknown> }>
+    | Array<{
+        type?: string
+        text?: string
+        refusal?: string
+        annotations?: Array<unknown>
+      }>
     | undefined,
   seenUrls: Set<string>,
 ): { textParts: Array<string>; sources: Array<WebSearchSource> } => {
   const textParts: Array<string> = []
   const sources: Array<WebSearchSource> = []
   for (const block of blocks ?? []) {
+    if (block.type === "refusal") {
+      if (block.refusal) textParts.push(block.refusal)
+      continue
+    }
     if (block.type !== "output_text") continue
     if (block.text) textParts.push(block.text)
     for (const annotation of block.annotations ?? []) {
@@ -105,6 +116,7 @@ export const extractWebSearchResult = (
   const sources: Array<WebSearchSource> = []
   const seenUrls = new Set<string>()
   const queries: Array<string> = []
+  let callCount = 0
 
   for (const item of result.output) {
     if (isMessageItem(item)) {
@@ -114,6 +126,7 @@ export const extractWebSearchResult = (
       continue
     }
     if ((item as { type?: string }).type === "web_search_call") {
+      callCount += 1
       collectQuery(
         item as { action?: { query?: string; queries?: Array<string> } },
         queries,
@@ -123,5 +136,5 @@ export const extractWebSearchResult = (
 
   const answerText =
     textParts.join("\n\n").trim() || (result.output_text ?? "").trim()
-  return { answerText, sources, queries }
+  return { answerText, sources, queries, callCount }
 }

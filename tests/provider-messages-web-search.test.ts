@@ -18,7 +18,9 @@ const actualTokenUsageModule = await import("../src/lib/token-usage")
 let providerConfigs: Record<string, ResolvedProviderConfig> = {}
 let messageApiWebSearchModel: string | undefined
 
-const providerUsageRecorder = mock((_usage: Record<string, unknown>) => {})
+const providerUsageRecorder = mock(
+  (_usage: Record<string, unknown>, _metadata?: Record<string, unknown>) => {},
+)
 const createProviderUsageRecorder = () => providerUsageRecorder
 const findEndpointModel = mock((model: string) => ({
   id: model,
@@ -590,9 +592,53 @@ describe("provider messages web_search", () => {
       "web_search_tool_result",
       "text",
     ])
+    expect(JSON.stringify(json)).not.toContain("encrypted_content")
+    expect(response.headers.get("x-copilot-api-web-search-carrier")).toBe(
+      "synthetic-without-encrypted-content",
+    )
+  })
+
+  test("rejects mixed top-level fallback tools before any upstream dispatch", async () => {
+    messageApiWebSearchModel = "gpt-search"
+
+    const response = await createApp().request("/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "search and call" }],
+        model: "claude-sonnet-4.5",
+        tools: [
+          webSearchTool,
+          { name: "get_weather", input_schema: { type: "object" } },
+        ],
+      }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   test("runs pure Anthropic web_search through an openai-responses provider", async () => {
+    responsesResultOverride = makeResponsesResult({
+      output: [
+        {
+          type: "web_search_call",
+          action: { queries: ["node current", "node lts"] },
+        },
+        { type: "web_search_call", action: {} },
+        makeResponsesResult().output[1],
+      ] as never,
+      usage: {
+        input_tokens: 12,
+        input_tokens_details: {
+          cached_tokens: 3,
+          cache_write_tokens: 2,
+        } as never,
+        output_tokens: 7,
+        total_tokens: 19,
+      },
+    })
     const app = createApp()
     const response = await app.request("/search/v1/messages", {
       method: "POST",
@@ -643,12 +689,96 @@ describe("provider messages web_search", () => {
       "text",
     ])
     expect(json.usage).toMatchObject({
-      input_tokens: 12,
+      input_tokens: 7,
+      cache_creation_input_tokens: 2,
+      cache_read_input_tokens: 3,
       output_tokens: 7,
       server_tool_use: {
-        web_search_requests: 1,
+        web_search_requests: 2,
       },
     })
+  })
+
+  test("returns max_tokens for provider Web Search max_tokens incomplete", async () => {
+    responsesResultOverride = makeResponsesResult({
+      status: "incomplete",
+      incomplete_details: { reason: "max_tokens" } as never,
+    })
+
+    const response = await createApp().request("/search/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "Search" }],
+        model: "gpt-search",
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(((await response.json()) as AnthropicResponse).stop_reason).toBe(
+      "max_tokens",
+    )
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder.mock.calls[0]?.[1]).toEqual({
+      errorCode: "max_output_tokens",
+      outcome: "incomplete",
+      terminal: "response.incomplete",
+    })
+  })
+
+  test("fails closed and records once for unknown provider incomplete reasons", async () => {
+    responsesResultOverride = makeResponsesResult({
+      status: "incomplete",
+      incomplete_details: { reason: "tool_limit" } as never,
+      copilot_usage: { total_nano_aiu: 800 },
+    })
+
+    const response = await createApp().request("/search/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "Search" }],
+        model: "gpt-search",
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(response.status).toBe(502)
+    expect(await response.text()).toContain(
+      "no Anthropic stop-reason equivalent",
+    )
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder.mock.calls[0]?.[0]).toMatchObject({
+      total_nano_aiu: 800,
+    })
+    expect(providerUsageRecorder.mock.calls[0]?.[1]).toEqual({
+      errorCode: "invalid_response",
+      outcome: "failed",
+      terminal: "response.incomplete",
+    })
+  })
+
+  test("rejects explicit search effort when no model descriptor is available", async () => {
+    const response = await createApp().request("/search/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "Search" }],
+        model: "gpt-search",
+        output_config: { effort: "high" },
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.text()).toContain(
+      "Cannot validate explicit reasoning effort",
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   test("marks dynamic web_search provider requests as direct fallback", async () => {
@@ -933,6 +1063,29 @@ describe("provider messages web_search", () => {
     ])
   })
 
+  test("forwards descriptor-approved explicit effort for Codex web_search", async () => {
+    configureCodexProvider()
+
+    const response = await createApp().request("/codex/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "Search deeply" }],
+        model: "gpt-search",
+        output_config: { effort: "ultra" },
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const [, init] = fetchMock.mock.calls[0]
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      reasoning?: { effort?: string }
+    }
+    expect(upstreamBody.reasoning?.effort).toBe("ultra")
+  })
+
   test("records buffered Codex web_search failure usage before the protocol error", async () => {
     configureCodexProvider()
     const failed = makeResponsesResult({
@@ -1058,7 +1211,7 @@ describe("provider messages web_search", () => {
     expect(text).toContain("event: message_stop")
   })
 
-  test("strips Anthropic web_search when mixed with normal tools", async () => {
+  test("rejects mixed web_search and normal tools before Responses dispatch", async () => {
     const app = createApp()
     const response = await app.request("/search/v1/messages", {
       method: "POST",
@@ -1079,22 +1232,126 @@ describe("provider messages web_search", () => {
       }),
     })
 
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        message:
+          "Mixed web_search and client tools are not supported by the Responses fallback",
+      },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("passes mixed web_search and client tools unchanged to native Anthropic", async () => {
+    providerConfigs.native = {
+      name: "native",
+      type: "anthropic",
+      baseUrl: "https://native.example",
+      apiKey: "native-key",
+      authType: "x-api-key",
+    }
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            id: "msg-native",
+            type: "message",
+            role: "assistant",
+            content: [{ type: "text", text: "native" }],
+            model: "claude-native",
+            stop_reason: "end_turn",
+            stop_sequence: null,
+            usage: { input_tokens: 1, output_tokens: 1 },
+          }),
+          { headers: { "content-type": "application/json" } },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/native/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "search and call" }],
+        model: "claude-native",
+        tools: [
+          webSearchTool,
+          { name: "get_weather", input_schema: { type: "object" } },
+        ],
+      }),
+    })
+
     expect(response.status).toBe(200)
     const [, init] = fetchMock.mock.calls[0]
     const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
       tools?: Array<Record<string, unknown>>
     }
     expect(upstreamBody.tools).toEqual([
-      {
-        type: "function",
-        name: "get_weather",
-        parameters: { type: "object", properties: {} },
-        strict: false,
-      },
+      webSearchTool,
+      { name: "get_weather", input_schema: { type: "object" } },
     ])
   })
 
-  test("strips Anthropic web_search before OpenAI-compatible translation", async () => {
+  test("prioritizes an explicit native provider alias over the global Web Search fallback", async () => {
+    messageApiWebSearchModel = "gpt-search"
+    providerConfigs.native = {
+      name: "native",
+      type: "anthropic",
+      baseUrl: "https://native.example",
+      apiKey: "native-key",
+      authType: "x-api-key",
+    }
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            id: "msg-native-top-level",
+            type: "message",
+            role: "assistant",
+            content: [{ type: "text", text: "native" }],
+            model: "claude-native",
+            stop_reason: "end_turn",
+            stop_sequence: null,
+            usage: { input_tokens: 1, output_tokens: 1 },
+          }),
+          { headers: { "content-type": "application/json" } },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "search and call" }],
+        model: "native/claude-native",
+        tools: [
+          webSearchTool,
+          { name: "get_weather", input_schema: { type: "object" } },
+        ],
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe("https://native.example/v1/messages")
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      model?: string
+      tools?: Array<Record<string, unknown>>
+    }
+    expect(upstreamBody.model).toBe("claude-native")
+    expect(upstreamBody.tools).toEqual([
+      webSearchTool,
+      { name: "get_weather", input_schema: { type: "object" } },
+    ])
+  })
+
+  test("rejects Anthropic web_search before OpenAI-compatible dispatch", async () => {
     providerConfigs.search = {
       ...providerConfigs.search,
       type: "openai-compatible",
@@ -1120,16 +1377,15 @@ describe("provider messages web_search", () => {
       }),
     })
 
-    expect(response.status).toBe(200)
-    const [url, init] = fetchMock.mock.calls[0]
-    expect(url).toBe(
-      "https://provider.example/compatible-mode/v1/chat/completions",
-    )
-
-    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
-      tools?: Array<Record<string, unknown>>
-    }
-    expect(upstreamBody.tools).toEqual([])
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        message: "Web Search is not supported by the selected provider adapter",
+      },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   test("collects a Codex stream into JSON when stream is omitted", async () => {

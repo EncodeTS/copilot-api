@@ -47,18 +47,20 @@ export async function handleCompletion(c: Context) {
     )
   }
 
+  // Explicit provider intent is resolved against the provider's effective
+  // protocol before the global Web Search fallback is considered.
+  const providerResponse = await routeProviderModelAlias(c, {
+    endpoint: "messages",
+    payload: anthropicPayload,
+  })
+  if (providerResponse) return providerResponse
+
   const webSearchResult = await tryHandleWebSearch(c, anthropicPayload, {
     logger,
     forwardToProvider: (ctx, payload, provider) =>
       handleProviderMessagesForProvider(ctx, { payload, provider }),
   })
   if (webSearchResult) return webSearchResult
-
-  const providerResponse = await routeProviderModelAlias(c, {
-    endpoint: "messages",
-    payload: anthropicPayload,
-  })
-  if (providerResponse) return providerResponse
 
   debugJson(logger, "Anthropic request payload:", anthropicPayload)
   return await handleCopilotMessages(c, anthropicPayload)

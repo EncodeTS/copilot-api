@@ -1103,7 +1103,10 @@ export const translateResponsesResultToAnthropic = (
     anthropicContent = contentBlocks
   }
 
-  const stopReason = mapResponsesStopReason(response, resolvedOptions)
+  const stopReason = mapResponsesStopReasonToAnthropic(
+    response,
+    resolvedOptions,
+  )
 
   return {
     id: response.id,
@@ -1344,11 +1347,20 @@ const fallbackContentBlocks = (
   ]
 }
 
-const mapResponsesStopReason = (
+const hasExplicitRefusal = (response: ResponsesResult): boolean =>
+  response.output.some(
+    (item) =>
+      item.type === "message"
+      && item.content?.some((block) => block.type === "refusal"),
+  )
+
+export const mapResponsesStopReasonToAnthropic = (
   response: ResponsesResult,
   options?: ResponsesToAnthropicOptions,
 ): AnthropicResponse["stop_reason"] => {
   const { status, incomplete_details: incompleteDetails } = response
+  const incompleteReason = (incompleteDetails as { reason?: string } | null)
+    ?.reason
 
   if (status === "completed") {
     if (!response.output || response.output.length === 0) {
@@ -1367,11 +1379,14 @@ const mapResponsesStopReason = (
   }
 
   if (status === "incomplete") {
-    if (incompleteDetails?.reason === "max_output_tokens") {
+    if (
+      incompleteReason === "max_output_tokens"
+      || incompleteReason === "max_tokens"
+    ) {
       return "max_tokens"
     }
-    if (incompleteDetails?.reason === "content_filter") {
-      return "end_turn"
+    if (incompleteReason === "content_filter" && hasExplicitRefusal(response)) {
+      return "refusal"
     }
   }
 

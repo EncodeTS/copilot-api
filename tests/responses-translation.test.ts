@@ -1982,7 +1982,7 @@ describe("translateResponsesResultToAnthropic", () => {
     const anthropicResponse =
       translateResponsesResultToAnthropic(responsesResult)
 
-    expect(anthropicResponse.stop_reason).toBe("end_turn")
+    expect(anthropicResponse.stop_reason).toBeNull()
     expect(anthropicResponse.content).toHaveLength(3)
 
     const [thinkingBlock, toolUseBlock, textBlock] = anthropicResponse.content
