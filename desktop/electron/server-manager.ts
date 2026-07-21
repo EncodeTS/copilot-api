@@ -12,6 +12,7 @@ import type {
   ServerCredentialMode,
 } from './server-credentials'
 import { buildServerStartArgs } from './server-start-args'
+import { buildServerLoopbackUrl } from './server-loopback'
 
 let serverProcess: UtilityProcess | null = null
 let currentPort = 4141
@@ -230,6 +231,10 @@ function getServerPath(): string {
   return path.join(app.getAppPath(), '..', 'dist', 'main.js')
 }
 
+export function getServerReadinessUrl(port: number): string {
+  return buildServerLoopbackUrl(port)
+}
+
 export async function startServer(
   port: number,
   token: string | null,
@@ -402,7 +407,7 @@ async function waitForServer(
     proc.once('exit', onExit)
 
     ;(async () => {
-      const url = `http://localhost:${port}/`
+      const url = getServerReadinessUrl(port)
       for (let i = 0; i < 20; i++) {
         await new Promise<void>((r) => setTimeout(r, 500))
         if (settled) return

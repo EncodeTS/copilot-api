@@ -19,5 +19,5 @@ test('Desktop shared boundaries are hermetic across module-cache order', async (
   ])
 
   expect(exitCode, `${stderr}\n${stdout}`).toBe(0)
-  expect(`${stdout}\n${stderr}`).toContain('3 pass')
+  expect(`${stdout}\n${stderr}`).toContain('4 pass')
 })

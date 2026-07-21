@@ -2,6 +2,7 @@ import { afterAll, describe, expect, mock, test } from 'bun:test'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { DesktopApi } from '../../shared-types'
+import { buildServerLoopbackUrl } from '../electron/server-loopback'
 
 type IpcHandler = (...args: unknown[]) => unknown
 
@@ -14,7 +15,11 @@ let exposedApi: unknown
 let serverRunning = true
 
 void mock.module('electron', () => ({
-  app: { getLocale: () => 'en' },
+  app: {
+    getAppPath: () => '/tmp/copilot-api-desktop',
+    getLocale: () => 'en',
+    isPackaged: false,
+  },
   BrowserWindow: class {},
   contextBridge: {
     exposeInMainWorld: (_name: string, api: unknown) => {
@@ -36,6 +41,7 @@ void mock.module('electron', () => ({
     send: () => undefined,
   },
   shell: { openExternal: () => Promise.resolve() },
+  utilityProcess: { fork: () => undefined },
 }))
 
 void mock.module('../electron/server-manager', () => ({
@@ -55,6 +61,10 @@ afterAll(() => {
 })
 
 describe('Desktop shared boundaries', () => {
+  test('server URLs use the explicit IPv4 listener', () => {
+    expect(buildServerLoopbackUrl(4510)).toBe('http://127.0.0.1:4510/')
+  })
+
   test('preload exposes the typed model mappings outcome bridge', async () => {
     await import('../electron/preload')
     const api = exposedApi as DesktopApi
@@ -89,6 +99,7 @@ describe('Desktop shared boundaries', () => {
   })
 
   test('IPC returns serializable read and save outcomes', async () => {
+    const requestedUrls: string[] = []
     const config = {
       configPath: '/tmp/config.json',
       modelMappings: { alias: 'provider/model' },
@@ -106,10 +117,20 @@ describe('Desktop shared boundaries', () => {
       },
     }
     globalThis.fetch = mock(
-      (_url: string | URL | Request, init?: RequestInit) =>
-        Promise.resolve(
-          Response.json(init?.method === 'POST' ? saveResult : config),
-        ),
+      (url: string | URL | Request, init?: RequestInit) => {
+        const requestUrl =
+          typeof url === 'string' ? url
+          : url instanceof URL ? url.toString()
+          : url.url
+        requestedUrls.push(requestUrl)
+        const body =
+          requestUrl.includes('/admin/config/model-mappings') ?
+            init?.method === 'POST' ?
+              saveResult
+            : config
+          : { ok: true }
+        return Promise.resolve(Response.json(body))
+      },
     ) as unknown as typeof fetch
 
     const { registerIpcHandlers } = await import('../electron/ipc-handlers')
@@ -126,6 +147,22 @@ describe('Desktop shared boundaries', () => {
     await expect(
       saveHandler?.({}, { alias: 'provider/model' }),
     ).resolves.toEqual({ ok: true, result: saveResult })
+
+    await ipcHandlers.get('server:fetch-usage')?.({})
+    await ipcHandlers.get('server:fetch-models')?.({})
+    await ipcHandlers.get('server:fetch-token-usage')?.({}, 'day')
+    await ipcHandlers.get('server:fetch-token-usage-daily')?.({}, 'week')
+    await ipcHandlers.get('server:fetch-token-usage-events')?.(
+      {},
+      'month',
+      2,
+      10,
+    )
+    expect(
+      requestedUrls
+        .filter((url) => !url.includes('/admin/config/model-mappings'))
+        .every((url) => url.startsWith('http://127.0.0.1:4510/')),
+    ).toBeTrue()
 
     serverRunning = false
     await expect(readHandler?.({})).resolves.toMatchObject({ ok: false })
@@ -150,6 +187,10 @@ describe('Desktop shared boundaries', () => {
     const sharedTypes = await import('../src/types/ipc')
 
     expect(typeof dashboard.default).toBe('function')
+    expect(dashboard.buildDashboardServerUrls(4510)).toEqual({
+      anthropicUrl: 'http://127.0.0.1:4510',
+      openaiUrl: 'http://127.0.0.1:4510/v1',
+    })
     expect(sharedTypes.TOKEN_USAGE_OUTCOME_VALUES).toContain('failed')
     expect(
       renderToStaticMarkup(

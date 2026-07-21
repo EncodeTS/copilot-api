@@ -11,6 +11,8 @@ import {
   listEnabledProviders,
   mergeConfigWithDefaults,
 } from "~/lib/config"
+import { resolveServerNetworkOptions } from "~/lib/network-security"
+import { getConfiguredApiKeys } from "~/lib/request-auth"
 import { registerProcessCleanup } from "~/lib/process-cleanup"
 import { responsesReasoningRecoveryRegistry } from "~/services/copilot/responses-reasoning-recovery-registry"
 import type { ModelsResponse } from "~/services/copilot/get-models"
@@ -32,11 +34,12 @@ import {
   cacheVsCodeDeviceId,
 } from "./lib/utils"
 
-interface RunServerOptions {
+export interface RunServerOptions {
   port: number
   verbose: boolean
   githubToken?: string
   claudeCode: boolean
+  lan: boolean
   showToken: boolean
   proxyEnv: boolean
   proxyRequired?: boolean
@@ -182,6 +185,11 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   await ensurePaths()
   mergeConfigWithDefaults()
 
+  const networkOptions = resolveServerNetworkOptions({
+    apiKeys: getConfiguredApiKeys(),
+    lan: options.lan,
+  })
+
   await initOpencodeVersion()
 
   const proxyRequired = options.proxyRequired === true || isProxyRequired()
@@ -202,7 +210,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   )
   registerProcessCleanup(() => responsesReasoningRecoveryRegistry.flush())
 
-  const serverUrl = `http://localhost:${options.port}`
+  const serverUrl = `http://${networkOptions.displayHost}:${options.port}`
 
   const githubToken = options.githubToken || (await readGitHubToken())
   if (githubToken) {
@@ -216,14 +224,13 @@ export async function runServer(options: RunServerOptions): Promise<void> {
     await setupProviderMode(serverUrl, options.claudeCode)
   }
 
-  consola.box(
-    `🌐 Usage Viewer: ${serverUrl}/usage-viewer?endpoint=${serverUrl}/usage`,
-  )
+  consola.box(`🌐 Usage Viewer: ${serverUrl}/usage-viewer`)
 
   const { server } = await import("./server")
 
   serve({
     fetch: server.fetch as ServerHandler,
+    hostname: networkOptions.listenerHost,
     port: options.port,
     bun: {
       idleTimeout: 0,
@@ -267,6 +274,12 @@ export const start = defineCommand({
       default: false,
       description: "Show GitHub and Copilot tokens on fetch and refresh",
     },
+    lan: {
+      type: "boolean",
+      default: false,
+      description:
+        "Listen on all network interfaces (requires auth.apiKeys in config.json)",
+    },
     "proxy-env": {
       type: "boolean",
       default: false,
@@ -285,6 +298,7 @@ export const start = defineCommand({
       verbose: args.verbose,
       githubToken: args["github-token"],
       claudeCode: args["claude-code"],
+      lan: args.lan,
       showToken: args["show-token"],
       proxyEnv: args["proxy-env"],
       proxyRequired: args["proxy-required"],

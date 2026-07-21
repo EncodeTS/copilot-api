@@ -122,11 +122,13 @@ Build the image:
 docker build -t copilot-api .
 ```
 
-Run the container with a bind mount so auth data survives restarts:
+Run the container with a bind mount so auth data survives restarts. Because a
+published container port is a LAN-facing listener, first set at least one
+non-empty `auth.apiKeys` entry in `copilot-data/config.json`, then pass `--lan`:
 
 ```sh
 mkdir -p ./copilot-data
-docker run -p 4141:4141 -v $(pwd)/copilot-data:/root/.local/share/copilot-api copilot-api
+docker run -p 4141:4141 -v $(pwd)/copilot-data:/root/.local/share/copilot-api copilot-api --lan
 ```
 
 This stores GitHub auth data, provider config, and other gateway state in `./copilot-data` on the host, mapped to `/root/.local/share/copilot-api` in the container.
@@ -134,8 +136,11 @@ This stores GitHub auth data, provider config, and other gateway state in `./cop
 Or pass a GitHub token directly:
 
 ```sh
-docker run -p 4141:4141 -e GH_TOKEN=your_github_token_here copilot-api
+docker run -p 4141:4141 -e GH_TOKEN=your_github_token_here -v $(pwd)/copilot-data:/root/.local/share/copilot-api copilot-api --lan
 ```
+
+Without `--lan`, the process binds explicitly to `127.0.0.1` inside the
+container and the published port is intentionally unreachable from the host.
 
 ## Electron Desktop App
 
@@ -474,25 +479,26 @@ After starting the server, a URL to the Copilot Usage Dashboard will be displaye
     npx @encodets/copilot-api@rc start
     ```
 2.  The server will output a URL to the usage viewer. Copy and paste this URL into your browser. It will look something like this:
-    `http://localhost:4141/usage-viewer?endpoint=http://localhost:4141/usage`
+    `http://127.0.0.1:4141/usage-viewer`
     - If you use the `start.bat` script on Windows, this page will open automatically.
 
 The dashboard provides a user-friendly interface to view your Copilot usage data:
 
 > Token usage history requires Bun or Node.js >= 22.13.0. On Node.js < 22.13.0, the server runs normally but token usage storage is disabled.
 
-- **API Endpoint URL**: The dashboard is pre-configured to fetch data from your local server endpoint via a URL query parameter. You can manually switch this to any other compatible API endpoint.
-- **x-api-key Authentication**: If API Key authentication is enabled, you can provide the `x-api-key` request header. The key is persisted in the browser's local storage.
+- **Same-origin data source**: The dashboard always fetches `/usage` and token-usage data from the server that delivered the page. An `endpoint` query parameter is ignored.
+- **x-api-key Authentication**: If API Key authentication is enabled, you can provide the `x-api-key` request header. The key remains only in the current page's memory and is cleared by navigation or reload.
 - **Period Selector**: Choose from Day, Week, or Month time ranges. The URL query parameter updates automatically when you switch, making it easy to bookmark and share.
-- **Fetch Data**: Click the "Refresh" button to load or refresh the usage data. The dashboard also fetches data automatically on page load.
+- **Fetch Data**: Click the "Refresh" button to load or refresh the usage data.
 - **Copilot Quotas**: View quota usage for services such as Chat and Completions via progress bars. Hover over a card to see used/remaining details.
 - **Token Usage Metric Cards**: See a summary of Total, Input, Output, Cache Read, Cache Write, Requests, and estimated cost for the current period.
 - **Trend Chart (Week / Month)**: An interactive line chart with model and metric filters. Click a data point to inspect the usage breakdown for a specific day.
 - **Model Breakdown Table**: A per-model summary of requests, input/output/cache tokens, and estimated cost for the selected period.
 - **Request Events (Paginated)**: A time-sorted list of request event records with pagination support, showing timestamps, models, request IDs, and token counts.
 - **Detailed Information**: See the full JSON response from the API for a detailed breakdown of all available usage statistics.
-- **URL-based Configuration**: You can also specify the API endpoint and period directly via `endpoint` and `period` query parameters. For example:
-  `http://localhost:4141/usage-viewer?endpoint=http://your-api-server/usage&period=week`
+- **URL-based period**: You can bookmark a period such as
+  `http://127.0.0.1:4141/usage-viewer?period=week`. Endpoint and key values are
+  never accepted from the URL.
 
 ### Usage Viewer Screenshot
 
@@ -527,6 +533,7 @@ The following command line options are available for the `start` command:
 | Option           | Description                                                                   | Default | Alias |
 | ---------------- | ----------------------------------------------------------------------------- | ------- | ----- |
 | --port           | Port to listen on                                                             | 4141    | -p    |
+| --lan            | Listen on all interfaces; requires at least one `auth.apiKeys` entry          | false   | none  |
 | --verbose        | Enable structured diagnostic logging (payload content omitted by default)     | false   | -v    |
 | --github-token   | Provide GitHub token directly (must be generated using the `auth` subcommand) | none    | -g    |
 | --claude-code    | Generate a command to launch Claude Code with Copilot API config              | false   | -c    |
@@ -700,12 +707,14 @@ Edit this file to customize prompts or swap in your own fast model. Restart the 
 
 ## API Authentication
 
-- **Protected non-admin routes:** All routes except `/`, `/usage-viewer`, and `/usage-viewer/` require authentication when `auth.apiKeys` is configured and non-empty.
+- **Listener:** `start` binds explicitly to `127.0.0.1`. Use `--lan` only for deliberate network access; startup refuses LAN mode unless a normal `auth.apiKeys` entry exists.
+- **Protected non-admin routes:** All routes except `/`, `/usage-viewer`, `/usage-viewer/`, and the local `/usage-viewer.css` asset require authentication when `auth.apiKeys` is configured and non-empty.
 - **Admin routes:** All `/admin/*` routes require `auth.adminApiKey`. If it is missing, the server generates one at startup and persists it to `config.json` before serving requests.
 - **Allowed auth headers:**
   - `x-api-key: <your_key>`
   - `Authorization: Bearer <your_key>`
-- **CORS preflight:** `OPTIONS` requests are always allowed.
+- **Browser origins:** Browser CORS is same-origin only. Cross-origin requests and preflights are rejected; originless CLI, SDK, and Desktop requests continue to work.
+- **Host validation:** Requests must use `localhost` or an IP-literal Host value. Use an IP address rather than a DNS alias for deliberate LAN clients.
 - **When no regular keys are configured:** Non-admin routes continue to allow requests. This does not apply to `/admin/*`, which only accepts `auth.adminApiKey`.
 
 Example request for a regular protected route:
@@ -778,7 +787,9 @@ New endpoints for monitoring your Copilot usage and quotas.
 | Endpoint     | Method | Description                                                  |
 | ------------ | ------ | ------------------------------------------------------------ |
 | `GET /usage` | `GET`  | Get detailed Copilot usage statistics and quota information. |
-| `GET /token` | `GET`  | Get the current Copilot token being used by the API.         |
+
+The former `GET /token` endpoint has been removed. Upstream bearer values are
+never returned by an HTTP status endpoint.
 
 ### Admin / Configuration Endpoints
 

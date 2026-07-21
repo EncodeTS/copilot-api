@@ -122,11 +122,11 @@ npx @encodets/copilot-api@rc start
 docker build -t copilot-api .
 ```
 
-通过 bind mount 运行容器，让认证数据在重启后保留：
+通过 bind mount 运行容器，让认证数据在重启后保留。发布容器端口属于 LAN 监听；请先在 `copilot-data/config.json` 中配置至少一个非空 `auth.apiKeys`，再显式传入 `--lan`：
 
 ```sh
 mkdir -p ./copilot-data
-docker run -p 4141:4141 -v $(pwd)/copilot-data:/root/.local/share/copilot-api copilot-api
+docker run -p 4141:4141 -v $(pwd)/copilot-data:/root/.local/share/copilot-api copilot-api --lan
 ```
 
 这会把宿主机上的 `./copilot-data` 映射到容器内的 `/root/.local/share/copilot-api`，用于持久化 GitHub 认证数据、provider 配置和其他 gateway 状态。
@@ -134,8 +134,10 @@ docker run -p 4141:4141 -v $(pwd)/copilot-data:/root/.local/share/copilot-api co
 也可以直接通过环境变量传入 GitHub token：
 
 ```sh
-docker run -p 4141:4141 -e GH_TOKEN=your_github_token_here copilot-api
+docker run -p 4141:4141 -e GH_TOKEN=your_github_token_here -v $(pwd)/copilot-data:/root/.local/share/copilot-api copilot-api --lan
 ```
+
+未传 `--lan` 时，进程只监听容器内的 `127.0.0.1`，宿主机无法通过 published port 访问。
 
 ## Electron 桌面应用
 
@@ -461,25 +463,24 @@ cp plugin/opencode/subagent-marker.js ~/.config/opencode/plugins/
    npx @encodets/copilot-api@rc start
    ```
 2. 服务会输出一个 usage viewer 的 URL。将它复制到浏览器中打开，形式大致如下：
-   `http://localhost:4141/usage-viewer?endpoint=http://localhost:4141/usage`
+   `http://127.0.0.1:4141/usage-viewer`
    - 如果你在 Windows 上使用 `start.bat` 脚本，这个页面会自动打开。
 
 看板提供了更易读的 Copilot 用量视图：
 
 > token usage 历史记录需要 Bun 或 Node.js >= 22.13.0。Node.js < 22.13.0 时服务会正常运行，但 token usage 存储会被禁用。
 
-- **API Endpoint URL**：通过 URL 查询参数指定 API endpoints，默认指向本地服务。支持手动切换为其他兼容 endpoints。
-- **x-api-key 认证**：如果启用了 API Key 认证，可填入 `x-api-key` 请求头。密钥会持久化保存在浏览器本地存储中。
+- **同源数据源**：看板只会请求提供页面的同一个服务上的 `/usage` 和 token-usage 路由；`endpoint` 查询参数会被忽略。
+- **x-api-key 认证**：如果启用了 API Key 认证，可填入 `x-api-key` 请求头。密钥仅保留在当前页面内存中，导航或刷新即清除。
 - **Period 选择器**：支持 Day / Week / Month 三种时间范围，切换时 URL 参数会自动同步，方便收藏和分享。
-- **Fetch Data**：点击 "Refresh" 按钮加载或刷新使用数据。页面加载时也会自动拉取数据。
+- **Fetch Data**：点击 "Refresh" 按钮加载或刷新使用数据。
 - **Copilot Quotas 额度**：通过进度条展示 Chat、Completions 等不同服务的额度使用情况，悬停可查看已用/剩余详情。
 - **Token Usage 指标卡片**：汇总当前周期的 Total、Input、Output、Cache Read、Cache Write、Requests 和预估费用。
 - **趋势图（Week / Month）**：提供按模型和指标筛选的折线趋势图，点击数据点可查看单日用量明细。
 - **Model Breakdown 表格**：按模型维度列出周期内的请求数、输入/输出/缓存 token 和预计费用。
 - **Request Events 分页列表**：按时间排序的请求事件记录，支持分页浏览，含时间戳、模型、请求 ID 和 token 用量。
 - **Detailed Information**：展示 API 返回的完整 JSON 响应，便于深入分析所有可用统计数据。
-- **URL-based Configuration**：也可通过 `endpoint` 和 `period` 查询参数直接指定 API 端点与时间范围。例如：
-  `http://localhost:4141/usage-viewer?endpoint=http://your-api-server/usage&period=week`
+- **URL 时间范围**：可收藏 `http://127.0.0.1:4141/usage-viewer?period=week` 这样的周期链接；URL 永远不接受 endpoint 或 key。
 
 ### Usage Viewer 截图
 
@@ -514,6 +515,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
 | 选项           | 说明                                                 | 默认值 | 别名 |
 | -------------- | ---------------------------------------------------- | ------ | ---- |
 | --port         | 监听端口                                             | 4141   | -p   |
+| --lan          | 监听所有网络接口；要求至少一个 `auth.apiKeys`       | false  | 无   |
 | --verbose      | 启用结构化诊断日志（默认省略 payload 内容）          | false  | -v   |
 | --github-token | 直接提供 GitHub token（必须通过 `auth` 子命令生成）  | 无     | -g   |
 | --claude-code  | 生成一个使用 Copilot API 配置启动 Claude Code 的命令 | false  | -c   |
@@ -672,12 +674,14 @@ Copilot API 现在使用子命令结构，主要命令包括：
 
 ## API 认证
 
-- **受保护的普通路由：** 当配置了 `auth.apiKeys` 且非空时，除 `/`、`/usage-viewer` 和 `/usage-viewer/` 以外的普通路由都需要认证。
+- **监听地址：** `start` 默认显式绑定 `127.0.0.1`。只有需要 LAN 访问时才使用 `--lan`；没有普通 `auth.apiKeys` 时 LAN 启动会直接失败。
+- **受保护的普通路由：** 当配置了 `auth.apiKeys` 且非空时，除 `/`、`/usage-viewer`、`/usage-viewer/` 和本地 `/usage-viewer.css` 静态资源以外的普通路由都需要认证。
 - **Admin 路由：** 所有 `/admin/*` 路由都要求 `auth.adminApiKey`。如果缺失，服务会在启动时自动生成并在开始提供服务前写回 `config.json`。
 - **允许的认证头：**
   - `x-api-key: <your_key>`
   - `Authorization: Bearer <your_key>`
-- **CORS 预检：** `OPTIONS` 请求始终允许。
+- **浏览器 Origin：** CORS 只允许同源；跨源请求和预检会被拒绝，不携带 Origin 的 CLI、SDK 和 Desktop 请求保持兼容。
+- **Host 校验：** 请求必须使用 `localhost` 或 IP literal Host；LAN client 应直接使用服务器 IP，而非 DNS alias。
 - **未配置普通 key 时：** 普通路由仍可直接访问；但这条规则不适用于 `/admin/*`，后者只接受 `auth.adminApiKey`。
 
 普通受保护路由的示例请求：
@@ -741,7 +745,8 @@ curl http://localhost:4141/admin/config/model-mappings \
 | 端点         | 方法  | 说明                                    |
 | ------------ | ----- | --------------------------------------- |
 | `GET /usage` | `GET` | 获取详细的 Copilot 使用统计与额度信息。 |
-| `GET /token` | `GET` | 获取当前 API 正在使用的 Copilot token。 |
+
+旧的 `GET /token` 端点已删除；任何 HTTP status 端点都不会返回上游 Copilot bearer。
 
 ### Admin / 配置端点
 

@@ -52,6 +52,7 @@ import {
   readModelMappingsRequest,
   saveModelMappingsRequest,
 } from './model-mappings-api'
+import { buildServerLoopbackUrl } from './server-loopback'
 
 type ServerAuthScope = 'default' | 'admin'
 
@@ -123,7 +124,7 @@ function getConfigApiBaseUrl(): string | null {
     return null
   }
 
-  return `http://localhost:${getPort()}/admin/config/model-mappings`
+  return buildServerLoopbackUrl(getPort(), '/admin/config/model-mappings')
 }
 
 function serverUnavailableError(): ModelMappingsRequestError {
@@ -349,7 +350,7 @@ export function registerIpcHandlers(
     const port = getPort()
     try {
       const headers = await getServerRequestHeaders()
-      const res = await fetch(`http://localhost:${port}/usage`, {
+      const res = await fetch(buildServerLoopbackUrl(port, '/usage'), {
         headers,
         signal: AbortSignal.timeout(5000),
       })
@@ -364,7 +365,7 @@ export function registerIpcHandlers(
     const port = getPort()
     try {
       const headers = await getServerRequestHeaders()
-      const res = await fetch(`http://localhost:${port}/models`, {
+      const res = await fetch(buildServerLoopbackUrl(port, '/models'), {
         headers,
         signal: AbortSignal.timeout(5000),
       })
@@ -382,7 +383,7 @@ export function registerIpcHandlers(
     try {
       const headers = await getServerRequestHeaders()
       const res = await fetch(
-        `http://localhost:${port}/token-usage?period=${normalizedPeriod}`,
+        buildServerLoopbackUrl(port, `/token-usage?period=${normalizedPeriod}`),
         {
           headers,
           signal: AbortSignal.timeout(5000),
@@ -404,7 +405,10 @@ export function registerIpcHandlers(
       try {
         const headers = await getServerRequestHeaders()
         const res = await fetch(
-          `http://localhost:${port}/token-usage/daily?period=${normalizedPeriod}`,
+          buildServerLoopbackUrl(
+            port,
+            `/token-usage/daily?period=${normalizedPeriod}`,
+          ),
           {
             headers,
             signal: AbortSignal.timeout(5000),
@@ -436,7 +440,10 @@ export function registerIpcHandlers(
       try {
         const headers = await getServerRequestHeaders()
         const res = await fetch(
-          `http://localhost:${port}/token-usage/events?${params.toString()}`,
+          buildServerLoopbackUrl(
+            port,
+            `/token-usage/events?${params.toString()}`,
+          ),
           {
             headers,
             signal: AbortSignal.timeout(5000),

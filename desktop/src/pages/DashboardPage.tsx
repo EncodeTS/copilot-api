@@ -36,6 +36,16 @@ interface DashboardPageProps {
   onChangeAuth: () => void
 }
 
+export function buildDashboardServerUrls(port: number): {
+  anthropicUrl: string
+  openaiUrl: string
+} {
+  return {
+    anthropicUrl: `http://127.0.0.1:${port}`,
+    openaiUrl: `http://127.0.0.1:${port}/v1`,
+  }
+}
+
 interface QuotaDetail {
   entitlement: number
   quota_remaining: number
@@ -302,8 +312,7 @@ export default function DashboardPage({
   )
 
   const portNum = parseInt(port, 10)
-  const openaiUrl = `http://localhost:${portNum}/v1`
-  const anthropicUrl = `http://localhost:${portNum}`
+  const { anthropicUrl, openaiUrl } = buildDashboardServerUrls(portNum)
 
   useEffect(() => {
     let active = true
