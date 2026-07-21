@@ -8,7 +8,10 @@ import { countMessagesTokens } from "~/services/copilot/create-messages"
 
 import type { AnthropicMessagesPayload } from "~/routes/messages/anthropic-types"
 import type { PreparedCopilotMessagesRequest } from "~/routes/messages/prepared-messages/core"
-import { getPreparedCopilotMessagesPlan } from "~/routes/messages/prepared-messages/core"
+import {
+  getPreparedCopilotMessagesFallbackPayload,
+  getPreparedCopilotMessagesPlan,
+} from "~/routes/messages/prepared-messages/core"
 import { estimateResponsesInputTokens } from "~/routes/messages/prepared-messages/token-estimation"
 
 export type PreparedMessagesCountResult =
@@ -82,7 +85,7 @@ export const countPreparedCopilotMessages = async (
     return {
       fallbackStatus,
       inputTokens: await estimateChatPayload(
-        plan.fallbackPayload,
+        getPreparedCopilotMessagesFallbackPayload(prepared),
         plan.sourcePayload,
         plan.tokenizerModel,
         options.anthropicBetaHeader,

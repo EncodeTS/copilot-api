@@ -1,5 +1,6 @@
 import type { CompactType } from "~/lib/compact"
 import { isMessagesApiEnabled } from "~/lib/config"
+import { deepFreeze } from "~/lib/deep-freeze"
 import { HTTPError } from "~/lib/error"
 import { findEndpointModel } from "~/lib/models"
 import { createFallbackModel } from "~/lib/provider-model"
@@ -57,7 +58,6 @@ export type PreparedCopilotMessagesPlan =
     })
   | (PreparedCommon & {
       kind: "messages"
-      fallbackPayload: ChatCompletionsPayload
       payload: AnthropicMessagesPayload
     })
   | (PreparedCommon & {
@@ -68,6 +68,12 @@ export type PreparedCopilotMessagesPlan =
     })
 
 const plans = new WeakMap<object, PreparedCopilotMessagesPlan>()
+interface NativeMessagesFallback {
+  payload?: ChatCompletionsPayload
+  snapshot: AnthropicMessagesPayload
+}
+
+const nativeFallbacks = new WeakMap<object, NativeMessagesFallback>()
 
 export const preparedMessagesCoreDependencies = {
   findEndpointModel,
@@ -119,14 +125,14 @@ export const prepareCopilotMessagesRequest = (
     tokenizerModel,
   }
   let plan: PreparedCopilotMessagesPlan
+  let nativeFallbackSnapshot: AnthropicMessagesPayload | undefined
 
   if (kind === "messages") {
     prepareMessagesApiPayload(sourcePayload, endpointModel)
-    const fallbackPayload = translateToOpenAI(structuredClone(sourcePayload))
+    nativeFallbackSnapshot = deepFreeze(sourcePayload)
     plan = {
       ...common,
       kind,
-      fallbackPayload,
       payload: sourcePayload,
     }
   } else if (kind === "responses") {
@@ -195,6 +201,9 @@ export const prepareCopilotMessagesRequest = (
     [preparedBrand]: true as const,
   })
   plans.set(prepared, plan)
+  if (nativeFallbackSnapshot) {
+    nativeFallbacks.set(prepared, { snapshot: nativeFallbackSnapshot })
+  }
   return prepared
 }
 
@@ -204,6 +213,17 @@ export const getPreparedCopilotMessagesPlan = (
   const plan = plans.get(prepared)
   if (!plan) throw new TypeError("Unknown Prepared Copilot Messages request")
   return plan
+}
+
+export const getPreparedCopilotMessagesFallbackPayload = (
+  prepared: PreparedCopilotMessagesRequest,
+): ChatCompletionsPayload => {
+  const fallback = nativeFallbacks.get(prepared)
+  if (!fallback) {
+    throw new TypeError("Prepared request has no native Messages fallback")
+  }
+  fallback.payload ??= deepFreeze(translateToOpenAI(fallback.snapshot))
+  return fallback.payload
 }
 
 const selectFlow = (

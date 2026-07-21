@@ -19,6 +19,8 @@ import {
 import { responsesUtilsDependencies } from "../src/routes/responses/utils"
 import type { Model } from "../src/services/copilot/get-models"
 
+import { makePng } from "./media-facts-fixtures"
+
 const originalModels = state.models
 const originalCountDependencies = { ...preparedMessagesCountDependencies }
 const originalCoreDependencies = { ...preparedMessagesCoreDependencies }
@@ -185,6 +187,45 @@ test("prepared native Messages request uses its final generation payload for aut
   })
 })
 
+test("native Messages generation does not build an unavailable Chat fallback", async () => {
+  state.models = {
+    object: "list",
+    data: [messagesModel],
+  } as typeof state.models
+  const generatedPayloads: Array<AnthropicMessagesPayload> = []
+  preparedMessagesGenerationDependencies.handleWithMessagesApi = (
+    _c,
+    payload,
+  ) => {
+    generatedPayloads.push(payload)
+    return Promise.resolve(new Response("generated"))
+  }
+  const source: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: { type: "file", file_id: "file_native_only" },
+          },
+        ],
+      },
+    ],
+    model: messagesModel.id,
+  }
+
+  const response = await generatePreparedCopilotMessages(
+    createGenerationContext(),
+    prepareCopilotMessagesRequest(source),
+  )
+
+  expect(await response.text()).toBe("generated")
+  expect(generatedPayloads).toHaveLength(1)
+  expect(generatedPayloads[0]).toMatchObject(source)
+})
+
 test("prepared native Messages request falls back only from 404 or 501 to its post-preparation Chat estimate", async () => {
   state.models = {
     object: "list",
@@ -235,6 +276,170 @@ test("prepared native Messages request falls back only from 404 or 501 to its po
       },
     ],
   })
+})
+
+test("native Messages fallback memoizes translation from a snapshot isolated from generation adapters", async () => {
+  state.models = {
+    object: "list",
+    data: [messagesModel],
+  } as typeof state.models
+  const estimatedPayloads: Array<unknown> = []
+  let mutationApplied: boolean | undefined
+  preparedMessagesGenerationDependencies.handleWithMessagesApi = (
+    _c,
+    payload,
+  ) => {
+    const firstMessage = payload.messages[0]
+    if (firstMessage) {
+      mutationApplied = Reflect.set(firstMessage, "content", "adapter mutation")
+    }
+    return Promise.resolve(new Response("generated"))
+  }
+  preparedMessagesCountDependencies.countCopilotMessagesTokens = () =>
+    Promise.reject(
+      new HTTPError("missing", new Response("missing", { status: 404 })),
+    )
+  preparedMessagesCountDependencies.getTokenCount = (payload) => {
+    estimatedPayloads.push(payload)
+    return Promise.resolve({ input: 10, output: 0 })
+  }
+  const prepared = prepareCopilotMessagesRequest({
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: messagesModel.id,
+  })
+
+  await generatePreparedCopilotMessages(createGenerationContext(), prepared)
+  await countPreparedCopilotMessages(prepared)
+  await countPreparedCopilotMessages(prepared)
+
+  expect(mutationApplied).toBe(false)
+  expect(estimatedPayloads).toHaveLength(2)
+  expect(estimatedPayloads[0]).toMatchObject({
+    messages: [{ role: "user", content: "hello" }],
+  })
+  expect(estimatedPayloads[1]).toBe(estimatedPayloads[0])
+})
+
+test("memoized native Messages fallback rejects count adapter mutation", async () => {
+  state.models = {
+    object: "list",
+    data: [messagesModel],
+  } as typeof state.models
+  const estimatedPayloads: Array<unknown> = []
+  const observedContents: Array<unknown> = []
+  let mutationApplied: boolean | undefined
+  preparedMessagesCountDependencies.countCopilotMessagesTokens = () =>
+    Promise.reject(
+      new HTTPError("missing", new Response("missing", { status: 404 })),
+    )
+  preparedMessagesCountDependencies.getTokenCount = (payload) => {
+    estimatedPayloads.push(payload)
+    const firstMessage = payload.messages[0]
+    observedContents.push(firstMessage?.content)
+    if (estimatedPayloads.length === 1 && firstMessage) {
+      mutationApplied = Reflect.set(
+        firstMessage,
+        "content",
+        "count adapter mutation",
+      )
+    }
+    return Promise.resolve({ input: 10, output: 0 })
+  }
+  const prepared = prepareCopilotMessagesRequest({
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: messagesModel.id,
+  })
+
+  await countPreparedCopilotMessages(prepared)
+  await countPreparedCopilotMessages(prepared)
+
+  expect(mutationApplied).toBe(false)
+  expect(observedContents).toEqual(["hello", "hello"])
+  expect(estimatedPayloads[1]).toBe(estimatedPayloads[0])
+})
+
+for (const status of [401, 429, 500, 502, 503] as const) {
+  test(`native Messages count preserves ${status} without local fallback`, async () => {
+    state.models = {
+      object: "list",
+      data: [messagesModel],
+    } as typeof state.models
+    const expected = new HTTPError(
+      "upstream failed",
+      new Response("upstream failed", { status }),
+    )
+    const getTokenCount = mock(() => Promise.resolve({ input: 10, output: 0 }))
+    preparedMessagesCountDependencies.countCopilotMessagesTokens = () =>
+      Promise.reject(expected)
+    preparedMessagesCountDependencies.getTokenCount = getTokenCount
+
+    let thrown: unknown
+    try {
+      await countPreparedCopilotMessages(
+        prepareCopilotMessagesRequest({
+          max_tokens: 128,
+          messages: [{ role: "user", content: "hello" }],
+          model: messagesModel.id,
+        }),
+      )
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(thrown).toBe(expected)
+    expect(getTokenCount).not.toHaveBeenCalled()
+  })
+}
+
+test("native Messages 404 fallback uses media-aware Chat estimation", async () => {
+  const nativeMediaModel = {
+    ...messagesModel,
+    id: "native-media",
+  } as Model
+  state.models = {
+    object: "list",
+    data: [nativeMediaModel],
+  } as typeof state.models
+  preparedMessagesCountDependencies.countCopilotMessagesTokens = () =>
+    Promise.reject(
+      new HTTPError("missing", new Response("missing", { status: 404 })),
+    )
+  const estimate = async (width: number, height: number) =>
+    await countPreparedCopilotMessages(
+      prepareCopilotMessagesRequest({
+        max_tokens: 128,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "image",
+                source: {
+                  type: "base64",
+                  media_type: "image/png",
+                  data: makePng(width, height).toString("base64"),
+                },
+              },
+            ],
+          },
+        ],
+        model: nativeMediaModel.id,
+      }),
+    )
+
+  const sixPatchImage = await estimate(56, 84)
+  const twelvePatchImage = await estimate(84, 112)
+
+  expect(sixPatchImage.mode).toBe("estimate")
+  expect(twelvePatchImage.mode).toBe("estimate")
+  if (
+    sixPatchImage.mode === "estimate"
+    && twelvePatchImage.mode === "estimate"
+  ) {
+    expect(twelvePatchImage.inputTokens - sixPatchImage.inputTokens).toBe(6)
+  }
 })
 
 test("generation and Count Tokens consume the same final native Messages preparation", async () => {
