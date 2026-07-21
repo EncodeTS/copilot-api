@@ -25,6 +25,9 @@ interface ConfigFileShape {
   migrationState?: {
     contextManagementMessages?: string
   }
+  nativeMessagesOutboundHardEnforcement?: boolean
+  nativeMessagesOutboundMaxBodyBytes?: number
+  nativeMessagesOutboundMaxImageSourceDataBytes?: number
   responsesImageCompression?: boolean
   responsesImageCompressionCacheBytes?: number
   responsesImageCompressionConcurrency?: number
@@ -259,6 +262,62 @@ describe("builtin provider config", () => {
     expect(persisted.responsesImageMaxInputImageBytes).toBeUndefined()
     expect(persisted.responsesImageOptimization).toBeUndefined()
     expect(persisted.responsesPayloadBudgetBytes).toBeUndefined()
+  })
+
+  test("keeps native Messages outbound admission observe-only without dated limits", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = path.join(tempDir, "config.json")
+
+    const output = runScript(
+      tempDir,
+      'const config = await import("./src/lib/config"); console.log(JSON.stringify(config.getNativeMessagesOutboundAdmissionProfile()));',
+    )
+
+    expect(JSON.parse(output)).toEqual({ hardEnforcement: false })
+    const persisted = readConfigFile(configPath)
+    expect(persisted.nativeMessagesOutboundHardEnforcement).toBeUndefined()
+    expect(persisted.nativeMessagesOutboundMaxBodyBytes).toBeUndefined()
+    expect(
+      persisted.nativeMessagesOutboundMaxImageSourceDataBytes,
+    ).toBeUndefined()
+  })
+
+  test("allows explicit native Messages limits to be rolled back to observe-only", () => {
+    const tempDir = createTempConfigDir()
+    writeConfigFile(tempDir, {
+      nativeMessagesOutboundHardEnforcement: false,
+      nativeMessagesOutboundMaxBodyBytes: 1_000_000,
+      nativeMessagesOutboundMaxImageSourceDataBytes: 750_000,
+    })
+
+    const output = runScript(
+      tempDir,
+      'const config = await import("./src/lib/config"); console.log(JSON.stringify(config.getNativeMessagesOutboundAdmissionProfile()));',
+    )
+
+    expect(JSON.parse(output)).toEqual({
+      hardEnforcement: false,
+      maxBodyBytes: 1_000_000,
+      maxImageSourceDataBytes: 750_000,
+    })
+  })
+
+  test("enables native Messages hard admission only with an explicit limit", () => {
+    const tempDir = createTempConfigDir()
+    writeConfigFile(tempDir, {
+      nativeMessagesOutboundHardEnforcement: true,
+      nativeMessagesOutboundMaxBodyBytes: 1_000_000,
+    })
+
+    const output = runScript(
+      tempDir,
+      'const config = await import("./src/lib/config"); console.log(JSON.stringify(config.getNativeMessagesOutboundAdmissionProfile()));',
+    )
+
+    expect(JSON.parse(output)).toEqual({
+      hardEnforcement: true,
+      maxBodyBytes: 1_000_000,
+    })
   })
 
   test("applies bounded Responses websocket defaults without persisting them", () => {

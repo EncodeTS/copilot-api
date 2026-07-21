@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 
 import {
   collectMediaFacts,
+  iterateAnthropicCanonicalContent,
   MEDIA_FACT_MAX_DEPTH,
   MEDIA_FACT_MAX_FACTS,
   MEDIA_FACT_MAX_NODES,
@@ -45,6 +46,147 @@ const malformedAnthropicPayload = (content: Array<unknown>): unknown => ({
 })
 
 describe("collectMediaFacts", () => {
+  test("iterates only canonical Anthropic user content paths", () => {
+    const payload: unknown = {
+      max_tokens: 128,
+      messages: [
+        {
+          content: [
+            {
+              source: {
+                data: "AQID",
+                media_type: "image/png",
+                type: "base64",
+              },
+              type: "image",
+            },
+            {
+              content: [
+                {
+                  input: {
+                    source: { data: "opaque", type: "base64" },
+                    type: "image",
+                  },
+                  type: "tool_use",
+                },
+                {
+                  source: {
+                    content: [
+                      {
+                        source: {
+                          data: "BAUG",
+                          media_type: "image/png",
+                          type: "base64",
+                        },
+                        type: "image",
+                      },
+                    ],
+                    type: "content",
+                  },
+                  type: "document",
+                },
+              ],
+              tool_use_id: "tool_1",
+              type: "tool_result",
+            },
+          ],
+          role: "user",
+        },
+        {
+          content: [
+            {
+              source: {
+                data: "assistant-pseudo-media",
+                media_type: "image/png",
+                type: "base64",
+              },
+              type: "image",
+            },
+          ],
+          role: "assistant",
+        },
+      ],
+      model: "claude-test",
+    }
+
+    const imagePaths = [...iterateAnthropicCanonicalContent(payload)]
+      .filter(
+        (event) =>
+          event.kind === "block"
+          && typeof event.value === "object"
+          && event.value !== null
+          && "type" in event.value
+          && event.value.type === "image",
+      )
+      .map((event) => event.path)
+
+    expect(imagePaths).toEqual([
+      ["messages", 0, "content", 0],
+      ["messages", 0, "content", 1, "content", 1, "source", "content", 0],
+    ])
+  })
+
+  test("keeps tool_use input opaque and never probes image data", () => {
+    const source = {
+      get data(): never {
+        throw new Error("iterator must not probe image data")
+      },
+      media_type: "image/png",
+      type: "base64",
+    }
+    const payload: unknown = {
+      max_tokens: 128,
+      messages: [
+        {
+          content: [
+            {
+              source: {
+                content: [{ source, type: "image" }],
+                type: "content",
+              },
+              type: "document",
+            },
+            {
+              content: [
+                {
+                  input: { image: { source, type: "image" } },
+                  type: "tool_use",
+                },
+              ],
+              tool_use_id: "tool_1",
+              type: "tool_result",
+            },
+          ],
+          role: "user",
+        },
+      ],
+      model: "claude-test",
+    }
+
+    const events = [...iterateAnthropicCanonicalContent(payload)]
+
+    expect(events.filter((event) => event.kind === "block")).toHaveLength(4)
+    expect(events.every((event) => !event.path.includes("input"))).toBe(true)
+  })
+
+  test("canonical iterator is independent of the media-fact count cap", () => {
+    const content = Array.from(
+      { length: MEDIA_FACT_MAX_FACTS + 1 },
+      (_, index) => ({ text: String(index), type: "text" }),
+    )
+    const payload: unknown = {
+      max_tokens: 128,
+      messages: [{ content, role: "user" }],
+      model: "claude-test",
+    }
+
+    const blockCount = [...iterateAnthropicCanonicalContent(payload)].filter(
+      (event) => event.kind === "block",
+    ).length
+
+    expect(blockCount).toBe(MEDIA_FACT_MAX_FACTS + 1)
+  })
+
   test("only recognizes media at official protocol request and history paths", () => {
     const mediaShape = {
       source: {

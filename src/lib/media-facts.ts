@@ -1,6 +1,13 @@
 import { collectMediaFactsFromPayload } from "~/lib/media-facts/traversal"
 
 export {
+  iterateAnthropicCanonicalContent,
+  type AnthropicCanonicalContentEvent,
+  type AnthropicCanonicalContentIteratorOptions,
+  type AnthropicContentAncestor,
+} from "~/lib/media-facts/anthropic-content"
+
+export {
   MEDIA_FACT_MAX_DEPTH,
   MEDIA_FACT_MAX_FACTS,
   MEDIA_FACT_MAX_NODES,

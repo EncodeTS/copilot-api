@@ -23,6 +23,7 @@ import {
   type UpstreamLifecycleTimeouts,
 } from "~/lib/upstream-lifecycle"
 import { parseUserIdMetadata } from "~/lib/utils"
+import { prepareNativeMessagesOutbound } from "~/services/copilot/native-messages-outbound"
 
 export type MessagesStream = ReturnType<typeof events>
 export type CreateMessagesReturn = AnthropicResponse | MessagesStream
@@ -150,16 +151,18 @@ export const countMessagesTokens = async (
     timeouts?: UpstreamLifecycleTimeouts
   },
 ): Promise<{ input_tokens: number }> => {
+  const headers = buildMessagesRequestHeaders(
+    payload,
+    anthropicBetaHeader,
+    options,
+  )
+  const outbound = prepareNativeMessagesOutbound(payload, "token_count")
   const response = await fetchWithUpstreamLifecycle(
     `${copilotBaseUrl(state)}/v1/messages/count_tokens`,
     {
       method: "POST",
-      headers: buildMessagesRequestHeaders(
-        payload,
-        anthropicBetaHeader,
-        options,
-      ),
-      body: JSON.stringify(payload),
+      headers,
+      body: outbound.body,
     },
     {
       signal: options.signal,
@@ -192,6 +195,7 @@ export const createMessages = async (
     anthropicBetaHeader,
     options,
   )
+  const outbound = prepareNativeMessagesOutbound(payload, "generation")
 
   consola.log(`<-- model: ${payload.model}`)
 
@@ -200,7 +204,7 @@ export const createMessages = async (
     {
       method: "POST",
       headers,
-      body: JSON.stringify(payload),
+      body: outbound.body,
     },
     {
       signal: options.signal,

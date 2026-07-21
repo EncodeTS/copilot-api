@@ -1,8 +1,6 @@
 import type {
   AnthropicDocumentBlock,
-  AnthropicDocumentContainerBlock,
   AnthropicImageBlock,
-  AnthropicMessagesPayload,
   AnthropicToolResultContentBlock,
 } from "~/routes/messages/anthropic-types"
 import {
@@ -25,7 +23,11 @@ import {
   FactCollector,
   isRecord,
 } from "~/lib/media-facts/collector"
-import type { MediaPathSegment } from "~/lib/media-facts/types"
+import {
+  MEDIA_FACT_MAX_DEPTH,
+  type MediaPathSegment,
+} from "~/lib/media-facts/types"
+import { iterateAnthropicCanonicalContent } from "~/lib/media-facts/anthropic-content"
 
 const consume = (
   collector: FactCollector,
@@ -112,166 +114,125 @@ const addAnthropicDocumentFact = (
   }
 }
 
-const visitDocumentContainer = (
-  block: AnthropicDocumentContainerBlock,
+const visitAnthropicBlock = (
+  block: unknown,
   path: Array<MediaPathSegment>,
   depth: number,
   ancestors: Ancestor,
   collector: FactCollector,
 ): void => {
-  if (block.source.type === "text") {
-    consume(collector, block.source.data, depth + 1, ancestors)
-    return
-  }
-  if (typeof block.source.content === "string") {
-    consume(collector, block.source.content, depth + 1, ancestors)
-    return
-  }
-  visitAnthropicContent(
-    block.source.content,
-    [...path, "source", "content"],
-    depth + 1,
-    ancestors,
-    collector,
-  )
-}
+  const blockVisit = collector.visit(block, depth, ancestors)
+  if (!blockVisit.accepted || !isRecord(block) || !blockVisit.ancestor) return
+  const source = isRecord(block.source) ? block.source : undefined
+  const sourceVisit =
+    source ? collector.visit(source, depth + 1, blockVisit.ancestor) : undefined
+  const typedBlock = block as AnthropicToolResultContentBlock
 
-const visitAnthropicContent = (
-  content: Array<unknown>,
-  path: Array<MediaPathSegment>,
-  depth: number,
-  ancestors: Ancestor,
-  collector: FactCollector,
-): void => {
-  const contentVisit = collector.visit(content, depth, ancestors)
-  if (!contentVisit.ancestor) return
-  for (let index = 0; index < content.length && !collector.halted; index += 1) {
-    const block = content[index]
-    const blockVisit = collector.visit(block, depth + 1, contentVisit.ancestor)
-    if (!blockVisit.accepted || !isRecord(block) || !blockVisit.ancestor)
-      continue
-    const blockPath = [...path, index]
-    const source = isRecord(block.source) ? block.source : undefined
-    const sourceVisit =
-      source ?
-        collector.visit(source, depth + 2, blockVisit.ancestor)
-      : undefined
-    const typedBlock = block as AnthropicToolResultContentBlock
-
-    if (isAnthropicImageBlock(typedBlock)) {
-      if (sourceVisit?.ancestor) {
-        addAnthropicImageFact(
-          typedBlock,
-          blockPath,
-          depth + 3,
-          sourceVisit.ancestor,
-          collector,
-        )
-      }
-      continue
-    }
-    if (isAnthropicDocumentBlock(typedBlock)) {
-      if (sourceVisit?.ancestor) {
-        addAnthropicDocumentFact(
-          typedBlock,
-          blockPath,
-          depth + 3,
-          sourceVisit.ancestor,
-          collector,
-        )
-      }
-      continue
-    }
-    if (isAnthropicDocumentContainerBlock(block)) {
-      if (sourceVisit?.ancestor) {
-        visitDocumentContainer(
-          block,
-          blockPath,
-          depth + 3,
-          sourceVisit.ancestor,
-          collector,
-        )
-      }
-      continue
-    }
-    const fileBlock =
-      isAnthropicFileImageBlock(block) ? block
-      : isAnthropicFileDocumentBlock(block) ? block
-      : undefined
-    if (
-      sourceVisit?.ancestor
-      && fileBlock
-      && isAnthropicFileSource(source)
-      && consume(collector, source.file_id, depth + 3, sourceVisit.ancestor)
-    ) {
-      collector.add(
-        createFileIdFact(
-          fileBlock.type === "image" ?
-            {
-              carrier: "anthropic.image.source.file_id",
-              mediaKind: "image",
-              path: [...blockPath, "source", "file_id"],
-              protocol: "anthropic",
-            }
-          : {
-              carrier: "anthropic.document.source.file_id",
-              mediaKind: "file",
-              path: [...blockPath, "source", "file_id"],
-              protocol: "anthropic",
-            },
-          source.file_id,
-        ),
-      )
-      continue
-    }
-    if (
-      block.type === "document"
-      && source
-      && (source.type === "text" || source.type === "content")
-    ) {
-      collector.warn("invalid_container")
-      continue
-    }
-    // `file_id` is a field of source.type=file, never a source discriminator.
-    if (
-      (block.type === "document" || block.type === "image")
-      && source
-      && source.type === "file_id"
-    ) {
-      continue
-    }
-    if (block.type === "image") {
-      collector.add(
-        createInvalidValueFact({
-          carrier: "anthropic.image.source.data",
-          mediaKind: "image",
-          path: [...blockPath, "source", "data"],
-          protocol: "anthropic",
-        }),
-      )
-      continue
-    }
-    if (block.type === "document") {
-      collector.add(
-        createInvalidValueFact({
-          carrier: "anthropic.document.source.data",
-          mediaKind: "file",
-          path: [...blockPath, "source", "data"],
-          protocol: "anthropic",
-        }),
-      )
-      continue
-    }
-    if (block.type === "tool_result" && Array.isArray(block.content)) {
-      visitAnthropicContent(
-        block.content,
-        [...blockPath, "content"],
+  if (isAnthropicImageBlock(typedBlock)) {
+    if (sourceVisit?.ancestor) {
+      addAnthropicImageFact(
+        typedBlock,
+        path,
         depth + 2,
-        blockVisit.ancestor,
+        sourceVisit.ancestor,
         collector,
       )
     }
-    // tool_use.input and every other arbitrary object are deliberately opaque.
+    return
+  }
+  if (isAnthropicDocumentBlock(typedBlock)) {
+    if (sourceVisit?.ancestor) {
+      addAnthropicDocumentFact(
+        typedBlock,
+        path,
+        depth + 2,
+        sourceVisit.ancestor,
+        collector,
+      )
+    }
+    return
+  }
+  if (isAnthropicDocumentContainerBlock(block)) {
+    if (sourceVisit?.ancestor) {
+      if (block.source.type === "text") {
+        consume(collector, block.source.data, depth + 3, sourceVisit.ancestor)
+      } else if (typeof block.source.content === "string") {
+        consume(
+          collector,
+          block.source.content,
+          depth + 3,
+          sourceVisit.ancestor,
+        )
+      }
+    }
+    return
+  }
+  const fileBlock =
+    isAnthropicFileImageBlock(block) ? block
+    : isAnthropicFileDocumentBlock(block) ? block
+    : undefined
+  if (
+    sourceVisit?.ancestor
+    && fileBlock
+    && isAnthropicFileSource(source)
+    && consume(collector, source.file_id, depth + 2, sourceVisit.ancestor)
+  ) {
+    collector.add(
+      createFileIdFact(
+        fileBlock.type === "image" ?
+          {
+            carrier: "anthropic.image.source.file_id",
+            mediaKind: "image",
+            path: [...path, "source", "file_id"],
+            protocol: "anthropic",
+          }
+        : {
+            carrier: "anthropic.document.source.file_id",
+            mediaKind: "file",
+            path: [...path, "source", "file_id"],
+            protocol: "anthropic",
+          },
+        source.file_id,
+      ),
+    )
+    return
+  }
+  if (
+    block.type === "document"
+    && source
+    && (source.type === "text" || source.type === "content")
+  ) {
+    collector.warn("invalid_container")
+    return
+  }
+  // `file_id` is a field of source.type=file, never a source discriminator.
+  if (
+    (block.type === "document" || block.type === "image")
+    && source
+    && source.type === "file_id"
+  ) {
+    return
+  }
+  if (block.type === "image") {
+    collector.add(
+      createInvalidValueFact({
+        carrier: "anthropic.image.source.data",
+        mediaKind: "image",
+        path: [...path, "source", "data"],
+        protocol: "anthropic",
+      }),
+    )
+    return
+  }
+  if (block.type === "document") {
+    collector.add(
+      createInvalidValueFact({
+        carrier: "anthropic.document.source.data",
+        mediaKind: "file",
+        path: [...path, "source", "data"],
+        protocol: "anthropic",
+      }),
+    )
   }
 }
 
@@ -280,35 +241,25 @@ export const collectAnthropicMediaFacts = (
   rootAncestor: Ancestor,
   collector: FactCollector,
 ): void => {
-  if (!Array.isArray(root.messages)) return
-  const payload = root as unknown as AnthropicMessagesPayload
-  const messagesVisit = collector.visit(payload.messages, 1, rootAncestor)
-  if (!messagesVisit.ancestor) return
-  for (
-    let messageIndex = 0;
-    messageIndex < payload.messages.length && !collector.halted;
-    messageIndex += 1
-  ) {
-    const message = payload.messages[messageIndex]
-    const messageVisit = collector.visit(message, 2, messagesVisit.ancestor)
-    if (
-      !messageVisit.accepted
-      || !isRecord(message)
-      || !messageVisit.ancestor
-    ) {
+  for (const event of iterateAnthropicCanonicalContent(root, {
+    maxDepth: MEDIA_FACT_MAX_DEPTH,
+    rootAncestor,
+  })) {
+    if (collector.halted) break
+    if (event.kind === "cycle") {
+      collector.warn("cycle_detected")
       continue
     }
-    if (message.role !== "user") continue
-    if (!Array.isArray(message.content)) {
-      consume(collector, message.content, 3, messageVisit.ancestor)
+    if (event.kind === "block") {
+      visitAnthropicBlock(
+        event.value,
+        [...event.path],
+        event.depth,
+        event.ancestors,
+        collector,
+      )
       continue
     }
-    visitAnthropicContent(
-      message.content,
-      ["messages", messageIndex, "content"],
-      3,
-      messageVisit.ancestor,
-      collector,
-    )
+    collector.visit(event.value, event.depth, event.ancestors)
   }
 }

@@ -56,6 +56,9 @@ export interface AppConfig {
   // via /responses. Leave unset to disable (the tool is then stripped).
   // Mixing web_search with other tools is not supported.
   messageApiWebSearchModel?: string
+  nativeMessagesOutboundHardEnforcement?: boolean
+  nativeMessagesOutboundMaxBodyBytes?: number
+  nativeMessagesOutboundMaxImageSourceDataBytes?: number
   claudeTokenMultiplier?: number
   responsesImageOptimization?: boolean
   responsesPayloadBudgetBytes?: number
@@ -1184,6 +1187,45 @@ export function isMessagesApiEnabled(): boolean {
   return config.useMessagesApi ?? true
 }
 
+export interface NativeMessagesOutboundAdmissionProfile {
+  hardEnforcement: boolean
+  maxBodyBytes?: number
+  maxImageSourceDataBytes?: number
+}
+
+export function getNativeMessagesOutboundAdmissionProfile(): NativeMessagesOutboundAdmissionProfile {
+  const maxBodyBytes = getOptionalIntegerConfig(
+    "nativeMessagesOutboundMaxBodyBytes",
+  )
+  const maxImageSourceDataBytes = getOptionalIntegerConfig(
+    "nativeMessagesOutboundMaxImageSourceDataBytes",
+  )
+  const hardEnforcementRequested = getBooleanConfig(
+    "nativeMessagesOutboundHardEnforcement",
+    false,
+  )
+  if (
+    hardEnforcementRequested
+    && maxBodyBytes === undefined
+    && maxImageSourceDataBytes === undefined
+  ) {
+    warnInvalidConfigOnce(
+      "nativeMessagesOutboundHardEnforcement:limits",
+      "Native Messages hard enforcement requires a configured body or image-source-data byte limit; using observe-only mode.",
+    )
+  }
+
+  return {
+    hardEnforcement:
+      hardEnforcementRequested
+      && (maxBodyBytes !== undefined || maxImageSourceDataBytes !== undefined),
+    ...(maxBodyBytes === undefined ? {} : { maxBodyBytes }),
+    ...(maxImageSourceDataBytes === undefined ?
+      {}
+    : { maxImageSourceDataBytes }),
+  }
+}
+
 export function isResponsesApiWebSocketEnabled(): boolean {
   const config = getConfig()
   return config.useResponsesApiWebSocket ?? true
@@ -1477,6 +1519,20 @@ function getIntegerConfig(
 ): number {
   const value = getNumberConfig(key, fallback, options)
   return Math.floor(value)
+}
+
+function getOptionalIntegerConfig(key: keyof AppConfig): number | undefined {
+  const value = getConfig()[key]
+  if (value === undefined) return undefined
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
+    return value
+  }
+
+  warnInvalidConfigOnce(
+    key,
+    `Invalid ${key} config. Expected a positive safe integer; ignoring it.`,
+  )
+  return undefined
 }
 
 function getNumberConfig(

@@ -49,6 +49,10 @@ await mock.module("~/lib/token-usage", () => ({
 }))
 
 const { messageRoutes } = await import("../src/routes/messages/route")
+const { nativeMessagesOutboundDependencies } = await import(
+  "../src/services/copilot/native-messages-outbound"
+)
+const originalOutboundDependencies = { ...nativeMessagesOutboundDependencies }
 
 const originalFetch = globalThis.fetch
 
@@ -118,9 +122,42 @@ beforeEach(() => {
 afterEach(() => {
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
   providerConfig = null
+  Object.assign(
+    nativeMessagesOutboundDependencies,
+    originalOutboundDependencies,
+  )
 })
 
 describe("provider/model aliases on top-level messages routes", () => {
+  test("keeps provider generation and count routes opted out of builtin admission", async () => {
+    nativeMessagesOutboundDependencies.getAdmissionProfile = () => {
+      throw new Error("builtin admission must not run for providers")
+    }
+
+    const generation = await createApp().request("/v1/messages", {
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ content: "hello", role: "user" }],
+        model: "dash/qwen-plus",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+    const count = await createApp().request("/v1/messages/count_tokens", {
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ content: "hello", role: "user" }],
+        model: "dash/qwen-plus",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+
+    expect(generation.status).toBe(200)
+    expect(count.status).toBe(200)
+    expect(await count.json()).toEqual({ input_tokens: 42 })
+  })
+
   test("routes mapped /v1/messages models to the provider before rate limiting", async () => {
     modelMappings = {
       "claude-opus-4-7": "dash/qwen-plus",
