@@ -464,6 +464,7 @@ export interface ResponseInProgressEvent {
 
 export interface ResponseErrorEvent {
   code: string | null
+  copilot_usage?: CopilotUsage | null
   message: string
   param: string | null
   sequence_number: number
@@ -475,6 +476,7 @@ export interface ResponseErrorEvent {
   }
   status_code?: number
   headers?: Record<string, string>
+  usage?: ResponseUsage | null
 }
 
 export interface ResponseFunctionCallArgumentsDeltaEvent {

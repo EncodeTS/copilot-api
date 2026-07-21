@@ -48,6 +48,7 @@ export interface ResponsesStreamTerminalResponse {
 }
 
 export interface ResponsesStreamResponseError {
+  readonly code?: string | null
   readonly message: string
   readonly [key: string]: unknown
 }
@@ -58,6 +59,7 @@ export interface ResponsesStreamIncompleteDetails {
 }
 
 export interface ResponsesStreamErrorDetails {
+  readonly code?: string | null
   readonly message: string
   readonly [key: string]: unknown
 }
@@ -88,9 +90,12 @@ export interface ResponsesStreamIncompleteEvent
 }
 
 export interface ResponsesStreamErrorEvent extends ResponsesStreamEventBase {
+  readonly code?: string | null
+  readonly copilot_usage?: unknown
   readonly error?: ResponsesStreamErrorDetails | null
   readonly message: string
   readonly type: "error"
+  readonly usage?: unknown
 }
 
 export type ResponsesStreamTerminalEvent =
@@ -230,7 +235,9 @@ const isOptionalResponseError = (
 ): value is ResponsesStreamResponseError | null | undefined =>
   value === undefined
   || value === null
-  || (isRecord(value) && typeof value.message === "string")
+  || (isRecord(value)
+    && typeof value.message === "string"
+    && isOptionalString(value.code))
 
 const isOptionalIncompleteDetails = (
   value: unknown,
@@ -245,7 +252,12 @@ const isOptionalErrorDetails = (
 ): value is ResponsesStreamErrorDetails | null | undefined =>
   value === undefined
   || value === null
-  || (isRecord(value) && typeof value.message === "string")
+  || (isRecord(value)
+    && typeof value.message === "string"
+    && isOptionalString(value.code))
+
+const isOptionalString = (value: unknown): value is string | null | undefined =>
+  value === undefined || value === null || typeof value === "string"
 
 const isResponsesStreamEventType = (
   value: string,

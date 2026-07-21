@@ -326,6 +326,12 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
 ): Promise<Response> => {
   const { modelConfig, payload, provider, providerConfig, selectedCodexModel } =
     options
+  const recordUsage = createProviderMessagesUsageRecorder(
+    payload,
+    provider,
+    modelConfig,
+    providerConfig.pricingCurrency,
+  )
   applyWebSearchFallbackHeaders(c, payload, logger)
   const responsesPayload = prepareWebSearchResponsesPayload(payload)
   const reasoningError =
@@ -358,23 +364,22 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
         errorMessagePrefix: `${provider} web search responses stream`,
         logger,
         providerConfig,
+        recordUsage,
         upstreamResponse,
       })
       return respondWebSearchProviderMessagesJson(c, {
         body,
-        modelConfig,
         payload,
-        pricingCurrency: providerConfig.pricingCurrency,
         provider,
+        recordUsage,
       })
     }
 
     return respondWebSearchProviderMessagesJson(c, {
       body: upstreamResponse,
-      modelConfig,
       payload,
-      pricingCurrency: providerConfig.pricingCurrency,
       provider,
+      recordUsage,
     })
   }
 
@@ -402,24 +407,23 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
       errorMessagePrefix: `${provider} web search responses stream`,
       logger,
       providerConfig,
+      recordUsage,
       upstreamResponse: events(upstreamResponse),
     })
     return respondWebSearchProviderMessagesJson(c, {
       body,
-      modelConfig,
       payload,
-      pricingCurrency: providerConfig.pricingCurrency,
       provider,
+      recordUsage,
     })
   }
 
   const jsonBody = (await upstreamResponse.json()) as ResponsesResult
   return respondWebSearchProviderMessagesJson(c, {
     body: jsonBody,
-    modelConfig,
     payload,
-    pricingCurrency: providerConfig.pricingCurrency,
     provider,
+    recordUsage,
   })
 }
 
@@ -435,6 +439,12 @@ const handleOpenAIResponsesProviderMessages = async (
 ): Promise<Response> => {
   const { modelConfig, payload, provider, providerConfig, selectedCodexModel } =
     options
+  const recordUsage = createProviderMessagesUsageRecorder(
+    payload,
+    provider,
+    modelConfig,
+    providerConfig.pricingCurrency,
+  )
   const wantsStream = payload.stream === true
   const responsesPayload = translateAnthropicMessagesToResponsesPayload(
     payload,
@@ -514,25 +524,24 @@ const handleOpenAIResponsesProviderMessages = async (
         errorMessagePrefix: `${provider} messages responses stream`,
         logger,
         providerConfig,
+        recordUsage,
         upstreamResponse,
       })
       return respondResponsesProviderMessagesJson(c, {
         body,
-        modelConfig,
         payload,
-        pricingCurrency: providerConfig.pricingCurrency,
         provider,
         providerConfig,
+        recordUsage,
       })
     }
 
     return respondResponsesProviderMessagesJson(c, {
       body: upstreamResponse,
-      modelConfig,
       payload,
-      pricingCurrency: providerConfig.pricingCurrency,
       provider,
       providerConfig,
+      recordUsage,
     })
   }
 
@@ -571,11 +580,10 @@ const handleOpenAIResponsesProviderMessages = async (
   const jsonBody = (await upstreamResponse.json()) as ResponsesResult
   return respondResponsesProviderMessagesJson(c, {
     body: jsonBody,
-    modelConfig,
     payload,
-    pricingCurrency: providerConfig.pricingCurrency,
     provider,
     providerConfig,
+    recordUsage,
   })
 }
 
@@ -1384,30 +1392,15 @@ const respondResponsesProviderMessagesJson = (
   c: Context,
   options: {
     body: ResponsesResult
-    modelConfig: ModelConfig | undefined
     payload: AnthropicMessagesPayload
-    pricingCurrency: string | undefined
     provider: string
     providerConfig: ResolvedProviderConfig
+    recordUsage: TokenUsageRecorder
   },
 ): Response => {
-  const {
-    body,
-    modelConfig,
-    payload,
-    pricingCurrency,
-    provider,
-    providerConfig,
-  } = options
-  const recordUsage = createProviderMessagesUsageRecorder(
-    payload,
-    provider,
-    modelConfig,
-    pricingCurrency,
-  )
-  recordUsage(normalizeResponsesUsage(body.usage))
+  const { body, payload, provider, providerConfig, recordUsage } = options
 
-  const failureMessage = getResponsesResultFailureMessage(body)
+  const failureMessage = recordProviderResponsesResultUsage(recordUsage, body)
   if (failureMessage) {
     return c.json(
       {
@@ -1442,20 +1435,13 @@ const respondWebSearchProviderMessagesJson = (
   c: Context,
   options: {
     body: ResponsesResult
-    modelConfig: ModelConfig | undefined
     payload: AnthropicMessagesPayload
-    pricingCurrency: string | undefined
     provider: string
+    recordUsage: TokenUsageRecorder
   },
 ): Response => {
-  const { body, modelConfig, payload, pricingCurrency, provider } = options
-  const recordUsage = createProviderMessagesUsageRecorder(
-    payload,
-    provider,
-    modelConfig,
-    pricingCurrency,
-  )
-  recordUsage(normalizeResponsesUsage(body.usage))
+  const { body, payload, provider, recordUsage } = options
+  recordProviderResponsesResultUsage(recordUsage, body)
 
   const { extract, response } = reconstructWebSearchResponse(payload, body, {
     requestId: body.id || `${provider}:${payload.model}`,
@@ -1481,6 +1467,24 @@ const respondWebSearchProviderMessagesJson = (
       })
     }
   })
+}
+
+const recordProviderResponsesResultUsage = (
+  recordUsage: TokenUsageRecorder,
+  body: ResponsesResult,
+): string | undefined => {
+  const failureMessage = getResponsesResultFailureMessage(body)
+  recordUsage(
+    normalizeResponsesUsage(body.usage),
+    failureMessage ?
+      {
+        errorCode: "response_failed",
+        outcome: "failed",
+        terminal: "response.failed",
+      }
+    : undefined,
+  )
+  return failureMessage
 }
 
 const createProviderMessagesUsageRecorder = (

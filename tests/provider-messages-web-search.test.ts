@@ -933,6 +933,98 @@ describe("provider messages web_search", () => {
     ])
   })
 
+  test("records buffered Codex web_search failure usage before the protocol error", async () => {
+    configureCodexProvider()
+    const failed = makeResponsesResult({
+      error: {
+        code: "server_error",
+        message: "private provider web search failure",
+      },
+      id: "resp-private-search-failure",
+      output: [],
+      output_text: "",
+      status: "failed",
+    })
+    responsesStreamFactory = () =>
+      new Response(
+        `data: ${JSON.stringify({
+          copilot_usage: { total_nano_aiu: 1_200 },
+          response: failed,
+          sequence_number: 1,
+          type: "response.failed",
+        })}\n\n`,
+        { headers: { "content-type": "text/event-stream" } },
+      )
+
+    const response = await createApp().request("/codex/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "Search privately" }],
+        model: "gpt-search",
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(response.status).toBe(502)
+    const body = await response.text()
+    expect(body).toContain("Responses upstream reported an error")
+    expect(body).not.toContain("private provider")
+    expect(body).not.toContain("resp-private")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      {
+        ...normalizedCodexResponsesUsage,
+        total_nano_aiu: 1_200,
+      },
+      {
+        errorCode: "upstream_error",
+        outcome: "failed",
+        terminal: "response.failed",
+      },
+    )
+  })
+
+  test("marks direct provider web_search JSON failures in the usage ledger", async () => {
+    const failed = makeResponsesResult({
+      error: { code: "server_error", message: "direct provider failure" },
+      output: [],
+      output_text: "",
+      status: "failed",
+    })
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(failed), {
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    )
+
+    const response = await createApp().request("/search/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "Search" }],
+        model: "gpt-search",
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(response.status).toBe(502)
+    expect(await response.text()).toContain("direct provider failure")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      normalizedCodexResponsesUsage,
+      {
+        errorCode: "response_failed",
+        outcome: "failed",
+        terminal: "response.failed",
+      },
+    )
+  })
+
   test("streams synthetic Anthropic events after parsing upstream Responses stream", async () => {
     const app = createApp()
     const response = await app.request("/search/v1/messages", {
@@ -1399,10 +1491,16 @@ describe("provider messages web_search", () => {
         [
           `data: ${JSON.stringify({
             code: "upstream_error",
-            message: "Codex stream failed",
+            copilot_usage: { total_nano_aiu: 800 },
+            message: "private Codex stream failure detail",
             param: null,
             sequence_number: 1,
             type: "error",
+            usage: {
+              input_tokens: 12,
+              output_tokens: 7,
+              total_tokens: 19,
+            },
           })}`,
           "",
           "",
@@ -1416,8 +1514,23 @@ describe("provider messages web_search", () => {
       body: JSON.stringify(createCodexMessagesPayload()),
     })
 
-    expect(response.status).toBe(500)
-    expect(await response.text()).not.toContain('"type":"message"')
+    expect(response.status).toBe(502)
+    const body = await response.text()
+    expect(body).toContain("Responses upstream reported an error")
+    expect(body).not.toContain("private Codex")
+    expect(body).not.toContain('"type":"message"')
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      {
+        ...normalizedCodexResponsesUsage,
+        total_nano_aiu: 800,
+      },
+      {
+        errorCode: "upstream_error",
+        outcome: "failed",
+        terminal: "error",
+      },
+    )
   })
 
   test("fails non-stream Codex requests when a terminal response reports failure", async () => {
@@ -1452,10 +1565,20 @@ describe("provider messages web_search", () => {
       body: JSON.stringify(createCodexMessagesPayload()),
     })
 
-    expect(response.status).toBe(500)
+    expect(response.status).toBe(502)
     const body = await response.text()
-    expect(body).toContain("Codex response failed")
+    expect(body).toContain("Responses upstream reported an error")
+    expect(body).not.toContain("Codex response failed")
     expect(body).not.toContain('"type":"message"')
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      normalizedCodexResponsesUsage,
+      {
+        errorCode: "upstream_error",
+        outcome: "failed",
+        terminal: "response.failed",
+      },
+    )
   })
 
   test("fails non-stream Codex requests without a terminal event", async () => {

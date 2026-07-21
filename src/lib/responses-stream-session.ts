@@ -4,6 +4,7 @@ import {
   RESPONSES_STREAM_TERMINAL_KIND_BY_TYPE,
   type ResponsesStreamEvent,
   type ResponsesStreamParseResult,
+  type ResponsesStreamTerminalEvent,
   type ResponsesStreamTerminalKind,
 } from "~/lib/responses-stream-protocol"
 import {
@@ -178,8 +179,6 @@ export interface RunResponsesStreamSessionOptions {
   signal?: AbortSignal
   source: AsyncIterable<ResponsesStreamSessionChunk>
 }
-
-const EMPTY_USAGE: Readonly<UsageTokens> = Object.freeze({})
 
 class ResponsesFrameDeliveryError extends Error {
   readonly deliveryError: unknown
@@ -482,25 +481,25 @@ const createTerminalSnapshot = (
       return freezeTerminalSnapshot(
         RESPONSES_STREAM_TERMINAL_KIND_BY_TYPE[terminal.event.type],
         terminal.event,
-        normalizeTerminalUsage(terminal.event),
+        normalizeResponsesTerminalUsage(terminal.event),
       )
     case "response.incomplete":
       return freezeTerminalSnapshot(
         RESPONSES_STREAM_TERMINAL_KIND_BY_TYPE[terminal.event.type],
         terminal.event,
-        normalizeTerminalUsage(terminal.event),
+        normalizeResponsesTerminalUsage(terminal.event),
       )
     case "response.failed":
       return freezeTerminalSnapshot(
         RESPONSES_STREAM_TERMINAL_KIND_BY_TYPE[terminal.event.type],
         terminal.event,
-        normalizeTerminalUsage(terminal.event),
+        normalizeResponsesTerminalUsage(terminal.event),
       )
     case "error":
       return freezeTerminalSnapshot(
         RESPONSES_STREAM_TERMINAL_KIND_BY_TYPE[terminal.event.type],
         terminal.event,
-        EMPTY_USAGE,
+        normalizeResponsesTerminalUsage(terminal.event),
       )
   }
 }
@@ -583,20 +582,27 @@ type FrameDeliveryResult =
   | { error: unknown; kind: "failed" }
   | { kind: "interrupted" }
 
-const normalizeTerminalUsage = (
-  event: Extract<
-    ResponsesStreamEvent,
-    {
-      type: "response.completed" | "response.failed" | "response.incomplete"
+export const normalizeResponsesTerminalUsage = (
+  event: ResponsesStreamTerminalEvent,
+): UsageTokens => {
+  if (event.type === "error") {
+    if (event.usage === undefined && event.copilot_usage === undefined) {
+      return {}
     }
-  >,
-): UsageTokens => ({
-  ...normalizeResponsesUsage(event.response.usage),
-  total_nano_aiu: normalizeResponsesAiu(
-    event.copilot_usage,
-    event.response.copilot_usage,
-  ),
-})
+    return {
+      ...normalizeResponsesUsage(event.usage),
+      total_nano_aiu: normalizeResponsesAiu(event.copilot_usage),
+    }
+  }
+
+  return {
+    ...normalizeResponsesUsage(event.response.usage),
+    total_nano_aiu: normalizeResponsesAiu(
+      event.copilot_usage,
+      event.response.copilot_usage,
+    ),
+  }
+}
 
 const findTimeout = (
   value: unknown,

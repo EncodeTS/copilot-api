@@ -651,6 +651,82 @@ describe("handleWebSearchViaResponses", () => {
       output_tokens: 50,
     })
   })
+
+  it("records a buffered failure once before surfacing a protocol error", async () => {
+    const calls: Array<Array<unknown>> = []
+    const failed = makeResponsesResult({
+      error: {
+        code: "server_error",
+        message: "private backend failure detail",
+      },
+      id: "resp-private-failure",
+      output: [],
+      output_text: "",
+      status: "failed",
+      usage: {
+        input_tokens: 14,
+        input_tokens_details: { cached_tokens: 4 },
+        output_tokens: 2,
+        total_tokens: 16,
+      },
+    })
+    webSearchFlowDependencies.createResponses = (() =>
+      Promise.resolve(
+        (async function* () {
+          await Promise.resolve()
+          yield {
+            data: JSON.stringify({
+              copilot_usage: { total_nano_aiu: 900 },
+              response: failed,
+              sequence_number: 1,
+              type: "response.failed",
+            }),
+          }
+        })(),
+      )) as never
+    webSearchFlowDependencies.createUsageRecorder = (() =>
+      (...args: Array<unknown>) => {
+        calls.push(args)
+        return "accepted"
+      }) as never
+
+    const { c } = makeContext()
+    let caught: unknown
+    try {
+      await handleWebSearchViaResponses(c, makePayload(), baseOptions)
+    } catch (error) {
+      caught = error
+    }
+
+    expect(caught).toBeInstanceOf(HTTPError)
+    expect((caught as HTTPError).response.status).toBe(502)
+    expect(await (caught as HTTPError).response.json()).toEqual({
+      type: "error",
+      error: {
+        code: "upstream_error",
+        message: "Responses upstream reported an error",
+        type: "api_error",
+      },
+    })
+    expect(calls).toEqual([
+      [
+        {
+          cache_read_input_tokens: 4,
+          input_tokens: 10,
+          output_tokens: 2,
+          total_nano_aiu: 900,
+          total_tokens: 16,
+        },
+        {
+          errorCode: "upstream_error",
+          outcome: "failed",
+          terminal: "response.failed",
+        },
+      ],
+    ])
+    expect(JSON.stringify(caught)).not.toContain("private backend")
+    expect(JSON.stringify(caught)).not.toContain("resp-private")
+  })
 })
 
 describe("buildSyntheticStreamEvents", () => {

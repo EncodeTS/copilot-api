@@ -49,8 +49,15 @@ import type {
   AnthropicWebSearchResultItem,
 } from "../anthropic-types"
 import { normalizeSystemMessages } from "../preprocess"
-import { collectResponsesStreamResult } from "../responses-stream-collection"
-import { assertResponsesResultUsable } from "../responses-result"
+import {
+  BufferedResponsesTerminalError,
+  collectResponsesStreamResult,
+  recordBufferedResponsesTerminalFailure,
+} from "../responses-stream-collection"
+import {
+  assertResponsesResultUsable,
+  createBufferedResponsesProtocolError,
+} from "../responses-result"
 import { translateAnthropicMessagesToResponsesPayload } from "../responses-translation"
 import {
   getResponsesRequestOptions,
@@ -516,20 +523,28 @@ export const handleWebSearchViaResponses = async (
     },
   )
 
-  const result =
-    isWebSearchResponsesStream(upstreamResult) ?
-      await collectResponsesStreamResult({
-        errorMessagePrefix: "Web search responses stream",
-        upstreamResponse: upstreamResult,
-        logger,
-      })
-    : upstreamResult
-
   const recordUsage = createUsageRecorder(
     payload,
     options.sessionId,
     webSearchModel,
   )
+  let result: ResponsesResult
+  try {
+    result =
+      isWebSearchResponsesStream(upstreamResult) ?
+        await collectResponsesStreamResult({
+          errorMessagePrefix: "Web search responses stream",
+          upstreamResponse: upstreamResult,
+          logger,
+        })
+      : upstreamResult
+  } catch (error) {
+    if (error instanceof BufferedResponsesTerminalError) {
+      recordBufferedResponsesTerminalFailure(recordUsage, error)
+      throw createBufferedResponsesProtocolError(error)
+    }
+    throw error
+  }
   recordUsage({
     ...normalizeResponsesUsage(result.usage),
     total_nano_aiu: normalizeOptionalToken(

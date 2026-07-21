@@ -17,7 +17,12 @@ import type {
 } from "~/services/copilot/create-responses"
 
 import type { AnthropicMessagesPayload } from "./anthropic-types"
-import { collectResponsesStreamResult } from "./responses-stream-collection"
+import {
+  BufferedResponsesTerminalError,
+  collectResponsesStreamResult,
+  recordBufferedResponsesTerminalFailure,
+} from "./responses-stream-collection"
+import { createBufferedResponsesProtocolError } from "./responses-result"
 import {
   createResponsesStreamState,
   type ResponsesStreamState,
@@ -65,20 +70,34 @@ export const collectProviderResponsesStreamResult = async ({
   errorMessagePrefix,
   logger,
   providerConfig,
+  recordUsage,
   upstreamResponse,
 }: {
   errorMessagePrefix: string
   logger: ConsolaInstance
   providerConfig: ResolvedProviderConfig
+  recordUsage: TokenUsageRecorder
   upstreamResponse: ResponsesStream
-}) =>
-  await collectResponsesStreamResult({
-    errorMessagePrefix,
-    logger,
-    parseEvent: (data) =>
-      parseProviderResponsesStreamEvent(data, providerConfig, logger),
-    upstreamResponse,
-  })
+}) => {
+  try {
+    return await collectResponsesStreamResult({
+      errorMessagePrefix,
+      logger,
+      onEvent: (event) => {
+        if (providerConfig.name === "codex") {
+          logCodexRateLimitsEvent(event)
+        }
+      },
+      upstreamResponse,
+    })
+  } catch (error) {
+    if (error instanceof BufferedResponsesTerminalError) {
+      recordBufferedResponsesTerminalFailure(recordUsage, error)
+      throw createBufferedResponsesProtocolError(error)
+    }
+    throw error
+  }
+}
 
 const consumeCopilotResponsesStream = async (
   options: Extract<ResponsesStreamConsumerOptions, { kind: "copilot" }>,
