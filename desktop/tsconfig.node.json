@@ -29,7 +29,7 @@
     "../src/lib/state.ts",
     "../src/lib/subagent.ts",
     "../src/lib/token.ts",
-    "../src/lib/token-manager-types.ts",
+    "../src/lib/token-manager-types.d.ts",
     "../src/lib/token-refresh-policy.ts",
     "../src/lib/utils.ts",
     "../src/routes/messages/anthropic-types.ts",
