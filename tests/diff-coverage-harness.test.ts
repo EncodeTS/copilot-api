@@ -139,6 +139,33 @@ function writeEmptyLcov(path: string, source: string): void {
 }
 
 describe("differential coverage gate", () => {
+  test("treats release scripts as root production without widening other scripts", () => {
+    expect(isProductionSource("scripts/release/quality.ts")).toBe(true)
+    expect(isProductionSource("scripts/release/smoke-docker-image.mjs")).toBe(
+      true,
+    )
+    expect(isProductionSource("scripts/benchmarks/runner.ts")).toBe(false)
+  })
+
+  test("fails when a changed release script is absent from root LCOV", () => {
+    const fixture = createChangedProductionFile(
+      "scripts/release/publish-artifact.ts",
+    )
+    writeLcov(fixture.lcovPath, "src/other.ts", 1)
+
+    const result = checkDiffCoverage({
+      base: fixture.base,
+      coverage: [{ path: fixture.lcovPath, sourcePrefix: "." }],
+      repository: fixture.repository,
+      threshold: 85,
+    })
+
+    expect(result.passed).toBe(false)
+    expect(result.failures).toContain(
+      'changed production file is missing from coverage: "scripts/release/publish-artifact.ts"',
+    )
+  })
+
   test("passes a covered changed production line", () => {
     const fixture = createChangedProductionFile()
     writeLcov(fixture.lcovPath, "src/value.ts", 1)

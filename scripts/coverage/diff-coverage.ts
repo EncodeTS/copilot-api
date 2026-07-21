@@ -92,6 +92,9 @@ function productionCoverageDomain(path: string): CoverageDomain | undefined {
   if (normalizedPath.startsWith("src/")) {
     return "root"
   }
+  if (normalizedPath.startsWith("scripts/release/")) {
+    return "root"
+  }
   if (
     normalizedPath.startsWith("desktop/electron/")
     || normalizedPath.startsWith("desktop/src/")
