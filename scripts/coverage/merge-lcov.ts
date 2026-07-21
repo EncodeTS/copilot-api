@@ -2,6 +2,18 @@
 
 import { readFileSync, writeFileSync } from "node:fs"
 import { readFile, writeFile } from "node:fs/promises"
+import { sep } from "node:path"
+
+type LcovSourceSeparator = "/" | "\\"
+
+const nativeLcovSourceSeparator: LcovSourceSeparator = sep === "\\" ? "\\" : "/"
+
+function normalizeLcovSource(
+  source: string,
+  sourceSeparator: LcovSourceSeparator,
+): string {
+  return sourceSeparator === "\\" ? source.replaceAll("\\", "/") : source
+}
 
 function mergeLcovContents(
   inputs: string[],
@@ -48,14 +60,22 @@ export function mergeLcovFilesSync(
 export function filterLcovSources(
   content: string,
   sources: Set<string>,
+  sourceSeparator: LcovSourceSeparator = nativeLcovSourceSeparator,
 ): string {
+  const normalizedSources = new Set(
+    [...sources].map((source) => normalizeLcovSource(source, sourceSeparator)),
+  )
   return content
     .split("end_of_record")
     .map((record) => record.trim())
-    .filter((record) => {
-      const source = /^SF:(.+)$/mu.exec(record)?.[1]
-      return source !== undefined && sources.has(source)
+    .map((record) => {
+      const match = /^SF:(.+)$/mu.exec(record)
+      if (!match) return null
+      const source = normalizeLcovSource(match[1], sourceSeparator)
+      if (!normalizedSources.has(source)) return null
+      return record.replace(/^SF:.+$/mu, () => `SF:${source}`)
     })
+    .filter((record): record is string => record !== null)
     .map((record) => `${record}\nend_of_record`)
     .join("\n")
 }

@@ -4,6 +4,7 @@ import os from "node:os"
 import path from "node:path"
 
 import {
+  filterLcovSources,
   mergeLcovFiles,
   mergeLcovFilesSync,
   runMergeLcovCli,
@@ -69,6 +70,29 @@ describe("LCOV merge helper", () => {
     expect(merged).toContain("SF:main.ts")
     expect(merged).toContain("SF:boundary.ts")
     expect(merged).not.toContain("SF:unrelated.ts")
+  })
+
+  test("normalizes Windows separators without aliasing POSIX backslashes", () => {
+    const content = [
+      "SF:electron\\main.ts\nDA:2,1\nend_of_record",
+      "SF:electron\\not-allowlisted.ts\nDA:3,1\nend_of_record",
+      "",
+    ].join("\n")
+    const sources = new Set(["electron/main.ts"])
+
+    expect(filterLcovSources(content, sources, "\\")).toBe(
+      "SF:electron/main.ts\nDA:2,1\nend_of_record",
+    )
+    expect(filterLcovSources(content, sources, "/")).toBe("")
+  })
+
+  test("writes allowlisted source paths without replacement interpolation", () => {
+    expect(
+      filterLcovSources(
+        "SF:electron/$&.ts\nDA:1,1\nend_of_record\n",
+        new Set(["electron/$&.ts"]),
+      ),
+    ).toBe("SF:electron/$&.ts\nDA:1,1\nend_of_record")
   })
 
   test("synchronously filters all non-allowlisted boundary records before replacing the output", async () => {
