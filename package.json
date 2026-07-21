@@ -45,7 +45,7 @@
     "test:coverage": "bun run test:coverage:root && bun run test:coverage:desktop",
     "test:coverage:desktop": "bun --cwd=desktop run test:coverage",
     "test:coverage:diff": "bun scripts/check-diff-coverage.ts",
-    "test:coverage:root": "bun test tests --coverage --coverage-reporter=lcov --coverage-dir=coverage/root",
+    "test:coverage:root": "bun scripts/coverage/run-coverage.ts --domain root",
     "test:zstd-worker-contract": "bun test tests/zstd-worker-harness.test.ts",
     "typecheck": "tsc"
   },

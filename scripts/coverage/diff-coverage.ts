@@ -1,9 +1,16 @@
-import { existsSync, readFileSync } from "node:fs"
-import { isAbsolute, join, relative, sep } from "node:path"
+import { existsSync } from "node:fs"
+import { dirname, isAbsolute, join, relative, sep } from "node:path"
+import * as ts from "typescript"
 
 import { runGit } from "../lib/git"
+import {
+  type CoverageDomain,
+  readVerifiedCoverageArtifact,
+} from "./coverage-attestation"
 
 export interface CoverageInput {
+  attestationPath?: string
+  domain?: CoverageDomain
   path: string
   sourcePrefix: string
 }
@@ -38,12 +45,24 @@ interface ParsedCoverage {
 }
 
 interface ChangedProductionFile {
+  baseFile?: string
+  domain: CoverageDomain
   file: string
   patchPaths: string[]
   requiresWholeFileAdmission: boolean
 }
 
-type CoverageDomain = "desktop" | "root"
+interface ChangedLineHunk {
+  currentCount: number
+  currentStart: number
+  previousCount: number
+  previousStart: number
+}
+
+interface ChangedLines {
+  hunks: ChangedLineHunk[]
+  lines: Set<number>
+}
 
 const productionExtensions = new Set([
   ".cjs",
@@ -96,6 +115,16 @@ function productionCoverageDomain(path: string): CoverageDomain | undefined {
     return "root"
   }
   if (
+    normalizedPath === "scripts/check-diff-coverage.ts"
+    || normalizedPath === "scripts/lib/git.ts"
+    || normalizedPath.startsWith("scripts/coverage/")
+  ) {
+    return "root"
+  }
+  if (normalizedPath.startsWith("shared-types/")) {
+    return "root"
+  }
+  if (
     normalizedPath.startsWith("desktop/electron/")
     || normalizedPath.startsWith("desktop/src/")
   ) {
@@ -119,6 +148,7 @@ function validateBase(repository: string, base: string): void {
 function listChangedProductionFiles(
   repository: string,
   base: string,
+  headCommit: string,
 ): ChangedProductionFile[] {
   const output = runGit(repository, [
     "diff",
@@ -128,7 +158,7 @@ function listChangedProductionFiles(
     "--find-renames",
     "--find-copies-harder",
     "--diff-filter=ACMR",
-    `${base}...HEAD`,
+    `${base}...${headCommit}`,
   ])
   const fields = output.split("\0")
   if (fields.at(-1) === "") {
@@ -160,6 +190,8 @@ function listChangedProductionFiles(
         const preservesSourceHistory =
           statusKind === "R" && productionCoverageDomain(oldFile) === newDomain
         changedFiles.push({
+          baseFile: preservesSourceHistory ? oldFile : undefined,
+          domain: newDomain,
           file,
           patchPaths: preservesSourceHistory ? [oldFile, file] : [file],
           requiresWholeFileAdmission: !preservesSourceHistory,
@@ -169,11 +201,14 @@ function listChangedProductionFiles(
     }
 
     const file = asGitRepositoryPath(oldPath)
-    if (isProductionSource(file)) {
+    const domain = productionCoverageDomain(file)
+    if (domain) {
       changedFiles.push({
+        baseFile: statusKind === "M" ? file : undefined,
+        domain,
         file,
         patchPaths: [file],
-        requiresWholeFileAdmission: false,
+        requiresWholeFileAdmission: statusKind === "A",
       })
     }
   }
@@ -184,8 +219,9 @@ function listChangedProductionFiles(
 function parseChangedLinesForFile(
   repository: string,
   base: string,
+  headCommit: string,
   patchPaths: string[],
-): Set<number> {
+): ChangedLines {
   const output = runGit(repository, [
     "--literal-pathspecs",
     "diff",
@@ -196,27 +232,31 @@ function parseChangedLinesForFile(
     "--find-renames",
     "--find-copies-harder",
     "--diff-filter=ACMR",
-    `${base}...HEAD`,
+    `${base}...${headCommit}`,
     "--",
     ...patchPaths,
   ])
   const changedLines = new Set<number>()
+  const hunks: ChangedLineHunk[] = []
 
   for (const line of output.split("\n")) {
-    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line)
+    const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line)
     if (!hunk) {
       continue
     }
 
-    const start = Number(hunk[1])
-    const count = hunk[2] === undefined ? 1 : Number(hunk[2])
+    const previousStart = Number(hunk[1])
+    const previousCount = hunk[2] === undefined ? 1 : Number(hunk[2])
+    const currentStart = Number(hunk[3])
+    const currentCount = hunk[4] === undefined ? 1 : Number(hunk[4])
+    hunks.push({ currentCount, currentStart, previousCount, previousStart })
 
-    for (let offset = 0; offset < count; offset += 1) {
-      changedLines.add(start + offset)
+    for (let offset = 0; offset < currentCount; offset += 1) {
+      changedLines.add(currentStart + offset)
     }
   }
 
-  return changedLines
+  return { hunks, lines: changedLines }
 }
 
 function resolveLcovSource(
@@ -229,7 +269,10 @@ function resolveLcovSource(
   return asFilesystemRepositoryPath(relative(repository, absoluteSource))
 }
 
-function parseLcov(options: DiffCoverageOptions): ParsedCoverage {
+function parseLcov(
+  options: DiffCoverageOptions,
+  headCommit: string,
+): ParsedCoverage {
   const files = new Map<string, Map<number, number>>()
   const failures: string[] = []
 
@@ -238,15 +281,37 @@ function parseLcov(options: DiffCoverageOptions): ParsedCoverage {
       failures.push(`coverage file does not exist: ${input.path}`)
       continue
     }
+    const attestationPath =
+      input.attestationPath ?? join(dirname(input.path), "attestation.json")
+    const domain =
+      input.domain ?? (input.sourcePrefix === "desktop" ? "desktop" : "root")
+    const verifiedArtifact = readVerifiedCoverageArtifact(
+      options.repository,
+      domain,
+      input.path,
+      attestationPath,
+      headCommit,
+    )
+    if (!verifiedArtifact.ok) {
+      failures.push(verifiedArtifact.failure)
+      continue
+    }
 
     let currentFile: string | undefined
-    for (const line of readFileSync(input.path, "utf8").split(/\r?\n/)) {
+    for (const line of verifiedArtifact.lcov.split(/\r?\n/)) {
       if (line.startsWith("SF:")) {
-        currentFile = resolveLcovSource(
+        const sourceFile = resolveLcovSource(
           options.repository,
           input.sourcePrefix,
           line.slice("SF:".length),
         )
+        currentFile =
+          productionCoverageDomain(sourceFile) === domain ? sourceFile : (
+            undefined
+          )
+        if (!currentFile) {
+          continue
+        }
         if (!files.has(currentFile)) {
           files.set(currentFile, new Map())
         }
@@ -287,6 +352,438 @@ function percentage(covered: number, instrumented: number): number {
   return instrumented === 0 ? 100 : (covered / instrumented) * 100
 }
 
+function runtimeCompilerOptions(domain: CoverageDomain): ts.CompilerOptions {
+  return {
+    jsx: ts.JsxEmit.Preserve,
+    module: ts.ModuleKind.Preserve,
+    newLine: ts.NewLineKind.LineFeed,
+    removeComments: true,
+    target: ts.ScriptTarget.ESNext,
+    verbatimModuleSyntax: domain === "root",
+  }
+}
+
+function emittedRuntime(
+  source: string,
+  file: string,
+  domain: CoverageDomain,
+): string {
+  return ts.transpileModule(source, {
+    compilerOptions: runtimeCompilerOptions(domain),
+    fileName: file,
+    reportDiagnostics: false,
+  }).outputText
+}
+
+interface SourceInterval {
+  end: number
+  start: number
+}
+
+const toolingDirectiveCommentPattern =
+  /(?:[@#](?:__NO_SIDE_EFFECTS__|__PURE__|babel|jsx(?:Frag|ImportSource|Runtime)?|license|preserve|ts-(?:check|expect-error|ignore|nocheck)|vite-ignore)\b|(?:biome|eslint|prettier)-(?:disable|enable|ignore)\b|(?:c8|istanbul)\s+ignore\b|source(?:Mapping)?URL\s*=|webpack(?:ChunkName|Exports|Ignore|Include|Mode|Prefetch|Preload)\s*:)/i
+
+function scriptKindForFile(file: string): ts.ScriptKind {
+  switch (extensionOf(file).toLowerCase()) {
+    case ".js":
+    case ".cjs":
+    case ".mjs":
+      return ts.ScriptKind.JS
+    case ".jsx":
+      return ts.ScriptKind.JSX
+    case ".tsx":
+      return ts.ScriptKind.TSX
+    default:
+      return ts.ScriptKind.TS
+  }
+}
+
+function runtimeSourceLineSignatures(source: string, file: string): string[] {
+  const scriptKind = scriptKindForFile(file)
+  const sourceFile = ts.createSourceFile(
+    file,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    scriptKind,
+  )
+  const erasedIntervals: SourceInterval[] = []
+  const semanticRuntimeMarkers: Array<{ position: number; value: string }> = []
+  const addInterval = (start: number, end: number): void => {
+    if (start < end) erasedIntervals.push({ end, start })
+  }
+  const addNode = (node: ts.Node): void => {
+    addInterval(node.getStart(sourceFile), node.end)
+  }
+  const addTypeAnnotation = (type: ts.TypeNode): void => {
+    let start = type.getStart(sourceFile)
+    let cursor = start - 1
+    while (cursor >= 0 && /\s/.test(source[cursor] ?? "")) cursor -= 1
+    if (source[cursor] === ":") start = cursor
+    addInterval(start, type.end)
+  }
+  const addBracketedNodeArray = (nodes: ts.NodeArray<ts.Node>): void => {
+    if (nodes.length === 0) return
+    let start = nodes[0]?.getStart(sourceFile) ?? nodes.pos
+    let cursor = start - 1
+    while (cursor >= 0 && /\s/.test(source[cursor] ?? "")) cursor -= 1
+    if (source[cursor] === "<") start = cursor
+    let end = nodes.at(-1)?.end ?? nodes.end
+    cursor = end
+    while (cursor < source.length && /\s/.test(source[cursor] ?? "")) {
+      cursor += 1
+    }
+    if (source[cursor] === ">") end = cursor + 1
+    addInterval(start, end)
+  }
+  const addTypeOnlySpecifier = (
+    node: ts.ImportSpecifier | ts.ExportSpecifier,
+  ): void => {
+    const siblings: readonly ts.Node[] = node.parent.elements
+    const index = siblings.indexOf(node)
+    const previous = siblings[index - 1]
+    const next = siblings[index + 1]
+    if (next) {
+      addInterval(node.getStart(sourceFile), next.getStart(sourceFile))
+    } else if (previous) {
+      addInterval(previous.end, node.end)
+    } else {
+      addNode(node)
+    }
+  }
+  const hasModifier = (node: ts.Node, kind: ts.SyntaxKind): boolean =>
+    ts.canHaveModifiers(node)
+    && (ts.getModifiers(node) ?? []).some((modifier) => modifier.kind === kind)
+  const isAmbientNode = (node: ts.Node): boolean => {
+    for (
+      let current: ts.Node | undefined = node;
+      current;
+      current = current.parent
+    ) {
+      if (hasModifier(current, ts.SyntaxKind.DeclareKeyword)) return true
+      if (ts.isSourceFile(current)) return current.isDeclarationFile
+    }
+    return false
+  }
+  const addRuntimeMarker = (node: ts.Node, value: string): void => {
+    semanticRuntimeMarkers.push({
+      position: node.getStart(sourceFile),
+      value,
+    })
+  }
+
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isModuleDeclaration(node)
+      && ts
+        .transpileModule(node.getText(sourceFile), {
+          compilerOptions: runtimeCompilerOptions("desktop"),
+          reportDiagnostics: false,
+        })
+        .outputText.trim().length === 0
+    ) {
+      addNode(node)
+      return
+    }
+    if (
+      ts.isParameter(node)
+      && ts.isParameterPropertyDeclaration(node, node.parent)
+    ) {
+      semanticRuntimeMarkers.push({
+        position: node.name.getStart(sourceFile),
+        value: "parameter-property-runtime",
+      })
+    }
+    if (
+      ts.isPropertyDeclaration(node)
+      && ts.isClassLike(node.parent)
+      && !isAmbientNode(node)
+      && !hasModifier(node, ts.SyntaxKind.AbstractKeyword)
+    ) {
+      addRuntimeMarker(
+        node,
+        `class-property-runtime:${hasModifier(node, ts.SyntaxKind.StaticKeyword) ? "static" : "instance"}:${hasModifier(node, ts.SyntaxKind.AccessorKeyword) ? "accessor" : "field"}`,
+      )
+    } else if (
+      (ts.isMethodDeclaration(node)
+        || ts.isGetAccessorDeclaration(node)
+        || ts.isSetAccessorDeclaration(node))
+      && node.body
+      && !isAmbientNode(node)
+    ) {
+      addRuntimeMarker(node, "class-method-runtime")
+    } else if (
+      (ts.isClassDeclaration(node) || ts.isClassExpression(node))
+      && !isAmbientNode(node)
+    ) {
+      addRuntimeMarker(node, "class-runtime")
+    } else if (
+      ts.isFunctionDeclaration(node)
+      && node.body
+      && !isAmbientNode(node)
+    ) {
+      addRuntimeMarker(node, "function-runtime")
+    } else if (ts.isEnumDeclaration(node) && !isAmbientNode(node)) {
+      addRuntimeMarker(node, "enum-runtime")
+    } else if (ts.isVariableStatement(node) && !isAmbientNode(node)) {
+      addRuntimeMarker(node, "variable-runtime")
+    }
+    if (ts.isImportDeclaration(node)) {
+      const clause = node.importClause
+      const namedBindings = clause?.namedBindings
+      if (
+        namedBindings
+        && ts.isNamedImports(namedBindings)
+        && namedBindings.elements.length > 0
+        && namedBindings.elements.every((specifier) => specifier.isTypeOnly)
+      ) {
+        if (clause.name) {
+          addInterval(clause.name.end, namedBindings.end)
+        } else {
+          addNode(node)
+          return
+        }
+      }
+    }
+    if (
+      ts.isExportDeclaration(node)
+      && node.exportClause
+      && ts.isNamedExports(node.exportClause)
+      && node.exportClause.elements.length > 0
+      && node.exportClause.elements.every((specifier) => specifier.isTypeOnly)
+    ) {
+      addNode(node)
+      return
+    }
+    if (
+      ts.isInterfaceDeclaration(node)
+      || ts.isTypeAliasDeclaration(node)
+      || (ts.isImportDeclaration(node) && node.importClause?.isTypeOnly)
+      || (ts.isExportDeclaration(node) && node.isTypeOnly)
+    ) {
+      addNode(node)
+      return
+    }
+    if (
+      (ts.isImportSpecifier(node) || ts.isExportSpecifier(node))
+      && node.isTypeOnly
+    ) {
+      addTypeOnlySpecifier(node)
+      return
+    }
+    if (ts.isTypeNode(node)) {
+      addNode(node)
+      return
+    }
+    if (ts.isAsExpression(node) || ts.isSatisfiesExpression(node)) {
+      addInterval(node.expression.end, node.end)
+      visit(node.expression)
+      return
+    }
+    if (ts.isTypeAssertionExpression(node)) {
+      addInterval(
+        node.getStart(sourceFile),
+        node.expression.getStart(sourceFile),
+      )
+      visit(node.expression)
+      return
+    }
+    if (ts.isNonNullExpression(node)) {
+      addInterval(node.expression.end, node.end)
+      visit(node.expression)
+      return
+    }
+
+    const typedNode = node as ts.Node & { readonly type?: ts.TypeNode }
+    if (typedNode.type && ts.isTypeNode(typedNode.type)) {
+      addTypeAnnotation(typedNode.type)
+    }
+    const genericNode = node as ts.Node & {
+      readonly typeArguments?: ts.NodeArray<ts.TypeNode>
+      readonly typeParameters?: ts.NodeArray<ts.TypeParameterDeclaration>
+    }
+    if (genericNode.typeArguments) {
+      addBracketedNodeArray(genericNode.typeArguments)
+    }
+    if (genericNode.typeParameters) {
+      addBracketedNodeArray(genericNode.typeParameters)
+    }
+    const optionalNode = node as ts.Node & {
+      readonly exclamationToken?: ts.ExclamationToken
+      readonly questionToken?: ts.QuestionToken
+    }
+    if (optionalNode.exclamationToken) addNode(optionalNode.exclamationToken)
+    if (optionalNode.questionToken) addNode(optionalNode.questionToken)
+
+    if (ts.canHaveModifiers(node)) {
+      for (const modifier of ts.getModifiers(node) ?? []) {
+        if (
+          modifier.kind === ts.SyntaxKind.AbstractKeyword
+          || modifier.kind === ts.SyntaxKind.DeclareKeyword
+          || modifier.kind === ts.SyntaxKind.OverrideKeyword
+          || modifier.kind === ts.SyntaxKind.PrivateKeyword
+          || modifier.kind === ts.SyntaxKind.ProtectedKeyword
+          || modifier.kind === ts.SyntaxKind.PublicKeyword
+          || modifier.kind === ts.SyntaxKind.ReadonlyKeyword
+        ) {
+          addNode(modifier)
+        }
+      }
+    }
+    if (ts.isClassLike(node)) {
+      for (const clause of node.heritageClauses ?? []) {
+        if (clause.token === ts.SyntaxKind.ImplementsKeyword) addNode(clause)
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+
+  erasedIntervals.sort(
+    (left, right) => left.start - right.start || left.end - right.end,
+  )
+  const mergedIntervals: SourceInterval[] = []
+  for (const interval of erasedIntervals) {
+    const previous = mergedIntervals.at(-1)
+    if (previous && interval.start <= previous.end) {
+      previous.end = Math.max(previous.end, interval.end)
+    } else {
+      mergedIntervals.push({ ...interval })
+    }
+  }
+
+  const scanner = ts.createScanner(
+    ts.ScriptTarget.Latest,
+    false,
+    scriptKind === ts.ScriptKind.JSX || scriptKind === ts.ScriptKind.TSX ?
+      ts.LanguageVariant.JSX
+    : ts.LanguageVariant.Standard,
+    source,
+  )
+  const lineSignatures: string[][] = Array.from(
+    {
+      length: sourceFile.getLineAndCharacterOfPosition(source.length).line + 1,
+    },
+    () => [],
+  )
+  const recordToken = (value: string, start: number, end: number): void => {
+    const firstLine = sourceFile.getLineAndCharacterOfPosition(start).line
+    const lastLine = sourceFile.getLineAndCharacterOfPosition(
+      Math.max(start, end - 1),
+    ).line
+    for (let line = firstLine; line <= lastLine; line += 1) {
+      lineSignatures[line]?.push(value)
+    }
+  }
+  for (const marker of semanticRuntimeMarkers) {
+    recordToken(marker.value, marker.position, marker.position + 1)
+  }
+  let intervalIndex = 0
+  for (
+    let token = scanner.scan();
+    token !== ts.SyntaxKind.EndOfFileToken;
+    token = scanner.scan()
+  ) {
+    const start = scanner.getTokenPos()
+    const end = scanner.getTextPos()
+    if (
+      token === ts.SyntaxKind.SingleLineCommentTrivia
+      || token === ts.SyntaxKind.MultiLineCommentTrivia
+    ) {
+      const comment = scanner.getTokenText()
+      if (toolingDirectiveCommentPattern.test(comment)) {
+        recordToken(`directive:${JSON.stringify(comment)}`, start, end)
+      }
+      continue
+    }
+    if (
+      token === ts.SyntaxKind.WhitespaceTrivia
+      || token === ts.SyntaxKind.NewLineTrivia
+    ) {
+      continue
+    }
+    while (
+      intervalIndex < mergedIntervals.length
+      && (mergedIntervals[intervalIndex]?.end ?? 0) <= start
+    ) {
+      intervalIndex += 1
+    }
+    const interval = mergedIntervals[intervalIndex]
+    if (interval && interval.start <= start && end <= interval.end) continue
+    recordToken(
+      `${token}:${JSON.stringify(scanner.getTokenText())}`,
+      start,
+      end,
+    )
+  }
+  return lineSignatures.map((tokens) => tokens.join("|"))
+}
+
+function neutralChangedLines(
+  hunks: ChangedLineHunk[],
+  previousSource: string,
+  previousFile: string,
+  currentSource: string,
+  currentFile: string,
+): Set<number> {
+  const previousLines = runtimeSourceLineSignatures(
+    previousSource,
+    previousFile,
+  )
+  const currentLines = runtimeSourceLineSignatures(currentSource, currentFile)
+  const neutral = new Set<number>()
+
+  for (const hunk of hunks) {
+    const previous = Array.from(
+      { length: hunk.previousCount },
+      (_, index) => previousLines[hunk.previousStart - 1 + index] ?? "",
+    )
+    const current = Array.from(
+      { length: hunk.currentCount },
+      (_, index) => currentLines[hunk.currentStart - 1 + index] ?? "",
+    )
+    let prefix = 0
+    while (
+      prefix < previous.length
+      && prefix < current.length
+      && previous[prefix] === current[prefix]
+    ) {
+      neutral.add(hunk.currentStart + prefix)
+      prefix += 1
+    }
+
+    let previousSuffix = previous.length - 1
+    let currentSuffix = current.length - 1
+    while (
+      previousSuffix >= prefix
+      && currentSuffix >= prefix
+      && previous[previousSuffix] === current[currentSuffix]
+    ) {
+      neutral.add(hunk.currentStart + currentSuffix)
+      previousSuffix -= 1
+      currentSuffix -= 1
+    }
+
+    const remainingPrevious = previousSuffix - prefix + 1
+    const remainingCurrent = currentSuffix - prefix + 1
+    if (remainingPrevious === remainingCurrent) {
+      for (let offset = 0; offset < remainingCurrent; offset += 1) {
+        if (previous[prefix + offset] === current[prefix + offset]) {
+          neutral.add(hunk.currentStart + prefix + offset)
+        }
+      }
+    } else {
+      for (let index = prefix; index <= currentSuffix; index += 1) {
+        if (current[index] === "") neutral.add(hunk.currentStart + index)
+      }
+    }
+    for (let index = 0; index < current.length; index += 1) {
+      if (current[index] === "") neutral.add(hunk.currentStart + index)
+    }
+  }
+  return neutral
+}
+
 export function checkDiffCoverage(
   options: DiffCoverageOptions,
 ): DiffCoverageResult {
@@ -302,16 +799,47 @@ export function checkDiffCoverage(
   }
 
   validateBase(options.repository, options.base)
+  const headCommit = runGit(options.repository, ["rev-parse", "HEAD"]).trim()
   const changedFiles = listChangedProductionFiles(
     options.repository,
     options.base,
+    headCommit,
   )
-  const parsedCoverage = parseLcov(options)
+  const parsedCoverage = parseLcov(options, headCommit)
   const failures = [...parsedCoverage.failures]
   const files: FileDiffCoverage[] = []
 
   for (const changedFile of changedFiles) {
     const { file } = changedFile
+    const currentSource = runGit(options.repository, [
+      "show",
+      `${headCommit}:${file}`,
+    ])
+    const currentRuntime = emittedRuntime(
+      currentSource,
+      file,
+      changedFile.domain,
+    )
+    const baseSource =
+      changedFile.baseFile ?
+        runGit(options.repository, [
+          "show",
+          `${options.base}:${changedFile.baseFile}`,
+        ])
+      : undefined
+    if (
+      !changedFile.requiresWholeFileAdmission
+      && currentRuntime.trim().length === 0
+    ) {
+      files.push({
+        coveredLines: 0,
+        file,
+        instrumentedLines: 0,
+        percentage: 100,
+      })
+      continue
+    }
+
     const coverage = parsedCoverage.files.get(file)
     if (!coverage) {
       failures.push(
@@ -319,18 +847,48 @@ export function checkDiffCoverage(
       )
       continue
     }
+    if (coverage.size === 0) {
+      failures.push(
+        `changed production file has an LCOV SF record but no instrumented DA lines: ${JSON.stringify(file)}`,
+      )
+    }
+    const currentLineCount = currentSource.split(/\r\n?|\n/).length
+    const validCoverage = new Map(
+      [...coverage].filter(([line]) => line >= 1 && line <= currentLineCount),
+    )
+    if (coverage.size > 0 && validCoverage.size === 0) {
+      failures.push(
+        `changed production file has no LCOV DA lines within the current source: ${JSON.stringify(file)}`,
+      )
+    }
+    if (currentRuntime.trim().length === 0) {
+      failures.push(
+        `changed production source emits no runtime; use a declaration file: ${JSON.stringify(file)}`,
+      )
+    }
 
     const changedLines = parseChangedLinesForFile(
       options.repository,
       options.base,
+      headCommit,
       changedFile.patchPaths,
     )
-    const instrumentedChangedLines = [...changedLines].filter((line) =>
-      coverage.has(line),
+    const neutralLines =
+      changedFile.baseFile && baseSource !== undefined ?
+        neutralChangedLines(
+          changedLines.hunks,
+          baseSource,
+          changedFile.baseFile,
+          currentSource,
+          file,
+        )
+      : new Set<number>()
+    const instrumentedChangedLines = [...changedLines.lines].filter(
+      (line) => !neutralLines.has(line) && validCoverage.has(line),
     )
     if (
       changedFile.requiresWholeFileAdmission
-      && changedLines.size > 0
+      && changedLines.lines.size > 0
       && instrumentedChangedLines.length === 0
     ) {
       failures.push(
@@ -338,7 +896,7 @@ export function checkDiffCoverage(
       )
     }
     const coveredLines = instrumentedChangedLines.filter(
-      (line) => (coverage.get(line) ?? 0) > 0,
+      (line) => (validCoverage.get(line) ?? 0) > 0,
     ).length
     files.push({
       coveredLines,
@@ -362,6 +920,9 @@ export function checkDiffCoverage(
     failures.push(
       `diff coverage ${totalPercentage.toFixed(2)}% is below required ${options.threshold.toFixed(2)}%`,
     )
+  }
+  if (runGit(options.repository, ["rev-parse", "HEAD"]).trim() !== headCommit) {
+    failures.push("HEAD changed while differential coverage was running")
   }
 
   return {

@@ -111,6 +111,9 @@ jobs:
       - name: Run Codex model discovery tests
         run: bun test tests/codex-installed-catalog.test.ts tests/codex-client-models.test.ts tests/codex-version.test.ts tests/models-route.test.ts tests/responses-capabilities.test.ts
 
+      - name: Run coverage harness contract tests
+        run: bun test tests/coverage-attestation.test.ts tests/diff-coverage-harness.test.ts
+
       - name: Run type check
         run: bun run typecheck
 
@@ -260,22 +263,24 @@ jobs:
         working-directory: desktop
         run: bun install --frozen-lockfile
 
-      - name: Generate root LCOV
+      - name: Generate root LCOV and attestation
         run: bun run test:coverage:root
 
-      - name: Generate Desktop LCOV
+      - name: Generate Desktop LCOV and attestation
         run: bun run test:coverage:desktop
 
       - name: Enforce changed-line coverage
         run: bun run test:coverage:diff -- --base "${{ steps.comparison.outputs.sha }}" --threshold 85
 
-      - name: Upload LCOV reports
+      - name: Upload LCOV reports and attestations
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: differential-coverage-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             coverage/root/lcov.info
+            coverage/root/attestation.json
             coverage/desktop/lcov.info
+            coverage/desktop/attestation.json
           if-no-files-found: warn
           retention-days: 14

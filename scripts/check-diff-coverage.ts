@@ -12,7 +12,11 @@ Options:
   --base <sha>            Explicit Git merge-base SHA (required)
   --threshold <percent>   Changed-line coverage threshold (default: 85)
   --root-lcov <path>      Root LCOV path (default: coverage/root/lcov.info)
+  --root-attestation <path>
+                          Root attestation path
   --desktop-lcov <path>   Desktop LCOV path (default: coverage/desktop/lcov.info)
+  --desktop-attestation <path>
+                          Desktop attestation path
   --repository <path>     Repository root (default: current directory)
   --help                  Show this help
 `
@@ -31,9 +35,11 @@ export function runDiffCoverageCli(
       args: arguments_,
       options: {
         base: { type: "string" },
+        "desktop-attestation": { type: "string" },
         "desktop-lcov": { type: "string" },
         help: { type: "boolean" },
         repository: { type: "string" },
+        "root-attestation": { type: "string" },
         "root-lcov": { type: "string" },
         threshold: { type: "string" },
       },
@@ -60,11 +66,29 @@ export function runDiffCoverageCli(
       repository,
       values["desktop-lcov"] ?? "coverage/desktop/lcov.info",
     )
+    const rootAttestation = resolve(
+      repository,
+      values["root-attestation"] ?? "coverage/root/attestation.json",
+    )
+    const desktopAttestation = resolve(
+      repository,
+      values["desktop-attestation"] ?? "coverage/desktop/attestation.json",
+    )
     const result = checkDiffCoverage({
       base: values.base,
       coverage: [
-        { path: rootLcov, sourcePrefix: "." },
-        { path: desktopLcov, sourcePrefix: "desktop" },
+        {
+          attestationPath: rootAttestation,
+          domain: "root",
+          path: rootLcov,
+          sourcePrefix: ".",
+        },
+        {
+          attestationPath: desktopAttestation,
+          domain: "desktop",
+          path: desktopLcov,
+          sourcePrefix: "desktop",
+        },
       ],
       repository,
       threshold,
@@ -76,7 +100,7 @@ export function runDiffCoverageCli(
       )
     }
     output.log(
-      `Diff coverage: ${result.percentage.toFixed(2)}% (${result.coveredLines}/${result.instrumentedLines} changed instrumented lines; required ${result.threshold.toFixed(2)}%)`,
+      `Diff coverage: ${result.percentage.toFixed(2)}% (${result.coveredLines}/${result.instrumentedLines} changed runtime lines; required ${result.threshold.toFixed(2)}%)`,
     )
 
     for (const failure of result.failures) {
