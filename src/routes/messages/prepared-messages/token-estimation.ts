@@ -1,72 +1,54 @@
-import { scheduler } from "node:timers/promises"
-
+import { collectMediaFacts } from "~/lib/media-facts"
 import {
-  getTextTokenCount,
+  isSupportedEncoding,
+  type SupportedEncoding,
+} from "~/lib/tokenizer-encodings"
+import { countTextsInTokenizerWorker } from "~/lib/tokenizer-worker-client"
+import {
+  getTokenizerFromModel,
   type TokenizerSchedulingOptions,
-  type TokenizerYieldControl,
 } from "~/lib/tokenizer"
 import type { ResponsesPayload } from "~/services/copilot/create-responses"
 import type { Model } from "~/services/copilot/get-models"
 
+import {
+  aggregateResponsesMediaTokens,
+  ResponsesMediaAggregationLimitError,
+  type ResponsesMediaEstimate,
+} from "~/routes/messages/prepared-messages/responses-media-token-aggregation"
+import type { ResponsesMediaProfileIdentity } from "~/routes/messages/prepared-messages/responses-media-token-profile"
+import {
+  collectResponsesSemanticSpans,
+  ResponsesSemanticSpanLimitError,
+  type ResponsesSemanticSpanCollection,
+} from "~/routes/messages/prepared-messages/responses-semantic-spans"
+
 const RESPONSES_ESTIMATE_SAFETY_FACTOR = 1.07
-const RESPONSES_ESTIMATE_MAX_NODES = 10_000
-const RESPONSES_ESTIMATE_MAX_DEPTH = 128
-const RESPONSES_ESTIMATE_TEXT_CHUNK_CODE_UNITS = 16_384
-const yieldToScheduler: TokenizerYieldControl = () => scheduler.yield()
 
-interface SemanticTokenStats {
-  objectCount: number
-  tokens: number
-}
-
-interface SemanticTokenTraversal {
-  depthLimit: number
-  nodeLimit: number
-  nodesVisited: number
-  signal?: AbortSignal
-  yieldControl: TokenizerYieldControl
-}
-
-const getSafeTextChunkEnd = (
-  text: string,
-  offset: number,
-  maximumEnd: number,
-): number => {
-  if (maximumEnd >= text.length || maximumEnd <= offset) return maximumEnd
-
-  const previous = text.charCodeAt(maximumEnd - 1)
-  const next = text.charCodeAt(maximumEnd)
-  const splitsSurrogatePair =
-    previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff
-  return splitsSurrogatePair ? maximumEnd - 1 : maximumEnd
-}
-
-const countTextTokensResponsively = async (
-  text: string,
-  selectedModel: Model,
-  yieldControl: TokenizerYieldControl,
-  signal?: AbortSignal,
-): Promise<number> => {
-  let offset = 0
-  let tokens = 0
-  while (offset < text.length) {
-    signal?.throwIfAborted()
-    const chunkEnd = getSafeTextChunkEnd(
-      text,
-      offset,
-      Math.min(text.length, offset + RESPONSES_ESTIMATE_TEXT_CHUNK_CODE_UNITS),
-    )
-    tokens += await getTextTokenCount(
-      text.slice(offset, chunkEnd),
-      selectedModel,
-    )
-    offset = chunkEnd
-    if (offset < text.length) {
-      await yieldControl()
-    }
+export interface ResponsesTokenEstimateBreakdown {
+  readonly media: ResponsesMediaEstimate
+  readonly profile: ResponsesMediaProfileIdentity
+  readonly safetyFactor: number
+  readonly semantic: {
+    readonly spans: number
+    readonly structuralTokens: number
+    readonly tokens: number
   }
-  signal?.throwIfAborted()
-  return tokens
+}
+
+export interface ResponsesTokenEstimateResult {
+  readonly breakdown: ResponsesTokenEstimateBreakdown
+  readonly inputTokens: number
+}
+
+export const responsesTokenEstimateDependencies: {
+  countTexts: (
+    texts: Array<string>,
+    encoding: SupportedEncoding,
+    signal: AbortSignal,
+  ) => Promise<Array<number>>
+} = {
+  countTexts: countTextsInTokenizerWorker,
 }
 
 export class ResponsesTokenEstimateLimitError extends Error {
@@ -76,132 +58,115 @@ export class ResponsesTokenEstimateLimitError extends Error {
   }
 }
 
-const enterSemanticTokenNode = (
-  traversal: SemanticTokenTraversal,
-  depth: number,
-): void => {
-  traversal.signal?.throwIfAborted()
-  if (depth > traversal.depthLimit) {
-    throw new ResponsesTokenEstimateLimitError(
-      `Responses token estimate exceeds the maximum depth of ${traversal.depthLimit}`,
-    )
-  }
-  traversal.nodesVisited += 1
-  if (traversal.nodesVisited > traversal.nodeLimit) {
-    throw new ResponsesTokenEstimateLimitError(
-      `Responses token estimate exceeds the maximum node count of ${traversal.nodeLimit}`,
-    )
+const collectSemanticSpans = (
+  payload: ResponsesPayload,
+  signal?: AbortSignal,
+): ResponsesSemanticSpanCollection => {
+  try {
+    return collectResponsesSemanticSpans(payload, signal)
+  } catch (error) {
+    if (error instanceof ResponsesSemanticSpanLimitError) {
+      throw new ResponsesTokenEstimateLimitError(error.message)
+    }
+    throw error
   }
 }
 
-const countSemanticTokens = async (
-  value: unknown,
-  selectedModel: Model,
-  includeStructure = false,
-  traversal: SemanticTokenTraversal,
-  depth = 0,
-): Promise<SemanticTokenStats> => {
-  enterSemanticTokenNode(traversal, depth)
-  if (
-    typeof value === "string"
-    || typeof value === "number"
-    || typeof value === "boolean"
-  ) {
-    const text = String(value)
-    return {
-      objectCount: 0,
-      tokens: await countTextTokensResponsively(
-        text,
-        selectedModel,
-        traversal.yieldControl,
-        traversal.signal,
-      ),
-    }
-  }
-  if (Array.isArray(value)) {
-    const total = { objectCount: 0, tokens: 0 }
-    for (const item of value) {
-      const stats = await countSemanticTokens(
-        item,
-        selectedModel,
-        includeStructure,
-        traversal,
-        depth + 1,
-      )
-      total.objectCount += stats.objectCount
-      total.tokens += stats.tokens
-    }
-    return total
-  }
-  if (typeof value !== "object" || value === null) {
-    return { objectCount: 0, tokens: 0 }
-  }
+const getSupportedTokenizer = (model: Model): SupportedEncoding => {
+  const tokenizer = getTokenizerFromModel(model)
+  return isSupportedEncoding(tokenizer) ? tokenizer : "o200k_base"
+}
 
-  let objectCount = includeStructure ? 1 : 0
-  let tokens = 0
-  for (const [key, child] of Object.entries(value)) {
-    const childIncludesStructure =
-      includeStructure
-      || key === "parameters"
-      || key === "schema"
-      || key === "tools"
-    if (includeStructure) {
-      tokens += await countTextTokensResponsively(
-        key,
-        selectedModel,
-        traversal.yieldControl,
-        traversal.signal,
-      )
-    }
-    const childStats = await countSemanticTokens(
-      child,
-      selectedModel,
-      childIncludesStructure,
-      traversal,
-      depth + 1,
-    )
-    objectCount += childStats.objectCount
-    tokens += childStats.tokens
+const countSemanticTextTokens = async (
+  texts: ReadonlyArray<string>,
+  model: Model,
+  options: TokenizerSchedulingOptions,
+): Promise<number> => {
+  if (texts.length === 0) return 0
+  const signal = options.signal ?? new AbortController().signal
+  signal.throwIfAborted()
+  const countsPromise = responsesTokenEstimateDependencies.countTexts(
+    [...texts],
+    getSupportedTokenizer(model),
+    signal,
+  )
+  if (options.yieldControl) {
+    void countsPromise.catch(() => undefined)
+    await options.yieldControl()
+    signal.throwIfAborted()
   }
-  return { objectCount, tokens }
+  const counts = await countsPromise
+  signal.throwIfAborted()
+  if (
+    counts.length !== texts.length
+    || counts.some((count) => !Number.isSafeInteger(count) || count < 0)
+  ) {
+    throw new TypeError("Tokenizer worker returned invalid Responses counts")
+  }
+  return counts.reduce((total, count) => total + count, 0)
+}
+
+const aggregateMediaTokens = (
+  payload: ResponsesPayload,
+  selectedModel: Model,
+  additionalUnknownItems: number,
+) => {
+  const collection = collectMediaFacts(payload, { protocol: "responses" })
+  try {
+    return aggregateResponsesMediaTokens(
+      collection,
+      selectedModel,
+      additionalUnknownItems,
+    )
+  } catch (error) {
+    if (error instanceof ResponsesMediaAggregationLimitError) {
+      throw new ResponsesTokenEstimateLimitError(error.message)
+    }
+    throw error
+  }
+}
+
+export const estimateResponsesInputTokensDetailed = async (
+  payload: ResponsesPayload,
+  selectedModel: Model,
+  options: TokenizerSchedulingOptions = {},
+): Promise<ResponsesTokenEstimateResult> => {
+  options.signal?.throwIfAborted()
+  const semantic = collectSemanticSpans(payload, options.signal)
+  const media = aggregateMediaTokens(
+    payload,
+    selectedModel,
+    semantic.unknownMediaItems,
+  )
+  options.signal?.throwIfAborted()
+  const semanticTokens = await countSemanticTextTokens(
+    semantic.texts,
+    selectedModel,
+    options,
+  )
+  const subtotal =
+    semanticTokens + semantic.structuralTokens + media.estimate.tokens
+  const inputTokens = Math.ceil(subtotal * RESPONSES_ESTIMATE_SAFETY_FACTOR)
+
+  return Object.freeze({
+    breakdown: Object.freeze({
+      media: media.estimate,
+      profile: media.profile,
+      safetyFactor: RESPONSES_ESTIMATE_SAFETY_FACTOR,
+      semantic: Object.freeze({
+        spans: semantic.texts.length,
+        structuralTokens: semantic.structuralTokens,
+        tokens: semanticTokens,
+      }),
+    }),
+    inputTokens,
+  })
 }
 
 export const estimateResponsesInputTokens = async (
   payload: ResponsesPayload,
   selectedModel: Model,
   options: TokenizerSchedulingOptions = {},
-): Promise<number> => {
-  const traversal: SemanticTokenTraversal = {
-    depthLimit: RESPONSES_ESTIMATE_MAX_DEPTH,
-    nodeLimit: RESPONSES_ESTIMATE_MAX_NODES,
-    nodesVisited: 0,
-    signal: options.signal,
-    yieldControl: options.yieldControl ?? yieldToScheduler,
-  }
-  const fields: Array<[unknown, boolean?]> = [
-    [payload.context_management],
-    [payload.input],
-    [payload.instructions],
-    [payload.parallel_tool_calls],
-    [payload.reasoning],
-    [payload.text, true],
-    [payload.tool_choice, true],
-    [payload.tools, true],
-  ]
-  const semanticFields: Array<SemanticTokenStats> = []
-  for (const [value, includeStructure] of fields) {
-    semanticFields.push(
-      await countSemanticTokens(
-        value,
-        selectedModel,
-        includeStructure,
-        traversal,
-      ),
-    )
-  }
-  const semanticTokens = semanticFields.reduce(
-    (total, field) => total + field.tokens + field.objectCount,
-    0,
-  )
-  return Math.ceil(semanticTokens * RESPONSES_ESTIMATE_SAFETY_FACTOR)
-}
+): Promise<number> =>
+  (await estimateResponsesInputTokensDetailed(payload, selectedModel, options))
+    .inputTokens
