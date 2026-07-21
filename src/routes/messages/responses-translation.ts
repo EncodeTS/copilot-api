@@ -81,7 +81,10 @@ import {
   parseLegacyOpenAIReasoningCarrierSignature,
   type ReasoningCarrierEndpoint,
 } from "./reasoning-carrier"
-import { normalizeMessageReasoningEffort } from "~/lib/reasoning-effort"
+import {
+  normalizeMessageReasoningEffort,
+  type GatewayReasoningEffort,
+} from "~/lib/reasoning-effort"
 import { normalizeToolSchema } from "./non-stream-translation"
 import { assertResponsesResultUsable } from "./responses-result"
 import { parseFunctionCallArguments } from "./tool-arguments"
@@ -95,8 +98,17 @@ export const THINKING_TEXT = "Thinking..."
 export const REASONING_SUMMARY_SEPARATOR = "\u00a0\n\n"
 const REASONING_SUMMARY_SEPARATOR_PATTERN = /\u00a0\n\n|\u2063\n\n/
 
-const resolveReasoningEffort = (payload: AnthropicMessagesPayload) =>
+interface ResponsesTranslationPolicy {
+  extraPrompt?: string
+  reasoningEffort?: GatewayReasoningEffort
+}
+
+const resolveReasoningEffort = (
+  payload: AnthropicMessagesPayload,
+  policy: ResponsesTranslationPolicy,
+) =>
   normalizeMessageReasoningEffort(payload.output_config?.effort)
+  ?? policy.reasoningEffort
   ?? getReasoningEffortForModel(payload.model)
 
 export const hasTrailingAssistantPrefill = (
@@ -142,6 +154,7 @@ export const translateAnthropicMessagesToResponsesPayload = (
     model: payload.model,
     provider: "copilot",
   },
+  policy: ResponsesTranslationPolicy = {},
 ): ResponsesPayload => {
   const input: Array<ResponseInputItem> = []
   const applyPhase = shouldApplyPhase(payload.model)
@@ -195,7 +208,11 @@ export const translateAnthropicMessagesToResponsesPayload = (
   const responsesPayload: ResponsesPayload = {
     model: payload.model,
     input,
-    instructions: translateSystemPrompt(payload.system, payload.model),
+    instructions: translateSystemPrompt(
+      payload.system,
+      payload.model,
+      policy.extraPrompt,
+    ),
     temperature: payload.temperature ?? 1,
     top_p: payload.top_p ?? null,
     max_output_tokens: payload.max_tokens,
@@ -218,7 +235,7 @@ export const translateAnthropicMessagesToResponsesPayload = (
       effort:
         payload.thinking?.type === "disabled" ?
           "none"
-        : resolveReasoningEffort(payload),
+        : resolveReasoningEffort(payload, policy),
       summary: "auto",
       context: isSupportAllTurns(payload) ? "all_turns" : "auto",
     },
@@ -933,12 +950,13 @@ const uniqueToolNames = (toolNames: Array<string>): Array<string> => [
 const translateSystemPrompt = (
   system: string | Array<AnthropicTextBlock> | undefined,
   model: string,
+  configuredExtraPrompt?: string,
 ): string | null => {
   if (!system) {
     return null
   }
 
-  const extraPrompt = getExtraPromptForModel(model)
+  const extraPrompt = configuredExtraPrompt ?? getExtraPromptForModel(model)
 
   if (typeof system === "string") {
     return system + extraPrompt

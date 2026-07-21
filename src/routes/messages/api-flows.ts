@@ -1,7 +1,4 @@
 import type { ConsolaInstance } from "consola"
-import type { Context } from "hono"
-
-import { streamSSE } from "hono/streaming"
 
 import type { CompactType } from "~/lib/compact"
 import type { SubagentMarker } from "~/lib/subagent"
@@ -44,6 +41,7 @@ import {
   type AnthropicStreamState,
   type CopilotUsage,
 } from "./anthropic-types"
+import type { MessagesResponseContext } from "./request-context"
 export { prepareCopilotChatCompletionsPayload } from "~/routes/messages/copilot-chat-payload"
 import { translateToAnthropic } from "~/routes/messages/non-stream-translation"
 import {
@@ -64,7 +62,13 @@ const createAnthropicErrorBody = (
   },
 })
 
-export const messagesApiFlowDependencies = {
+export interface MessagesApiFlowDependencies {
+  createChatCompletions: typeof createCopilotChatCompletions
+  createMessages: typeof createCopilotMessages
+  createResponses: typeof createCopilotResponses
+}
+
+export const messagesApiFlowDependencies: MessagesApiFlowDependencies = {
   createChatCompletions: createCopilotChatCompletions,
   createMessages: createCopilotMessages,
   createResponses: createCopilotResponses,
@@ -91,10 +95,11 @@ export type MessagesFlowOptions = FlowBaseOptions & {
 export type ChatCompletionsFlowOptions = FlowBaseOptions
 
 export const handlePreparedChatCompletions = async (
-  c: Context,
+  responseContext: MessagesResponseContext,
   anthropicPayload: AnthropicMessagesPayload,
   options: ChatCompletionsFlowOptions,
   openAIPayload: ChatCompletionsPayload,
+  dependencies: MessagesApiFlowDependencies = messagesApiFlowDependencies,
 ) => {
   const { logger, subagentMarker, requestId, sessionId, signal, compactType } =
     options
@@ -106,16 +111,13 @@ export const handlePreparedChatCompletions = async (
   })
   debugJson(logger, "Translated OpenAI request payload:", openAIPayload)
 
-  const response = await messagesApiFlowDependencies.createChatCompletions(
-    openAIPayload,
-    {
-      subagentMarker,
-      requestId,
-      sessionId,
-      signal,
-      compactType,
-    },
-  )
+  const response = await dependencies.createChatCompletions(openAIPayload, {
+    subagentMarker,
+    requestId,
+    sessionId,
+    signal,
+    compactType,
+  })
 
   if (isNonStreaming(response)) {
     debugJson(logger, "Non-streaming response from Copilot:", response)
@@ -126,7 +128,7 @@ export const handlePreparedChatCompletions = async (
       ),
     })
     if (response.choices.some((choice) => choice.finish_reason === "error")) {
-      return c.json(
+      return responseContext.json(
         createAnthropicErrorBody(
           "Chat Completions upstream ended with finish_reason=error",
         ),
@@ -138,11 +140,11 @@ export const handlePreparedChatCompletions = async (
       includeThinking: anthropicPayload.thinking?.type !== "disabled",
     })
     debugJson(logger, "Translated Anthropic response:", anthropicResponse)
-    return c.json(anthropicResponse)
+    return responseContext.json(anthropicResponse)
   }
 
   logger.debug("Streaming response from Copilot")
-  return streamSSE(c, async (stream) => {
+  return responseContext.streamSSE(async (stream) => {
     const streamStartedAt = Date.now()
     let usage: UsageTokens = {}
     let eventCount = 0
@@ -268,11 +270,12 @@ export const handlePreparedChatCompletions = async (
 }
 
 export const handlePreparedResponsesApi = async (
-  c: Context,
+  responseContext: MessagesResponseContext,
   anthropicPayload: AnthropicMessagesPayload,
   options: ResponsesFlowOptions,
   responsesPayload: Parameters<typeof createOptimizedCopilotResponses>[0],
   transport: "http" | "websocket",
+  dependencies: MessagesApiFlowDependencies = messagesApiFlowDependencies,
 ) => {
   const { logger, selectedModel, ...requestOptions } = options
   const recordUsage = createCopilotUsageRecorder({
@@ -285,7 +288,7 @@ export const handlePreparedResponsesApi = async (
   const endpointCapabilities = getResponsesEndpointCapabilities(selectedModel)
   debugJson(logger, "Translated Responses payload:", responsesPayload)
   const response = await createOptimizedCopilotResponses(responsesPayload, {
-    createResponses: messagesApiFlowDependencies.createResponses,
+    createResponses: dependencies.createResponses,
     logger,
     requestOptions: {
       allowHttpFallback: transport === "websocket" && endpointCapabilities.http,
@@ -299,7 +302,7 @@ export const handlePreparedResponsesApi = async (
 
   if (responsesPayload.stream && isAsyncIterable(response)) {
     logger.debug("Streaming response from Copilot (Responses API)")
-    return streamSSE(c, (stream) =>
+    return responseContext.streamSSE((stream) =>
       consumeResponsesStream({
         kind: "copilot",
         logger,
@@ -323,7 +326,7 @@ export const handlePreparedResponsesApi = async (
   })
   const failureMessage = getResponsesResultFailureMessage(responsesResult)
   if (failureMessage) {
-    return c.json(createAnthropicErrorBody(failureMessage), 502)
+    return responseContext.json(createAnthropicErrorBody(failureMessage), 502)
   }
 
   const anthropicResponse = translateResponsesResultToAnthropic(
@@ -334,13 +337,14 @@ export const handlePreparedResponsesApi = async (
     },
   )
   debugJson(logger, "Translated Anthropic response:", anthropicResponse)
-  return c.json(anthropicResponse)
+  return responseContext.json(anthropicResponse)
 }
 
 export const handlePreparedMessagesApi = async (
-  c: Context,
+  responseContext: MessagesResponseContext,
   anthropicPayload: AnthropicMessagesPayload,
   options: MessagesFlowOptions,
+  dependencies: MessagesApiFlowDependencies = messagesApiFlowDependencies,
 ) => {
   const {
     logger,
@@ -361,7 +365,7 @@ export const handlePreparedMessagesApi = async (
 
   debugJson(logger, "Translated Messages payload:", anthropicPayload)
 
-  const response = await messagesApiFlowDependencies.createMessages(
+  const response = await dependencies.createMessages(
     anthropicPayload,
     anthropicBetaHeader,
     {
@@ -375,7 +379,7 @@ export const handlePreparedMessagesApi = async (
 
   if (isAsyncIterable(response)) {
     logger.debug("Streaming response from Copilot (Messages API)")
-    return streamSSE(c, async (stream) => {
+    return responseContext.streamSSE(async (stream) => {
       const streamStartedAt = Date.now()
       let usage: UsageTokens = {}
       let eventCount = 0
@@ -460,7 +464,7 @@ export const handlePreparedMessagesApi = async (
     ...normalizeAnthropicUsage(response.usage),
     ...normalizeCopilotUsage(response.copilot_usage),
   })
-  return c.json(response)
+  return responseContext.json(response)
 }
 
 const isNonStreaming = (

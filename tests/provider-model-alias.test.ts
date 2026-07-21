@@ -37,6 +37,7 @@ const noopTokenUsageRecorder = () => {}
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
   getRawProviderConfig: () => ({ authType: configuredAuthType }),
+  getModelMappings: () => ({ ...modelMappings }),
   getProviderConfig: () => providerConfig,
   resolveMappedModel: (model: string) => modelMappings[model] ?? model,
 }))

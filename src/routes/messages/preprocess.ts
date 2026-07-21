@@ -517,6 +517,7 @@ const resolveEffortForThinkingBudget = (
 export const prepareMessagesApiPayload = (
   payload: AnthropicMessagesPayload,
   selectedModel?: Model,
+  options: { reasoningEffort?: GatewayReasoningEffort } = {},
 ): void => {
   stripCacheControl(payload)
   applyTopLevelCacheControl(payload)
@@ -571,6 +572,7 @@ export const prepareMessagesApiPayload = (
         maxThinkingBudget,
         reasoningEffort,
       )
+      ?? options.reasoningEffort
       ?? getReasoningEffortForModel(payload.model)
     if (effort === "none" || effort === "minimal") {
       effort = "low"

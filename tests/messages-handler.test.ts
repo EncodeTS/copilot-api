@@ -4,6 +4,8 @@ import { Hono } from "hono"
 import type { AnthropicMessagesPayload } from "../src/routes/messages/anthropic-types"
 import type { Model } from "../src/services/copilot/get-models"
 import type { GatewayReasoningEffort } from "../src/lib/reasoning-effort"
+import { forwardError } from "../src/lib/error"
+import { adaptMessagesRouteError } from "../src/routes/messages/route-error"
 
 import {
   compactSummaryPromptStart,
@@ -102,33 +104,67 @@ await mock.module("~/lib/models", () => ({
 await mock.module("~/lib/utils", () => ({
   ...actualUtilsModule,
 }))
+const actualPreparedMessagesModule = await import(
+  "../src/routes/messages/prepared-messages/facade"
+)
+const { createPreparedMessagesPolicyPort } = await import(
+  "../src/routes/messages/prepared-messages/policy"
+)
+const testPreparedMessagesPolicy = createPreparedMessagesPolicyPort(() => {
+  const lookupModel = modelMappings["original-model"] ?? "original-model"
+  const model = selectedModel && findEndpointModel(lookupModel)
+  const facadeMappings: Record<string, string> = { ...modelMappings }
+  if (model && model.id !== "original-model") {
+    facadeMappings["original-model"] = model.id
+  }
+  return {
+    catalogLoaded: false,
+    claudeTokenMultiplier: 1.15,
+    contextManagementMessages: true,
+    extraPrompt: "",
+    modelMappings: facadeMappings,
+    modelResponsesApiCompactThresholds: {},
+    models: model ? [model] : [],
+    reasoningEffort: "high",
+    useMessagesApi: messagesApiEnabled,
+    useResponsesApiWebSocket: responsesApiWebSocketEnabled,
+  }
+})
+const testPreparedMessages =
+  actualPreparedMessagesModule.createPreparedMessagesFacade({
+    countCopilotMessagesTokens,
+    handleWithChatCompletions,
+    handleWithMessagesApi,
+    handleWithResponsesApi,
+  })
 const { handleCompletion } = await import("../src/routes/messages/handler")
 const { handleCountTokens } = await import(
   "../src/routes/messages/count-tokens-handler"
 )
-const { messagesTranslationDependencies: messagesFlowHandlers } = await import(
-  "../src/routes/messages/translation-orchestrator"
-)
-const { preparedMessagesCountDependencies } = await import(
-  "../src/routes/messages/prepared-messages/count"
-)
-const { preparedMessagesCoreDependencies } = await import(
-  "../src/routes/messages/prepared-messages/core"
-)
-
-const defaultMessagesFlowHandlers = { ...messagesFlowHandlers }
-const defaultPreparedMessagesCoreDependencies = {
-  ...preparedMessagesCoreDependencies,
-}
-const defaultPreparedMessagesCountDependencies = {
-  ...preparedMessagesCountDependencies,
-}
 const defaultResponsesUtilsDependencies = { ...responsesUtilsDependencies }
 
 const createApp = () => {
   const app = new Hono()
-  app.post("/", handleCompletion)
-  app.post("/count_tokens", handleCountTokens)
+  app.post("/", async (c) => {
+    try {
+      return await handleCompletion(c, {
+        preparedMessages: testPreparedMessages,
+        preparedMessagesPolicy: testPreparedMessagesPolicy,
+      })
+    } catch (error) {
+      return await forwardError(c, adaptMessagesRouteError(error))
+    }
+  })
+  app.post("/count_tokens", async (c) => {
+    try {
+      return await handleCountTokens(c, {
+        preparedMessages: testPreparedMessages,
+        preparedMessagesPolicy: testPreparedMessagesPolicy,
+      })
+    } catch (error) {
+      return await forwardError(c, adaptMessagesRouteError(error))
+    }
+  })
   return app
 }
 
@@ -149,15 +185,6 @@ beforeEach(() => {
 
   responsesUtilsDependencies.isResponsesApiWebSocketEnabled = () =>
     responsesApiWebSocketEnabled
-  preparedMessagesCoreDependencies.findEndpointModel = findEndpointModel
-  preparedMessagesCoreDependencies.isMessagesApiEnabled = () =>
-    messagesApiEnabled
-  preparedMessagesCountDependencies.countCopilotMessagesTokens =
-    countCopilotMessagesTokens
-
-  messagesFlowHandlers.handleWithMessagesApi = handleWithMessagesApi
-  messagesFlowHandlers.handleWithResponsesApi = handleWithResponsesApi
-  messagesFlowHandlers.handleWithChatCompletions = handleWithChatCompletions
 
   findEndpointModel.mockClear()
   handleWithMessagesApi.mockClear()
@@ -167,21 +194,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  messagesFlowHandlers.handleWithMessagesApi =
-    defaultMessagesFlowHandlers.handleWithMessagesApi
-  messagesFlowHandlers.handleWithResponsesApi =
-    defaultMessagesFlowHandlers.handleWithResponsesApi
-  messagesFlowHandlers.handleWithChatCompletions =
-    defaultMessagesFlowHandlers.handleWithChatCompletions
   Object.assign(responsesUtilsDependencies, defaultResponsesUtilsDependencies)
-  Object.assign(
-    preparedMessagesCoreDependencies,
-    defaultPreparedMessagesCoreDependencies,
-  )
-  Object.assign(
-    preparedMessagesCountDependencies,
-    defaultPreparedMessagesCountDependencies,
-  )
 })
 
 describe("messages handler orchestration", () => {
@@ -310,8 +323,6 @@ describe("messages handler orchestration", () => {
 
     expect(response.status).toBe(200)
     expect(countResponse.status).toBe(200)
-    expect(findEndpointModel).toHaveBeenNthCalledWith(1, "messages-model")
-    expect(findEndpointModel).toHaveBeenNthCalledWith(2, "messages-model")
     const preparedGenerationPayload = handleWithMessagesApi.mock.calls[0][1]
     const preparedCountPayload = countCopilotMessagesTokens.mock.calls[0][0]
     expect(preparedGenerationPayload).toMatchObject({
@@ -787,7 +798,6 @@ describe("messages handler orchestration", () => {
 
     expect(response.status).toBe(200)
     expect(await response.text()).toBe("messages")
-    expect(findEndpointModel).toHaveBeenCalledWith("messages-model")
 
     const [, forwardedPayload] = handleWithMessagesApi.mock.calls[0]
     expect(forwardedPayload.model).toBe("messages-model")
@@ -1054,7 +1064,6 @@ describe("messages handler orchestration", () => {
 
     expect(response.status).toBe(200)
     expect(await response.text()).toBe("messages")
-    expect(findEndpointModel).toHaveBeenCalledWith("original-model")
 
     const expectedSessionId = actualUtilsModule.getUUID("session-123")
     const expectedRequestId = actualUtilsModule.generateRequestIdFromPayload(

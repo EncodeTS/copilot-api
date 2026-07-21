@@ -63,11 +63,13 @@ export const getResponsesTransportForModel = (
     | undefined,
   options: {
     compactType?: CompactType
+    useWebSocket?: boolean
   } = {},
 ): ResponsesTransport | null => {
   const capabilities = getResponsesEndpointCapabilities(selectedModel)
   const useWebSocket =
-    responsesUtilsDependencies.isResponsesApiWebSocketEnabled()
+    options.useWebSocket
+    ?? responsesUtilsDependencies.isResponsesApiWebSocketEnabled()
 
   if (
     options.compactType !== COMPACT_REQUEST
@@ -2028,6 +2030,8 @@ export const applyResponsesApiContextManagement = (
   modelLimits: ResponsesModelLimits | undefined,
   options: {
     compactThresholdRatio?: number
+    contextManagementEnabled?: boolean
+    modelCompactThreshold?: number | null
     source: ResponsesApiContextManagementSource
   },
 ): ResponsesContextManagementDecision => {
@@ -2047,7 +2051,12 @@ export const applyResponsesApiContextManagement = (
     }
   }
 
-  if (!isContextManagementEnabledForSource(options.source)) {
+  if (
+    !(
+      options.contextManagementEnabled
+      ?? isContextManagementEnabledForSource(options.source)
+    )
+  ) {
     return {
       owner: "none",
       injected: false,
@@ -2055,9 +2064,10 @@ export const applyResponsesApiContextManagement = (
     }
   }
 
-  const modelCompactThreshold = getModelResponsesApiCompactThreshold(
-    payload.model,
-  )
+  const modelCompactThreshold =
+    Object.hasOwn(options, "modelCompactThreshold") ?
+      (options.modelCompactThreshold ?? undefined)
+    : getModelResponsesApiCompactThreshold(payload.model)
   payload.context_management = createCompactionContextManagement(
     modelCompactThreshold
       ?? resolveResponsesCompactThreshold(

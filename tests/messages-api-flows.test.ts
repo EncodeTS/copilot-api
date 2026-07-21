@@ -21,7 +21,22 @@ import type {
 } from "../src/services/copilot/create-responses"
 
 import { COMPACT_REQUEST } from "../src/lib/compact"
-import { HTTPError } from "../src/lib/error"
+import { createMessagesResponseContext } from "../src/routes/messages/request-context"
+import { translateToOpenAI } from "../src/routes/messages/non-stream-translation"
+import {
+  normalizeSystemMessages,
+  prepareMessagesApiPayload,
+  sanitizeIdeTools,
+} from "../src/routes/messages/preprocess"
+import {
+  hasTrailingAssistantPrefill,
+  translateAnthropicMessagesToResponsesPayload,
+} from "../src/routes/messages/responses-translation"
+import {
+  applyResponsesApiContextManagement,
+  compactInputByLatestCompaction,
+  getResponsesTransportForModel,
+} from "../src/routes/responses/utils"
 import {
   closeUsageStore,
   getTokenUsageEventsPage,
@@ -102,11 +117,6 @@ const {
   messagesApiFlowDependencies,
   prepareCopilotChatCompletionsPayload,
 } = await import("../src/routes/messages/api-flows")
-const { prepareCopilotMessagesRequest } = await import(
-  "../src/routes/messages/prepared-messages/core"
-)
-const { getPreparedCopilotMessagesPlan, preparedMessagesCoreDependencies } =
-  await import("../src/routes/messages/prepared-messages/core")
 const { responsesUtilsDependencies } = await import(
   "../src/routes/responses/utils"
 )
@@ -133,19 +143,17 @@ const handleWithChatCompletions = (
     selectedModel?: Model
   },
 ) => {
-  const plan = prepareForModel(
-    payload,
-    options.selectedModel ?? createModel([]),
-  )
-  if (plan.kind !== "chat_completions") {
-    throw new Error(`Expected Chat plan, received ${plan.kind}`)
-  }
-  return handlePreparedChatCompletions(
-    c,
-    plan.sourcePayload,
-    options,
-    plan.payload,
-  )
+  const selectedModel = options.selectedModel ?? createModel([])
+  const sourcePayload = structuredClone(payload)
+  normalizeSystemMessages(sourcePayload)
+  sanitizeIdeTools(sourcePayload, { preserveExecuteCode: false })
+  const openAIPayload = translateToOpenAI(sourcePayload, {
+    validateReasoningEffort: true,
+    reasoningEffortSupport:
+      selectedModel.capabilities.supports.reasoning_effort,
+  })
+  prepareCopilotChatCompletionsPayload(openAIPayload)
+  return handlePreparedChatCompletions(c, sourcePayload, options, openAIPayload)
 }
 
 const handleWithMessagesApi = (
@@ -155,14 +163,12 @@ const handleWithMessagesApi = (
     selectedModel?: Model
   },
 ) => {
-  const plan = prepareForModel(
-    payload,
-    options.selectedModel ?? createModel(["/v1/messages"]),
-  )
-  if (plan.kind !== "messages") {
-    throw new Error(`Expected Messages plan, received ${plan.kind}`)
-  }
-  return handlePreparedMessagesApi(c, plan.payload, options)
+  const selectedModel = options.selectedModel ?? createModel(["/v1/messages"])
+  const sourcePayload = structuredClone(payload)
+  normalizeSystemMessages(sourcePayload)
+  sanitizeIdeTools(sourcePayload, { preserveExecuteCode: true })
+  prepareMessagesApiPayload(sourcePayload, selectedModel)
+  return handlePreparedMessagesApi(c, sourcePayload, options)
 }
 
 const handleWithResponsesApi = (
@@ -170,51 +176,46 @@ const handleWithResponsesApi = (
   payload: AnthropicMessagesPayload,
   options: Parameters<typeof handlePreparedResponsesApi>[2],
 ) => {
-  let plan
-  try {
-    plan = prepareForModel(
-      payload,
-      options.selectedModel ?? createModel(["/responses"]),
+  const selectedModel = options.selectedModel ?? createModel(["/responses"])
+  if (hasTrailingAssistantPrefill(payload)) {
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          type: "error",
+          error: {
+            type: "invalid_request_error",
+            message:
+              "Assistant prefill is not supported by the Responses API bridge.",
+          },
+        }),
+        { status: 400 },
+      ),
     )
-  } catch (error) {
-    if (error instanceof HTTPError) return Promise.resolve(error.response)
-    throw error
   }
-  if (plan.kind !== "responses") {
-    throw new Error(`Expected Responses plan, received ${plan.kind}`)
+  const sourcePayload = structuredClone(payload)
+  normalizeSystemMessages(sourcePayload)
+  sanitizeIdeTools(sourcePayload, { preserveExecuteCode: true })
+  const responsesPayload =
+    translateAnthropicMessagesToResponsesPayload(sourcePayload)
+  const contextDecision = applyResponsesApiContextManagement(
+    responsesPayload,
+    selectedModel.capabilities.limits,
+    { source: "messages" },
+  )
+  if (contextDecision.shouldPruneInput) {
+    compactInputByLatestCompaction(responsesPayload)
   }
+  const transport =
+    getResponsesTransportForModel(selectedModel, {
+      compactType: options.compactType,
+    }) ?? "http"
   return handlePreparedResponsesApi(
     c,
-    plan.sourcePayload,
+    sourcePayload,
     options,
-    plan.payload,
-    options.compactType ? "http" : plan.transport,
+    responsesPayload,
+    transport,
   )
-}
-
-const prepareForModel = (
-  payload: AnthropicMessagesPayload,
-  selectedModel: Model,
-) => {
-  const previousFindModel = preparedMessagesCoreDependencies.findEndpointModel
-  const previousMessagesEnabled =
-    preparedMessagesCoreDependencies.isMessagesApiEnabled
-  const effectiveModel = {
-    ...selectedModel,
-    id: payload.model,
-    name: payload.model,
-  }
-  preparedMessagesCoreDependencies.findEndpointModel = () => effectiveModel
-  preparedMessagesCoreDependencies.isMessagesApiEnabled = () => true
-  try {
-    return getPreparedCopilotMessagesPlan(
-      prepareCopilotMessagesRequest(payload),
-    )
-  } finally {
-    preparedMessagesCoreDependencies.findEndpointModel = previousFindModel
-    preparedMessagesCoreDependencies.isMessagesApiEnabled =
-      previousMessagesEnabled
-  }
 }
 
 test("messages Chat flow forwards the caller abort signal", async () => {
@@ -580,7 +581,7 @@ test("messages Messages flow records Copilot AIU from streaming message delta", 
   }
   const app = new Hono()
   app.post("/", (c) =>
-    handleWithMessagesApi(c, payload, {
+    handleWithMessagesApi(createMessagesResponseContext(c), payload, {
       logger,
       requestId: "request-1",
     }),
@@ -669,7 +670,7 @@ test("messages Chat Completions flow preserves usage after metadata-only chunks"
   }
   const app = new Hono()
   app.post("/", (c) =>
-    handleWithChatCompletions(c, payload, {
+    handleWithChatCompletions(createMessagesResponseContext(c), payload, {
       logger,
       requestId: "request-metadata-usage",
     }),
@@ -722,7 +723,7 @@ test("messages Chat Completions flow flushes metadata-delayed completion at EOF"
   }
   const app = new Hono()
   app.post("/", (c) =>
-    handleWithChatCompletions(c, payload, {
+    handleWithChatCompletions(createMessagesResponseContext(c), payload, {
       logger,
       requestId: "request-metadata-eof",
     }),
@@ -783,7 +784,7 @@ test("messages Chat Completions flow does not stop before an error after metadat
   }
   const app = new Hono()
   app.post("/", (c) =>
-    handleWithChatCompletions(c, payload, {
+    handleWithChatCompletions(createMessagesResponseContext(c), payload, {
       logger,
       requestId: "request-metadata-error",
     }),
@@ -817,7 +818,7 @@ test("messages Chat Completions flow emits error event when upstream stream thro
   }
   const app = new Hono()
   app.post("/", (c) =>
-    handleWithChatCompletions(c, payload, {
+    handleWithChatCompletions(createMessagesResponseContext(c), payload, {
       logger,
       requestId: "request-1",
     }),
@@ -863,7 +864,7 @@ test("messages Chat Completions flow emits one error event for streaming finish_
   }
   const app = new Hono()
   app.post("/", (c) =>
-    handleWithChatCompletions(c, payload, {
+    handleWithChatCompletions(createMessagesResponseContext(c), payload, {
       logger,
       requestId: "request-stream-error",
     }),
@@ -903,7 +904,7 @@ test("messages Responses flow emits error event when upstream stream throws", as
   }
   const app = new Hono()
   app.post("/", (c) =>
-    handleWithResponsesApi(c, payload, {
+    handleWithResponsesApi(createMessagesResponseContext(c), payload, {
       logger,
       requestId: "request-1",
       selectedModel: createModel(["/responses"]),
@@ -941,7 +942,7 @@ test("messages Messages flow emits error event when upstream stream throws", asy
   }
   const app = new Hono()
   app.post("/", (c) =>
-    handleWithMessagesApi(c, payload, {
+    handleWithMessagesApi(createMessagesResponseContext(c), payload, {
       logger,
       requestId: "request-1",
     }),
@@ -969,7 +970,7 @@ test("messages Chat Completions flow emits error on clean EOF without terminal",
   }
   const app = new Hono()
   app.post("/", (c) =>
-    handleWithChatCompletions(c, payload, {
+    handleWithChatCompletions(createMessagesResponseContext(c), payload, {
       logger,
       requestId: "request-1",
     }),
@@ -994,7 +995,7 @@ test("messages Responses flow emits error on clean EOF without terminal", async 
   }
   const app = new Hono()
   app.post("/", (c) =>
-    handleWithResponsesApi(c, payload, {
+    handleWithResponsesApi(createMessagesResponseContext(c), payload, {
       logger,
       requestId: "request-1",
       selectedModel: createModel(["/responses"]),
@@ -1018,7 +1019,7 @@ test("messages Messages flow emits error on clean EOF without terminal", async (
   }
   const app = new Hono()
   app.post("/", (c) =>
-    handleWithMessagesApi(c, payload, {
+    handleWithMessagesApi(createMessagesResponseContext(c), payload, {
       logger,
       requestId: "request-1",
     }),
@@ -1060,7 +1061,7 @@ test("messages Responses flow ignores DONE before a typed terminal event", async
   }
   const app = new Hono()
   app.post("/", (c) =>
-    handleWithResponsesApi(c, payload, {
+    handleWithResponsesApi(createMessagesResponseContext(c), payload, {
       logger,
       requestId: "request-1",
       selectedModel: createModel(["/responses"]),
@@ -1114,7 +1115,7 @@ test("messages Responses flow emits one in-band error for failed terminals", asy
     }
     const app = new Hono()
     app.post("/", (c) =>
-      handleWithResponsesApi(c, payload, {
+      handleWithResponsesApi(createMessagesResponseContext(c), payload, {
         logger,
         requestId: "request-1",
         selectedModel: createModel(["/responses"]),

@@ -72,6 +72,7 @@ interface ToolResultMessages {
 }
 
 interface TranslateToOpenAIOptions {
+  model?: Model | null
   supportPdf?: boolean
   toolContentSupportType?: Array<ToolContentSupportType>
   validateReasoningEffort?: boolean
@@ -94,7 +95,10 @@ export function translateToOpenAI(
   options: TranslateToOpenAIOptions = {},
 ): ChatCompletionsPayload {
   const modelId = payload.model
-  const model = state.models?.data.find((m) => m.id === modelId)
+  const model =
+    Object.hasOwn(options, "model") ?
+      (options.model ?? undefined)
+    : state.models?.data.find((candidate) => candidate.id === modelId)
   const thinkingBudget = getThinkingBudget(payload, model)
   const reasoningEffort = getReasoningEffort(payload, options)
   const capabilities = {

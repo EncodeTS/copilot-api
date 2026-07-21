@@ -1,13 +1,21 @@
 import type { Context } from "hono"
 
-import { resolveMappedModel } from "~/lib/config"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { normalizeMessageReasoningEffort } from "~/lib/reasoning-effort"
 import { handleProviderMessagesForProvider } from "~/routes/provider/messages/handler"
 import { routeProviderModelAlias } from "~/routes/provider/model-router"
 
 import type { AnthropicMessagesPayload } from "./anthropic-types"
-import { handleCopilotMessages } from "./translation-orchestrator"
+import {
+  preparedMessages,
+  type PreparedMessagesFacade,
+} from "./prepared-messages/facade"
+import {
+  preparedMessagesPolicy,
+  resolvePreparedMessagesModel,
+  type PreparedMessagesPolicyPort,
+} from "./prepared-messages/policy"
+import { createMessagesRequestContext } from "./request-context"
 import { tryHandleWebSearch } from "./web-search/fulfill"
 import consola from "consola"
 
@@ -16,7 +24,20 @@ const logger = createHandlerLogger("messages-handler")
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
 
-export async function handleCompletion(c: Context) {
+interface MessagesHandlerComposition {
+  preparedMessages: PreparedMessagesFacade
+  preparedMessagesPolicy: PreparedMessagesPolicyPort
+}
+
+const defaultMessagesHandlerComposition = Object.freeze({
+  preparedMessages,
+  preparedMessagesPolicy,
+})
+
+export async function handleCompletion(
+  c: Context,
+  composition: MessagesHandlerComposition = defaultMessagesHandlerComposition,
+) {
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
   const outputConfig: unknown = anthropicPayload.output_config
   if (isRecord(outputConfig) && Object.hasOwn(outputConfig, "effort")) {
@@ -39,8 +60,16 @@ export async function handleCompletion(c: Context) {
     }
   }
 
+  const messagesRequestContext = createMessagesRequestContext(
+    c,
+    anthropicPayload,
+    composition.preparedMessagesPolicy.snapshot(anthropicPayload.model),
+  )
   const requestedModel = anthropicPayload.model
-  anthropicPayload.model = resolveMappedModel(anthropicPayload.model)
+  anthropicPayload.model = resolvePreparedMessagesModel(
+    messagesRequestContext.policy,
+    anthropicPayload.model,
+  )
   if (anthropicPayload.model !== requestedModel) {
     consola.debug(
       `Resolved model mapping: ${requestedModel} -> ${anthropicPayload.model}`,
@@ -63,5 +92,8 @@ export async function handleCompletion(c: Context) {
   if (webSearchResult) return webSearchResult
 
   debugJson(logger, "Anthropic request payload:", anthropicPayload)
-  return await handleCopilotMessages(c, anthropicPayload)
+  return await composition.preparedMessages.generate(
+    messagesRequestContext,
+    anthropicPayload,
+  )
 }
