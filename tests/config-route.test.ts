@@ -311,11 +311,6 @@ describe("config model mappings route", () => {
   })
 
   test("returns an invalid request when centralized mapping validation fails", async () => {
-    setModelMappings.mockImplementationOnce(() => {
-      throw new actualConfigModule.ModelMappingsValidationError([
-        { code: "chain", source: "a", target: "b" },
-      ])
-    })
     const response = await createApp().request("/admin/config/model-mappings", {
       method: "POST",
       headers: {
@@ -337,6 +332,7 @@ describe("config model mappings route", () => {
         type: "invalid_request_error",
       },
     })
+    expect(setModelMappings).not.toHaveBeenCalled()
     expect(refreshStartupCatalog).not.toHaveBeenCalled()
   })
 

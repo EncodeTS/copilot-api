@@ -12,6 +12,16 @@ import {
   DEFAULT_RESPONSES_WEBSOCKET_RESOURCE_LIMITS,
   type ResponsesWebSocketResourceLimits,
 } from "./responses-websocket-limits"
+import type {
+  ModelMappingsDiagnostic,
+  ModelMappingsValidationOutcome,
+} from "../../shared-types/model-mappings"
+
+export type {
+  ModelMappingsDiagnostic,
+  ModelMappingsDiagnosticCode,
+  ModelMappingsValidationOutcome,
+} from "../../shared-types/model-mappings"
 
 export interface AppConfig {
   configSchemaVersion?: number
@@ -78,20 +88,6 @@ export interface ConfigMigrationState {
 export interface ContextManagementConfig {
   messages?: boolean
   responses?: boolean
-}
-
-export type ModelMappingsDiagnosticCode =
-  | "chain"
-  | "invalid_record"
-  | "self_mapping"
-  | "unsafe_name"
-  | "whitespace_source"
-  | "whitespace_target"
-
-export interface ModelMappingsDiagnostic {
-  code: ModelMappingsDiagnosticCode
-  source?: string
-  target?: string
 }
 
 export class ModelMappingsValidationError extends Error {
@@ -843,8 +839,21 @@ const createSafeModelMappings = (): Record<string, string> =>
 export function validateModelMappings(
   modelMappings: unknown,
 ): Record<string, string> {
+  const outcome = validateModelMappingsOutcome(modelMappings)
+  if (!outcome.ok) {
+    throw new ModelMappingsValidationError(outcome.diagnostics)
+  }
+  return outcome.modelMappings
+}
+
+export function validateModelMappingsOutcome(
+  modelMappings: unknown,
+): ModelMappingsValidationOutcome {
   if (!isPlainRecord(modelMappings)) {
-    throw new ModelMappingsValidationError([{ code: "invalid_record" }])
+    return {
+      diagnostics: [{ code: "invalid_record" }],
+      ok: false,
+    }
   }
 
   const entries = Object.entries(modelMappings)
@@ -896,10 +905,10 @@ export function validateModelMappings(
   }
 
   if (diagnostics.length > 0) {
-    throw new ModelMappingsValidationError(diagnostics)
+    return { diagnostics, ok: false }
   }
 
-  return validatedMappings
+  return { modelMappings: validatedMappings, ok: true }
 }
 
 export function setModelMappings(

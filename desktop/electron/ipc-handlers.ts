@@ -33,12 +33,16 @@ import type {
   DesktopAuthMode,
   DesktopProxySettings,
   DesktopSettings,
-  ModelMappingsConfig,
   ProviderAuthInput,
   ServerAuthInfo,
 } from '../src/types/ipc'
+import type {
+  ModelMappingsConfigOutcome,
+  ModelMappingsRequestError,
+  ModelMappingsSaveOutcome,
+} from '../../shared-types'
 import {
-  readConfigApiError,
+  readModelMappingsRequest,
   saveModelMappingsRequest,
 } from './model-mappings-api'
 
@@ -107,37 +111,47 @@ async function getServerRequestHeaders(
   }
 }
 
-function getConfigApiBaseUrl(): string {
+function getConfigApiBaseUrl(): string | null {
   if (!isRunning()) {
-    throw new Error(
-      'Server is not running. Start the service before editing advanced config.',
-    )
+    return null
   }
 
   return `http://localhost:${getPort()}/admin/config/model-mappings`
 }
 
-async function fetchModelMappingsConfig(): Promise<ModelMappingsConfig> {
-  const headers = await getServerRequestHeaders('admin')
-  const response = await fetch(getConfigApiBaseUrl(), {
-    headers,
-    signal: AbortSignal.timeout(5000),
-  })
-  if (!response.ok) {
-    throw new Error(await readConfigApiError(response))
+function serverUnavailableError(): ModelMappingsRequestError {
+  return {
+    diagnostics: [],
+    kind: 'request_failed',
+    message:
+      'Server is not running. Start the service before editing advanced config.',
   }
+}
 
-  return (await response.json()) as ModelMappingsConfig
+async function fetchModelMappingsConfig(): Promise<ModelMappingsConfigOutcome> {
+  const url = getConfigApiBaseUrl()
+  if (!url) {
+    return { error: serverUnavailableError(), ok: false }
+  }
+  const headers = await getServerRequestHeaders('admin')
+  return await readModelMappingsRequest({
+    headers,
+    url,
+  })
 }
 
 async function saveModelMappingsViaApi(
   modelMappings: Record<string, string>,
-): ReturnType<typeof saveModelMappingsRequest> {
+): Promise<ModelMappingsSaveOutcome> {
+  const url = getConfigApiBaseUrl()
+  if (!url) {
+    return { error: serverUnavailableError(), ok: false }
+  }
   const headers = await getServerRequestHeaders('admin')
   return await saveModelMappingsRequest({
     headers,
     modelMappings,
-    url: getConfigApiBaseUrl(),
+    url,
   })
 }
 

@@ -1,4 +1,10 @@
+import type {
+  ModelMappingsDiagnostic,
+  ModelMappingsSaveResult,
+} from '../../../shared-types'
+
 export interface ModelMappingRow {
+  diagnostics?: ModelMappingsDiagnostic[]
   id: string
   source: string
   target: string
@@ -10,12 +16,11 @@ export type ModelMappingsValidationResult =
       ok: true
     }
   | {
-      model?: string
+      diagnostics: ModelMappingsDiagnostic[]
       ok: false
-      reason: 'duplicate' | 'incomplete'
     }
 
-export type ModelMappingsSaveOutcome =
+export type ModelMappingsSavePresentationOutcome =
   'refresh_failed' | 'refresh_skipped' | 'restart_required' | 'saved'
 
 export type ModelMappingsSaveMessageKey =
@@ -28,7 +33,7 @@ export type ModelMappingsSaveMessageKey =
 export interface ModelMappingsSavePresentation {
   degradedMessageKey: 'savedDegraded' | null
   messageKey: Exclude<ModelMappingsSaveMessageKey, 'savedDegraded'>
-  outcome: ModelMappingsSaveOutcome
+  outcome: ModelMappingsSavePresentationOutcome
   tone: 'error' | 'info' | 'success' | 'warning'
 }
 
@@ -56,6 +61,41 @@ export function modelMappingsToRows(
   )
 }
 
+export function applyModelMappingsDiagnostics(
+  rows: ModelMappingRow[],
+  diagnostics: ModelMappingsDiagnostic[],
+): ModelMappingRow[] {
+  return rows.map((row) => ({
+    ...row,
+    diagnostics: diagnostics.filter((diagnostic) => {
+      if (diagnostic.source === undefined && diagnostic.target === undefined) {
+        return false
+      }
+      if (diagnostic.source !== undefined && diagnostic.source !== row.source) {
+        return false
+      }
+      if (diagnostic.target !== undefined && diagnostic.target !== row.target) {
+        return false
+      }
+      return true
+    }),
+  }))
+}
+
+export function formatModelMappingsDiagnostic(
+  diagnostic: ModelMappingsDiagnostic,
+): string {
+  return [
+    diagnostic.code,
+    ...(diagnostic.source === undefined ?
+      []
+    : [`source=${JSON.stringify(diagnostic.source)}`]),
+    ...(diagnostic.target === undefined ?
+      []
+    : [`target=${JSON.stringify(diagnostic.target)}`]),
+  ].join(' · ')
+}
+
 export function buildModelMappingsFromRows(
   rows: ModelMappingRow[],
 ): ModelMappingsValidationResult {
@@ -66,12 +106,37 @@ export function buildModelMappingsFromRows(
       continue
     }
 
-    if (!row.source.trim() || !row.target.trim()) {
-      return { ok: false, reason: 'incomplete' }
+    if (!row.source.trim()) {
+      return {
+        diagnostics: [
+          {
+            code: 'whitespace_source',
+            source: row.source,
+            target: row.target,
+          },
+        ],
+        ok: false,
+      }
+    }
+
+    if (!row.target.trim()) {
+      return {
+        diagnostics: [
+          {
+            code: 'whitespace_target',
+            source: row.source,
+            target: row.target,
+          },
+        ],
+        ok: false,
+      }
     }
 
     if (Object.hasOwn(modelMappings, row.source)) {
-      return { ok: false, model: row.source, reason: 'duplicate' }
+      return {
+        diagnostics: [{ code: 'duplicate_source', source: row.source }],
+        ok: false,
+      }
     }
 
     modelMappings[row.source] = row.target
@@ -117,4 +182,3 @@ export function getModelMappingsSavePresentation(
     tone: refresh.degraded ? 'warning' : 'success',
   }
 }
-import type { ModelMappingsSaveResult } from '../types/ipc'

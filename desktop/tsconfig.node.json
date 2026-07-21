@@ -4,6 +4,7 @@
     "electron.vite.config.*",
     "electron/**/*",
     "tests/**/*",
+    "../shared-types/**/*",
     "src/locales/**/*",
     "src/types/**/*",
     "../src/lib/api-config.ts",
@@ -32,6 +33,7 @@
     "../src/services/responses-websocket.ts",
     "../src/lib/electron-fetch.ts"
   ],
+  "exclude": ["electron/preload.ts"],
   "compilerOptions": {
     "composite": true,
     "types": ["electron-vite/node", "node", "bun"]

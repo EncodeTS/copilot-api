@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url"
 import {
   ModelMappingsValidationError,
   validateModelMappings,
+  validateModelMappingsOutcome,
 } from "../src/lib/config"
 
 const cwd = fileURLToPath(new URL("../", import.meta.url))
@@ -48,6 +49,39 @@ describe("model mapping configuration", () => {
       expect(() => validateModelMappings(mappings)).toThrow(
         ModelMappingsValidationError,
       )
+    }
+  })
+
+  test("returns serializable diagnostics without losing model names", () => {
+    expect(
+      validateModelMappingsOutcome({
+        chain: "target",
+        target: "live",
+        self: "self",
+        safe: "constructor",
+        " ": "blank-source-target",
+        blankTarget: " ",
+      }),
+    ).toEqual({
+      diagnostics: [
+        { code: "chain", source: "chain", target: "target" },
+        { code: "self_mapping", source: "self", target: "self" },
+        { code: "unsafe_name", source: "safe", target: "constructor" },
+        { code: "whitespace_source", source: " " },
+        { code: "whitespace_target", source: "blankTarget", target: " " },
+      ],
+      ok: false,
+    })
+
+    const valid = validateModelMappingsOutcome({
+      " alias with spaces ": "provider/model with spaces",
+    })
+    expect(valid.ok).toBeTrue()
+    if (valid.ok) {
+      expect(Object.entries(valid.modelMappings)).toEqual([
+        [" alias with spaces ", "provider/model with spaces"],
+      ])
+      expect(Object.getPrototypeOf(valid.modelMappings)).toBeNull()
     }
   })
 

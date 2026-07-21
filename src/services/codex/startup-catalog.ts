@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto"
 import { isDeepStrictEqual } from "node:util"
 import consola from "consola"
 
+import type { CodexStartupCatalogUpdateResult } from "../../../shared-types"
+
 import {
   projectCodexModels,
   type CodexModelsProjection,
@@ -16,40 +18,7 @@ import { normalizeCodexVersion } from "~/services/codex/version"
 import type { Model } from "~/services/copilot/get-models"
 import { PATHS } from "~/lib/paths"
 
-export type CodexStartupCatalogUpdateResult =
-  | {
-      clientVersion: string
-      degraded: boolean
-      inputRevision: number
-      modelCount: number
-      path: string
-      restartRequired: boolean
-      status: "unchanged" | "updated"
-    }
-  | {
-      clientVersion?: string
-      degraded: boolean
-      inputRevision: number
-      path: string
-      reason:
-        | "invalid_catalog"
-        | "invalid_client_version"
-        | "no_installed_client"
-        | "older_client_version"
-        | "projection_unavailable"
-        | "superseded_input"
-      restartRequired: false
-      status: "skipped"
-    }
-  | {
-      clientVersion?: string
-      degraded: boolean
-      inputRevision: number
-      path: string
-      reason: "generation_failed" | "persistence_failed"
-      restartRequired: false
-      status: "failed"
-    }
+export type { CodexStartupCatalogUpdateResult } from "../../../shared-types"
 
 export interface CodexStartupCatalogInputs {
   copilotModels: ReadonlyArray<Model>

@@ -5,8 +5,8 @@ import { forwardError } from "~/lib/error"
 import {
   getModelMappings,
   getResponsesWebSocketResourceLimits,
-  ModelMappingsValidationError,
   setModelMappings,
+  validateModelMappingsOutcome,
 } from "~/lib/config"
 import { PATHS } from "~/lib/paths"
 import { state } from "~/lib/state"
@@ -99,9 +99,23 @@ configRoutes.post("/model-mappings", async (c) => {
       )
     }
 
-    const updatedModelMappings = setModelMappings(
+    const validation = validateModelMappingsOutcome(
       parseResult.data.modelMappings,
     )
+    if (!validation.ok) {
+      return c.json(
+        {
+          error: {
+            diagnostics: validation.diagnostics,
+            message: "Invalid model mappings.",
+            type: "invalid_request_error",
+          },
+        },
+        400,
+      )
+    }
+
+    const updatedModelMappings = setModelMappings(validation.modelMappings)
     const catalogRefresh = await configRouteDependencies.refreshStartupCatalog({
       modelMappings: updatedModelMappings,
     })
@@ -112,18 +126,6 @@ configRoutes.post("/model-mappings", async (c) => {
       modelMappings: updatedModelMappings,
     })
   } catch (error) {
-    if (error instanceof ModelMappingsValidationError) {
-      return c.json(
-        {
-          error: {
-            diagnostics: error.diagnostics,
-            message: error.message,
-            type: "invalid_request_error",
-          },
-        },
-        400,
-      )
-    }
     return await forwardError(c, error)
   }
 })

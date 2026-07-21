@@ -1,12 +1,14 @@
 import { describe, expect, test } from 'bun:test'
 
 import {
+  applyModelMappingsDiagnostics,
   buildModelMappingsFromRows,
   createModelMappingRow,
+  formatModelMappingsDiagnostic,
   getModelMappingsSavePresentation,
   modelMappingsToRows,
 } from '../src/lib/model-mappings-editor'
-import type { ModelMappingsSaveResult } from '../src/types/ipc'
+import type { ModelMappingsSaveResult } from '../../shared-types'
 
 const createSaveResult = (
   catalogRefresh: ModelMappingsSaveResult['catalogRefresh'],
@@ -44,12 +46,22 @@ describe('model mappings editor', () => {
       buildModelMappingsFromRows([
         { id: 'missing-source', source: '', target: 'target' },
       ]),
-    ).toEqual({ ok: false, reason: 'incomplete' })
+    ).toEqual({
+      diagnostics: [
+        { code: 'whitespace_source', source: '', target: 'target' },
+      ],
+      ok: false,
+    })
     expect(
       buildModelMappingsFromRows([
         { id: 'missing-target', source: 'source', target: '' },
       ]),
-    ).toEqual({ ok: false, reason: 'incomplete' })
+    ).toEqual({
+      diagnostics: [
+        { code: 'whitespace_target', source: 'source', target: '' },
+      ],
+      ok: false,
+    })
   })
 
   test('keeps duplicate rows observable before converting them to a safe record', () => {
@@ -58,7 +70,40 @@ describe('model mappings editor', () => {
         { id: '1', source: 'source', target: 'target-a' },
         { id: '2', source: 'source', target: 'target-b' },
       ]),
-    ).toEqual({ model: 'source', ok: false, reason: 'duplicate' })
+    ).toEqual({
+      diagnostics: [{ code: 'duplicate_source', source: 'source' }],
+      ok: false,
+    })
+  })
+
+  test('marks the exact row without changing server diagnostics', () => {
+    const rows = [
+      createModelMappingRow('alias', 'target', 'row-1'),
+      createModelMappingRow('target', 'live', 'row-2'),
+    ]
+    const diagnostic = {
+      code: 'chain',
+      source: 'alias',
+      target: 'target',
+    } as const
+
+    expect(applyModelMappingsDiagnostics(rows, [diagnostic])).toEqual([
+      {
+        diagnostics: [diagnostic],
+        id: 'row-1',
+        source: 'alias',
+        target: 'target',
+      },
+      {
+        diagnostics: [],
+        id: 'row-2',
+        source: 'target',
+        target: 'live',
+      },
+    ])
+    expect(formatModelMappingsDiagnostic(diagnostic)).toBe(
+      'chain · source="alias" · target="target"',
+    )
   })
 
   test('keeps projection degradation orthogonal to every refresh status', () => {

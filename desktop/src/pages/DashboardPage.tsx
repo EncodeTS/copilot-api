@@ -83,6 +83,7 @@ const EMPTY_TOKEN_USAGE_TOTALS: TokenUsageTotals = {
   input_tokens: 0,
   output_tokens: 0,
   request_count: 0,
+  total_nano_aiu: null,
   total_tokens: 0,
 }
 

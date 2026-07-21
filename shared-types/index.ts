@@ -1,8 +1,3 @@
-export {
-  TOKEN_USAGE_ERROR_CODE_VALUES,
-  TOKEN_USAGE_OUTCOME_VALUES,
-  TOKEN_USAGE_TERMINAL_VALUES,
-} from '../../../shared-types'
 export type {
   AuthResult,
   AuthStatus,
@@ -13,11 +8,6 @@ export type {
   DesktopSettings,
   DeviceCodeInfo,
   LangPreference,
-  ModelMappingsConfig,
-  ModelMappingsConfigOutcome,
-  ModelMappingsDiagnostic,
-  ModelMappingsSaveOutcome,
-  ModelMappingsSaveResult,
   ProviderAuthInput,
   ProviderAuthType,
   ProviderAuthTypeInput,
@@ -26,6 +16,27 @@ export type {
   ServerAuthInfo,
   ServerStatus,
   ThemePreference,
+} from "./desktop-ipc"
+export { MODEL_MAPPINGS_DIAGNOSTIC_CODE_VALUES } from "./model-mappings"
+export type {
+  CodexStartupCatalogUpdateResult,
+  ModelMappingsConfig,
+  ModelMappingsConfigOutcome,
+  ModelMappingsDiagnostic,
+  ModelMappingsDiagnosticCode,
+  ModelMappingsRequestError,
+  ModelMappingsRequestErrorKind,
+  ModelMappingsSaveOutcome,
+  ModelMappingsSaveResult,
+  ModelMappingsValidationOutcome,
+} from "./model-mappings"
+export {
+  TOKEN_USAGE_ERROR_CODE_VALUES,
+  TOKEN_USAGE_OUTCOME_VALUES,
+  TOKEN_USAGE_PERIOD_VALUES,
+  TOKEN_USAGE_TERMINAL_VALUES,
+} from "./token-usage"
+export type {
   TokenUsageCost,
   TokenUsageDailyBucket,
   TokenUsageDailySummary,
@@ -37,8 +48,9 @@ export type {
   TokenUsageModelSummary,
   TokenUsageOutcome,
   TokenUsagePeriod,
+  TokenUsageRange,
   TokenUsageSource,
   TokenUsageSummary,
   TokenUsageTerminal,
   TokenUsageTotals,
-} from '../../../shared-types'
+} from "./token-usage"

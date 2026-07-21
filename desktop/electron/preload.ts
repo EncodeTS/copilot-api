@@ -1,23 +1,32 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type {
+  AuthResult,
+  DesktopApi,
+  DesktopAuthMode,
+  DesktopSettings,
+  ProviderAuthInput,
+  ServerStatus,
+  TokenUsagePeriod,
+} from '../../shared-types'
 
-contextBridge.exposeInMainWorld('electronAPI', {
+const electronApi = {
   getAuthStatus: () => ipcRenderer.invoke('auth:get-status'),
   getDeviceCode: () => ipcRenderer.invoke('auth:get-device-code'),
   saveToken: (token: string) => ipcRenderer.invoke('auth:save-token', token),
   checkSavedToken: () => ipcRenderer.invoke('auth:check-saved'),
-  configureProvider: (input: unknown) =>
+  configureProvider: (input: ProviderAuthInput) =>
     ipcRenderer.invoke('auth:configure-provider', input),
   startCodexLogin: (callbackUrlOrCode?: string) =>
     ipcRenderer.invoke('auth:start-codex-login', callbackUrlOrCode),
   logout: () => ipcRenderer.invoke('auth:logout'),
 
-  startServer: (port: number, authMode?: string) =>
+  startServer: (port: number, authMode?: DesktopAuthMode) =>
     ipcRenderer.invoke('server:start', port, authMode),
   stopServer: () => ipcRenderer.invoke('server:stop'),
   getServerStatus: () => ipcRenderer.invoke('server:get-status'),
 
   getSettings: () => ipcRenderer.invoke('settings:get'),
-  saveSettings: (settings: unknown) =>
+  saveSettings: (settings: DesktopSettings) =>
     ipcRenderer.invoke('settings:save', settings),
   getModelMappingsConfig: () => ipcRenderer.invoke('config:get-model-mappings'),
   saveModelMappings: (modelMappings: Record<string, string>) =>
@@ -27,11 +36,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   fetchUsage: () => ipcRenderer.invoke('server:fetch-usage'),
   fetchModels: () => ipcRenderer.invoke('server:fetch-models'),
-  fetchTokenUsage: (period: string) =>
+  fetchTokenUsage: (period: TokenUsagePeriod) =>
     ipcRenderer.invoke('server:fetch-token-usage', period),
-  fetchTokenUsageDaily: (period: string) =>
+  fetchTokenUsageDaily: (period: TokenUsagePeriod) =>
     ipcRenderer.invoke('server:fetch-token-usage-daily', period),
-  fetchTokenUsageEvents: (period: string, page: number, pageSize: number) =>
+  fetchTokenUsageEvents: (
+    period: TokenUsagePeriod,
+    page: number,
+    pageSize: number,
+  ) =>
     ipcRenderer.invoke(
       'server:fetch-token-usage-events',
       period,
@@ -41,15 +54,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getServerAuthInfo: () => ipcRenderer.invoke('server:get-auth-info'),
   getLogs: () => ipcRenderer.invoke('server:get-logs'),
 
-  onAuthSuccess: (callback: (result: unknown) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, result: unknown) =>
+  onAuthSuccess: (callback: (result: AuthResult) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, result: AuthResult) =>
       callback(result)
     ipcRenderer.on('auth:success', handler)
     return () => ipcRenderer.off('auth:success', handler)
   },
 
-  onServerStatus: (callback: (status: unknown) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, status: unknown) =>
+  onServerStatus: (callback: (status: ServerStatus) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: ServerStatus) =>
       callback(status)
     ipcRenderer.on('server:status', handler)
     return () => ipcRenderer.off('server:status', handler)
@@ -78,4 +91,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('window:maximize-changed', handler)
     return () => ipcRenderer.off('window:maximize-changed', handler)
   },
-})
+} satisfies DesktopApi
+
+contextBridge.exposeInMainWorld('electronAPI', electronApi)
