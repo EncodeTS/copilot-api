@@ -1,6 +1,9 @@
 import consola from "consola"
 import type { ResolvedProviderConfig } from "~/lib/config"
-import { fetchWithUpstreamLifecycle } from "~/lib/upstream-lifecycle"
+import {
+  fetchWithUpstreamLifecycle,
+  type UpstreamLifecycleTimeouts,
+} from "~/lib/upstream-lifecycle"
 import type { AnthropicMessagesPayload } from "~/routes/messages/anthropic-types"
 import type { ChatCompletionsPayload } from "~/services/copilot/create-chat-completions"
 import type { ResponsesPayload } from "~/services/copilot/create-responses"
@@ -121,6 +124,7 @@ export async function forwardProviderResponses(
   payload: ResponsesPayload,
   requestHeaders: Headers,
   signal?: AbortSignal,
+  timeouts?: UpstreamLifecycleTimeouts,
 ): Promise<Response> {
   consola.log(`<-- model: ${payload.model}`)
   return await fetchWithUpstreamLifecycle(
@@ -130,7 +134,7 @@ export async function forwardProviderResponses(
       headers: buildProviderUpstreamHeaders(providerConfig, requestHeaders),
       body: JSON.stringify(payload),
     },
-    { signal },
+    { signal, timeouts },
   )
 }
 

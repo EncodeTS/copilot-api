@@ -1,7 +1,6 @@
 import { expect, mock, test } from "bun:test"
 import type { ConsolaInstance } from "consola"
 
-import type { ResolvedProviderConfig } from "../src/lib/config"
 import type { UsageTokens } from "../src/lib/token-usage"
 import type { AnthropicMessagesPayload } from "../src/routes/messages/anthropic-types"
 import {
@@ -75,7 +74,6 @@ test("Provider Responses consumer keeps parser, DONE, and usage semantics privat
     output,
     payload: createPayload(),
     provider: "example",
-    providerConfig: createProviderConfig(),
     recordUsage,
     transport: "http",
     upstreamResponse: createStream([
@@ -112,7 +110,6 @@ test("Provider Responses consumer owns incomplete-stream error and recording", a
     output,
     payload: createPayload(),
     provider: "example",
-    providerConfig: createProviderConfig(),
     recordUsage,
     transport: "http",
     upstreamResponse: createStream([
@@ -141,7 +138,6 @@ test("Provider Responses consumer turns a partial source failure into one Anthro
     output,
     payload: createPayload(),
     provider: "example",
-    providerConfig: createProviderConfig(),
     recordUsage,
     transport: "http",
     upstreamResponse: createThrowingStream(
@@ -175,7 +171,6 @@ test("Provider Responses consumer stops pulling after a typed terminal", async (
     output,
     payload: createPayload(),
     provider: "example",
-    providerConfig: createProviderConfig(),
     recordUsage,
     transport: "http",
     upstreamResponse: createThrowingStream(
@@ -232,7 +227,6 @@ test("Provider Responses consumer stops pulling after a canonical translation er
     output,
     payload: createPayload(),
     provider: "example",
-    providerConfig: createProviderConfig(),
     recordUsage,
     transport: "http",
     upstreamResponse: canonicalErrorThenTail(),
@@ -260,7 +254,6 @@ test("Provider Responses consumer releases an already-aborted source without fab
     output,
     payload: createPayload(),
     provider: "example",
-    providerConfig: createProviderConfig(),
     recordUsage,
     signal: controller.signal,
     transport: "http",
@@ -301,7 +294,6 @@ test("Provider Responses consumer releases the source when the caller aborts aft
     },
     payload: createPayload(),
     provider: "example",
-    providerConfig: createProviderConfig(),
     recordUsage,
     signal: controller.signal,
     transport: "websocket",
@@ -334,7 +326,6 @@ test("Provider Responses consumer keeps release diagnostics content-safe", async
     output,
     payload: createPayload(),
     provider: "example",
-    providerConfig: createProviderConfig(),
     recordUsage,
     releaseUpstream: () =>
       Promise.reject(new Error("private upstream cleanup detail")),
@@ -413,14 +404,6 @@ const createPayload = (): AnthropicMessagesPayload => ({
   messages: [{ role: "user", content: "hello" }],
   model: "gpt-test",
   stream: true,
-})
-
-const createProviderConfig = (): ResolvedProviderConfig => ({
-  apiKey: "test-key",
-  authType: "authorization",
-  baseUrl: "https://provider.example",
-  name: "example",
-  type: "openai-responses",
 })
 
 const createResponsesResult = (): ResponsesResult => ({

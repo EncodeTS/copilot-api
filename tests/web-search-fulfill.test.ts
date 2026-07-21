@@ -1965,4 +1965,42 @@ describe("buildSyntheticStreamEvents", () => {
       },
     })
   })
+
+  it("streams buffered thinking text and signature as ordered deltas", () => {
+    const events = buildSyntheticStreamEvents({
+      id: "msg-thinking",
+      type: "message",
+      role: "assistant",
+      model: "gpt-responses",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 4, output_tokens: 3 },
+      content: [
+        {
+          type: "thinking",
+          thinking: "buffered thought",
+          signature: "opaque-signature",
+        },
+      ],
+    })
+
+    expect(events.slice(1, 5)).toEqual([
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "thinking", thinking: "" },
+      },
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "thinking_delta", thinking: "buffered thought" },
+      },
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "signature_delta", signature: "opaque-signature" },
+      },
+      { type: "content_block_stop", index: 0 },
+    ])
+  })
 })

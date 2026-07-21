@@ -1,7 +1,5 @@
 import type { ConsolaInstance } from "consola"
 
-import type { ResolvedProviderConfig } from "~/lib/config"
-import { logCodexRateLimitsEvent } from "~/lib/codex-rate-limit"
 import { observeCopilotResponsesMetadata } from "~/lib/copilot-rate-limit"
 import { debugJsonTail, debugLazy } from "~/lib/logger"
 import {
@@ -54,7 +52,6 @@ type ResponsesStreamConsumerOptions =
   | (ResponsesStreamConsumerBase & {
       kind: "provider"
       provider: string
-      providerConfig: ResolvedProviderConfig
       releaseUpstream?: (reason: unknown) => Promise<void> | void
     })
 
@@ -71,14 +68,14 @@ export const consumeResponsesStream = async (
 export const collectProviderResponsesStreamResult = async ({
   errorMessagePrefix,
   logger,
-  providerConfig,
+  observeParsed,
   recordUsage,
   signal,
   upstreamResponse,
 }: {
   errorMessagePrefix: string
   logger: ConsolaInstance
-  providerConfig: ResolvedProviderConfig
+  observeParsed?: (event: unknown) => void
   recordUsage: TokenUsageRecorder
   signal?: AbortSignal
   upstreamResponse: ResponsesStream
@@ -87,11 +84,7 @@ export const collectProviderResponsesStreamResult = async ({
     return await collectResponsesStreamResult({
       errorMessagePrefix,
       logger,
-      onParsed: (event) => {
-        if (providerConfig.name === "codex") {
-          logCodexRateLimitsEvent(event)
-        }
-      },
+      onParsed: observeParsed,
       signal,
       upstreamResponse,
     })
@@ -135,7 +128,7 @@ const consumeCopilotResponsesStream = async (
 const consumeProviderResponsesStream = async (
   options: Extract<ResponsesStreamConsumerOptions, { kind: "provider" }>,
 ): Promise<void> => {
-  const { logger, payload, provider, providerConfig } = options
+  const { logger, payload, provider } = options
   const streamState = createResponsesStreamState({
     carrierSource: { model: payload.model, provider },
     emitThinking: payload.thinking?.type !== "disabled",
@@ -159,10 +152,7 @@ const consumeProviderResponsesStream = async (
       ])
     },
     malformedBehavior: "ignore",
-    onParsed: (event) => {
-      if (providerConfig.name === "codex") logCodexRateLimitsEvent(event)
-      options.observeParsed?.(event)
-    },
+    onParsed: options.observeParsed,
     streamState,
   })
 }

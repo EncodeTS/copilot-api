@@ -14,6 +14,7 @@ import type {
   AnthropicContentBlockStartEvent,
   AnthropicMessagesPayload,
   AnthropicResponse,
+  AnthropicResponseContentBlock,
   AnthropicStreamEventData,
   AnthropicTextBlock,
   AnthropicToolUseBlock,
@@ -541,7 +542,7 @@ export const getWebSearchUsageMetadata = (
 }
 
 const blockToStreamEvents = (
-  block: WebSearchResponseBlock,
+  block: AnthropicResponseContentBlock,
   index: number,
 ): Array<AnthropicStreamEventData> => {
   const start = (
@@ -613,6 +614,36 @@ const blockToStreamEvents = (
         stop,
       ]
     }
+    case "thinking": {
+      return [
+        start({ type: "thinking", thinking: "" }),
+        ...(block.thinking ?
+          [
+            {
+              type: "content_block_delta" as const,
+              index,
+              delta: {
+                type: "thinking_delta" as const,
+                thinking: block.thinking,
+              },
+            },
+          ]
+        : []),
+        ...(block.signature ?
+          [
+            {
+              type: "content_block_delta" as const,
+              index,
+              delta: {
+                type: "signature_delta" as const,
+                signature: block.signature,
+              },
+            },
+          ]
+        : []),
+        stop,
+      ]
+    }
     case "web_search_tool_result": {
       return [start(block), stop]
     }
@@ -623,7 +654,7 @@ const blockToStreamEvents = (
 }
 
 export const buildSyntheticStreamEvents = (
-  response: AnthropicResponse<WebSearchResponseBlock>,
+  response: AnthropicResponse,
 ): Array<AnthropicStreamEventData> => {
   const events: Array<AnthropicStreamEventData> = []
 

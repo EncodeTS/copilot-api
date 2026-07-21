@@ -1,9 +1,7 @@
 import type { Context } from "hono"
 
-import { events } from "fetch-event-stream"
 import { streamSSE, type SSEStreamingApi } from "hono/streaming"
 
-import { logCodexRateLimitsEvent } from "~/lib/codex-rate-limit"
 import {
   type ModelConfig,
   supportsProviderResponsesContextManagement,
@@ -34,23 +32,18 @@ import {
   relayResponsesStreamSession,
 } from "~/routes/responses/stream-session-adapter"
 
-import type {
-  ResponsesPayload,
-  ResponsesResult,
-  ResponsesStream,
-} from "~/services/copilot/create-responses"
-import {
-  forwardCodexResponses,
-  resolveCodexResponsesTransport,
-} from "~/services/codex/create-responses"
+import type { ResponsesPayload } from "~/services/copilot/create-responses"
 import {
   getCodexProviderCatalogHeaders,
   loadCodexProviderModels,
 } from "~/services/codex/get-models"
 import {
-  createProviderProxyResponse,
-  forwardProviderResponses,
-} from "~/services/providers/provider-proxy"
+  createProviderResponsesPort,
+  createProviderResponsesSafeHeaders,
+  type ProviderResponsesErrorDispatch,
+  type ProviderResponsesResultDispatch,
+  type ProviderResponsesStreamDispatch,
+} from "~/services/providers/provider-responses-port"
 import type { ContentfulStatusCode } from "hono/utils/http-status"
 
 import {
@@ -72,12 +65,14 @@ export interface ProviderResponsesHandler {
 
 export interface ProviderResponsesComposition {
   createProviderTokenUsageRecorder?: typeof createProviderTokenUsageRecorder
+  createProviderResponsesPort?: typeof createProviderResponsesPort
   loadCodexProviderModels?: typeof loadCodexProviderModels
   resolveProviderModel?: typeof resolveProviderModel
 }
 
 interface ProviderResponsesDependencies {
   createProviderTokenUsageRecorder: typeof createProviderTokenUsageRecorder
+  createProviderResponsesPort: typeof createProviderResponsesPort
   loadCodexProviderModels: typeof loadCodexProviderModels
   resolveProviderModel: typeof resolveProviderModel
 }
@@ -85,6 +80,7 @@ interface ProviderResponsesDependencies {
 const createDefaultProviderResponsesDependencies =
   (): ProviderResponsesDependencies => ({
     createProviderTokenUsageRecorder,
+    createProviderResponsesPort,
     loadCodexProviderModels,
     resolveProviderModel,
   })
@@ -97,6 +93,9 @@ export const createProviderResponsesHandler = (
     createProviderTokenUsageRecorder:
       composition.createProviderTokenUsageRecorder
       ?? defaults.createProviderTokenUsageRecorder,
+    createProviderResponsesPort:
+      composition.createProviderResponsesPort
+      ?? defaults.createProviderResponsesPort,
     loadCodexProviderModels:
       composition.loadCodexProviderModels ?? defaults.loadCodexProviderModels,
     resolveProviderModel:
@@ -164,9 +163,11 @@ async function handleProviderResponsesForProviderWithDependencies(
     forwardingConfig,
     modelConfig,
   } = resolvedProviderModel
+  const responsesPort =
+    dependencies.createProviderResponsesPort(forwardingConfig)
 
   const codexCatalog =
-    providerConfig.name === "codex" ?
+    responsesPort.adapter === "codex" ?
       await dependencies.loadCodexProviderModels(c.req.raw.signal)
     : undefined
   if (codexCatalog) {
@@ -181,7 +182,7 @@ async function handleProviderResponsesForProviderWithDependencies(
   )
   const requestedEffort = payload.reasoning?.effort
   if (
-    providerConfig.name === "codex"
+    responsesPort.adapter === "codex"
     && requestedEffort
     && !model?.capabilities.supports.reasoning_effort?.includes(requestedEffort)
   ) {
@@ -218,50 +219,6 @@ async function handleProviderResponsesForProviderWithDependencies(
     provider,
   })
 
-  if (providerConfig.name === "codex") {
-    const transport = resolveCodexResponsesTransport()
-    const upstreamResponse = await forwardCodexResponses(
-      payload,
-      c.req.raw.headers,
-      providerConfig.baseUrl,
-      { signal: c.req.raw.signal, transport },
-    )
-    const recordUsage = createProviderResponsesUsageRecorder(
-      payload,
-      provider,
-      modelConfig,
-      providerConfig.pricingCurrency,
-      dependencies,
-    )
-
-    if (payload.stream && isResponsesStream(upstreamResponse)) {
-      return streamProviderResponses(c, upstreamResponse, {
-        normalizeCodex: true,
-        provider,
-        recordUsage,
-        transport,
-      })
-    }
-
-    const responseBody = upstreamResponse as ResponsesResult
-    recordUsage(normalizeResponsesUsage(responseBody.usage))
-    return c.json(responseBody)
-  }
-
-  const upstreamResponse = await forwardProviderResponses(
-    forwardingConfig,
-    payload,
-    c.req.raw.headers,
-    c.req.raw.signal,
-  )
-
-  if (!upstreamResponse.ok) {
-    throw new HTTPError(
-      `Failed to create ${provider} responses`,
-      upstreamResponse,
-    )
-  }
-
   const recordUsage = createProviderResponsesUsageRecorder(
     payload,
     provider,
@@ -269,22 +226,30 @@ async function handleProviderResponsesForProviderWithDependencies(
     providerConfig.pricingCurrency,
     dependencies,
   )
+  const dispatched = await responsesPort.dispatch({
+    payload,
+    requestHeaders: c.req.raw.headers,
+    signal: c.req.raw.signal,
+  })
 
-  if (payload.stream) {
-    return streamProviderResponses(c, getResponsesEvents(upstreamResponse), {
-      normalizeCodex: false,
+  if (dispatched.kind === "error") {
+    const rawBody = new Uint8Array(await dispatched.response.arrayBuffer())
+    await dispatched.cancel(
+      new Error(`Provider Responses error ${dispatched.status} consumed`),
+    )
+    return createExactProviderResponsesResponse(c, rawBody, dispatched)
+  }
+
+  if (dispatched.kind === "stream") {
+    return streamProviderResponses(c, dispatched, {
       provider,
       recordUsage,
-      transport: "http",
     })
   }
 
-  const responseBody = (await upstreamResponse
-    .clone()
-    .json()) as ResponsesResult
-  recordUsage(normalizeResponsesUsage(responseBody.usage))
-
-  return createProviderProxyResponse(upstreamResponse)
+  recordUsage(normalizeResponsesUsage(dispatched.result.usage))
+  await dispatched.cancel(new Error("Provider Responses result consumed"))
+  return createExactProviderResponsesResponse(c, dispatched.rawBody, dispatched)
 }
 
 const createProviderResponsesUsageRecorder = (
@@ -310,23 +275,33 @@ const createProviderResponsesUsageRecorder = (
 
 const streamProviderResponses = async (
   c: Context,
-  upstreamResponse: ResponsesStream,
+  dispatched: ProviderResponsesStreamDispatch,
   options: {
-    normalizeCodex: boolean
     provider: string
     recordUsage: TokenUsageRecorder
-    transport: StreamTransport
   },
 ): Promise<Response> => {
+  applyProviderResponsesStreamMetadata(c, dispatched)
   const prefetched = await prefetchResponsesStreamSession({
-    observeFrame: (frame) => observeProviderResponsesFrame(frame, options),
-    signal: c.req.raw.signal,
-    source: upstreamResponse,
+    observeFrame: (frame) =>
+      observeProviderResponsesFrame(frame, dispatched, options.provider),
+    signal: dispatched.signal,
+    source: dispatched.source,
   })
 
   if (prefetched.kind === "settled") {
-    recordResponsesStreamSessionUsage(options.recordUsage, prefetched.outcome)
-    return projectPrefetchedProviderResponses(c, prefetched, options)
+    try {
+      recordResponsesStreamSessionUsage(options.recordUsage, prefetched.outcome)
+      return projectPrefetchedProviderResponses(c, prefetched, {
+        normalizeSseEventNames: dispatched.normalizeSseEventNames,
+        provider: options.provider,
+        transport: dispatched.transport,
+      })
+    } finally {
+      await dispatched.cancel(
+        new Error("Provider Responses prefetched stream settled"),
+      )
+    }
   }
 
   return streamSSE(c, async (stream) => {
@@ -336,17 +311,21 @@ const streamProviderResponses = async (
           "Provider Responses stream ended without a terminal event",
         flow: "provider_responses",
         logger,
-        observeFrame: (frame) => observeProviderResponsesFrame(frame, options),
+        observeFrame: (frame) =>
+          observeProviderResponsesFrame(frame, dispatched, options.provider),
         output: stream,
         projectFrame:
-          options.normalizeCodex ? projectCodexResponsesFrame : undefined,
+          dispatched.normalizeSseEventNames ?
+            projectCodexResponsesFrame
+          : undefined,
         recordUsage: options.recordUsage,
-        signal: c.req.raw.signal,
+        signal: dispatched.signal,
         source: prefetched.source,
-        transport: options.transport,
+        transport: dispatched.transport,
       })
     } finally {
       await prefetched.cancel()
+      await dispatched.cancel(new Error("Provider Responses stream finished"))
     }
   })
 }
@@ -355,9 +334,9 @@ const projectPrefetchedProviderResponses = (
   c: Context,
   prefetched: Extract<PrefetchedResponsesSession, { kind: "settled" }>,
   options: {
-    normalizeCodex: boolean
+    normalizeSseEventNames: boolean
     provider: string
-    transport: StreamTransport
+    transport: ProviderResponsesStreamDispatch["transport"]
   },
 ): Response => {
   const { outcome } = prefetched
@@ -386,7 +365,7 @@ const projectPrefetchedProviderResponses = (
     return streamSSE(c, async (stream) => {
       for (const frame of prefetched.frames) {
         const message =
-          options.normalizeCodex ?
+          options.normalizeSseEventNames ?
             projectCodexResponsesFrame(frame)
           : projectResponsesSessionFrame(frame)
         if (message) await stream.writeSSE(message)
@@ -443,12 +422,15 @@ const toHeaderRecord = (value: unknown): Record<string, string> | undefined => {
   const entries = Object.entries(value).filter(
     (entry): entry is [string, string] => typeof entry[1] === "string",
   )
-  return entries.length > 0 ? Object.fromEntries(entries) : undefined
+  if (entries.length === 0) return undefined
+  const headers = createProviderResponsesSafeHeaders(new Headers(entries))
+  return Object.keys(headers).length > 0 ? { ...headers } : undefined
 }
 
 const observeProviderResponsesFrame = (
   frame: ResponsesStreamSessionFrame,
-  options: { normalizeCodex: boolean; provider: string },
+  dispatched: ProviderResponsesStreamDispatch,
+  provider: string,
 ): void => {
   debugJsonTail(logger, "Responses stream chunk:", {
     value: frame.wire,
@@ -457,13 +439,12 @@ const observeProviderResponsesFrame = (
   if (frame.kind === "malformed") {
     logger.error("provider.responses.parse_chunk_error", {
       frameKind: frame.kind,
-      provider: options.provider,
+      provider,
     })
     return
   }
-  if (!options.normalizeCodex) return
-  if (frame.kind === "event") logCodexRateLimitsEvent(frame.event)
-  if (frame.kind === "unknown") logCodexRateLimitsEvent(frame.parsed)
+  if (frame.kind === "event") dispatched.observer(frame.event)
+  if (frame.kind === "unknown") dispatched.observer(frame.parsed)
 }
 
 const projectCodexResponsesFrame = (frame: ResponsesStreamSessionFrame) => {
@@ -475,12 +456,37 @@ const projectCodexResponsesFrame = (frame: ResponsesStreamSessionFrame) => {
 const asError = (value: unknown, fallback: string): Error =>
   value instanceof Error ? value : new Error(fallback)
 
-const getResponsesEvents = (response: Response): ResponsesStream =>
-  events(response)
+const applyProviderResponsesHeaders = (
+  c: Context,
+  headers: Readonly<Record<string, string>>,
+): void => {
+  for (const [name, value] of Object.entries(headers)) {
+    c.header(name, value)
+  }
+}
 
-const isResponsesStream = (value: unknown): value is ResponsesStream => {
-  return (
-    Boolean(value)
-    && typeof (value as ResponsesStream)[Symbol.asyncIterator] === "function"
-  )
+const applyProviderResponsesStreamMetadata = (
+  c: Context,
+  dispatched: ProviderResponsesStreamDispatch,
+): void => {
+  c.status(dispatched.status as ContentfulStatusCode)
+  for (const [name, value] of Object.entries(dispatched.headers)) {
+    if (name.toLowerCase() !== "content-type") c.header(name, value)
+  }
+}
+
+const createExactProviderResponsesResponse = (
+  c: Context,
+  rawBody: Uint8Array<ArrayBuffer>,
+  dispatched: Pick<
+    ProviderResponsesErrorDispatch | ProviderResponsesResultDispatch,
+    "headers" | "status" | "statusText"
+  >,
+): Response => {
+  applyProviderResponsesHeaders(c, dispatched.headers)
+  return new Response(rawBody, {
+    headers: new Headers(c.res.headers),
+    status: dispatched.status,
+    statusText: dispatched.statusText,
+  })
 }

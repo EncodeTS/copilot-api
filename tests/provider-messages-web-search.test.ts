@@ -21,11 +21,13 @@ import type {
   CreateResponsesReturn,
   ResponsesPayload,
   ResponsesResult,
+  ResponsesStream,
   ResponsesTransport,
 } from "../src/services/copilot/create-responses"
 import type { Model } from "../src/services/copilot/get-models"
 import type { CodexProviderCatalogSnapshot } from "../src/services/codex/get-models"
 import type { TokenUsageRecorder } from "../src/lib/token-usage"
+import { createProviderResponsesPort } from "../src/services/providers/provider-responses-port"
 import {
   encodeWebSearchHistoryCarrier,
   WEB_SEARCH_HISTORY_CARRIER_FIELD,
@@ -390,6 +392,42 @@ const forwardCodexResponses = async (
   return (await response.json()) as ResponsesResult
 }
 
+const createTestProviderResponsesPort: typeof createProviderResponsesPort = (
+  providerConfig,
+) =>
+  createProviderResponsesPort(providerConfig, {
+    dispatchCodexResponses: async (
+      payload,
+      requestHeaders,
+      baseUrl,
+      options,
+    ) => {
+      const result = await forwardCodexResponses(
+        payload,
+        requestHeaders,
+        baseUrl,
+        options,
+      )
+      if (
+        result
+        && typeof (result as ResponsesStream)[Symbol.asyncIterator]
+          === "function"
+      ) {
+        return {
+          kind: "stream",
+          source: result as ResponsesStream,
+          transport: "http",
+        }
+      }
+      return {
+        kind: "http",
+        payload,
+        response: Response.json(result),
+        transport: "http",
+      }
+    },
+  })
+
 const createApp = () => {
   const providerConfigSnapshot = structuredClone(providerConfigs)
   const providerResolver = createProviderResolver({
@@ -400,12 +438,11 @@ const createApp = () => {
   })
   const providerMessages = createProviderMessagesHandler({
     createProviderTokenUsageRecorder: createProviderUsageRecorder,
-    forwardCodexResponses,
+    createProviderResponsesPort: createTestProviderResponsesPort,
     getModelResponsesApiCompactThreshold: () => undefined,
     isContextManagementEnabledForMessages: () => true,
     loadCodexProviderModels,
     providerResolver,
-    resolveCodexResponsesTransport: () => "http",
   })
   const providerCountTokens = createProviderCountTokensHandler({
     getTokenCount: providerGetTokenCount,

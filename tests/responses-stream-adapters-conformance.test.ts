@@ -2,7 +2,6 @@ import { expect, mock, test } from "bun:test"
 import type { ConsolaInstance } from "consola"
 import type { SSEStreamingApi } from "hono/streaming"
 
-import type { ResolvedProviderConfig } from "../src/lib/config"
 import type {
   TokenUsageRecordMetadata,
   UsageTokens,
@@ -124,7 +123,6 @@ const harnesses: Array<AdapterHarness> = [
         output: createAnthropicOutput(messages),
         payload: createAnthropicPayload(),
         provider: "example",
-        providerConfig: createProviderConfig(),
         recordUsage: usage.record,
         signal: context.controller.signal,
         transport: "http",
@@ -466,14 +464,6 @@ const createAnthropicPayload = (): AnthropicMessagesPayload => ({
   messages: [{ role: "user", content: "hello" }],
   model: "gpt-test",
   stream: true,
-})
-
-const createProviderConfig = (): ResolvedProviderConfig => ({
-  apiKey: "test-key",
-  authType: "authorization",
-  baseUrl: "https://provider.example",
-  name: "example",
-  type: "openai-responses",
 })
 
 const isMetadataEvent = (value: unknown): boolean => {

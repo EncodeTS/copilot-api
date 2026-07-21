@@ -952,6 +952,100 @@ describe("openai-compatible provider messages", () => {
 })
 
 describe("openai-responses provider messages", () => {
+  test("keeps Anthropic SSE when a streaming provider returns buffered JSON", async () => {
+    configureOpenAIResponsesProvider()
+    let upstreamSignal: AbortSignal | null = null
+    fetchMock.mockImplementationOnce((_url, init) => {
+      upstreamSignal = init?.signal ?? null
+      return Promise.resolve(
+        Response.json({
+          ...createResponsesResult(),
+          output: [
+            {
+              id: "msg-buffered-fallback",
+              type: "message",
+              role: "assistant",
+              status: "completed",
+              content: [
+                {
+                  type: "output_text",
+                  text: "buffered fallback",
+                  annotations: [],
+                },
+              ],
+            },
+          ],
+          output_text: "buffered fallback",
+        }),
+      )
+    })
+
+    const response = await requestStreamingResponsesProviderMessages()
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get("content-type")).toStartWith(
+      "text/event-stream",
+    )
+    const body = await response.text()
+    expect(body).toContain("event: message_start")
+    expect(body).toContain("event: content_block_start")
+    expect(body).toContain('"text":"buffered fallback"')
+    expect(body).toContain("event: message_delta")
+    expect(body).toContain("event: message_stop")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      normalizedResponsesUsage,
+      undefined,
+    )
+    expect(upstreamSignal).not.toBeNull()
+    expect((upstreamSignal as unknown as AbortSignal).aborted).toBe(true)
+  })
+
+  test("releases the provider HTTP transport after a non-stream error body", async () => {
+    configureOpenAIResponsesProvider()
+    let upstreamSignal: AbortSignal | null = null
+    fetchMock.mockImplementationOnce((_url, init) => {
+      upstreamSignal = init?.signal ?? null
+      return Promise.resolve(
+        Response.json(
+          {
+            error: {
+              code: "rate_limit_exceeded",
+              message: "slow down",
+              type: "requests",
+            },
+          },
+          {
+            headers: { "retry-after": "3" },
+            status: 429,
+          },
+        ),
+      )
+    })
+
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-resp",
+      }),
+    })
+
+    expect(response.status).toBe(429)
+    expect(response.headers.get("retry-after")).toBe("3")
+    expect(await response.json()).toEqual({
+      error: {
+        code: "rate_limit_exceeded",
+        message: "slow down",
+        type: "requests",
+      },
+    })
+    expect(upstreamSignal).not.toBeNull()
+    expect((upstreamSignal as unknown as AbortSignal).aborted).toBe(true)
+  })
+
   test("releases the real provider HTTP transport after a typed terminal", async () => {
     configureOpenAIResponsesProvider()
 

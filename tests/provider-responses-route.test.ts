@@ -77,6 +77,7 @@ const fetchMock = mock((_url: string | URL | Request, init?: RequestInit) => {
     new Response(JSON.stringify(createResponsesResult(payload.model)), {
       headers: {
         "content-type": "application/json",
+        "set-cookie": "upstream_session=private",
         "x-upstream": "responses-provider",
       },
       status: 201,
@@ -191,6 +192,7 @@ describe("versioned provider Responses route", () => {
 
     expect(response.status).toBe(201)
     expect(response.headers.get("x-upstream")).toBe("responses-provider")
+    expect(response.headers.get("set-cookie")).toBeNull()
     expect(await response.json()).toEqual(createResponsesResult("gpt-test"))
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
@@ -207,6 +209,40 @@ describe("versioned provider Responses route", () => {
     )
   })
 
+  test("preserves exact successful JSON bytes, large integers, and status text", async () => {
+    const rawBody = `${JSON.stringify(
+      createResponsesResult("gpt-test"),
+    ).replace(
+      '"usage":null}',
+      '"usage":null,"unknown_large_integer":9007199254740993}',
+    )}\n`
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(rawBody, {
+          headers: {
+            "content-type": "application/json; profile=provider-exact",
+            "x-request-id": "request-exact-result",
+          },
+          status: 201,
+          statusText: "Created Exactly",
+        }),
+      ),
+    )
+
+    const response = await requestProviderResponses("/openai/v1/responses", {
+      input: "hello",
+      model: "gpt-test",
+    })
+
+    expect(response.status).toBe(201)
+    expect(response.statusText).toBe("Created Exactly")
+    expect(response.headers.get("content-type")).toBe(
+      "application/json; profile=provider-exact",
+    )
+    expect(response.headers.get("x-request-id")).toBe("request-exact-result")
+    expect(await response.text()).toBe(rawBody)
+  })
+
   test("streams provider Responses events through the public route", async () => {
     const completed = createResponsesResult("gpt-test")
     fetchMock.mockImplementationOnce(() =>
@@ -218,7 +254,13 @@ describe("versioned provider Responses route", () => {
             "",
           ].join("\n\n"),
           {
-            headers: { "content-type": "text/event-stream" },
+            headers: {
+              "content-type": "text/event-stream; charset=utf-8",
+              "set-cookie": "stream_private=1",
+              "x-ratelimit-remaining": "41",
+              "x-request-id": "request-stream-live",
+            },
+            status: 202,
           },
         ),
       ),
@@ -230,15 +272,104 @@ describe("versioned provider Responses route", () => {
       { accept: "text/event-stream" },
     )
 
-    expect(response.status).toBe(200)
+    expect(response.status).toBe(202)
     expect(response.headers.get("content-type")).toStartWith(
       "text/event-stream",
     )
+    expect(response.headers.get("x-request-id")).toBe("request-stream-live")
+    expect(response.headers.get("x-ratelimit-remaining")).toBe("41")
+    expect(response.headers.get("set-cookie")).toBeNull()
     const body = await response.text()
     expect(body).toContain("event: response.output_text.delta")
     expect(body).toContain('"delta":"hello"')
     expect(body).toContain("event: response.completed")
     expect(body).not.toContain("event: error")
+  })
+
+  test("preserves a JSON success when a requested stream falls back to a result", async () => {
+    fetchMock.mockImplementationOnce((_url, init) => {
+      const payload = parseJsonRequestBody(init?.body) as { model: string }
+      return Promise.resolve(
+        new Response(JSON.stringify(createResponsesResult(payload.model)), {
+          headers: {
+            "content-type": "application/json",
+            "x-upstream-mode": "buffered",
+          },
+          status: 202,
+        }),
+      )
+    })
+
+    const response = await requestProviderResponses(
+      "/openai/v1/responses",
+      { input: "hello", model: "gpt-test", stream: true },
+      { accept: "text/event-stream" },
+    )
+
+    expect(response.status).toBe(202)
+    expect(response.headers.get("content-type")).toContain("application/json")
+    expect(response.headers.get("x-upstream-mode")).toBe("buffered")
+    expect(await response.json()).toEqual(createResponsesResult("gpt-test"))
+  })
+
+  test("releases the provider transport after a typed stream terminal", async () => {
+    const encoder = new TextEncoder()
+    let upstreamSignal: AbortSignal | null = null
+    let cancelCount = 0
+    const completed = createResponsesResult("gpt-test")
+    fetchMock.mockImplementationOnce((_url, init) => {
+      upstreamSignal = init?.signal ?? null
+      return Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  `event: response.completed\ndata: ${JSON.stringify({
+                    response: completed,
+                    sequence_number: 1,
+                    type: "response.completed",
+                  })}\n\n`,
+                ),
+              )
+            },
+            cancel() {
+              cancelCount += 1
+            },
+          }),
+          {
+            headers: {
+              "content-type": "text/event-stream; upstream=ignored",
+              "x-request-id": "request-stream-prefetched",
+              "x-upstream-safe": "prefetched",
+            },
+            status: 201,
+          },
+        ),
+      )
+    })
+
+    const response = await requestProviderResponses(
+      "/openai/v1/responses",
+      { input: "hello", model: "gpt-test", stream: true },
+      { accept: "text/event-stream" },
+    )
+
+    expect(response.status).toBe(201)
+    expect(response.headers.get("content-type")).toStartWith(
+      "text/event-stream",
+    )
+    expect(response.headers.get("content-type")).not.toContain(
+      "upstream=ignored",
+    )
+    expect(response.headers.get("x-request-id")).toBe(
+      "request-stream-prefetched",
+    )
+    expect(response.headers.get("x-upstream-safe")).toBe("prefetched")
+    expect(await response.text()).toContain("event: response.completed")
+    expect(upstreamSignal).not.toBeNull()
+    expect((upstreamSignal as unknown as AbortSignal).aborted).toBe(true)
+    expect(cancelCount).toBe(1)
   })
 
   test("projects a first-frame provider error only after session usage and cancellation", async () => {
@@ -254,7 +385,11 @@ describe("versioned provider Responses route", () => {
                 message: "slow down",
                 type: "requests",
               },
-              headers: { "retry-after": "4" },
+              headers: {
+                "retry-after": "4",
+                "set-cookie": "terminal_private=1",
+                "x-terminal-safe": "preserved",
+              },
               message: "slow down",
               sequence_number: 1,
               status_code: 429,
@@ -281,6 +416,8 @@ describe("versioned provider Responses route", () => {
 
     expect(response.status).toBe(429)
     expect(response.headers.get("retry-after")).toBe("4")
+    expect(response.headers.get("x-terminal-safe")).toBe("preserved")
+    expect(response.headers.get("set-cookie")).toBeNull()
     expect(await response.json()).toEqual({
       error: {
         code: "rate_limit_exceeded",
@@ -425,6 +562,32 @@ describe("versioned provider Responses route", () => {
         type: "requests",
       },
     })
+  })
+
+  test("preserves non-JSON upstream errors and only their safe headers", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response("provider teapot", {
+          headers: {
+            "content-type": "text/plain",
+            "set-cookie": "private=1",
+            "x-unknown-safe": "preserved",
+          },
+          status: 418,
+        }),
+      ),
+    )
+
+    const response = await requestProviderResponses("/openai/v1/responses", {
+      input: "hello",
+      model: "gpt-test",
+    })
+
+    expect(response.status).toBe(418)
+    expect(response.headers.get("content-type")).toContain("text/plain")
+    expect(response.headers.get("x-unknown-safe")).toBe("preserved")
+    expect(response.headers.get("set-cookie")).toBeNull()
+    expect(await response.text()).toBe("provider teapot")
   })
 
   test("keeps the root Responses route ahead of the provider route", async () => {
