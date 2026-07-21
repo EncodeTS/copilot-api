@@ -44,11 +44,7 @@ export async function runZstdWorkerContract({
     fixture: payloadFixture,
     workerUrl,
   })
-  const active = successMessages.find((message) => message.type === "active")
-  const result = successMessages.find((message) => message.type === "result")
-  if (!active || !result) {
-    throw new Error("zstd worker did not emit active and result messages")
-  }
+  const [active, result] = requireSuccessfulMessageSequence(successMessages)
   const output = Buffer.from(result.output)
   if (!output.equals(payloadExpected)) {
     throw new Error("zstd worker output mismatch")
@@ -61,9 +57,9 @@ export async function runZstdWorkerContract({
     fixture: emptyFixture,
     workerUrl,
   })
-  const emptyActive = emptyMessages.find((message) => message.type === "active")
-  const emptyResult = emptyMessages.find((message) => message.type === "result")
-  if (!emptyActive || !emptyResult || emptyResult.output.byteLength !== 0) {
+  const [emptyActive, emptyResult] =
+    requireSuccessfulMessageSequence(emptyMessages)
+  if (emptyResult.output.byteLength !== 0) {
     throw new Error("zstd worker did not preserve a valid FCS=0 frame")
   }
 
@@ -139,8 +135,18 @@ async function runWorker({
 }
 
 function failedBeforeActive(messages) {
-  return (
-    !messages.some((message) => message.type === "active") &&
-    messages.some((message) => message.type === "error")
-  )
+  return messages.length === 1 && messages[0]?.type === "error"
+}
+
+function requireSuccessfulMessageSequence(messages) {
+  if (
+    messages.length !== 2 ||
+    messages[0]?.type !== "active" ||
+    messages[1]?.type !== "result"
+  ) {
+    throw new Error(
+      "zstd worker must emit exactly one active message followed by exactly one result message",
+    )
+  }
+  return messages
 }
