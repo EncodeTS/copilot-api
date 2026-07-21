@@ -1,5 +1,7 @@
 import type { ConsolaInstance } from "consola"
 
+import { observeCopilotResponsesMetadata } from "~/lib/copilot-rate-limit"
+
 import type {
   ResponsesStreamEvent as ProtocolResponsesStreamEvent,
   ResponsesStreamTerminalEvent,
@@ -65,16 +67,21 @@ interface ResponsesStreamCollection {
 export const collectResponsesStreamResult = async ({
   errorMessagePrefix = "Responses stream",
   onEvent,
+  onParsed,
+  signal,
   upstreamResponse,
   logger,
 }: {
   errorMessagePrefix?: string
   onEvent?: (event: ResponseStreamEvent) => void
+  onParsed?: (event: unknown) => void
+  signal?: AbortSignal
   upstreamResponse: ResponsesStream
   logger: ConsolaInstance
 }): Promise<ResponsesResult> => {
   const state = createResponsesStreamCollection()
   const outcome = await runResponsesStreamSession({
+    doneMarkerBehavior: "continue",
     onFrame: (frame) => {
       logger.debug("messages.responses.buffered_frame", {
         eventType: frame.kind === "event" ? frame.event.type : null,
@@ -82,11 +89,19 @@ export const collectResponsesStreamResult = async ({
         terminal:
           frame.kind === "event" ? (frame.terminal?.kind ?? null) : null,
       })
+      if (frame.kind === "unknown") {
+        observeCopilotResponsesMetadata(frame.parsed)
+        onParsed?.(frame.parsed)
+        return
+      }
       if (frame.kind !== "event") return
+      observeCopilotResponsesMetadata(frame.event)
+      onParsed?.(frame.event)
       onEvent?.(frame.event as unknown as ResponseStreamEvent)
       collectResponsesStreamEvent(frame.event, state)
     },
-    source: ignoreBufferedDoneMarkers(upstreamResponse),
+    signal,
+    source: upstreamResponse,
   })
 
   return resolveResponsesStreamCollectionOutcome(
@@ -94,15 +109,6 @@ export const collectResponsesStreamResult = async ({
     state,
     errorMessagePrefix,
   )
-}
-
-const ignoreBufferedDoneMarkers = async function* (
-  upstreamResponse: ResponsesStream,
-): AsyncGenerator<{ data?: string; event?: string }> {
-  for await (const chunk of upstreamResponse) {
-    if (chunk.data === "[DONE]") continue
-    yield chunk
-  }
 }
 
 const createResponsesStreamCollection = (): ResponsesStreamCollection => ({

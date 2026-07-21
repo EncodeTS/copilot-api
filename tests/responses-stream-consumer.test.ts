@@ -200,6 +200,50 @@ test("Provider Responses consumer stops pulling after a typed terminal", async (
   })
 })
 
+test("Provider Responses consumer stops pulling after a canonical translation error", async () => {
+  const logger = createLogger()
+  const { messages, output } = createOutput()
+  const recordUsage = mock((_usage: UsageTokens) => "accepted" as const)
+  const response = createResponsesResult()
+  let readsPastTerminal = 0
+
+  async function* canonicalErrorThenTail(): ResponsesStream {
+    await Promise.resolve()
+    yield createResponseCreatedChunk(response)
+    yield createOutputTextDeltaChunk()
+    yield {
+      event: "response.output_text.done",
+      data: JSON.stringify({
+        content_index: 0,
+        item_id: "msg-test",
+        output_index: 0,
+        sequence_number: 2,
+        text: "different canonical text",
+        type: "response.output_text.done",
+      }),
+    }
+    readsPastTerminal += 1
+    throw new Error("read past canonical translation error")
+  }
+
+  await consumeResponsesStream({
+    kind: "provider",
+    logger,
+    output,
+    payload: createPayload(),
+    provider: "example",
+    providerConfig: createProviderConfig(),
+    recordUsage,
+    transport: "http",
+    upstreamResponse: canonicalErrorThenTail(),
+  })
+
+  expect(messages.filter(({ event }) => event === "error")).toHaveLength(1)
+  expect(messages.at(-1)?.data).toContain("diverged from streamed deltas")
+  expect(readsPastTerminal).toBe(0)
+  expect(recordUsage).toHaveBeenCalledWith({})
+})
+
 test("Provider Responses consumer releases an already-aborted source without fabricating an error", async () => {
   const logger = createLogger()
   const { messages, output } = createOutput()

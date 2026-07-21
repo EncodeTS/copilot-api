@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Hono } from "hono"
 
-import type { createResponses as createCopilotResponses } from "../src/services/copilot/create-responses"
+import type {
+  createResponses as createCopilotResponses,
+  ResponseStreamEvent,
+} from "../src/services/copilot/create-responses"
 
 let responsesApiWebSocketEnabled = true
 const originalFetch = globalThis.fetch
@@ -43,6 +46,9 @@ const { generateRequestIdFromPayload, getUUID } = await import(
   "../src/lib/utils"
 )
 const { HTTPError } = await import("../src/lib/error")
+const { createStreamIdTracker, fixParsedStreamIds } = await import(
+  "../src/routes/responses/stream-id-sync"
+)
 
 const defaultResponsesHandlerDependencies = {
   ...responsesHandlerDependencies,
@@ -147,6 +153,14 @@ afterEach(async () => {
 })
 
 describe("responses handler token usage", () => {
+  test("keeps original native Responses wire data when stream IDs do not change", () => {
+    const data =
+      '{ "type": "response.output_text.delta", "sequence_number": 1, "output_index": 0, "item_id": "message-1", "delta": "hello" }'
+    const event = JSON.parse(data) as ResponseStreamEvent
+
+    expect(fixParsedStreamIds(data, event, createStreamIdTracker())).toBe(data)
+  })
+
   test("model mapping preserves explicit and omitted native Responses intent", async () => {
     state.models = {
       object: "list",

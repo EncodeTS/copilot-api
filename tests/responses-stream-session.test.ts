@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 
 import {
+  isResponsesStreamTerminalData,
   type ResponsesStreamNonTerminalEventType,
   type ResponsesStreamEventType,
 } from "../src/lib/responses-stream-protocol"
@@ -28,6 +29,21 @@ const eventUniversesMatch: EventUniversesMatch = true
 
 test("neutral and service Responses event universes match bidirectionally", () => {
   expect(eventUniversesMatch).toBe(true)
+})
+
+test("shared transport terminal detection preserves tolerant pool semantics", () => {
+  expect(isResponsesStreamTerminalData('{"type":"response.completed"}')).toBe(
+    true,
+  )
+  expect(isResponsesStreamTerminalData('{"type":"response.failed"}')).toBe(true)
+  expect(isResponsesStreamTerminalData('{"type":"response.incomplete"}')).toBe(
+    true,
+  )
+  expect(isResponsesStreamTerminalData('{"type":"error"}')).toBe(true)
+  expect(isResponsesStreamTerminalData('{"type":"response.created"}')).toBe(
+    false,
+  )
+  expect(isResponsesStreamTerminalData("not-json")).toBe(false)
 })
 
 test("Responses session parses data frames once and exposes content-free control classifications", async () => {
@@ -114,6 +130,34 @@ test("Responses session parses data frames once and exposes content-free control
   if (outcome.kind === "eof") {
     expect(outcome.endedBy).toBe("done")
   }
+})
+
+test("Responses session can observe a DONE marker without ending adapter-owned streams", async () => {
+  const response = createResult()
+  const frames = new Array<ResponsesStreamSessionFrame>()
+
+  const outcome = await runResponsesStreamSession({
+    doneMarkerBehavior: "continue",
+    onFrame: (frame) => {
+      frames.push(frame)
+    },
+    source: createThrowingStream(
+      [
+        { data: "[DONE]", event: "message" },
+        {
+          data: JSON.stringify({
+            response,
+            sequence_number: 1,
+            type: "response.completed",
+          }),
+        },
+      ],
+      "read past terminal",
+    ),
+  })
+
+  expect(frames.map((frame) => frame.kind)).toEqual(["done", "event"])
+  expect(outcome.kind).toBe("completed")
 })
 
 test("Responses session delivers data-free SSE envelope metadata without loss", async () => {

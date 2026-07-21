@@ -19,6 +19,7 @@ import {
   isResponsesApiWebSocketEnabled as isConfiguredResponsesApiWebSocketEnabled,
 } from "~/lib/config"
 import { HTTPError } from "~/lib/error"
+import { isResponsesStreamTerminalData } from "~/lib/responses-stream-protocol"
 import {
   fetchWithUpstreamLifecycle,
   type UpstreamLifecycleTimeouts,
@@ -30,6 +31,7 @@ import {
   createWebSocketUrl,
   type PooledWebSocketRequest,
 } from "~/services/responses-websocket"
+import { projectResponsesWebSocketChunk } from "~/services/responses-websocket-chunk"
 import { requestContext } from "~/lib/request-context"
 import consola from "consola"
 
@@ -506,34 +508,18 @@ const createCodexResponsesSafeStream = async function* (
 
 const createCodexResponsesWebSocketStreamChunk = (
   data: string,
-): ServerSentEventChunk => {
-  if (data === "[DONE]") {
-    return { data }
-  }
+): ServerSentEventChunk =>
+  projectResponsesWebSocketChunk(data, {
+    normalizeError: normalizeCodexResponsesWebSocketError,
+  })
 
-  try {
-    const parsed = JSON.parse(data) as {
-      id?: unknown
-      type?: unknown
-      error?: {
-        message: string
-      }
-      message?: string
-    }
-
-    if (parsed.type === "error" && parsed.error) {
-      consola.warn("Codex responses websocket stream error:", parsed.error)
-      parsed.message = parsed.error.message
-    }
-
-    return {
-      event: typeof parsed.type === "string" ? parsed.type : undefined,
-      data: JSON.stringify(parsed),
-      id: typeof parsed.id === "string" ? parsed.id : undefined,
-    }
-  } catch {
-    return { data }
-  }
+const normalizeCodexResponsesWebSocketError = (
+  event: Record<string, unknown>,
+): Record<string, unknown> => {
+  if (!event.error || typeof event.error !== "object") return event
+  const error = event.error as Record<string, unknown>
+  consola.warn("Codex responses websocket stream error:", error)
+  return { ...event, message: error.message }
 }
 
 const isTerminalCodexResponsesWebSocketChunk = (
@@ -543,17 +529,7 @@ const isTerminalCodexResponsesWebSocketChunk = (
     return false
   }
 
-  try {
-    const parsed = JSON.parse(chunk.data) as { type?: unknown }
-    return (
-      parsed.type === "response.completed"
-      || parsed.type === "response.failed"
-      || parsed.type === "response.incomplete"
-      || parsed.type === "error"
-    )
-  } catch {
-    return false
-  }
+  return isResponsesStreamTerminalData(chunk.data)
 }
 
 const createResponsesErrorServerSentEventChunk = (

@@ -2,14 +2,15 @@ import type { ConsolaInstance } from "consola"
 
 import type { ResolvedProviderConfig } from "~/lib/config"
 import { logCodexRateLimitsEvent } from "~/lib/codex-rate-limit"
+import { observeCopilotResponsesMetadata } from "~/lib/copilot-rate-limit"
 import { debugJsonTail, debugLazy } from "~/lib/logger"
-import type { StreamTransport } from "~/lib/stream-lifecycle"
 import {
-  normalizeOptionalToken,
-  normalizeResponsesUsage,
-  type TokenUsageRecorder,
-  type UsageTokens,
-} from "~/lib/token-usage"
+  getResponsesStreamSessionFailure,
+  runResponsesStreamSession,
+  type ResponsesStreamSessionFrame,
+} from "~/lib/responses-stream-session"
+import type { StreamTransport } from "~/lib/stream-lifecycle"
+import { type TokenUsageRecorder } from "~/lib/token-usage"
 import { resolveBridgeToolSearchName } from "~/lib/tool-search"
 import type {
   ResponsesStream,
@@ -37,6 +38,7 @@ export type { AnthropicStreamOutput } from "./stream-error"
 
 interface ResponsesStreamConsumerBase {
   logger: ConsolaInstance
+  observeParsed?: (event: unknown) => void
   output: AnthropicStreamOutput
   payload: AnthropicMessagesPayload
   recordUsage: TokenUsageRecorder
@@ -83,7 +85,7 @@ export const collectProviderResponsesStreamResult = async ({
     return await collectResponsesStreamResult({
       errorMessagePrefix,
       logger,
-      onEvent: (event) => {
+      onParsed: (event) => {
         if (providerConfig.name === "codex") {
           logCodexRateLimitsEvent(event)
         }
@@ -112,19 +114,17 @@ const consumeCopilotResponsesStream = async (
     doneMarkerBehavior: "ignore",
     eofErrorMessage: "Responses stream ended without completion",
     flow: "responses",
-    normalizeTerminalUsage: (event) => ({
-      ...normalizeResponsesUsage(event.response.usage),
-      total_nano_aiu: normalizeOptionalToken(
-        event.copilot_usage?.total_nano_aiu,
-      ),
-    }),
     onData: (data) => {
       debugLazy(logger, () => ["Responses raw stream event:", data])
     },
     onTranslatedData: (eventData) => {
       debugLazy(logger, () => ["Translated Anthropic event:", eventData])
     },
-    parseEvent: (data) => JSON.parse(data) as ResponseStreamEvent,
+    malformedBehavior: "error",
+    onParsed: (event) => {
+      observeCopilotResponsesMetadata(event)
+      options.observeParsed?.(event)
+    },
     streamState,
   })
 }
@@ -143,8 +143,6 @@ const consumeProviderResponsesStream = async (
     doneMarkerBehavior: "end",
     eofErrorMessage: `${provider} stream ended without a completion event`,
     flow: "provider_responses",
-    normalizeTerminalUsage: (event) =>
-      normalizeResponsesUsage(event.response.usage),
     onChunk: (chunk) => {
       debugJsonTail(logger, "provider.messages.responses.raw_stream_event:", {
         value: chunk.data,
@@ -157,29 +155,25 @@ const consumeProviderResponsesStream = async (
         eventData,
       ])
     },
-    parseEvent: (data) =>
-      parseProviderResponsesStreamEvent(data, providerConfig, logger),
+    malformedBehavior: "ignore",
+    onParsed: (event) => {
+      if (providerConfig.name === "codex") logCodexRateLimitsEvent(event)
+      options.observeParsed?.(event)
+    },
     streamState,
   })
 }
-
-type TerminalResponsesEvent = Extract<
-  ResponseStreamEvent,
-  {
-    type: "response.completed" | "response.failed" | "response.incomplete"
-  }
->
 
 interface TranslatedResponsesStreamConsumerOptions
   extends ResponsesStreamConsumerBase {
   doneMarkerBehavior: "end" | "ignore"
   eofErrorMessage: string
   flow: "provider_responses" | "responses"
-  normalizeTerminalUsage: (event: TerminalResponsesEvent) => UsageTokens
+  malformedBehavior: "error" | "ignore"
   onChunk?: (chunk: { data?: string; event?: string }) => void
   onData?: (data: string) => void
+  onParsed?: (event: unknown) => void
   onTranslatedData?: (data: string) => void
-  parseEvent: (data: string) => ResponseStreamEvent | null
   releaseUpstream?: (reason: unknown) => Promise<void> | void
   streamState: ResponsesStreamState
 }
@@ -192,12 +186,12 @@ const consumeTranslatedResponsesStream = async (
     eofErrorMessage,
     flow,
     logger,
-    normalizeTerminalUsage,
+    malformedBehavior,
     onChunk,
     onData,
+    onParsed,
     onTranslatedData,
     output,
-    parseEvent,
     recordUsage,
     releaseUpstream,
     signal,
@@ -205,128 +199,145 @@ const consumeTranslatedResponsesStream = async (
     transport,
     upstreamResponse,
   } = options
-  const streamStartedAt = Date.now()
-  let usage: UsageTokens = {}
-  let eventCount = 0
-  let lastEventType: string | null = null
-  let iteratorExhausted = false
-  let cleanupReason: unknown = new Error("Responses stream consumer finished")
-  const iterator = upstreamResponse[Symbol.asyncIterator]()
-
-  try {
-    while (!signal?.aborted) {
-      const result = await iterator.next()
-      if (result.done) {
-        iteratorExhausted = true
-        break
-      }
-      if (signal?.aborted) break
-
-      const chunk = result.value
-      onChunk?.(chunk)
-      if (chunk.event === "ping") {
-        await output.writeSSE({ event: "ping", data: '{"type":"ping"}' })
-        eventCount += 1
-        lastEventType = "ping"
-        continue
-      }
-      const data = chunk.data
-      if (!data) continue
-      if (data === "[DONE]") {
-        if (doneMarkerBehavior === "end") break
-        continue
-      }
-
-      onData?.(data)
-      const responseEvent = parseEvent(data)
-      if (!responseEvent) continue
-      lastEventType = responseEvent.type
-      if (isTerminalResponsesEvent(responseEvent)) {
-        usage = normalizeTerminalUsage(responseEvent)
-      }
-
-      for (const event of translateResponsesStreamEvent(
-        responseEvent,
+  const sourceWasUnopenedForAbort = signal?.aborted === true
+  const adapterTerminal = new AbortController()
+  const sessionSignal =
+    signal ?
+      AbortSignal.any([signal, adapterTerminal.signal])
+    : adapterTerminal.signal
+  const outcome = await runResponsesStreamSession({
+    doneMarkerBehavior:
+      doneMarkerBehavior === "ignore" ? "continue" : "terminate",
+    onFrame: async (frame) => {
+      onChunk?.(frame.wire)
+      await deliverTranslatedResponsesFrame({
+        frame,
+        malformedBehavior,
+        logger,
+        onData,
+        onParsed,
+        onTranslatedData,
+        output,
         streamState,
-      )) {
-        const eventData = JSON.stringify(event)
-        onTranslatedData?.(eventData)
-        await output.writeSSE({
-          event: event.type,
-          data: eventData,
-        })
-        eventCount += 1
-      }
-
-      if (streamState.messageCompleted) {
-        logger.debug("Responses message completed, ending stream", {
-          flow,
-          transport,
-        })
-        break
-      }
-    }
-
-    if (!streamState.messageCompleted && !signal?.aborted) {
-      const error = new Error(eofErrorMessage)
-      cleanupReason = error
-      await emitAnthropicStreamError(output, logger, {
-        diagnostics: {
-          elapsedMs: Date.now() - streamStartedAt,
-          eventCount,
-          flow,
-          lastEventType,
-          retryCount: 0,
-          terminalSeen: false,
-          transport,
-        },
-        error,
-        flow,
-        signal,
       })
-    }
-  } catch (error) {
-    cleanupReason = error
+      if (
+        streamState.messageCompleted
+        && frame.kind === "event"
+        && !frame.terminal
+      ) {
+        adapterTerminal.abort(new Error("Anthropic translation completed"))
+      }
+    },
+    signal: sessionSignal,
+    source: upstreamResponse,
+  })
+
+  const failure = getResponsesStreamSessionFailure(outcome, eofErrorMessage)
+  if (failure) {
     await emitAnthropicStreamError(output, logger, {
       diagnostics: {
-        elapsedMs: Date.now() - streamStartedAt,
-        eventCount,
+        elapsedMs: outcome.diagnostics.elapsedMs,
+        eventCount: outcome.diagnostics.frameCount,
         flow,
-        lastEventType,
+        lastEventType: outcome.diagnostics.lastEventType,
         retryCount: 0,
-        terminalSeen: streamState.messageCompleted,
+        terminalSeen: outcome.diagnostics.terminalSeen,
         transport,
       },
-      error,
+      error: failure.error,
       flow,
       signal,
     })
-  } finally {
-    await releaseResponsesStreamSource({
+  }
+
+  if (streamState.messageCompleted) {
+    logger.debug("Responses message completed, ending stream", {
       flow,
-      iterator,
-      iteratorExhausted,
-      logger,
-      reason: signal?.reason ?? cleanupReason,
-      releaseUpstream,
       transport,
     })
-    recordUsage(usage)
+  }
+  await releaseResponsesUpstream({
+    flow,
+    logger,
+    reason:
+      sessionSignal.reason
+      ?? failure?.error
+      ?? new Error("Responses stream consumer finished"),
+    releaseUpstream,
+    transport,
+  })
+  if (sourceWasUnopenedForAbort) {
+    await releaseUnopenedResponsesSource({
+      flow,
+      logger,
+      source: upstreamResponse,
+      transport,
+    })
+  }
+  recordUsage(outcome.terminal?.usage ?? {})
+}
+
+const deliverTranslatedResponsesFrame = async ({
+  frame,
+  malformedBehavior,
+  logger,
+  onData,
+  onParsed,
+  onTranslatedData,
+  output,
+  streamState,
+}: {
+  frame: ResponsesStreamSessionFrame
+  malformedBehavior: "error" | "ignore"
+  logger: ConsolaInstance
+  onData?: (data: string) => void
+  onParsed?: (event: unknown) => void
+  onTranslatedData?: (data: string) => void
+  output: AnthropicStreamOutput
+  streamState: ResponsesStreamState
+}): Promise<void> => {
+  if (frame.kind === "ping") {
+    await output.writeSSE({ event: "ping", data: '{"type":"ping"}' })
+    return
+  }
+  if (frame.kind === "malformed") {
+    if (malformedBehavior === "error") {
+      throw new Error("Responses stream contained a malformed event")
+    }
+    logger.error("provider.messages.responses.parse_chunk_error", {
+      frameKind: frame.kind,
+    })
+    return
+  }
+  if (frame.kind === "unknown") {
+    onParsed?.(frame.parsed)
+    return
+  }
+  if (frame.kind !== "event") return
+
+  onData?.(frame.wire.data ?? "")
+  onParsed?.(frame.event)
+  for (const event of translateResponsesStreamEvent(
+    frame.event as unknown as ResponseStreamEvent,
+    streamState,
+  )) {
+    const eventData = JSON.stringify(event)
+    onTranslatedData?.(eventData)
+    await output.writeSSE({
+      event: event.type,
+      data: eventData,
+    })
   }
 }
 
-const releaseResponsesStreamSource = async ({
+const releaseResponsesUpstream = async ({
   flow,
-  iterator,
-  iteratorExhausted,
   logger,
   reason,
   releaseUpstream,
   transport,
 }: {
   flow: "provider_responses" | "responses"
-  iterator: AsyncIterator<{ data?: string; event?: string }>
-  iteratorExhausted: boolean
   logger: ConsolaInstance
   reason: unknown
   releaseUpstream?: (reason: unknown) => Promise<void> | void
@@ -341,11 +352,21 @@ const releaseResponsesStreamSource = async ({
       transport,
     })
   }
+}
 
-  if (iteratorExhausted) return
-
+const releaseUnopenedResponsesSource = async ({
+  flow,
+  logger,
+  source,
+  transport,
+}: {
+  flow: "provider_responses" | "responses"
+  logger: ConsolaInstance
+  source: ResponsesStream
+  transport: StreamTransport
+}): Promise<void> => {
   try {
-    await iterator.return?.()
+    await source[Symbol.asyncIterator]().return?.()
   } catch {
     logger.debug("messages.responses.release_failed", {
       flow,
@@ -354,31 +375,3 @@ const releaseResponsesStreamSource = async ({
     })
   }
 }
-
-const parseProviderResponsesStreamEvent = (
-  data: string,
-  providerConfig: ResolvedProviderConfig,
-  logger: ConsolaInstance,
-): ResponseStreamEvent | null => {
-  try {
-    const parsed = JSON.parse(data) as ResponseStreamEvent
-    if (providerConfig.name === "codex") {
-      logCodexRateLimitsEvent(parsed)
-    }
-    return parsed
-  } catch (error) {
-    logger.error("provider.messages.responses.parse_chunk_error", {
-      provider: providerConfig.name,
-      data,
-      error,
-    })
-    return null
-  }
-}
-
-const isTerminalResponsesEvent = (
-  event: ResponseStreamEvent,
-): event is TerminalResponsesEvent =>
-  event.type === "response.completed"
-  || event.type === "response.failed"
-  || event.type === "response.incomplete"

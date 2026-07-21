@@ -12,9 +12,11 @@ import {
   debugJsonTail,
   logDiagnosticEvent,
 } from "~/lib/logger"
+import { observeCopilotResponsesMetadata } from "~/lib/copilot-rate-limit"
 import { responsesDiagnosticsLogger } from "~/lib/responses-diagnostic-logger"
 import { summarizeResponsesPayload } from "~/lib/responses-diagnostics"
 import { getResponsesEndpointCapabilities } from "~/lib/responses-capabilities"
+import type { ResponsesStreamSessionFrame } from "~/lib/responses-stream-session"
 import { normalizeGatewayReasoningEffort } from "~/lib/reasoning-effort"
 import { routeProviderModelAlias } from "~/routes/provider/model-router"
 import { state } from "~/lib/state"
@@ -22,7 +24,6 @@ import {
   createCopilotTokenUsageRecorder,
   normalizeOptionalToken,
   normalizeResponsesUsage,
-  type UsageTokens,
 } from "~/lib/token-usage"
 import { generateRequestIdFromPayload, getUUID } from "~/lib/utils"
 import type { SubagentMarker } from "~/lib/subagent"
@@ -33,7 +34,11 @@ import {
   type ResponseStreamEvent,
 } from "~/services/copilot/create-responses"
 
-import { createStreamIdTracker, fixStreamIds } from "./stream-id-sync"
+import { createStreamIdTracker, fixParsedStreamIds } from "./stream-id-sync"
+import {
+  projectResponsesSessionFrame,
+  relayResponsesStreamSession,
+} from "./stream-session-adapter"
 import {
   applyResponsesApiContextManagement,
   compactInputByLatestCompaction,
@@ -41,7 +46,6 @@ import {
   getResponsesRequestOptions,
 } from "./utils"
 import { createOptimizedCopilotResponses } from "./optimized-create"
-import { emitResponsesStreamError } from "./stream-error"
 import consola from "consola"
 
 const logger = createHandlerLogger("responses-handler")
@@ -230,97 +234,29 @@ export const handleResponses = async (c: Context) => {
     logger.debug("Forwarding native Responses stream")
     return streamSSE(c, async (stream) => {
       const idTracker = createStreamIdTracker()
-      const streamStartedAt = Date.now()
-      let usage: UsageTokens = {}
-      let eventCount = 0
-      let lastEventType: string | null = null
-      let terminalSeen = false
-
-      try {
-        for await (const chunk of response) {
+      await relayResponsesStreamSession({
+        eofErrorMessage: "Responses stream ended without a terminal event",
+        flow: "responses",
+        logger,
+        observeFrame: (frame) => {
           debugJsonTail(logger, "Responses stream chunk:", {
-            value: chunk,
+            value: frame.wire,
             tailLength: 1_000,
           })
-          const parsedEvent = parseResponsesStreamEvent(chunk)
-          const isTerminal = isTerminalResponsesStreamEvent(parsedEvent)
-          if (isTerminal) {
-            terminalSeen = true
+          if (frame.kind === "event") {
+            observeCopilotResponsesMetadata(frame.event)
           }
-          if (
-            parsedEvent?.type === "response.completed"
-            || parsedEvent?.type === "response.failed"
-            || parsedEvent?.type === "response.incomplete"
-          ) {
-            usage = {
-              ...normalizeResponsesUsage(parsedEvent.response.usage),
-              total_nano_aiu: normalizeOptionalToken(
-                parsedEvent.copilot_usage?.total_nano_aiu,
-              ),
-            }
+          if (frame.kind === "unknown") {
+            observeCopilotResponsesMetadata(frame.parsed)
           }
-
-          const processedData = fixStreamIds(
-            (chunk as { data?: string }).data ?? "",
-            (chunk as { event?: string }).event,
-            idTracker,
-          )
-
-          await stream.writeSSE({
-            id: (chunk as { id?: string }).id,
-            event: (chunk as { event?: string }).event,
-            data: processedData,
-          })
-          eventCount += 1
-          lastEventType =
-            parsedEvent?.type
-            ?? (chunk as { event?: string }).event
-            ?? lastEventType
-
-          if (isTerminal) {
-            break
-          }
-        }
-      } catch (error) {
-        if (!terminalSeen) {
-          await emitResponsesStreamError(stream, logger, error, {
-            diagnostics: {
-              elapsedMs: Date.now() - streamStartedAt,
-              eventCount,
-              flow: "responses",
-              lastEventType,
-              retryCount: 0,
-              terminalSeen,
-              transport: responsesTransport,
-            },
-            signal: c.req.raw.signal,
-          })
-        }
-        recordUsage(usage)
-        return
-      }
-
-      if (!terminalSeen && !c.req.raw.signal.aborted) {
-        await emitResponsesStreamError(
-          stream,
-          logger,
-          new Error("Responses stream ended without a terminal event"),
-          {
-            diagnostics: {
-              elapsedMs: Date.now() - streamStartedAt,
-              eventCount,
-              flow: "responses",
-              lastEventType,
-              retryCount: 0,
-              terminalSeen,
-              transport: responsesTransport,
-            },
-            signal: c.req.raw.signal,
-          },
-        )
-      }
-
-      recordUsage(usage)
+        },
+        output: stream,
+        projectFrame: (frame) => projectNativeResponsesFrame(frame, idTracker),
+        recordUsage,
+        signal: c.req.raw.signal,
+        source: response,
+        transport: responsesTransport,
+      })
     })
   }
 
@@ -345,28 +281,20 @@ const isAsyncIterable = <T>(value: unknown): value is AsyncIterable<T> =>
 const isStreamingRequested = (payload: ResponsesPayload): boolean =>
   Boolean(payload.stream)
 
-const parseResponsesStreamEvent = (
-  chunk: unknown,
-): ResponseStreamEvent | null => {
-  const data = (chunk as { data?: string }).data
-  if (!data || data === "[DONE]") {
-    return null
-  }
-
-  try {
-    return JSON.parse(data) as ResponseStreamEvent
-  } catch {
-    return null
-  }
+const projectNativeResponsesFrame = (
+  frame: ResponsesStreamSessionFrame,
+  idTracker: ReturnType<typeof createStreamIdTracker>,
+) => {
+  const message = projectResponsesSessionFrame(frame)
+  if (frame.kind !== "event" || !message) return message
+  message.data = fixParsedStreamIds(
+    message.data,
+    frame.event as unknown as ResponseStreamEvent,
+    idTracker,
+    frame.wire.event,
+  )
+  return message
 }
-
-const isTerminalResponsesStreamEvent = (
-  event: ResponseStreamEvent | null,
-): boolean =>
-  event?.type === "response.completed"
-  || event?.type === "response.failed"
-  || event?.type === "response.incomplete"
-  || event?.type === "error"
 
 const removeWebSearchTool = (payload: ResponsesPayload): void => {
   if (!Array.isArray(payload.tools) || payload.tools.length === 0) return

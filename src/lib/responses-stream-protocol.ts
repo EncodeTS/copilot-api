@@ -227,6 +227,19 @@ export const classifyResponsesStreamTerminalEvent = (
     }
   : null
 
+export const isResponsesStreamTerminalData = (data: string): boolean => {
+  try {
+    const parsed: unknown = JSON.parse(data)
+    return (
+      isRecord(parsed)
+      && typeof parsed.type === "string"
+      && Object.hasOwn(RESPONSES_STREAM_TERMINAL_KIND_BY_TYPE, parsed.type)
+    )
+  } catch {
+    return false
+  }
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
 

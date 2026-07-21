@@ -14,7 +14,6 @@ import {
 import { COMPACT_REQUEST, type CompactType } from "~/lib/compact"
 import { getResponsesWebSocketResourceLimits } from "~/lib/config"
 import {
-  logCopilotQuotaSnapshots,
   logCopilotRateLimits,
   type CopilotQuotaSnapshot,
 } from "~/lib/copilot-rate-limit"
@@ -22,6 +21,7 @@ import { HTTPError } from "~/lib/error"
 import { logDiagnosticEvent } from "~/lib/logger"
 import type { GatewayReasoningEffort } from "~/lib/reasoning-effort"
 import { responsesDiagnosticsLogger } from "~/lib/responses-diagnostic-logger"
+import { isResponsesStreamTerminalData } from "~/lib/responses-stream-protocol"
 import {
   createResponsesTransportErrorDiagnostic,
   createResponsesUpstreamErrorDiagnostic,
@@ -49,6 +49,7 @@ import {
   isWebSocketNotSentError,
   type PooledWebSocketRequest,
 } from "~/services/responses-websocket"
+import { projectResponsesWebSocketChunk } from "~/services/responses-websocket-chunk"
 import {
   createReasoningRecoveryScope,
   responsesReasoningRecoveryRegistry,
@@ -1568,38 +1569,20 @@ const getHeaderValue = (
 
 const createResponsesWebSocketStreamChunk = (
   data: string,
-): { data?: string; event?: string; id?: string } => {
-  if (data === "[DONE]") {
-    return { data }
-  }
+): { data?: string; event?: string; id?: string } =>
+  projectResponsesWebSocketChunk(data, {
+    normalizeError: normalizeCopilotResponsesWebSocketError,
+  })
 
-  try {
-    const parsed = JSON.parse(data) as {
-      copilot_quota_snapshots?: Record<string, CopilotQuotaSnapshot>
-      id?: unknown
-      type?: unknown
-      error?: {
-        code: string | null
-        message: string
-      }
-      code?: string | null
-      message?: string
-    }
-    if (parsed.type === "response.completed") {
-      logCopilotQuotaSnapshots(parsed.copilot_quota_snapshots)
-    }
-    if (parsed.type === "error" && parsed.error) {
-      consola.warn("Copilot responses websocket stream error:", parsed.error)
-      parsed.code = parsed.error.code
-      parsed.message = parsed.error.message
-    }
-    return {
-      event: typeof parsed.type === "string" ? parsed.type : undefined,
-      data: JSON.stringify(parsed),
-      id: typeof parsed.id === "string" ? parsed.id : undefined,
-    }
-  } catch {
-    return { data }
+const normalizeCopilotResponsesWebSocketError = (
+  event: Record<string, unknown>,
+): Record<string, unknown> => {
+  if (!isRecord(event.error)) return event
+  consola.warn("Copilot responses websocket stream error:", event.error)
+  return {
+    ...event,
+    code: event.error.code,
+    message: event.error.message,
   }
 }
 
@@ -1608,17 +1591,7 @@ const isTerminalResponsesStreamChunk = (chunk: { data?: string }): boolean => {
     return false
   }
 
-  try {
-    const parsed = JSON.parse(chunk.data) as { type?: unknown }
-    return (
-      parsed.type === "response.completed"
-      || parsed.type === "response.failed"
-      || parsed.type === "response.incomplete"
-      || parsed.type === "error"
-    )
-  } catch {
-    return false
-  }
+  return isResponsesStreamTerminalData(chunk.data)
 }
 
 const createResponsesErrorServerSentEventChunk = (

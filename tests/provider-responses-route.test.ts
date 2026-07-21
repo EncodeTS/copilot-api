@@ -8,6 +8,7 @@ const actualTokenUsageModule = await import("../src/lib/token-usage")
 
 let gatewayApiKeys: Array<string> = []
 let providerConfigs: Record<string, ResolvedProviderConfig> = {}
+const recordUsage = mock(() => "accepted" as const)
 
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
@@ -26,7 +27,7 @@ await mock.module("~/lib/config", () => ({
 
 await mock.module("~/lib/token-usage", () => ({
   ...actualTokenUsageModule,
-  createProviderTokenUsageRecorder: () => () => {},
+  createProviderTokenUsageRecorder: () => recordUsage,
 }))
 
 const { server } = await import("../src/server")
@@ -103,6 +104,7 @@ beforeEach(() => {
     },
   }
   fetchMock.mockClear()
+  recordUsage.mockClear()
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
     fetchMock as unknown as typeof fetch
 })
@@ -167,8 +169,8 @@ describe("versioned provider Responses route", () => {
       Promise.resolve(
         new Response(
           [
-            'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"hello"}',
-            `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response: completed })}`,
+            'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","sequence_number":0,"delta":"hello"}',
+            `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", sequence_number: 1, response: completed })}`,
             "",
           ].join("\n\n"),
           {
@@ -193,6 +195,113 @@ describe("versioned provider Responses route", () => {
     expect(body).toContain('"delta":"hello"')
     expect(body).toContain("event: response.completed")
     expect(body).not.toContain("event: error")
+  })
+
+  test("projects a first-frame provider error only after session usage and cancellation", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          [
+            `event: error\ndata: ${JSON.stringify({
+              code: "rate_limit_exceeded",
+              copilot_usage: { total_nano_aiu: 77 },
+              error: {
+                code: "rate_limit_exceeded",
+                message: "slow down",
+                type: "requests",
+              },
+              headers: { "retry-after": "4" },
+              message: "slow down",
+              sequence_number: 1,
+              status_code: 429,
+              type: "error",
+              usage: {
+                input_tokens: 8,
+                input_tokens_details: { cached_tokens: 3 },
+                output_tokens: 2,
+                total_tokens: 10,
+              },
+            })}`,
+            "",
+          ].join("\n\n"),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      ),
+    )
+
+    const response = await requestProviderResponses(
+      "/openai/v1/responses",
+      { input: "hello", model: "gpt-test", stream: true },
+      { accept: "text/event-stream" },
+    )
+
+    expect(response.status).toBe(429)
+    expect(response.headers.get("retry-after")).toBe("4")
+    expect(await response.json()).toEqual({
+      error: {
+        code: "rate_limit_exceeded",
+        message: "slow down",
+        type: "requests",
+      },
+    })
+    expect(recordUsage).toHaveBeenCalledTimes(1)
+    expect(recordUsage).toHaveBeenCalledWith(
+      {
+        cache_read_input_tokens: 3,
+        input_tokens: 5,
+        output_tokens: 2,
+        total_nano_aiu: 77,
+        total_tokens: 10,
+      },
+      { outcome: "failed", terminal: "error" },
+    )
+  })
+
+  test("records a first-frame failed terminal once before relaying it", async () => {
+    const failed = {
+      ...createResponsesResult("gpt-test"),
+      error: { code: "upstream_error", message: "generation failed" },
+      status: "failed",
+      usage: {
+        input_tokens: 6,
+        input_tokens_details: { cached_tokens: 1 },
+        output_tokens: 2,
+        total_tokens: 8,
+      },
+    }
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          `event: response.failed\ndata: ${JSON.stringify({
+            copilot_usage: { total_nano_aiu: 45 },
+            response: failed,
+            sequence_number: 1,
+            type: "response.failed",
+          })}\n\n`,
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      ),
+    )
+
+    const response = await requestProviderResponses(
+      "/openai/v1/responses",
+      { input: "hello", model: "gpt-test", stream: true },
+      { accept: "text/event-stream" },
+    )
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toContain("event: response.failed")
+    expect(recordUsage).toHaveBeenCalledTimes(1)
+    expect(recordUsage).toHaveBeenCalledWith(
+      {
+        cache_read_input_tokens: 1,
+        input_tokens: 5,
+        output_tokens: 2,
+        total_nano_aiu: 45,
+        total_tokens: 8,
+      },
+      { outcome: "failed", terminal: "response.failed" },
+    )
   })
 
   test("rejects an unknown provider without contacting an upstream", async () => {

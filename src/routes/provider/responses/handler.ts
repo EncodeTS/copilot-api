@@ -1,7 +1,7 @@
 import type { Context } from "hono"
 
 import { events } from "fetch-event-stream"
-import { streamSSE } from "hono/streaming"
+import { streamSSE, type SSEStreamingApi } from "hono/streaming"
 
 import { logCodexRateLimitsEvent } from "~/lib/codex-rate-limit"
 import {
@@ -12,23 +12,31 @@ import { HTTPError } from "~/lib/error"
 import { createHandlerLogger, debugJson, debugJsonTail } from "~/lib/logger"
 import { resolveProviderModel } from "~/lib/provider-resolver"
 import { requestContext } from "~/lib/request-context"
+import {
+  getResponsesStreamSessionFailure,
+  type ResponsesStreamSessionFrame,
+  type ResponsesStreamSessionOutcome,
+} from "~/lib/responses-stream-session"
 import type { StreamTransport } from "~/lib/stream-lifecycle"
 import {
   createProviderTokenUsageRecorder,
   normalizeResponsesUsage,
   type TokenUsageRecorder,
-  type UsageTokens,
 } from "~/lib/token-usage"
 import {
   applyResponsesApiContextManagement,
   compactInputByLatestCompaction,
 } from "~/routes/responses/utils"
-import { emitResponsesStreamError } from "~/routes/responses/stream-error"
+import {
+  emitResponsesStreamSessionFailure,
+  projectResponsesSessionFrame,
+  recordResponsesStreamSessionUsage,
+  relayResponsesStreamSession,
+} from "~/routes/responses/stream-session-adapter"
 
 import type {
   ResponsesPayload,
   ResponsesResult,
-  ResponseStreamEvent,
   ResponsesStream,
 } from "~/services/copilot/create-responses"
 import {
@@ -44,6 +52,11 @@ import {
   forwardProviderResponses,
 } from "~/services/providers/provider-proxy"
 import type { ContentfulStatusCode } from "hono/utils/http-status"
+
+import {
+  prefetchResponsesStreamSession,
+  type PrefetchedResponsesSession,
+} from "./stream-prefetch"
 
 const logger = createHandlerLogger("provider-responses-handler")
 
@@ -240,181 +253,162 @@ const streamProviderResponses = async (
     transport: StreamTransport
   },
 ): Promise<Response> => {
-  const iterator = upstreamResponse[Symbol.asyncIterator]()
-  const firstResult = await iterator.next()
-  if (firstResult.done) {
-    throw new HTTPError(
-      `Empty stream from ${options.provider} responses`,
-      new Response("", { status: 502 }),
-    )
-  }
+  const prefetched = await prefetchResponsesStreamSession({
+    observeFrame: (frame) => observeProviderResponsesFrame(frame, options),
+    signal: c.req.raw.signal,
+    source: upstreamResponse,
+  })
 
-  const firstChunk = firstResult.value
-  if (firstChunk.data && firstChunk.data !== "[DONE]") {
-    const event = parseProviderResponsesStreamEvent(firstChunk.data, {
-      normalizeCodex: false,
-      provider: options.provider,
-    })
-    if (event?.type === "error") {
-      const errorEvent = event
-      const statusCode = errorEvent.status_code ?? 500
-      return c.json(
-        {
-          error: {
-            message: errorEvent.message,
-            ...errorEvent.error,
-          },
-        },
-        statusCode as ContentfulStatusCode,
-        errorEvent.headers ?? undefined,
-      )
-    }
+  if (prefetched.kind === "settled") {
+    recordResponsesStreamSessionUsage(options.recordUsage, prefetched.outcome)
+    return projectPrefetchedProviderResponses(c, prefetched, options)
   }
 
   return streamSSE(c, async (stream) => {
-    const streamStartedAt = Date.now()
-    let usage: UsageTokens = {}
-    let eventCount = 0
-    let lastEventType: string | null = null
-    let terminalSeen = false
-
-    const writeChunk = async (chunk: typeof firstChunk): Promise<boolean> => {
-      debugJsonTail(logger, "Responses stream chunk:", {
-        value: chunk,
-        tailLength: 1_000,
-      })
-      let responseChunk = chunk
-      let event: ResponseStreamEvent | null = null
-
-      if (chunk.data && chunk.data !== "[DONE]") {
-        event = parseProviderResponsesStreamEvent(chunk.data, {
-          normalizeCodex: options.normalizeCodex,
-          provider: options.provider,
-        })
-        if (event && options.normalizeCodex) {
-          responseChunk = {
-            ...chunk,
-            data: JSON.stringify(event),
-            event: event.type,
-          }
-        }
-      }
-
-      if (event) {
-        const nextUsage = getResponsesStreamEventUsage(event)
-        if (nextUsage) {
-          usage = nextUsage
-        }
-      }
-
-      await stream.writeSSE({
-        data: responseChunk.data ?? "",
-        event: responseChunk.event,
-      })
-      eventCount += 1
-      lastEventType = event?.type ?? responseChunk.event ?? lastEventType
-
-      return isTerminalProviderResponsesEvent(event)
-    }
-
     try {
-      terminalSeen = await writeChunk(firstChunk)
-
-      if (!terminalSeen) {
-        for await (const chunk of {
-          [Symbol.asyncIterator]: () => iterator,
-        }) {
-          terminalSeen = await writeChunk(chunk)
-          if (terminalSeen) {
-            break
-          }
-        }
-      }
-
-      if (!terminalSeen) {
-        await emitResponsesStreamError(
-          stream,
-          logger,
-          new Error("Provider Responses stream ended without a terminal event"),
-          {
-            diagnostics: {
-              elapsedMs: Date.now() - streamStartedAt,
-              eventCount,
-              flow: "provider_responses",
-              lastEventType,
-              retryCount: 0,
-              terminalSeen,
-              transport: options.transport,
-            },
-            signal: c.req.raw.signal,
-          },
-        )
-      }
-    } catch (error) {
-      if (!terminalSeen) {
-        await emitResponsesStreamError(stream, logger, error, {
-          diagnostics: {
-            elapsedMs: Date.now() - streamStartedAt,
-            eventCount,
-            flow: "provider_responses",
-            lastEventType,
-            retryCount: 0,
-            terminalSeen,
-            transport: options.transport,
-          },
-          signal: c.req.raw.signal,
-        })
-      }
+      await relayResponsesStreamSession({
+        eofErrorMessage:
+          "Provider Responses stream ended without a terminal event",
+        flow: "provider_responses",
+        logger,
+        observeFrame: (frame) => observeProviderResponsesFrame(frame, options),
+        output: stream,
+        projectFrame:
+          options.normalizeCodex ? projectCodexResponsesFrame : undefined,
+        recordUsage: options.recordUsage,
+        signal: c.req.raw.signal,
+        source: prefetched.source,
+        transport: options.transport,
+      })
     } finally {
-      options.recordUsage(usage)
+      await prefetched.cancel()
     }
   })
 }
 
-const isTerminalProviderResponsesEvent = (
-  event: ResponseStreamEvent | null,
-): boolean =>
-  event?.type === "response.completed"
-  || event?.type === "response.failed"
-  || event?.type === "response.incomplete"
-  || event?.type === "error"
-
-const parseProviderResponsesStreamEvent = (
-  data: string,
+const projectPrefetchedProviderResponses = (
+  c: Context,
+  prefetched: Extract<PrefetchedResponsesSession, { kind: "settled" }>,
   options: {
     normalizeCodex: boolean
     provider: string
+    transport: StreamTransport
   },
-): ResponseStreamEvent | null => {
-  try {
-    const parsed = JSON.parse(data) as ResponseStreamEvent
-    if (options.normalizeCodex) {
-      logCodexRateLimitsEvent(parsed)
-    }
-    return parsed
-  } catch (error) {
-    logger.error("provider.responses.parse_chunk_error", {
-      provider: options.provider,
-      data,
-      error,
-    })
-    return null
+): Response => {
+  const { outcome } = prefetched
+  if (outcome.kind === "error") {
+    const errorEvent = outcome.terminal.event
+    const statusCode =
+      typeof errorEvent.status_code === "number" ? errorEvent.status_code : 500
+    return c.json(
+      {
+        error: {
+          message: errorEvent.message,
+          ...errorEvent.error,
+        },
+      },
+      statusCode as ContentfulStatusCode,
+      toHeaderRecord(errorEvent.headers),
+    )
   }
-}
 
-const getResponsesStreamEventUsage = (
-  event: ResponseStreamEvent,
-): UsageTokens | null => {
   if (
-    event.type === "response.completed"
-    || event.type === "response.failed"
-    || event.type === "response.incomplete"
+    outcome.kind === "completed"
+    || outcome.kind === "failed"
+    || outcome.kind === "incomplete"
+    || (outcome.kind === "eof" && outcome.endedBy === "done")
   ) {
-    return normalizeResponsesUsage(event.response.usage)
+    return streamSSE(c, async (stream) => {
+      for (const frame of prefetched.frames) {
+        const message =
+          options.normalizeCodex ?
+            projectCodexResponsesFrame(frame)
+          : projectResponsesSessionFrame(frame)
+        if (message) await stream.writeSSE(message)
+      }
+      if (outcome.kind === "eof") {
+        await emitPrefetchedProviderStreamFailure(
+          stream,
+          outcome,
+          options.transport,
+          c.req.raw.signal,
+        )
+      }
+    })
   }
 
-  return null
+  if (outcome.kind === "abort") {
+    throw asError(outcome.reason, "Provider Responses request aborted")
+  }
+  if (outcome.kind === "throw") throw outcome.error
+  if (outcome.kind === "timeout") throw outcome.error
+  if (outcome.kind === "delivery_failed") throw outcome.deliveryError
+  throw new HTTPError(
+    `Empty stream from ${options.provider} responses`,
+    new Response("", { status: 502 }),
+  )
 }
+
+const emitPrefetchedProviderStreamFailure = async (
+  stream: SSEStreamingApi,
+  outcome: ResponsesStreamSessionOutcome,
+  transport: StreamTransport,
+  signal: AbortSignal,
+): Promise<void> => {
+  const failure = getResponsesStreamSessionFailure(
+    outcome,
+    "Provider Responses stream ended without a terminal event",
+  )
+  if (!failure) return
+  await emitResponsesStreamSessionFailure({
+    error: failure.error,
+    flow: "provider_responses",
+    logger,
+    outcome,
+    output: stream,
+    signal,
+    transport,
+  })
+}
+
+const toHeaderRecord = (value: unknown): Record<string, string> | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined
+  }
+  const entries = Object.entries(value).filter(
+    (entry): entry is [string, string] => typeof entry[1] === "string",
+  )
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined
+}
+
+const observeProviderResponsesFrame = (
+  frame: ResponsesStreamSessionFrame,
+  options: { normalizeCodex: boolean; provider: string },
+): void => {
+  debugJsonTail(logger, "Responses stream chunk:", {
+    value: frame.wire,
+    tailLength: 1_000,
+  })
+  if (frame.kind === "malformed") {
+    logger.error("provider.responses.parse_chunk_error", {
+      frameKind: frame.kind,
+      provider: options.provider,
+    })
+    return
+  }
+  if (!options.normalizeCodex) return
+  if (frame.kind === "event") logCodexRateLimitsEvent(frame.event)
+  if (frame.kind === "unknown") logCodexRateLimitsEvent(frame.parsed)
+}
+
+const projectCodexResponsesFrame = (frame: ResponsesStreamSessionFrame) => {
+  const message = projectResponsesSessionFrame(frame)
+  if (message && frame.kind === "event") message.event = frame.event.type
+  return message
+}
+
+const asError = (value: unknown, fallback: string): Error =>
+  value instanceof Error ? value : new Error(fallback)
 
 const getResponsesEvents = (response: Response): ResponsesStream =>
   events(response)

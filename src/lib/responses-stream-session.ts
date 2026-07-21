@@ -24,6 +24,7 @@ export interface ResponsesStreamSessionChunk {
   data?: string
   event?: string
   id?: number | string
+  parsedResult?: ResponsesStreamParseResult
   retry?: number
 }
 
@@ -175,7 +176,34 @@ export type ResponsesStreamSessionOutcome =
   | ResponsesStreamSessionThrowOutcome
   | ResponsesStreamSessionTimeoutOutcome
 
+export interface ResponsesStreamSessionFailure {
+  error: unknown
+}
+
+export const getResponsesStreamSessionFailure = (
+  outcome: ResponsesStreamSessionOutcome,
+  eofErrorMessage: string,
+): ResponsesStreamSessionFailure | null => {
+  switch (outcome.kind) {
+    case "abort":
+    case "completed":
+    case "error":
+    case "failed":
+    case "incomplete":
+      return null
+    case "delivery_failed":
+      return outcome.terminal ? null : { error: outcome.deliveryError }
+    case "eof":
+      return { error: new Error(eofErrorMessage) }
+    case "throw":
+      return { error: outcome.error }
+    case "timeout":
+      return { error: outcome.error }
+  }
+}
+
 export interface RunResponsesStreamSessionOptions {
+  doneMarkerBehavior?: "continue" | "terminate"
   onFrame?: (frame: ResponsesStreamSessionFrame) => PromiseLike<void> | void
   signal?: AbortSignal
   source: AsyncIterable<ResponsesStreamSessionChunk>
@@ -210,6 +238,7 @@ class ResponsesFrameDeliveryInterrupted extends Error {
 }
 
 export const runResponsesStreamSession = async ({
+  doneMarkerBehavior = "terminate",
   onFrame,
   signal,
   source,
@@ -275,6 +304,7 @@ export const runResponsesStreamSession = async ({
       if (chunk.data === "[DONE]") {
         incrementSaturatingCounter(diagnostics, "doneCount")
         await deliverFrame(onFrame, { kind: "done", wire }, null, signal)
+        if (doneMarkerBehavior === "continue") continue
         const interruption = getSignalOutcome(signal, diagnostics, startedAt)
         if (interruption) {
           closeIterator()
@@ -291,7 +321,7 @@ export const runResponsesStreamSession = async ({
       }
 
       const parsedResult: ResponsesStreamParseResult =
-        parseResponsesStreamEventData(chunk.data)
+        chunk.parsedResult ?? parseResponsesStreamEventData(chunk.data)
 
       if (parsedResult.kind === "malformed") {
         incrementSaturatingCounter(diagnostics, "malformedCount")
