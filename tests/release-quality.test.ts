@@ -384,6 +384,44 @@ describe("Desktop release asset quality contract", () => {
 })
 
 describe("unified release workflow contract", () => {
+  test("uses an ORAS CLI version embedded by the pinned setup action", async () => {
+    const repository = path.join(import.meta.dir, "..")
+    const workflowPath = path.join(
+      repository,
+      ".github",
+      "workflows",
+      "release.yml",
+    )
+    const workflow = Bun.YAML.parse(await Bun.file(workflowPath).text()) as {
+      jobs: Record<
+        string,
+        { steps?: Array<{ uses?: string; with?: Record<string, unknown> }> }
+      >
+    }
+    const pinnedSetupOras =
+      "oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6"
+    // This pinned upstream commit embeds releases.json through ORAS CLI 1.3.0.
+    // A newer CLI tag requires a separately reviewed setup-action repin.
+    const embeddedVersions = new Map([[pinnedSetupOras, new Set(["1.3.0"])]])
+    const setupSteps = Object.entries(workflow.jobs).flatMap(([jobName, job]) =>
+      (job.steps ?? [])
+        .filter((step) => step.uses?.startsWith("oras-project/setup-oras@"))
+        .map((step) => ({ jobName, step })),
+    )
+
+    expect(setupSteps.map(({ jobName }) => jobName)).toEqual([
+      "build-docker",
+      "publish-docker",
+    ])
+    for (const { jobName, step } of setupSteps) {
+      expect(step.uses, jobName).toBe(pinnedSetupOras)
+      expect(
+        embeddedVersions.get(step.uses ?? "")?.has(String(step.with?.version)),
+        jobName,
+      ).toBe(true)
+    }
+  })
+
   test("makes every publication edge wait for quality and runtime smoke", async () => {
     const repository = path.join(import.meta.dir, "..")
     const workflowPath = path.join(
