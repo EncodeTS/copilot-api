@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, join, sep } from "node:path"
 import { spawnSync } from "node:child_process"
 
 import { checkDiffCoverage } from "../scripts/coverage/diff-coverage"
@@ -236,12 +236,13 @@ describe("coverage attestation", () => {
 
     expect(result).toBe(0)
     expect(inspectedBeforeAttestation).toBe(true)
-    expect(
-      readFileSync(
-        join(repository, "coverage/desktop-boundary/lcov.info"),
-        "utf8",
-      ),
-    ).toContain("SF:electron/not-allowlisted.ts")
+    const rawBoundaryCoverage = readFileSync(
+      join(repository, "coverage/desktop-boundary/lcov.info"),
+      "utf8",
+    )
+    expect(rawBoundaryCoverage.replaceAll(sep, "/")).toContain(
+      "SF:electron/not-allowlisted.ts",
+    )
     expect(
       readVerifiedCoverageArtifact(
         repository,
