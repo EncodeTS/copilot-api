@@ -58,6 +58,7 @@ import {
   normalizeWebSearchResponsesUsage,
   reconstructWebSearchResponse,
 } from "./reconstruction"
+import { webSearchCarrierSanitizer } from "./carrier-sanitizer"
 
 export * from "./policy"
 export * from "./reconstruction"
@@ -168,7 +169,7 @@ export interface WebSearchFlowOptions {
   subagentMarker?: SubagentMarker | null
   /** GPT (Responses-capable) model the web search request is switched to. */
   webSearchModel: string
-  requestId: string
+  requestId?: string
   sessionId?: string
   signal?: AbortSignal
   compactType?: CompactType
@@ -223,14 +224,6 @@ const tryHandleWebSearchWithDependencies = async (
 
   if (route.kind === "responses") {
     const reasoningRecoverySessionId = getRootSessionId(payload, c)
-    let sessionId = reasoningRecoverySessionId
-    const requestId = generateRequestIdFromPayload(
-      payload,
-      reasoningRecoverySessionId,
-    )
-    if (!sessionId) {
-      sessionId = getUUID(requestId)
-    }
     return await handleWebSearchViaResponsesWithDependencies(
       c,
       payload,
@@ -238,8 +231,6 @@ const tryHandleWebSearchWithDependencies = async (
         subagentMarker: null,
         webSearchModel: route.model,
         reasoningRecoverySessionId,
-        requestId,
-        sessionId,
         signal: c.req.raw.signal,
         compactType: 0,
         logger: options.logger,
@@ -268,15 +259,28 @@ const handleWebSearchViaResponsesWithDependencies = async (
 ): Promise<Response> => {
   const { logger, webSearchModel } = options
   const wantsStream = Boolean(payload.stream)
+  const selectedModel: Model | undefined =
+    dependencies.findEndpointModel(webSearchModel)
+  const carrierSanitization = webSearchCarrierSanitizer.sanitize(payload, {
+    destination: "responses",
+    canonicalTarget: {
+      adapter: "copilot-responses",
+      provider: "copilot",
+      model: selectedModel?.id ?? webSearchModel.trim(),
+    },
+  })
+  const requestId =
+    options.requestId
+    ?? generateRequestIdFromPayload(payload, options.reasoningRecoverySessionId)
+  let sessionId = options.sessionId ?? options.reasoningRecoverySessionId
+  if (!sessionId) sessionId = getUUID(requestId)
   applyWebSearchFallbackHeaders(c, payload, logger)
 
   const responsesPayload = prepareWebSearchResponsesPayload(payload, {
     model: webSearchModel,
+    restoredWebSearchTurns: carrierSanitization.restoredTurns,
     subagentAgentId: options.subagentMarker?.agent_id,
   })
-
-  const selectedModel: Model | undefined =
-    dependencies.findEndpointModel(webSearchModel)
   const reasoningError = applyWebSearchReasoningEffort(
     payload,
     responsesPayload,
@@ -311,8 +315,8 @@ const handleWebSearchViaResponsesWithDependencies = async (
         reasoningRecoverySessionId: options.reasoningRecoverySessionId,
         transport,
         subagentMarker: options.subagentMarker,
-        requestId: options.requestId,
-        sessionId: options.sessionId,
+        requestId,
+        sessionId,
         signal: options.signal,
         compactType: options.compactType,
       },
@@ -322,7 +326,7 @@ const handleWebSearchViaResponsesWithDependencies = async (
 
   const recordUsage = dependencies.createUsageRecorder(
     payload,
-    options.sessionId,
+    sessionId,
     webSearchModel,
   )
   let result: ResponsesResult
@@ -347,7 +351,13 @@ const handleWebSearchViaResponsesWithDependencies = async (
   let reconstructed: ReturnType<typeof reconstructWebSearchResponse>
   try {
     reconstructed = reconstructWebSearchResponse(payload, result, {
-      requestId: options.requestId,
+      carrierSource: {
+        destination: "responses",
+        adapter: "copilot-responses",
+        provider: "copilot",
+        model: selectedModel?.id ?? responsesPayload.model,
+      },
+      requestId,
     })
   } catch (error) {
     recordUsage(usage, getWebSearchUsageMetadata(result, "rejected"))
@@ -355,6 +365,7 @@ const handleWebSearchViaResponsesWithDependencies = async (
   }
   recordUsage(usage, getWebSearchUsageMetadata(result, "mapped"))
   const { extract, response } = reconstructed
+  c.header("x-copilot-api-web-search-carrier", reconstructed.carrierMode)
 
   debugJson(
     logger,
@@ -369,7 +380,7 @@ const handleWebSearchViaResponsesWithDependencies = async (
   return streamSSE(c, async (stream) => {
     for (const event of buildSyntheticStreamEvents(response)) {
       const data = JSON.stringify(event)
-      logger.debug(`Web search stream event`, data)
+      logger.debug("Web search stream event", event.type)
       await stream.writeSSE({
         event: event.type,
         data,

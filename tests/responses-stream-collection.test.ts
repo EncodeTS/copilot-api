@@ -135,6 +135,104 @@ describe("responses stream collection", () => {
     expect(collected).toEqual(result)
   })
 
+  test("overlays partial done items without dropping the terminal transcript", async () => {
+    const terminalOutput = [
+      {
+        id: "search-first",
+        type: "web_search_call",
+        status: "completed",
+        action: { type: "search", query: "first" },
+      },
+      {
+        id: "search-second",
+        type: "web_search_call",
+        status: "completed",
+        action: { type: "open", url: "https://example.test" },
+      },
+      {
+        id: "message-complete",
+        type: "message",
+        role: "assistant",
+        status: "completed",
+        content: [
+          {
+            type: "output_text",
+            text: "complete answer",
+            annotations: [
+              {
+                type: "url_citation",
+                start_index: 0,
+                end_index: 8,
+                url: "https://example.test",
+                title: "Example",
+              },
+            ],
+          },
+        ],
+      },
+    ] as ResponsesResult["output"]
+    const terminal = makeResult({ output: terminalOutput })
+    const doneFirst = {
+      ...terminalOutput[0],
+      provider_done_extension: true,
+    } as ResponsesResult["output"][number]
+
+    const collected = await collect([
+      {
+        data: JSON.stringify({
+          item: doneFirst,
+          output_index: 0,
+          sequence_number: 1,
+          type: "response.output_item.done",
+        }),
+      },
+      {
+        data: JSON.stringify({
+          response: terminal,
+          sequence_number: 2,
+          type: "response.completed",
+        }),
+      },
+    ])
+
+    expect(collected.output).toEqual([
+      doneFirst,
+      terminalOutput[1],
+      terminalOutput[2],
+    ])
+  })
+
+  test("rejects output-index gaps instead of compacting the transcript", async () => {
+    const result = makeResult({ output: [] })
+    let thrown: unknown
+    try {
+      await collect([
+        {
+          data: JSON.stringify({
+            item: makeResult().output[0],
+            output_index: 2,
+            sequence_number: 1,
+            type: "response.output_item.done",
+          }),
+        },
+        {
+          data: JSON.stringify({
+            response: result,
+            sequence_number: 2,
+            type: "response.completed",
+          }),
+        },
+      ])
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(thrown).toBeInstanceOf(Error)
+    expect((thrown as Error).message).toBe(
+      "Responses terminal output is missing output_index 0",
+    )
+  })
+
   test("keeps waiting for a typed terminal after an early DONE marker", async () => {
     const result = makeResult()
     const collected = await collect([

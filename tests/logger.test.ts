@@ -290,6 +290,96 @@ test("full payload logging redacts credentials embedded in raw strings", () => {
   expect(serialized).toContain("[redacted_media")
 })
 
+test("Web Search carriers and native opaque fields are always redacted", () => {
+  const privateCarrier =
+    "copilot-api-web-search-v1:private-carrier-query-url-and-item-ids"
+  const privateResult = "opaque-native-web-search-result"
+  const privateIndex = "opaque-native-citation-index"
+  const privateQuery = "private web search query"
+  const privateUrl = "https://private.example.test/web-search"
+  const privateTitle = "Private search title"
+  const privateCitationText = "Private cited claim"
+  const privateToolId = "srvtoolu-private-web-search"
+  const payload = {
+    messages: [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "server_tool_use",
+            id: privateToolId,
+            name: "web_search",
+            input: {
+              query: privateQuery,
+              queries: [privateQuery, `${privateQuery} second`],
+              _copilot_api_web_search_history: privateCarrier,
+            },
+          },
+          {
+            type: "web_search_tool_result",
+            tool_use_id: privateToolId,
+            content: [
+              {
+                type: "web_search_result",
+                url: privateUrl,
+                title: privateTitle,
+                encrypted_content: privateResult,
+              },
+            ],
+          },
+          {
+            type: "text",
+            text: privateCitationText,
+            citations: [
+              {
+                type: "web_search_result_location",
+                url: privateUrl,
+                title: privateTitle,
+                cited_text: privateCitationText,
+                encrypted_index: privateIndex,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  }
+
+  const structured = JSON.stringify(redactPayloadForDebug(payload))
+  const raw = redactLogString(JSON.stringify(payload))
+  const transcript = JSON.stringify(
+    redactPayloadForDebug({
+      id: "private-response-id",
+      input: [
+        {
+          id: "private-search-item-id",
+          type: "web_search_call",
+          status: "completed",
+          action: { type: "search", query: privateQuery },
+        },
+      ],
+    }),
+  )
+
+  for (const redacted of [structured, raw]) {
+    expect(redacted).toContain("[redacted_web_search_history]")
+    expect(redacted).toContain("[redacted_opaque]")
+    expect(redacted).not.toContain(privateCarrier)
+    expect(redacted).not.toContain(privateResult)
+    expect(redacted).not.toContain(privateIndex)
+    expect(redacted).not.toContain(privateQuery)
+    expect(redacted).not.toContain(privateUrl)
+    expect(redacted).not.toContain(privateTitle)
+    expect(redacted).not.toContain(privateCitationText)
+    expect(redacted).not.toContain(privateToolId)
+  }
+  expect(transcript).toContain("web_search_payload_summary")
+  expect(transcript).toContain("[redacted_web_search_history]")
+  expect(transcript).not.toContain("private-response-id")
+  expect(transcript).not.toContain("private-search-item-id")
+  expect(transcript).not.toContain(privateQuery)
+})
+
 test("raw JSON redaction handles apostrophes and escaped matching quotes", () => {
   const raw =
     '{"token":"owner\'s-test-token-secret","apiKey":"escaped \\"test-api-secret\\" tail","image_url":"https://private.example.test/o\'neil.png?sig=test-media-secret"}'

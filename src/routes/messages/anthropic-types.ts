@@ -61,7 +61,16 @@ export interface AnthropicCacheControl {
 export interface AnthropicTextBlock {
   type: "text"
   text: string
+  citations?: Array<AnthropicWebSearchResultLocationCitation>
   cache_control?: AnthropicCacheControl | null
+}
+
+export interface AnthropicWebSearchResultLocationCitation {
+  type: "web_search_result_location"
+  url: string
+  title: string
+  cited_text: string
+  encrypted_index?: string
 }
 
 export interface AnthropicImageBlock {
@@ -295,6 +304,7 @@ export type AnthropicAssistantContentBlock =
   | AnthropicTextBlock
   | AnthropicToolUseBlock
   | AnthropicThinkingBlock
+  | AnthropicWebSearchContentBlock
 
 export interface AnthropicUserMessage {
   role: "user"
@@ -368,6 +378,7 @@ export interface AnthropicServerToolUseBlock {
   id: string
   name: "web_search"
   input: Record<string, unknown>
+  caller?: string | Record<string, unknown>
 }
 
 export interface AnthropicWebSearchToolResultErrorBlock {
@@ -462,6 +473,10 @@ export interface AnthropicContentBlockDeltaEvent {
     | { type: "input_json_delta"; partial_json: string }
     | { type: "thinking_delta"; thinking: string }
     | { type: "signature_delta"; signature: string }
+    | {
+        type: "citations_delta"
+        citation: AnthropicWebSearchResultLocationCitation
+      }
 }
 
 export interface AnthropicContentBlockStopEvent {

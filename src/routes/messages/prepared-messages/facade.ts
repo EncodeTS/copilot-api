@@ -32,7 +32,8 @@ import {
 } from "~/routes/messages/responses-translation"
 import { parseSubagentMarkerFromFirstUser } from "~/routes/messages/subagent-marker"
 import {
-  passthroughWebSearchCarrierSanitizer,
+  webSearchCarrierSanitizer,
+  type WebSearchCarrierSanitizerContext,
   type WebSearchCarrierSanitizer,
 } from "~/routes/messages/web-search/carrier-sanitizer"
 import {
@@ -152,7 +153,7 @@ export const createPreparedMessagesFacade = (
 ): PreparedMessagesFacade => {
   const dependencies = Object.freeze<PreparedMessagesDependencies>({
     carrierSanitizer: Object.freeze({
-      ...(composition.carrierSanitizer ?? passthroughWebSearchCarrierSanitizer),
+      ...(composition.carrierSanitizer ?? webSearchCarrierSanitizer),
     }),
     countCopilotMessagesTokens:
       composition.countCopilotMessagesTokens ?? countMessagesTokens,
@@ -242,7 +243,10 @@ const preparePlan = (
     )
   }
 
-  dependencies.carrierSanitizer.sanitize(sourcePayload, kind)
+  const carrierSanitization = dependencies.carrierSanitizer.sanitize(
+    sourcePayload,
+    createCarrierSanitizerContext(destination, endpointModel, sourcePayload),
+  )
   sanitizeIdeTools(sourcePayload, {
     preserveExecuteCode: kind !== "chat_completions",
   })
@@ -280,6 +284,7 @@ const preparePlan = (
       {
         extraPrompt: policy.extraPrompt,
         reasoningEffort: policy.reasoningEffort,
+        restoredWebSearchTurns: carrierSanitization.restoredTurns,
       },
     )
     const configuredThreshold =
@@ -343,6 +348,42 @@ const preparePlan = (
     countSourcePayload,
     kind,
     payload,
+  }
+}
+
+const createCarrierSanitizerContext = (
+  destination: DestinationDecision,
+  endpointModel: Model | undefined,
+  payload: AnthropicMessagesPayload,
+): WebSearchCarrierSanitizerContext => {
+  const model = endpointModel?.id ?? payload.model.trim()
+  if (destination.kind === "responses") {
+    return {
+      destination: "responses",
+      canonicalTarget: {
+        adapter: "copilot-responses",
+        provider: "copilot",
+        model: destination.endpointModel.id,
+      },
+    }
+  }
+  if (destination.kind === "messages") {
+    return {
+      destination: "messages",
+      canonicalTarget: {
+        adapter: "anthropic-messages",
+        provider: "copilot",
+        model,
+      },
+    }
+  }
+  return {
+    destination: "chat_completions",
+    canonicalTarget: {
+      adapter: "chat-completions",
+      provider: "copilot",
+      model,
+    },
   }
 }
 

@@ -25,6 +25,10 @@ import {
   type WebSearchFlowComposition,
 } from "~/routes/messages/web-search/fulfill"
 import { getResponsesTransportForModel } from "~/routes/responses/utils"
+import {
+  decodeWebSearchHistoryCarrier,
+  WEB_SEARCH_HISTORY_CARRIER_FIELD,
+} from "~/routes/messages/web-search/history-carrier"
 
 const webSearchTool = {
   type: "web_search_20250305",
@@ -34,14 +38,13 @@ const webSearchTool = {
 
 const makePayload = (
   overrides: Partial<AnthropicMessagesPayload> = {},
-): AnthropicMessagesPayload =>
-  ({
-    model: "claude-sonnet-4.5",
-    max_tokens: 1024,
-    messages: [{ role: "user", content: "What is new in Node.js?" }],
-    tools: [webSearchTool],
-    ...overrides,
-  }) as unknown as AnthropicMessagesPayload
+): AnthropicMessagesPayload => ({
+  model: "claude-sonnet-4.5",
+  max_tokens: 1024,
+  messages: [{ role: "user", content: "What is new in Node.js?" }],
+  tools: [webSearchTool],
+  ...overrides,
+})
 
 const makeContext = () => {
   const captured: { headers: Record<string, string>; json?: unknown } = {
@@ -61,47 +64,51 @@ const makeContext = () => {
 
 const makeResponsesResult = (
   overrides: Partial<ResponsesResult> = {},
-): ResponsesResult =>
-  ({
-    id: "resp_1",
-    object: "response",
-    created_at: 0,
-    model: "gpt-5-mini",
-    output: [
-      { type: "web_search_call", action: { query: "node lts version" } },
-      {
-        type: "message",
-        role: "assistant",
-        status: "completed",
-        content: [
-          {
-            type: "output_text",
-            text: "Node.js 24 is the latest LTS.",
-            annotations: [
-              {
-                type: "url_citation",
-                url: "https://nodejs.org",
-                title: "Node.js",
-              },
-            ],
-          },
-        ],
-      },
-    ],
-    output_text: "",
-    status: "completed",
-    usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
-    error: null,
-    incomplete_details: null,
-    instructions: null,
-    metadata: null,
-    parallel_tool_calls: true,
-    temperature: 1,
-    tool_choice: null,
-    tools: [],
-    top_p: null,
-    ...overrides,
-  }) as unknown as ResponsesResult
+): ResponsesResult => ({
+  id: "resp_1",
+  object: "response",
+  created_at: 0,
+  model: "gpt-5-mini",
+  output: [
+    {
+      type: "web_search_call",
+      status: "completed",
+      action: { type: "search", query: "node lts version" },
+    },
+    {
+      id: "message-default",
+      type: "message",
+      role: "assistant",
+      status: "completed",
+      content: [
+        {
+          type: "output_text",
+          text: "Node.js 24 is the latest LTS.",
+          annotations: [
+            {
+              type: "url_citation",
+              url: "https://nodejs.org",
+              title: "Node.js",
+            },
+          ],
+        },
+      ],
+    },
+  ],
+  output_text: "",
+  status: "completed",
+  usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
+  error: null,
+  incomplete_details: null,
+  instructions: null,
+  metadata: null,
+  parallel_tool_calls: true,
+  temperature: 1,
+  tool_choice: null,
+  tools: [],
+  top_p: null,
+  ...overrides,
+})
 
 async function* makeResponsesStream(result: ResponsesResult) {
   await Promise.resolve()
@@ -442,6 +449,7 @@ describe("prepareWebSearchResponsesPayload", () => {
 
     expect(responses.max_tool_calls).toBe(2)
     expect(responses.tools).toEqual([{ type: "web_search" }])
+    expect(responses.include).toContain("web_search_call.action.sources")
   })
 })
 
@@ -497,7 +505,7 @@ describe("reconstructWebSearchResponse", () => {
           status: "incomplete",
           content: [{ type: "refusal", refusal: "Cannot provide that." }],
         },
-      ] as never,
+      ] satisfies ResponsesResult["output"],
     })
     const { response } = reconstructWebSearchResponse(
       makePayload(),
@@ -515,19 +523,25 @@ describe("reconstructWebSearchResponse", () => {
       output: [
         {
           type: "web_search_call",
-          action: { queries: ["first", "second", "third"] },
+          status: "completed",
+          action: {
+            type: "search",
+            queries: ["first", "second", "third"],
+          },
         },
         {
           type: "web_search_call",
-          action: {},
+          status: "completed",
+          action: { type: "open", url: "https://example.test" },
         },
         {
+          id: "message-usage",
           type: "message",
           role: "assistant",
           status: "completed",
           content: [{ type: "output_text", text: "answer", annotations: [] }],
         },
-      ] as never,
+      ] satisfies ResponsesResult["output"],
       usage: {
         input_tokens: 20,
         input_tokens_details: { cached_tokens: 6 },
@@ -552,6 +566,7 @@ describe("reconstructWebSearchResponse", () => {
     const result = makeResponsesResult({
       output: [
         {
+          id: "message-no-search",
           type: "message",
           role: "assistant",
           status: "completed",
@@ -559,7 +574,7 @@ describe("reconstructWebSearchResponse", () => {
             { type: "output_text", text: "No search needed.", annotations: [] },
           ],
         },
-      ] as never,
+      ] satisfies ResponsesResult["output"],
     })
 
     const { response } = reconstructWebSearchResponse(makePayload(), result, {
@@ -570,6 +585,733 @@ describe("reconstructWebSearchResponse", () => {
     expect(JSON.stringify(response)).not.toContain("encrypted_content")
     expect(response.content.map((block) => block.type)).toEqual(["text"])
   })
+
+  it("preserves each call, query, result outcome, and repeated claim citation", () => {
+    const result = makeResponsesResult({
+      output: [
+        {
+          id: "search-primary",
+          type: "web_search_call",
+          status: "completed",
+          action: {
+            type: "search",
+            queries: ["first query", "second query"],
+            sources: [
+              {
+                type: "url",
+                url: "https://example.test/repeated",
+                title: "Primary source",
+                page_age: "2 days ago",
+              },
+            ],
+          },
+        },
+        {
+          id: "search-follow-up",
+          type: "web_search_call",
+          status: "failed",
+          action: {
+            type: "find",
+            query: "third query",
+            url: "https://example.test/repeated",
+            pattern: "Beta",
+          },
+        },
+        {
+          id: "message-search-answer",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [
+            {
+              type: "output_text",
+              text: "Alpha claim. Beta claim.",
+              annotations: [
+                {
+                  type: "url_citation",
+                  start_index: 0,
+                  end_index: 11,
+                  url: "https://example.test/repeated",
+                  title: "Primary source",
+                  provider_rank: 1,
+                },
+                {
+                  type: "url_citation",
+                  start_index: 13,
+                  end_index: 23,
+                  url: "https://example.test/repeated",
+                  title: "Primary source",
+                  provider_rank: 2,
+                },
+              ],
+            },
+          ],
+        },
+      ] satisfies ResponsesResult["output"],
+    })
+
+    const { extract, response } = reconstructWebSearchResponse(
+      makePayload(),
+      result,
+      { requestId: "req-multi-call" },
+    )
+
+    expect(extract.queries).toEqual([
+      "first query",
+      "second query",
+      "third query",
+    ])
+    expect(response.content).toEqual([
+      {
+        type: "server_tool_use",
+        id: "search-primary",
+        name: "web_search",
+        input: {
+          type: "search",
+          queries: ["first query", "second query"],
+        },
+      },
+      {
+        type: "web_search_tool_result",
+        tool_use_id: "search-primary",
+        content: [
+          {
+            type: "web_search_result",
+            url: "https://example.test/repeated",
+            title: "Primary source",
+            page_age: "2 days ago",
+          },
+        ],
+      },
+      {
+        type: "server_tool_use",
+        id: "search-follow-up",
+        name: "web_search",
+        input: {
+          type: "find",
+          query: "third query",
+          url: "https://example.test/repeated",
+          pattern: "Beta",
+        },
+      },
+      {
+        type: "web_search_tool_result",
+        tool_use_id: "search-follow-up",
+        content: {
+          type: "web_search_tool_result_error",
+          error_code: "unavailable",
+        },
+      },
+      {
+        type: "text",
+        text: "Alpha claim. Beta claim.",
+        citations: [
+          {
+            type: "web_search_result_location",
+            url: "https://example.test/repeated",
+            title: "Primary source",
+            cited_text: "Alpha claim",
+          },
+          {
+            type: "web_search_result_location",
+            url: "https://example.test/repeated",
+            title: "Primary source",
+            cited_text: "Beta claim",
+          },
+        ],
+      },
+    ])
+    expect(JSON.stringify(response)).not.toContain("encrypted_index")
+    expect(JSON.stringify(response)).not.toContain("provider_rank")
+  })
+
+  it("writes one scoped v1 carrier from the exact ordered Responses output", () => {
+    const result = makeResponsesResult({
+      copilot_usage: { total_nano_aiu: 42 },
+      output: [
+        {
+          id: "search-carried",
+          type: "web_search_call",
+          status: "completed",
+          action: {
+            type: "search",
+            query: "carrier query",
+            sources: [{ type: "url", url: "https://example.test/carrier" }],
+            provider_extension: { preserved: true },
+          },
+        },
+        {
+          id: "message-carried",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [
+            {
+              type: "output_text",
+              text: "Carrier answer",
+              annotations: [
+                {
+                  type: "url_citation",
+                  start_index: 0,
+                  end_index: 7,
+                  title: "Carrier source",
+                  url: "https://example.test/carrier",
+                  provider_offset_unit: "utf16",
+                },
+              ],
+            },
+          ],
+        },
+      ] satisfies ResponsesResult["output"],
+    })
+    const source = {
+      destination: "responses",
+      adapter: "copilot-responses",
+      provider: "copilot",
+      model: "gpt-5-mini",
+    } as const
+
+    const { carrierMode, response } = reconstructWebSearchResponse(
+      makePayload(),
+      result,
+      { requestId: "req-carrier", carrierSource: source },
+    )
+
+    expect(carrierMode).toBe("gateway-v1-exact-responses-scope")
+    expect(response.copilot_usage).toEqual({ total_nano_aiu: 42 })
+    const firstInput = (
+      response.content[0] as { input: Record<string, unknown> }
+    ).input
+    const carrier = firstInput[WEB_SEARCH_HISTORY_CARRIER_FIELD]
+    expect(typeof carrier).toBe("string")
+    expect(
+      response.content
+        .slice(1)
+        .some((block) =>
+          JSON.stringify(block).includes(WEB_SEARCH_HISTORY_CARRIER_FIELD),
+        ),
+    ).toBe(false)
+    expect(
+      decodeWebSearchHistoryCarrier(carrier, {
+        destination: "responses",
+        canonicalTarget: source,
+      }),
+    ).toMatchObject({
+      kind: "accepted",
+      envelope: {
+        output_items: result.output,
+        continuation: { kind: "complete" },
+        source,
+      },
+    })
+  })
+
+  it("keeps output without stable call IDs explicitly non-resumable", () => {
+    const { carrierMode, response } = reconstructWebSearchResponse(
+      makePayload(),
+      makeResponsesResult(),
+      {
+        requestId: "req-legacy",
+        carrierSource: {
+          destination: "responses",
+          adapter: "copilot-responses",
+          provider: "copilot",
+          model: "gpt-5-mini",
+        },
+      },
+    )
+
+    expect(carrierMode).toBe("synthetic-without-encrypted-content")
+    expect(JSON.stringify(response)).not.toContain(
+      WEB_SEARCH_HISTORY_CARRIER_FIELD,
+    )
+  })
+
+  it("rejects malformed nested search facts as an upstream protocol mismatch", async () => {
+    const malformed = makeResponsesResult({
+      output: [
+        {
+          id: "search-malformed",
+          type: "web_search_call",
+          status: "completed",
+          action: {
+            type: "search",
+            queries: ["valid", { private_query: "must-not-echo" }],
+          },
+        },
+      ] as never,
+    })
+
+    let thrown: unknown
+    try {
+      reconstructWebSearchResponse(makePayload(), malformed, {
+        requestId: "req-malformed",
+      })
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(thrown).toBeInstanceOf(HTTPError)
+    expect((thrown as HTTPError).response.status).toBe(502)
+    const body = await (thrown as HTTPError).response.text()
+    expect(body).toContain("malformed Web Search output")
+    expect(body).not.toContain("must-not-echo")
+  })
+
+  it("fails closed when a terminal response still has an unfinished search call", () => {
+    const unfinished = makeResponsesResult({
+      output: [
+        {
+          id: "search-unfinished",
+          type: "web_search_call",
+          status: "searching",
+          action: { type: "search", query: "still running" },
+        },
+      ] satisfies ResponsesResult["output"],
+    })
+
+    expect(() =>
+      reconstructWebSearchResponse(makePayload(), unfinished, {
+        requestId: "req-unfinished",
+      }),
+    ).toThrow("Responses ended with an unfinished Web Search call")
+  })
+
+  it("fails closed when a completed response contains an incomplete message", () => {
+    const unfinished = makeResponsesResult({
+      output: [
+        {
+          id: "message-unfinished",
+          type: "message",
+          role: "assistant",
+          status: "incomplete",
+          content: [],
+        },
+      ] satisfies ResponsesResult["output"],
+    })
+
+    expect(() =>
+      reconstructWebSearchResponse(makePayload(), unfinished, {
+        requestId: "req-unfinished-message",
+      }),
+    ).toThrow("malformed Web Search output")
+  })
+
+  for (const [label, output] of [
+    ["output array", null],
+    ["output item", [null]],
+    [
+      "missing call status",
+      [
+        {
+          id: "search-missing-status",
+          type: "web_search_call",
+          action: { type: "search", query: "missing status" },
+        },
+      ],
+    ],
+    [
+      "missing call action",
+      [
+        {
+          id: "search-missing-action",
+          type: "web_search_call",
+          status: "completed",
+        },
+      ],
+    ],
+    [
+      "action object",
+      [
+        {
+          id: "search-bad-action",
+          type: "web_search_call",
+          status: "completed",
+          action: 1,
+        },
+      ],
+    ],
+    [
+      "call status",
+      [
+        {
+          id: "search-bad-status",
+          type: "web_search_call",
+          status: "unknown-future-status",
+          action: { type: "search", query: "invalid status" },
+        },
+      ],
+    ],
+    [
+      "action type",
+      [
+        {
+          id: "search-bad-action-type",
+          type: "web_search_call",
+          status: "completed",
+          action: { type: "teleport", query: "invalid action" },
+        },
+      ],
+    ],
+    [
+      "duplicate output IDs",
+      [
+        {
+          id: "duplicate-search-item",
+          type: "web_search_call",
+          status: "completed",
+          action: { type: "search", query: "duplicate" },
+        },
+        {
+          id: "duplicate-search-item",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [],
+        },
+      ],
+    ],
+    [
+      "message role",
+      [
+        {
+          id: "message-bad-role",
+          type: "message",
+          role: "user",
+          status: "completed",
+          content: [],
+        },
+      ],
+    ],
+    [
+      "message status",
+      [
+        {
+          id: "message-bad-status",
+          type: "message",
+          role: "assistant",
+          status: "failed",
+          content: [],
+        },
+      ],
+    ],
+    [
+      "source list",
+      [
+        {
+          id: "search-bad-sources",
+          type: "web_search_call",
+          status: "completed",
+          action: { type: "search", query: "q", sources: {} },
+        },
+      ],
+    ],
+    [
+      "source type",
+      [
+        {
+          id: "search-bad-source-type",
+          type: "web_search_call",
+          status: "completed",
+          action: {
+            type: "search",
+            query: "q",
+            sources: [
+              {
+                type: "not-a-url",
+                url: "https://example.test/private",
+              },
+            ],
+          },
+        },
+      ],
+    ],
+    [
+      "source URL",
+      [
+        {
+          id: "search-bad-source-url",
+          type: "web_search_call",
+          status: "completed",
+          action: {
+            type: "search",
+            query: "q",
+            sources: [{ type: "url", url: "" }],
+          },
+        },
+      ],
+    ],
+    [
+      "source age",
+      [
+        {
+          id: "search-bad-source-age",
+          type: "web_search_call",
+          status: "completed",
+          action: {
+            type: "search",
+            query: "q",
+            sources: [
+              { type: "url", url: "https://example.test", page_age: 12 },
+            ],
+          },
+        },
+      ],
+    ],
+    [
+      "citation URL",
+      [
+        {
+          id: "message-bad-citation-url",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [
+            {
+              type: "output_text",
+              text: "claim",
+              annotations: [{ type: "url_citation", url: "" }],
+            },
+          ],
+        },
+      ],
+    ],
+    [
+      "citation range",
+      [
+        {
+          id: "message-bad-citation-range",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [
+            {
+              type: "output_text",
+              text: "claim",
+              annotations: [
+                {
+                  type: "url_citation",
+                  url: "https://example.test",
+                  start_index: 4,
+                  end_index: 99,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    ],
+    [
+      "message content",
+      [
+        {
+          id: "message-bad-content",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: {},
+        },
+      ],
+    ],
+    [
+      "null message content block",
+      [
+        {
+          id: "message-null-block",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [null],
+        },
+      ],
+    ],
+    [
+      "primitive message content block",
+      [
+        {
+          id: "message-primitive-block",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: ["not-a-block"],
+        },
+      ],
+    ],
+    [
+      "unknown message content type",
+      [
+        {
+          id: "message-unknown-block",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [{ type: "future_private_block", private: "not-visible" }],
+        },
+      ],
+    ],
+    [
+      "refusal",
+      [
+        {
+          id: "message-bad-refusal",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [{ type: "refusal", refusal: 1 }],
+        },
+      ],
+    ],
+    [
+      "output text",
+      [
+        {
+          id: "message-bad-text",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [{ type: "output_text", text: 1, annotations: [] }],
+        },
+      ],
+    ],
+    [
+      "annotations",
+      [
+        {
+          id: "message-bad-annotations",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [{ type: "output_text", text: "claim", annotations: {} }],
+        },
+      ],
+    ],
+  ] as const) {
+    it(`rejects malformed ${label} before semantic reconstruction`, () => {
+      expect(() =>
+        reconstructWebSearchResponse(
+          makePayload(),
+          makeResponsesResult({ output: output as never }),
+          { requestId: `req-malformed-${label}` },
+        ),
+      ).toThrow("Responses returned malformed Web Search output")
+    })
+  }
+
+  for (const [label, output] of [
+    [
+      "output item count",
+      Array.from({ length: 257 }, (_, index) => ({
+        id: `extension-${index}`,
+        type: "provider_extension",
+      })),
+    ],
+    [
+      "query count",
+      [
+        {
+          id: "search-query-bound",
+          type: "web_search_call",
+          status: "completed",
+          action: {
+            type: "search",
+            queries: Array.from({ length: 257 }, (_, index) => `q-${index}`),
+          },
+        },
+      ],
+    ],
+    [
+      "source count",
+      [
+        {
+          id: "search-source-bound",
+          type: "web_search_call",
+          status: "completed",
+          action: {
+            type: "search",
+            query: "q",
+            sources: Array.from({ length: 257 }, (_, index) => ({
+              type: "url",
+              url: `https://example.test/${index}`,
+            })),
+          },
+        },
+      ],
+    ],
+    [
+      "annotation count",
+      [
+        {
+          id: "message-annotation-bound",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [
+            {
+              type: "output_text",
+              text: "claim",
+              annotations: Array.from({ length: 1_025 }, () => ({
+                type: "url_citation",
+                url: "https://example.test",
+              })),
+            },
+          ],
+        },
+      ],
+    ],
+    [
+      "known string size",
+      [
+        {
+          id: "search-string-bound",
+          type: "web_search_call",
+          status: "completed",
+          action: { type: "search", query: "q".repeat(1024 * 1024 + 1) },
+        },
+      ],
+    ],
+    [
+      "collection width",
+      [
+        {
+          id: "extension-width-bound",
+          type: "provider_extension",
+          values: Array<number>(10_001).fill(0),
+        },
+      ],
+    ],
+    [
+      "node count",
+      [
+        {
+          id: "extension-node-bound",
+          type: "provider_extension",
+          values: Array.from({ length: 101 }, () =>
+            Array<number>(1_000).fill(0),
+          ),
+        },
+      ],
+    ],
+    [
+      "byte size",
+      [
+        {
+          id: "extension-byte-bound",
+          type: "provider_extension",
+          value: "x".repeat(4 * 1024 * 1024 + 1),
+        },
+      ],
+    ],
+  ] as const) {
+    it(`bounds Web Search ${label} before semantic copying`, () => {
+      expect(() =>
+        reconstructWebSearchResponse(
+          makePayload(),
+          makeResponsesResult({ output: output as never }),
+          { requestId: `req-bound-${label}` },
+        ),
+      ).toThrow("Responses returned malformed Web Search output")
+    })
+  }
 })
 
 describe("handleWebSearchViaResponses", () => {
@@ -844,12 +1586,164 @@ describe("handleWebSearchViaResponses", () => {
     ).toEqual({ web_search_requests: 1 })
   })
 
+  it("restores a builtin same-model carrier at the exact Responses position", async () => {
+    const exactOutput = [
+      {
+        id: "search-builtin-history",
+        type: "web_search_call",
+        status: "completed",
+        action: {
+          type: "search",
+          query: "builtin history",
+          sources: [
+            { type: "url", url: "https://example.test/builtin-history" },
+          ],
+        },
+      },
+      {
+        id: "message-builtin-history",
+        type: "message",
+        role: "assistant",
+        status: "completed",
+        content: [
+          {
+            type: "output_text",
+            text: "Builtin history answer",
+            annotations: [],
+          },
+        ],
+      },
+    ] as ResponsesResult["output"]
+    const result = makeResponsesResult({ output: exactOutput })
+    webSearchFlowDependencies.findEndpointModel = (() => ({
+      capabilities: { limits: {}, supports: {} },
+      id: "gpt-5-mini",
+      supported_endpoints: ["/responses"],
+    })) as never
+    webSearchFlowDependencies.createUsageRecorder = (() => () => {}) as never
+    webSearchFlowDependencies.createResponses = (() =>
+      Promise.resolve(result)) as never
+
+    const firstContext = makeContext()
+    await handleWebSearchViaResponses(
+      firstContext.c,
+      makePayload(),
+      baseOptions,
+    )
+    expect(
+      firstContext.captured.headers["x-copilot-api-web-search-carrier"],
+    ).toBe("gateway-v1-exact-responses-scope")
+    const firstResponse = firstContext.captured.json as AnthropicResponse
+
+    let continuedPayload: ResponsesPayload | undefined
+    webSearchFlowDependencies.createResponses = ((
+      payload: ResponsesPayload,
+    ) => {
+      continuedPayload = payload
+      return Promise.resolve(result)
+    }) as never
+    const continued = makePayload({
+      messages: [
+        { role: "user", content: "Search" },
+        { role: "assistant", content: firstResponse.content },
+        { role: "user", content: "Continue" },
+      ],
+    })
+    await handleWebSearchViaResponses(makeContext().c, continued, baseOptions)
+
+    if (!Array.isArray(continuedPayload?.input)) {
+      throw new Error("expected Responses input")
+    }
+    expect(JSON.stringify(continuedPayload.input.slice(1, 3))).toBe(
+      JSON.stringify(exactOutput),
+    )
+    expect(JSON.stringify(continuedPayload)).not.toContain(
+      WEB_SEARCH_HISTORY_CARRIER_FIELD,
+    )
+  })
+
+  it("keeps top-level-only output text legacy across a self round-trip", async () => {
+    const result = makeResponsesResult({
+      output: [
+        {
+          id: "search-top-level-text",
+          type: "web_search_call",
+          status: "completed",
+          action: {
+            type: "search",
+            query: "top-level text",
+            sources: [],
+          },
+        },
+      ] satisfies ResponsesResult["output"],
+      output_text: "Visible fallback answer",
+    })
+    webSearchFlowDependencies.findEndpointModel = (() => ({
+      capabilities: { limits: {}, supports: {} },
+      id: "gpt-5-mini",
+      supported_endpoints: ["/responses"],
+    })) as never
+    webSearchFlowDependencies.createUsageRecorder = (() => () => {}) as never
+    webSearchFlowDependencies.createResponses = (() =>
+      Promise.resolve(result)) as never
+
+    const firstContext = makeContext()
+    await handleWebSearchViaResponses(
+      firstContext.c,
+      makePayload(),
+      baseOptions,
+    )
+    expect(
+      firstContext.captured.headers["x-copilot-api-web-search-carrier"],
+    ).toBe("synthetic-without-encrypted-content")
+    const firstResponse = firstContext.captured.json as AnthropicResponse
+    expect(firstResponse.content.at(-1)).toEqual({
+      type: "text",
+      text: "Visible fallback answer",
+    })
+    expect(JSON.stringify(firstResponse)).not.toContain(
+      WEB_SEARCH_HISTORY_CARRIER_FIELD,
+    )
+
+    let continuedPayload: ResponsesPayload | undefined
+    webSearchFlowDependencies.createResponses = ((
+      payload: ResponsesPayload,
+    ) => {
+      continuedPayload = payload
+      return Promise.resolve(result)
+    }) as never
+    await handleWebSearchViaResponses(
+      makeContext().c,
+      makePayload({
+        messages: [
+          { role: "user", content: "Search" },
+          { role: "assistant", content: firstResponse.content },
+          { role: "user", content: "Continue" },
+        ],
+      }),
+      baseOptions,
+    )
+
+    if (!Array.isArray(continuedPayload?.input)) {
+      throw new Error("expected Responses input")
+    }
+    expect(
+      continuedPayload.input.some(
+        (item) => (item as { type?: string }).type === "web_search_call",
+      ),
+    ).toBe(false)
+    expect(JSON.stringify(continuedPayload.input)).toContain(
+      "Visible fallback answer",
+    )
+  })
+
   it("returns just text when the backend produced no sources", async () => {
     webSearchFlowDependencies.createResponses = (() =>
       Promise.resolve(
         makeResponsesResult({
           output: [
             {
+              id: "message-no-results",
               type: "message",
               role: "assistant",
               status: "completed",
@@ -857,7 +1751,7 @@ describe("handleWebSearchViaResponses", () => {
                 { type: "output_text", text: "No results.", annotations: [] },
               ],
             },
-          ] as never,
+          ] satisfies ResponsesResult["output"],
         }),
       )) as never
     webSearchFlowDependencies.createUsageRecorder = (() => () => {}) as never
@@ -995,6 +1889,7 @@ describe("buildSyntheticStreamEvents", () => {
       stop_reason: "end_turn" as const,
       stop_sequence: null,
       usage: { input_tokens: 10, output_tokens: 20 },
+      copilot_usage: { total_nano_aiu: 24 },
       content: [
         {
           type: "server_tool_use" as const,
@@ -1013,7 +1908,18 @@ describe("buildSyntheticStreamEvents", () => {
             },
           ],
         },
-        { type: "text" as const, text: "answer" },
+        {
+          type: "text" as const,
+          text: "answer",
+          citations: [
+            {
+              type: "web_search_result_location" as const,
+              url: "https://x",
+              title: "X",
+              cited_text: "answer",
+            },
+          ],
+        },
       ],
     }
 
@@ -1032,10 +1938,28 @@ describe("buildSyntheticStreamEvents", () => {
       "content_block_start",
       "content_block_stop",
     ])
-    expect(types.slice(6, 9)).toEqual([
+    expect(types.slice(6, 10)).toEqual([
       "content_block_start",
+      "content_block_delta",
       "content_block_delta",
       "content_block_stop",
     ])
+    expect(events.at(-2)).toMatchObject({
+      type: "message_delta",
+      copilot_usage: { total_nano_aiu: 24 },
+    })
+    expect(events).toContainEqual({
+      type: "content_block_delta",
+      index: 2,
+      delta: {
+        type: "citations_delta",
+        citation: {
+          type: "web_search_result_location",
+          url: "https://x",
+          title: "X",
+          cited_text: "answer",
+        },
+      },
+    })
   })
 })

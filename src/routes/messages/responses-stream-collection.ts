@@ -169,14 +169,23 @@ const materializeResponsesResult = (
   state: ResponsesStreamCollection,
 ): ResponsesResult => {
   const response = event.response as unknown as ResponsesResult
-  const output = [...state.outputItemsByIndex.entries()]
-    .sort(([leftIndex], [rightIndex]) => leftIndex - rightIndex)
-    .map(([, item]) => item)
+  const lastCollectedIndex = Math.max(-1, ...state.outputItemsByIndex.keys())
+  const outputLength = Math.max(response.output.length, lastCollectedIndex + 1)
+  const output = new Array<ResponsesResult["output"][number]>()
+  for (let index = 0; index < outputLength; index += 1) {
+    const item = state.outputItemsByIndex.get(index) ?? response.output[index]
+    if (item === undefined) {
+      throw new Error(
+        `Responses terminal output is missing output_index ${index}`,
+      )
+    }
+    output.push(item)
+  }
   return {
     ...response,
     copilot_usage:
       response.copilot_usage ?? (event.copilot_usage as CopilotUsage),
-    output: output.length > 0 ? output : response.output,
+    output,
   }
 }
 

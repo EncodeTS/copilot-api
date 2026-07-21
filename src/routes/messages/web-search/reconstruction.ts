@@ -14,6 +14,7 @@ import type {
   AnthropicStreamEventData,
   AnthropicTextBlock,
   AnthropicWebSearchContentBlock,
+  AnthropicWebSearchResultLocationCitation,
   AnthropicWebSearchResultItem,
 } from "../anthropic-types"
 import {
@@ -24,20 +25,48 @@ import {
   mapResponsesStopReasonToAnthropic,
   mapResponsesUsageToAnthropic,
 } from "../responses-translation"
-import { extractWebSearchResult, type WebSearchExtract } from "./backend"
+import {
+  extractWebSearchResult,
+  WebSearchSemanticValidationError,
+  type WebSearchAction,
+  type WebSearchCall,
+  type WebSearchExtract,
+  type WebSearchSource,
+  type WebSearchTextBlock,
+} from "./backend"
+import {
+  encodeWebSearchHistoryCarrier,
+  WebSearchHistoryCarrierValidationError,
+  WEB_SEARCH_HISTORY_CARRIER_FIELD,
+  type WebSearchHistoryCarrierSource,
+  type WebSearchHistoryOutputItem,
+} from "./history-carrier"
+
+export type WebSearchCarrierMode =
+  | "gateway-v1-exact-responses-scope"
+  | "synthetic-without-encrypted-content"
 
 const buildWebSearchResultBlock = (
   toolUseId: string,
-  extract: WebSearchExtract,
+  sources: Array<WebSearchSource>,
+  status: string | undefined,
 ): AnthropicWebSearchContentBlock => {
-  const items: Array<AnthropicWebSearchResultItem> = extract.sources.map(
-    (source) => ({
-      type: "web_search_result",
-      url: source.url,
-      title: source.title,
-      page_age: source.page_age ?? null,
-    }),
-  )
+  if (status === "failed") {
+    return {
+      type: "web_search_tool_result",
+      tool_use_id: toolUseId,
+      content: {
+        type: "web_search_tool_result_error",
+        error_code: "unavailable",
+      },
+    }
+  }
+  const items: Array<AnthropicWebSearchResultItem> = sources.map((source) => ({
+    type: "web_search_result",
+    url: source.url,
+    title: source.title,
+    page_age: source.page_age ?? null,
+  }))
   return {
     type: "web_search_tool_result",
     tool_use_id: toolUseId,
@@ -45,31 +74,135 @@ const buildWebSearchResultBlock = (
   }
 }
 
+const buildServerToolInput = (
+  action: WebSearchAction,
+): Record<string, unknown> => ({
+  ...(action.type !== undefined && { type: action.type }),
+  ...(action.query !== undefined && { query: action.query }),
+  ...(action.queries !== undefined && { queries: [...action.queries] }),
+  ...(action.url !== undefined && { url: action.url }),
+  ...(action.pattern !== undefined && { pattern: action.pattern }),
+})
+
+const buildTextBlock = (block: WebSearchTextBlock): AnthropicTextBlock => {
+  const citations: Array<AnthropicWebSearchResultLocationCitation> =
+    block.citations.flatMap((citation) =>
+      citation.citedText === undefined ?
+        []
+      : [
+          {
+            type: "web_search_result_location" as const,
+            url: citation.url,
+            title: citation.title,
+            cited_text: citation.citedText,
+          },
+        ],
+    )
+  return {
+    type: "text",
+    text: block.text,
+    ...(citations.length > 0 && { citations }),
+  }
+}
+
+const resolveCallId = (
+  call: WebSearchCall,
+  requestId: string,
+  index: number,
+): string => call.id?.trim() || `srvtoolu_${getUUID(`${requestId}:${index}`)}`
+
 const buildResponseContent = (
   requestId: string,
   extract: WebSearchExtract,
+  carrier?: string,
 ): Array<AnthropicTextBlock | AnthropicWebSearchContentBlock> => {
   const blocks: Array<AnthropicTextBlock | AnthropicWebSearchContentBlock> = []
-  const query = extract.queries[0] ?? ""
-  if (extract.callCount > 0) {
-    const toolUseId = `srvtoolu_${getUUID(requestId)}`
+  const hasCallSources = extract.calls.some(
+    (call) => call.action.sources.length > 0,
+  )
+  extract.calls.forEach((call, index) => {
+    const toolUseId = resolveCallId(call, requestId, index)
+    const sources =
+      call.action.sources.length > 0 ? call.action.sources
+      : !hasCallSources && index === 0 ? extract.sources
+      : []
     blocks.push(
       {
         type: "server_tool_use",
         id: toolUseId,
         name: "web_search",
-        input: { query },
+        input: {
+          ...buildServerToolInput(call.action),
+          ...(index === 0 && carrier ?
+            { [WEB_SEARCH_HISTORY_CARRIER_FIELD]: carrier }
+          : {}),
+        },
       },
-      buildWebSearchResultBlock(toolUseId, extract),
+      buildWebSearchResultBlock(toolUseId, sources, call.status),
     )
+  })
+  if (extract.textBlocks.length > 0) {
+    blocks.push(...extract.textBlocks.map(buildTextBlock))
+  } else if (extract.answerText) {
+    blocks.push({ type: "text", text: extract.answerText })
   }
-  blocks.push({ type: "text", text: extract.answerText })
   return blocks
 }
 
-const createWebSearchProtocolMismatchError = (): HTTPError => {
-  const message =
-    "Responses incomplete result has no Anthropic stop-reason equivalent"
+export const projectWebSearchSyntheticHistory = (
+  outputItems: ReadonlyArray<WebSearchHistoryOutputItem>,
+  carrier: string,
+): Array<AnthropicTextBlock | AnthropicWebSearchContentBlock> => {
+  const output = structuredClone(
+    outputItems,
+  ) as unknown as ResponsesResult["output"]
+  const status =
+    (
+      output.some(
+        (item) => item.type === "message" && item.status === "incomplete",
+      )
+    ) ?
+      "incomplete"
+    : "completed"
+  const extract = extractWebSearchResult({
+    output,
+    output_text: "",
+    status,
+  } as ResponsesResult)
+  return buildResponseContent("carrier-projection", extract, carrier)
+}
+
+const createHistoryCarrier = (
+  result: ResponsesResult,
+  source: WebSearchHistoryCarrierSource | undefined,
+  extract: WebSearchExtract,
+): { carrier?: string; mode: WebSearchCarrierMode } => {
+  if (
+    !source
+    || (extract.textBlocks.length === 0 && extract.answerText.length > 0)
+  ) {
+    return { mode: "synthetic-without-encrypted-content" }
+  }
+  try {
+    return {
+      carrier: encodeWebSearchHistoryCarrier({
+        source,
+        output_items: result.output,
+        continuation: { kind: "complete" },
+      }),
+      mode: "gateway-v1-exact-responses-scope",
+    }
+  } catch (error) {
+    if (error instanceof WebSearchHistoryCarrierValidationError) {
+      return { mode: "synthetic-without-encrypted-content" }
+    }
+    throw error
+  }
+}
+
+const createWebSearchProtocolMismatchError = (
+  message = "Responses incomplete result has no Anthropic stop-reason equivalent",
+): HTTPError => {
   return new HTTPError(
     message,
     new Response(
@@ -88,19 +221,47 @@ const createWebSearchProtocolMismatchError = (): HTTPError => {
 export const reconstructWebSearchResponse = (
   payload: AnthropicMessagesPayload,
   result: ResponsesResult,
-  options: { requestId: string },
+  options: {
+    carrierSource?: WebSearchHistoryCarrierSource
+    requestId: string
+  },
 ): {
+  carrierMode: WebSearchCarrierMode
   extract: WebSearchExtract
   response: AnthropicResponse<
     AnthropicTextBlock | AnthropicWebSearchContentBlock
   >
 } => {
   assertResponsesResultUsable(result)
-  const extract = extractWebSearchResult(result)
+  let extract: WebSearchExtract
+  try {
+    extract = extractWebSearchResult(result)
+  } catch (error) {
+    if (error instanceof WebSearchSemanticValidationError) {
+      throw createWebSearchProtocolMismatchError(
+        "Responses returned malformed Web Search output",
+      )
+    }
+    throw error
+  }
   const stopReason = mapResponsesStopReasonToAnthropic(result)
   if (stopReason === null) {
     throw createWebSearchProtocolMismatchError()
   }
+  if (
+    extract.calls.some(
+      (call) => call.status === "in_progress" || call.status === "searching",
+    )
+  ) {
+    throw createWebSearchProtocolMismatchError(
+      "Responses ended with an unfinished Web Search call",
+    )
+  }
+  const historyCarrier = createHistoryCarrier(
+    result,
+    options.carrierSource,
+    extract,
+  )
   const usage = mapResponsesUsageToAnthropic(result.usage)
   const response: AnthropicResponse<
     AnthropicTextBlock | AnthropicWebSearchContentBlock
@@ -108,7 +269,11 @@ export const reconstructWebSearchResponse = (
     id: result.id || getUUID(options.requestId),
     type: "message",
     role: "assistant",
-    content: buildResponseContent(options.requestId, extract),
+    content: buildResponseContent(
+      options.requestId,
+      extract,
+      historyCarrier.carrier,
+    ),
     model: payload.model,
     stop_reason: stopReason,
     stop_sequence: null,
@@ -118,9 +283,12 @@ export const reconstructWebSearchResponse = (
         web_search_requests: extract.callCount,
       },
     },
+    ...(result.copilot_usage !== undefined && {
+      copilot_usage: result.copilot_usage,
+    }),
   }
 
-  return { extract, response }
+  return { carrierMode: historyCarrier.mode, extract, response }
 }
 
 export const normalizeWebSearchResponsesUsage = (result: ResponsesResult) => {
@@ -195,6 +363,13 @@ const blockToStreamEvents = (
           index,
           delta: { type: "text_delta", text: block.text },
         },
+        ...(block.citations ?? []).map(
+          (citation): AnthropicStreamEventData => ({
+            type: "content_block_delta",
+            index,
+            delta: { type: "citations_delta", citation },
+          }),
+        ),
         stop,
       ]
     }
@@ -254,6 +429,9 @@ export const buildSyntheticStreamEvents = (
   events.push(
     {
       type: "message_delta",
+      ...(response.copilot_usage !== undefined && {
+        copilot_usage: response.copilot_usage,
+      }),
       delta: {
         stop_reason: response.stop_reason,
         stop_sequence: response.stop_sequence,

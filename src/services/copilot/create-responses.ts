@@ -290,6 +290,13 @@ export type ResponseInputContent =
 export interface ResponseInputText {
   type: "input_text" | "output_text"
   text: string
+  annotations?: Array<{
+    type: "url_citation"
+    start_index: number
+    end_index: number
+    url: string
+    title: string
+  }>
   prompt_cache_breakpoint?: { mode: "explicit" } | null
 }
 
@@ -412,12 +419,20 @@ export interface ResponseOutputWebSearchCall {
   action?: {
     query?: string
     queries?: Array<string>
-    sources?: Array<{ type?: "url"; url: string }>
+    sources?: Array<{
+      type?: "url"
+      url: string
+      title?: string
+      page_age?: string | null
+      [key: string]: unknown
+    }>
     type?: string
     url?: string
     pattern?: string
+    [key: string]: unknown
   }
   status?: "in_progress" | "searching" | "completed" | "failed"
+  [key: string]: unknown
 }
 
 export interface ResponseOutputCompaction {

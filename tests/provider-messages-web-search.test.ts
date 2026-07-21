@@ -12,8 +12,10 @@ import type {
 import { createMessagesHandler } from "../src/routes/messages/handler"
 import { createMessageRoutes } from "../src/routes/messages/route"
 import { createWebSearchFlow } from "../src/routes/messages/web-search/fulfill"
+import { projectWebSearchSyntheticHistory } from "../src/routes/messages/web-search/reconstruction"
 import { getResponsesTransportForModel } from "../src/routes/responses/utils"
 import { createProviderMessagesHandler } from "../src/routes/provider/messages/handler"
+import { createProviderCountTokensHandler } from "../src/routes/provider/messages/count-tokens-handler"
 import { createProviderMessageRoutes } from "../src/routes/provider/messages/route"
 import type {
   CreateResponsesReturn,
@@ -24,6 +26,10 @@ import type {
 import type { Model } from "../src/services/copilot/get-models"
 import type { CodexProviderCatalogSnapshot } from "../src/services/codex/get-models"
 import type { TokenUsageRecorder } from "../src/lib/token-usage"
+import {
+  encodeWebSearchHistoryCarrier,
+  WEB_SEARCH_HISTORY_CARRIER_FIELD,
+} from "../src/routes/messages/web-search/history-carrier"
 
 let providerConfigs: Record<string, ResolvedProviderConfig> = {}
 let messageApiWebSearchModel: string | undefined
@@ -31,6 +37,9 @@ let messageApiWebSearchModel: string | undefined
 const recordProviderUsage: TokenUsageRecorder = () => "accepted"
 const providerUsageRecorder = mock(recordProviderUsage)
 const createProviderUsageRecorder = () => providerUsageRecorder
+const providerGetTokenCount = mock(() =>
+  Promise.resolve({ input: 1, output: 0 }),
+)
 const findEndpointModel = mock(
   (model: string): Model => ({
     capabilities: {
@@ -86,47 +95,51 @@ const loadCodexProviderModels = mock((_signal?: AbortSignal) =>
 
 const makeResponsesResult = (
   overrides: Partial<ResponsesResult> = {},
-): ResponsesResult =>
-  ({
-    id: "resp_provider_search",
-    object: "response",
-    created_at: 0,
-    model: "gpt-search",
-    output: [
-      { type: "web_search_call", action: { query: "node lts version" } },
-      {
-        type: "message",
-        role: "assistant",
-        status: "completed",
-        content: [
-          {
-            type: "output_text",
-            text: "Node.js 24 is the latest LTS.",
-            annotations: [
-              {
-                type: "url_citation",
-                url: "https://nodejs.org",
-                title: "Node.js",
-              },
-            ],
-          },
-        ],
-      },
-    ],
-    output_text: "",
-    status: "completed",
-    usage: { input_tokens: 12, output_tokens: 7, total_tokens: 19 },
-    error: null,
-    incomplete_details: null,
-    instructions: null,
-    metadata: null,
-    parallel_tool_calls: true,
-    temperature: 1,
-    tool_choice: null,
-    tools: [],
-    top_p: null,
-    ...overrides,
-  }) as unknown as ResponsesResult
+): ResponsesResult => ({
+  id: "resp_provider_search",
+  object: "response",
+  created_at: 0,
+  model: "gpt-search",
+  output: [
+    {
+      type: "web_search_call",
+      status: "completed",
+      action: { type: "search", query: "node lts version" },
+    },
+    {
+      id: "message-provider-default",
+      type: "message",
+      role: "assistant",
+      status: "completed",
+      content: [
+        {
+          type: "output_text",
+          text: "Node.js 24 is the latest LTS.",
+          annotations: [
+            {
+              type: "url_citation",
+              url: "https://nodejs.org",
+              title: "Node.js",
+            },
+          ],
+        },
+      ],
+    },
+  ],
+  output_text: "",
+  status: "completed",
+  usage: { input_tokens: 12, output_tokens: 7, total_tokens: 19 },
+  error: null,
+  incomplete_details: null,
+  instructions: null,
+  metadata: null,
+  parallel_tool_calls: true,
+  temperature: 1,
+  tool_choice: null,
+  tools: [],
+  top_p: null,
+  ...overrides,
+})
 
 const makePlainResponsesResult = (): ResponsesResult =>
   makeResponsesResult({
@@ -394,6 +407,10 @@ const createApp = () => {
     providerResolver,
     resolveCodexResponsesTransport: () => "http",
   })
+  const providerCountTokens = createProviderCountTokensHandler({
+    getTokenCount: providerGetTokenCount,
+    providerResolver,
+  })
   const searchFlow = createWebSearchFlow({
     findEndpointModel,
     getMessageApiWebSearchModel: () => messageApiWebSearchModel,
@@ -412,7 +429,10 @@ const createApp = () => {
   app.route("/v1/messages", createMessageRoutes({ messages }))
   app.route(
     "/:provider/v1/messages",
-    createProviderMessageRoutes({ messages: providerMessages }),
+    createProviderMessageRoutes({
+      countTokens: providerCountTokens.handle,
+      messages: providerMessages,
+    }),
   )
   return app
 }
@@ -493,6 +513,7 @@ beforeEach(() => {
   loadCodexProviderModels.mockClear()
   fetchMock.mockClear()
   providerUsageRecorder.mockClear()
+  providerGetTokenCount.mockClear()
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
     fetchMock as unknown as typeof fetch
 })
@@ -650,17 +671,25 @@ describe("provider messages web_search", () => {
       output: [
         {
           type: "web_search_call",
-          action: { queries: ["node current", "node lts"] },
+          status: "completed",
+          action: {
+            type: "search",
+            queries: ["node current", "node lts"],
+          },
         },
-        { type: "web_search_call", action: {} },
+        {
+          type: "web_search_call",
+          status: "completed",
+          action: { type: "open", url: "https://nodejs.org" },
+        },
         makeResponsesResult().output[1],
-      ] as never,
+      ] satisfies ResponsesResult["output"],
       usage: {
         input_tokens: 12,
         input_tokens_details: {
           cached_tokens: 3,
           cache_write_tokens: 2,
-        } as never,
+        },
         output_tokens: 7,
         total_tokens: 19,
       },
@@ -712,8 +741,13 @@ describe("provider messages web_search", () => {
     expect(json.content.map((block) => block.type)).toEqual([
       "server_tool_use",
       "web_search_tool_result",
+      "server_tool_use",
+      "web_search_tool_result",
       "text",
     ])
+    expect(
+      (json.content[0] as { input: Record<string, unknown> }).input.queries,
+    ).toEqual(["node current", "node lts"])
     expect(json.usage).toMatchObject({
       input_tokens: 7,
       cache_creation_input_tokens: 2,
@@ -723,6 +757,123 @@ describe("provider messages web_search", () => {
         web_search_requests: 2,
       },
     })
+  })
+
+  test("round-trips exact Web Search history only to the same provider model", async () => {
+    const exactOutput = [
+      {
+        id: "search-provider-history",
+        type: "web_search_call",
+        status: "completed",
+        action: {
+          type: "search",
+          queries: ["first provider query", "second provider query"],
+          sources: [
+            { type: "url", url: "https://example.test/provider-history" },
+          ],
+          provider_extension: { kept: true },
+        },
+      },
+      {
+        id: "message-provider-history",
+        type: "message",
+        role: "assistant",
+        status: "completed",
+        content: [
+          {
+            type: "output_text",
+            text: "Provider history answer",
+            annotations: [
+              {
+                type: "url_citation",
+                start_index: 0,
+                end_index: 8,
+                title: "Provider history",
+                url: "https://example.test/provider-history",
+              },
+            ],
+          },
+        ],
+      },
+    ] as ResponsesResult["output"]
+    responsesResultOverride = makeResponsesResult({ output: exactOutput })
+    const app = createApp()
+
+    const first = await app.request("/search/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "Search first" }],
+        model: "gpt-search",
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(first.status).toBe(200)
+    expect(first.headers.get("x-copilot-api-web-search-carrier")).toBe(
+      "gateway-v1-exact-responses-scope",
+    )
+    const firstBody = (await first.json()) as AnthropicResponse
+    expect(JSON.stringify(firstBody)).toContain(
+      WEB_SEARCH_HISTORY_CARRIER_FIELD,
+    )
+
+    const second = await app.request("/search/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [
+          { role: "user", content: "Search first" },
+          { role: "assistant", content: firstBody.content },
+          { role: "user", content: "Continue" },
+        ],
+        model: "gpt-search",
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(second.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const [, secondInit] = fetchMock.mock.calls[1]
+    const secondUpstream = JSON.parse(
+      (secondInit as RequestInit).body as string,
+    ) as { input: Array<unknown> }
+    expect(secondUpstream.input.slice(1, 3)).toEqual(
+      exactOutput as Array<unknown>,
+    )
+    expect(
+      secondUpstream.input.filter(
+        (item) =>
+          typeof item === "object"
+          && item !== null
+          && (item as { id?: unknown }).id === "search-provider-history",
+      ),
+    ).toHaveLength(1)
+    expect(JSON.stringify(secondUpstream)).not.toContain(
+      WEB_SEARCH_HISTORY_CARRIER_FIELD,
+    )
+
+    fetchMock.mockClear()
+    const mismatch = await app.request("/search/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [
+          { role: "user", content: "Search first" },
+          { role: "assistant", content: firstBody.content },
+          { role: "user", content: "Continue elsewhere" },
+        ],
+        model: "gpt-other",
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(mismatch.status).toBe(400)
+    expect(await mismatch.text()).toContain("model-mismatch")
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   test("returns max_tokens for provider Web Search max_tokens incomplete", async () => {
@@ -1205,6 +1356,51 @@ describe("provider messages web_search", () => {
   })
 
   test("streams synthetic Anthropic events after parsing upstream Responses stream", async () => {
+    responsesResultOverride = makeResponsesResult({
+      copilot_usage: { total_nano_aiu: 77 },
+      output: [
+        {
+          id: "search-stream-first",
+          type: "web_search_call",
+          status: "completed",
+          action: { type: "search", queries: ["first", "second"] },
+        },
+        {
+          id: "search-stream-second",
+          type: "web_search_call",
+          status: "completed",
+          action: { type: "open", url: "https://example.test/stream" },
+        },
+        {
+          id: "message-stream-search",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [
+            {
+              type: "output_text",
+              text: "First claim. Second claim.",
+              annotations: [
+                {
+                  type: "url_citation",
+                  start_index: 0,
+                  end_index: 11,
+                  title: "Repeated",
+                  url: "https://example.test/repeated",
+                },
+                {
+                  type: "url_citation",
+                  start_index: 13,
+                  end_index: 25,
+                  title: "Repeated",
+                  url: "https://example.test/repeated",
+                },
+              ],
+            },
+          ],
+        },
+      ] satisfies ResponsesResult["output"],
+    })
     const app = createApp()
     const response = await app.request("/search/v1/messages", {
       method: "POST",
@@ -1233,7 +1429,11 @@ describe("provider messages web_search", () => {
     expect(text).toContain("event: content_block_start")
     expect(text).toContain("server_tool_use")
     expect(text).toContain("web_search_tool_result")
-    expect(text).toContain("Node.js 24 is the latest LTS.")
+    expect(text).toContain("search-stream-first")
+    expect(text).toContain("search-stream-second")
+    expect(text.match(/citations_delta/gu)).toHaveLength(2)
+    expect(text).toContain('"total_nano_aiu":77')
+    expect(text).toContain("First claim. Second claim.")
     expect(text).toContain("event: message_stop")
   })
 
@@ -1278,6 +1478,40 @@ describe("provider messages web_search", () => {
       apiKey: "native-key",
       authType: "x-api-key",
     }
+    const nativeHistory = [
+      {
+        type: "server_tool_use",
+        id: "srvtoolu-native-history",
+        name: "web_search",
+        input: { query: "native history" },
+        caller: { type: "direct" },
+      },
+      {
+        type: "web_search_tool_result",
+        tool_use_id: "srvtoolu-native-history",
+        content: [
+          {
+            type: "web_search_result",
+            url: "https://example.test/native-history",
+            title: "Native history",
+            encrypted_content: "opaque-native-content",
+          },
+        ],
+      },
+      {
+        type: "text",
+        text: "Native history answer",
+        citations: [
+          {
+            type: "web_search_result_location",
+            url: "https://example.test/native-history",
+            title: "Native history",
+            cited_text: "Native history answer",
+            encrypted_index: "opaque-native-index",
+          },
+        ],
+      },
+    ] satisfies AnthropicResponse["content"]
     fetchMock.mockImplementationOnce(() =>
       Promise.resolve(
         new Response(
@@ -1285,7 +1519,7 @@ describe("provider messages web_search", () => {
             id: "msg-native",
             type: "message",
             role: "assistant",
-            content: [{ type: "text", text: "native" }],
+            content: nativeHistory,
             model: "claude-native",
             stop_reason: "end_turn",
             stop_sequence: null,
@@ -1301,7 +1535,11 @@ describe("provider messages web_search", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         max_tokens: 128,
-        messages: [{ role: "user", content: "search and call" }],
+        messages: [
+          { role: "user", content: "search and call" },
+          { role: "assistant", content: nativeHistory },
+          { role: "user", content: "continue native" },
+        ],
         model: "claude-native",
         tools: [
           webSearchTool,
@@ -1313,12 +1551,226 @@ describe("provider messages web_search", () => {
     expect(response.status).toBe(200)
     const [, init] = fetchMock.mock.calls[0]
     const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      messages?: Array<{ content: unknown }>
       tools?: Array<Record<string, unknown>>
     }
     expect(upstreamBody.tools).toEqual([
       webSearchTool,
       { name: "get_weather", input_schema: { type: "object" } },
     ])
+    expect(upstreamBody.messages?.[1]?.content).toEqual(nativeHistory)
+    expect(((await response.json()) as AnthropicResponse).content).toEqual(
+      nativeHistory,
+    )
+  })
+
+  test("streams native Web Search opaque fields without synthetic translation", async () => {
+    providerConfigs.native = {
+      name: "native",
+      type: "anthropic",
+      baseUrl: "https://native.example",
+      apiKey: "native-key",
+      authType: "x-api-key",
+    }
+    const events = [
+      {
+        type: "message_start",
+        message: {
+          id: "msg-native-stream",
+          type: "message",
+          role: "assistant",
+          content: [],
+          model: "claude-native",
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 3, output_tokens: 0 },
+        },
+      },
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "web_search_tool_result",
+          tool_use_id: "srvtoolu-native-stream",
+          content: [
+            {
+              type: "web_search_result",
+              url: "https://example.test/native-stream",
+              title: "Native stream",
+              encrypted_content: "opaque-native-stream-content",
+            },
+          ],
+        },
+      },
+      {
+        type: "content_block_delta",
+        index: 1,
+        delta: {
+          type: "citations_delta",
+          citation: {
+            type: "web_search_result_location",
+            url: "https://example.test/native-stream",
+            title: "Native stream",
+            cited_text: "Native stream answer",
+            encrypted_index: "opaque-native-stream-index",
+          },
+        },
+      },
+      {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn", stop_sequence: null },
+        usage: { output_tokens: 4 },
+      },
+      { type: "message_stop" },
+    ]
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          events
+            .map(
+              (event) =>
+                `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+            )
+            .join(""),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/native/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "native stream" }],
+        model: "claude-native",
+        stream: true,
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("opaque-native-stream-content")
+    expect(body).toContain("opaque-native-stream-index")
+    expect(body).toContain('"type":"citations_delta"')
+    expect(body).not.toContain(WEB_SEARCH_HISTORY_CARRIER_FIELD)
+  })
+
+  test("rejects a gateway Responses carrier before native Anthropic dispatch", async () => {
+    providerConfigs.native = {
+      name: "native",
+      type: "anthropic",
+      baseUrl: "https://native.example",
+      apiKey: "native-key",
+      authType: "x-api-key",
+    }
+    const historyCarrier = encodeWebSearchHistoryCarrier({
+      source: {
+        destination: "responses",
+        adapter: "provider-responses",
+        provider: "search",
+        model: "gpt-search",
+      },
+      output_items: [
+        {
+          id: "search-cross-adapter",
+          type: "web_search_call",
+          status: "completed",
+          action: { type: "search", query: "private cross adapter query" },
+        },
+      ],
+      continuation: { kind: "complete" },
+    })
+
+    const response = await createApp().request("/native/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        model: "claude-native",
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "server_tool_use",
+                id: "search-cross-adapter",
+                name: "web_search",
+                input: {
+                  query: "private cross adapter query",
+                  [WEB_SEARCH_HISTORY_CARRIER_FIELD]: historyCarrier,
+                },
+              },
+              {
+                type: "web_search_tool_result",
+                tool_use_id: "search-cross-adapter",
+                content: [],
+              },
+            ],
+          },
+          { role: "user", content: "continue" },
+        ],
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(response.status).toBe(400)
+    const body = await response.text()
+    expect(body).toContain("destination-mismatch")
+    expect(body).not.toContain(historyCarrier)
+    expect(body).not.toContain("private cross adapter query")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("rejects resumable Web Search history before provider token counting", async () => {
+    const historySource = {
+      destination: "responses",
+      adapter: "provider-responses",
+      provider: "search",
+      model: "gpt-search",
+    } as const
+    const historyOutput = [
+      {
+        id: "search-count-history",
+        type: "web_search_call",
+        status: "completed",
+        action: { type: "search", query: "count history" },
+      },
+    ] as const
+    const historyCarrier = encodeWebSearchHistoryCarrier({
+      source: historySource,
+      output_items: historyOutput,
+      continuation: { kind: "complete" },
+    })
+
+    const response = await createApp().request(
+      "/search/v1/messages/count_tokens",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          max_tokens: 128,
+          model: "gpt-search",
+          messages: [
+            {
+              role: "assistant",
+              content: projectWebSearchSyntheticHistory(
+                historyOutput,
+                historyCarrier,
+              ),
+            },
+            { role: "user", content: "continue" },
+          ],
+        }),
+      },
+    )
+
+    expect(response.status).toBe(400)
+    expect(await response.text()).toContain(
+      "Resumable Web Search history is not supported by provider token counting",
+    )
+    expect(providerGetTokenCount).not.toHaveBeenCalled()
   })
 
   test("prioritizes an explicit native provider alias over the global Web Search fallback", async () => {

@@ -89,6 +89,7 @@ import { normalizeToolSchema } from "./non-stream-translation"
 import { assertResponsesResultUsable } from "./responses-result"
 import { parseFunctionCallArguments } from "./tool-arguments"
 import { validateAnthropicToolResultContent } from "./tool-result-content"
+import type { RestoredWebSearchTurn } from "./web-search/carrier-sanitizer"
 
 const MESSAGE_TYPE = "message"
 const COMPACTION_SIGNATURE_PREFIX = "cm1#"
@@ -101,6 +102,7 @@ const REASONING_SUMMARY_SEPARATOR_PATTERN = /\u00a0\n\n|\u2063\n\n/
 interface ResponsesTranslationPolicy {
   extraPrompt?: string
   reasoningEffort?: GatewayReasoningEffort
+  restoredWebSearchTurns?: ReadonlyArray<RestoredWebSearchTurn>
 }
 
 const resolveReasoningEffort = (
@@ -157,6 +159,7 @@ export const translateAnthropicMessagesToResponsesPayload = (
   policy: ResponsesTranslationPolicy = {},
 ): ResponsesPayload => {
   const input: Array<ResponseInputItem> = []
+  const exactRestoredItems = new WeakSet<object>()
   const applyPhase = shouldApplyPhase(payload.model)
   const toolSearchEnabled = shouldEnableResponsesToolSearch({
     model: payload.model,
@@ -169,15 +172,48 @@ export const translateAnthropicMessagesToResponsesPayload = (
     toolUseNameById: new Map(),
   }
 
-  for (const message of payload.messages as Array<AnthropicMessage>) {
+  const restoredTurnsByMessageIndex = new Map(
+    (policy.restoredWebSearchTurns ?? []).map((turn) => [
+      turn.messageIndex,
+      turn,
+    ]),
+  )
+  for (const [messageIndex, message] of (
+    payload.messages as Array<AnthropicMessage>
+  ).entries()) {
+    const restored = restoredTurnsByMessageIndex.get(messageIndex)
+    if (restored) {
+      if (message.role !== "assistant") {
+        throw createMessagesInvalidRequestError(
+          "Restored Web Search history must replace an assistant message.",
+        )
+      }
+      const restoredItems = structuredClone(
+        restored.outputItems,
+      ) as Array<ResponseInputItem>
+      for (const item of restoredItems) {
+        if (typeof item === "object" && item !== null) {
+          exactRestoredItems.add(item)
+        }
+      }
+      input.push(...restoredItems)
+      restoredTurnsByMessageIndex.delete(messageIndex)
+      continue
+    }
     input.push(
       ...translateMessage(message, payload.model, applyPhase, translationState),
+    )
+  }
+  if (restoredTurnsByMessageIndex.size > 0) {
+    throw createMessagesInvalidRequestError(
+      "Restored Web Search history references a missing message.",
     )
   }
 
   const hasExplicitCacheBreakpoints = retainLatestPromptCacheBreakpoints(
     input,
     isGpt56OrAbove(payload.model) ? 3 : 0,
+    exactRestoredItems,
   )
 
   const hasOriginalTools =
@@ -264,11 +300,13 @@ export const translateAnthropicMessagesToResponsesPayload = (
 const retainLatestPromptCacheBreakpoints = (
   input: Array<ResponseInputItem>,
   limit: number,
+  exactRestoredItems: WeakSet<object> = new WeakSet(),
 ): boolean => {
   const markedBlocks: Array<Record<string, unknown>> = []
 
   for (const item of input) {
     if (!isRecord(item)) continue
+    if (exactRestoredItems.has(item)) continue
 
     const content =
       Array.isArray(item.content) ? item.content
@@ -534,7 +572,7 @@ const translateAssistantContentBlock = (
 ): ResponseInputContent | undefined => {
   switch (block.type) {
     case "text": {
-      return createOutPutTextContent(block.text)
+      return createOutPutTextContent(block)
     }
     default: {
       return undefined
@@ -609,10 +647,73 @@ const createTextContent = (
   : {}),
 })
 
-const createOutPutTextContent = (text: string): ResponseInputText => ({
-  type: "output_text",
-  text,
-})
+const createOutPutTextContent = (
+  block: AnthropicTextBlock,
+): ResponseInputText => {
+  const rawCitations: unknown = block.citations
+  if (rawCitations !== undefined && !Array.isArray(rawCitations)) {
+    throw createMessagesInvalidRequestError(
+      "Anthropic Web Search citations must be an array.",
+    )
+  }
+  const citations = rawCitations ?? []
+  if (citations.length > 1_024 || block.text.length > 1024 * 1024) {
+    throw createMessagesInvalidRequestError(
+      "Anthropic Web Search citations exceed the local safety limit.",
+    )
+  }
+  const annotations: NonNullable<ResponseInputText["annotations"]> = []
+  let nextSearchIndex = 0
+  let citationCharacters = 0
+  for (const citation of citations) {
+    if (
+      !isRecord(citation)
+      || citation.type !== "web_search_result_location"
+      || typeof citation.cited_text !== "string"
+      || !citation.cited_text
+      || typeof citation.url !== "string"
+      || !citation.url
+      || typeof citation.title !== "string"
+      || !citation.title
+      || Object.hasOwn(citation, "encrypted_index")
+      || Object.keys(citation).some(
+        (key) => !["cited_text", "title", "type", "url"].includes(key),
+      )
+    ) {
+      throw createMessagesInvalidRequestError(
+        "Anthropic Web Search citation is malformed.",
+      )
+    }
+    citationCharacters +=
+      citation.cited_text.length + citation.url.length + citation.title.length
+    if (citationCharacters > 1024 * 1024) {
+      throw createMessagesInvalidRequestError(
+        "Anthropic Web Search citations exceed the local safety limit.",
+      )
+    }
+    let startIndex = block.text.indexOf(citation.cited_text, nextSearchIndex)
+    if (startIndex < 0) startIndex = block.text.indexOf(citation.cited_text)
+    if (startIndex < 0) {
+      throw createMessagesInvalidRequestError(
+        "Anthropic Web Search citation does not match its text block.",
+      )
+    }
+    const endIndex = startIndex + citation.cited_text.length
+    nextSearchIndex = endIndex
+    annotations.push({
+      type: "url_citation",
+      start_index: startIndex,
+      end_index: endIndex,
+      url: citation.url,
+      title: citation.title,
+    })
+  }
+  return {
+    type: "output_text",
+    text: block.text,
+    ...(annotations.length > 0 && { annotations }),
+  }
+}
 
 const createImageContent = (
   block: AnthropicImageBlock,

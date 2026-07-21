@@ -89,6 +89,11 @@ import {
   reconstructWebSearchResponse,
   WEB_SEARCH_PROVIDER_ADAPTER_UNSUPPORTED_MESSAGE,
 } from "~/routes/messages/web-search/fulfill"
+import {
+  createProviderWebSearchCarrierContext,
+  webSearchCarrierSanitizer,
+  type RestoredWebSearchTurn,
+} from "~/routes/messages/web-search/carrier-sanitizer"
 import { normalizeSystemMessages } from "~/routes/messages/preprocess"
 import {
   applyResponsesApiContextManagement,
@@ -308,11 +313,18 @@ async function handleProviderMessagesForProviderWithDependencies(
       modelConfig,
       type: effectiveType,
     } = resolvedProviderModel
-    debugJson(logger, "provider.messages.request", { payload, provider })
-
     normalizeSystemMessages(payload)
 
     applyModelDefaults(payload, modelConfig)
+    const carrierSanitization = webSearchCarrierSanitizer.sanitize(
+      payload,
+      createProviderWebSearchCarrierContext(
+        effectiveType,
+        forwardingConfig.name,
+        payload.model,
+      ),
+    )
+    debugJson(logger, "provider.messages.request", { payload, provider })
 
     if (effectiveType === "openai-responses") {
       if (hasTrailingAssistantPrefill(payload)) {
@@ -352,6 +364,7 @@ async function handleProviderMessagesForProviderWithDependencies(
             payload,
             provider,
             providerConfig: forwardingConfig,
+            restoredWebSearchTurns: carrierSanitization.restoredTurns,
             selectedCodexModel,
           })
         }
@@ -364,6 +377,7 @@ async function handleProviderMessagesForProviderWithDependencies(
         payload,
         provider,
         providerConfig: forwardingConfig,
+        restoredWebSearchTurns: carrierSanitization.restoredTurns,
         selectedCodexModel,
       })
     }
@@ -449,6 +463,7 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
     payload: AnthropicMessagesPayload
     provider: string
     providerConfig: ResolvedProviderConfig
+    restoredWebSearchTurns: ReadonlyArray<RestoredWebSearchTurn>
     selectedCodexModel?: Model
   },
 ): Promise<Response> => {
@@ -458,6 +473,7 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
     payload,
     provider,
     providerConfig,
+    restoredWebSearchTurns,
     selectedCodexModel,
   } = options
   const recordUsage = createProviderMessagesUsageRecorder(
@@ -468,7 +484,9 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
     dependencies,
   )
   applyWebSearchFallbackHeaders(c, payload, logger)
-  const responsesPayload = prepareWebSearchResponsesPayload(payload)
+  const responsesPayload = prepareWebSearchResponsesPayload(payload, {
+    restoredWebSearchTurns,
+  })
   const reasoningError =
     providerConfig.name === "codex" ?
       applyCodexProviderReasoningEffort(
@@ -504,6 +522,7 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
       })
       return respondWebSearchProviderMessagesJson(c, {
         body,
+        canonicalProvider: providerConfig.name,
         payload,
         provider,
         recordUsage,
@@ -512,6 +531,7 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
 
     return respondWebSearchProviderMessagesJson(c, {
       body: upstreamResponse,
+      canonicalProvider: providerConfig.name,
       payload,
       provider,
       recordUsage,
@@ -547,6 +567,7 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
     })
     return respondWebSearchProviderMessagesJson(c, {
       body,
+      canonicalProvider: providerConfig.name,
       payload,
       provider,
       recordUsage,
@@ -556,6 +577,7 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
   const jsonBody = (await upstreamResponse.json()) as ResponsesResult
   return respondWebSearchProviderMessagesJson(c, {
     body: jsonBody,
+    canonicalProvider: providerConfig.name,
     payload,
     provider,
     recordUsage,
@@ -570,6 +592,7 @@ const handleOpenAIResponsesProviderMessages = async (
     payload: AnthropicMessagesPayload
     provider: string
     providerConfig: ResolvedProviderConfig
+    restoredWebSearchTurns: ReadonlyArray<RestoredWebSearchTurn>
     selectedCodexModel?: Model
   },
 ): Promise<Response> => {
@@ -579,6 +602,7 @@ const handleOpenAIResponsesProviderMessages = async (
     payload,
     provider,
     providerConfig,
+    restoredWebSearchTurns,
     selectedCodexModel,
   } = options
   const recordUsage = createProviderMessagesUsageRecorder(
@@ -593,6 +617,7 @@ const handleOpenAIResponsesProviderMessages = async (
     payload,
     undefined,
     { model: payload.model, provider },
+    { restoredWebSearchTurns },
   )
   const reasoningError =
     providerConfig.name === "codex" ?
@@ -1617,16 +1642,23 @@ const respondWebSearchProviderMessagesJson = (
   c: Context,
   options: {
     body: ResponsesResult
+    canonicalProvider: string
     payload: AnthropicMessagesPayload
     provider: string
     recordUsage: TokenUsageRecorder
   },
 ): Response => {
-  const { body, payload, provider, recordUsage } = options
+  const { body, canonicalProvider, payload, provider, recordUsage } = options
   const usage = normalizeWebSearchResponsesUsage(body)
   let reconstructed: ReturnType<typeof reconstructWebSearchResponse>
   try {
     reconstructed = reconstructWebSearchResponse(payload, body, {
+      carrierSource: {
+        destination: "responses",
+        adapter: "provider-responses",
+        provider: canonicalProvider,
+        model: payload.model.trim(),
+      },
       requestId: body.id || `${provider}:${payload.model}`,
     })
   } catch (error) {
@@ -1635,6 +1667,7 @@ const respondWebSearchProviderMessagesJson = (
   }
   recordUsage(usage, getWebSearchUsageMetadata(body, "mapped"))
   const { extract, response } = reconstructed
+  c.header("x-copilot-api-web-search-carrier", reconstructed.carrierMode)
 
   debugJson(
     logger,
@@ -1649,7 +1682,7 @@ const respondWebSearchProviderMessagesJson = (
   return streamSSE(c, async (stream) => {
     for (const event of buildSyntheticStreamEvents(response)) {
       const data = JSON.stringify(event)
-      logger.debug(`Web search stream event`, data)
+      logger.debug("Web search stream event", event.type)
       await stream.writeSSE({
         event: event.type,
         data: data,

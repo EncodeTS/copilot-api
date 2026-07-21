@@ -426,7 +426,7 @@ test("request context carries recovery, request identity, and cancellation to ge
 })
 
 test("Web Search carrier sanitizer remains an independent destination hook", async () => {
-  const destinations: Array<string> = []
+  const contexts: Array<unknown> = []
   const context = createRequestContext(
     createSnapshot(messagesModel, {
       modelMappings: { "model-alias": messagesModel.id },
@@ -434,8 +434,9 @@ test("Web Search carrier sanitizer remains an independent destination hook", asy
   )
   const facade = createPreparedMessagesFacade({
     carrierSanitizer: {
-      sanitize: (_payload, destination) => {
-        destinations.push(destination)
+      sanitize: (_payload, carrierContext) => {
+        contexts.push(carrierContext)
+        return { restoredTurns: [] }
       },
     },
     handleWithMessagesApi: () => Promise.resolve(new Response("messages")),
@@ -443,5 +444,14 @@ test("Web Search carrier sanitizer remains an independent destination hook", asy
 
   await facade.generate(context, source)
 
-  expect(destinations).toEqual(["messages"])
+  expect(contexts).toEqual([
+    {
+      destination: "messages",
+      canonicalTarget: {
+        adapter: "anthropic-messages",
+        provider: "copilot",
+        model: messagesModel.id,
+      },
+    },
+  ])
 })

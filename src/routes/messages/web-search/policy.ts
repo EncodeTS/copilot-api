@@ -15,6 +15,7 @@ import type {
   AnthropicTool,
   AnthropicWebSearchTool,
 } from "../anthropic-types"
+import type { RestoredWebSearchTurn } from "./carrier-sanitizer"
 import { translateAnthropicMessagesToResponsesPayload } from "../responses-translation"
 import {
   buildResponsesWebSearchTool,
@@ -204,6 +205,7 @@ export const prepareWebSearchResponsesPayload = (
   payload: AnthropicMessagesPayload,
   options: {
     model?: string
+    restoredWebSearchTurns?: ReadonlyArray<RestoredWebSearchTurn>
     subagentAgentId?: string | null
   } = {},
 ): ResponsesPayload => {
@@ -218,7 +220,15 @@ export const prepareWebSearchResponsesPayload = (
   const responsesPayload = translateAnthropicMessagesToResponsesPayload(
     switchedPayload,
     options.subagentAgentId,
+    undefined,
+    { restoredWebSearchTurns: options.restoredWebSearchTurns },
   )
+  responsesPayload.include = [
+    ...new Set([
+      ...(responsesPayload.include ?? []),
+      "web_search_call.action.sources" as const,
+    ]),
+  ]
   responsesPayload.tools = [buildResponsesWebSearchTool(config)]
   if (
     typeof config.maxUses === "number"
