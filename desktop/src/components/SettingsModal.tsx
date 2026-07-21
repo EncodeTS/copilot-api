@@ -2,6 +2,7 @@ import { useState, useEffect, type ReactNode } from 'react'
 import type {
   DesktopProxyMode,
   DesktopSettings,
+  SettingsSaveResult,
   ThemePreference,
 } from '../types/ipc'
 import { useLanguage } from '../contexts/LanguageContext'
@@ -24,6 +25,12 @@ function requiresAppRestart(
     || previous.enterpriseUrl !== next.enterpriseUrl
   )
 }
+
+export const resolveSettingsRuntimeError = (
+  result: SettingsSaveResult,
+  fallback: string,
+): string | null =>
+  result.success ? null : result.error || result.serverStatus.error || fallback
 
 const fieldClass =
   'w-full rounded-lg border border-line bg-surface px-3 py-2 text-[13px] text-ink transition-colors focus:outline-none focus:ring-2 focus:ring-accent/40 dark:border-white/10 dark:bg-[#101014] dark:focus:border-blue-400/40 dark:focus:bg-[#17171d] dark:focus:ring-blue-500/30'
@@ -222,6 +229,7 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
   const [initialSettings, setInitialSettings] =
     useState<DesktopSettings | null>(null)
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
 
   useEffect(() => {
     void window.electronAPI
@@ -238,8 +246,17 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
       initialSettings !== null && requiresAppRestart(initialSettings, settings)
 
     setSaving(true)
+    setSaveError('')
     try {
-      await window.electronAPI.saveSettings(settings)
+      const result = await window.electronAPI.saveSettings(settings)
+      const runtimeError = resolveSettingsRuntimeError(
+        result,
+        t('settings.saveFailed'),
+      )
+      if (runtimeError) {
+        setSaveError(runtimeError)
+        return
+      }
       setLangPref(settings.language)
       setThemePref(settings.theme)
 
@@ -255,6 +272,10 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
       }
 
       onClose()
+    } catch (error) {
+      setSaveError(
+        error instanceof Error ? error.message : t('settings.saveFailed'),
+      )
     } finally {
       setSaving(false)
     }
@@ -611,6 +632,14 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
 
         {/* Footer actions */}
         <div className="flex shrink-0 justify-end gap-2 border-t border-line-soft bg-sunken/60 px-5 py-3.5 dark:border-white/10 dark:bg-[#101014]">
+          {saveError && (
+            <div
+              role="alert"
+              className="mr-auto self-center text-[12px] text-red-600 dark:text-red-400"
+            >
+              {saveError}
+            </div>
+          )}
           <button
             onClick={onClose}
             className="rounded-lg border border-line px-4 py-2 text-[13px] text-ink-soft transition-colors hover:bg-sunken hover:text-ink dark:border-white/10 dark:hover:bg-white/10 dark:hover:text-white"

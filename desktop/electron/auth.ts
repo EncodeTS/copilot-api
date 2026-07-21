@@ -38,11 +38,7 @@ export async function readToken(): Promise<string | null> {
 }
 
 export async function clearToken(): Promise<void> {
-  try {
-    await clearGitHubToken()
-  } catch {
-    // ignore
-  }
+  await clearGitHubToken()
 }
 
 export async function getCopilotAccountType(

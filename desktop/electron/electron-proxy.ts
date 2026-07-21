@@ -54,6 +54,11 @@ export async function applyElectronProxy(
       : 'system settings'
     console.info(`Electron proxy configured from ${source}`)
   } catch (error) {
+    if (isFixedProxyConfig(proxyConfig)) {
+      throw new Error('Required custom proxy configuration failed', {
+        cause: error,
+      })
+    }
     console.warn('Failed to configure Electron proxy.', error)
   }
 }

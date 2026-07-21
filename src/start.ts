@@ -20,7 +20,7 @@ import { runProviderSetup } from "./auth"
 import { readGitHubToken } from "./lib/credential-store"
 import { initOpencodeVersion } from "./lib/opencode"
 import { ensurePaths, PATHS } from "./lib/paths"
-import { initProxyFromEnv } from "./lib/proxy"
+import { initProxyFromEnv, isProxyRequired } from "./lib/proxy"
 import { generateEnvScript } from "./lib/shell"
 import { state } from "./lib/state"
 import { logUser, setupCopilotToken } from "./lib/token"
@@ -39,6 +39,7 @@ interface RunServerOptions {
   claudeCode: boolean
   showToken: boolean
   proxyEnv: boolean
+  proxyRequired?: boolean
 }
 
 export const startDependencies = {
@@ -178,12 +179,14 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   consola.options.throttle = 0
 
+  await ensurePaths()
   mergeConfigWithDefaults()
 
   await initOpencodeVersion()
 
-  if (options.proxyEnv) {
-    initProxyFromEnv()
+  const proxyRequired = options.proxyRequired === true || isProxyRequired()
+  if (options.proxyEnv || proxyRequired) {
+    initProxyFromEnv({ required: proxyRequired })
   }
 
   state.verbose = options.verbose
@@ -194,7 +197,6 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   state.showToken = options.showToken
 
-  await ensurePaths()
   await responsesReasoningRecoveryRegistry.initialize(
     PATHS.REASONING_RECOVERY_PATH,
   )
@@ -270,6 +272,12 @@ export const start = defineCommand({
       default: false,
       description: "Initialize proxy from environment variables",
     },
+    "proxy-required": {
+      type: "boolean",
+      default: false,
+      description:
+        "Require proxy routing except for explicit NO_PROXY destinations",
+    },
   },
   run({ args }) {
     return runServer({
@@ -279,6 +287,7 @@ export const start = defineCommand({
       claudeCode: args["claude-code"],
       showToken: args["show-token"],
       proxyEnv: args["proxy-env"],
+      proxyRequired: args["proxy-required"],
     })
   },
 })

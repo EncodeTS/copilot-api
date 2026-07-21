@@ -1,7 +1,7 @@
 import consola from "consola"
-import { getProxyForUrl } from "proxy-from-env"
 import { WebSocket } from "undici"
 
+import { resolveProxyUrlForUrl } from "~/lib/proxy"
 import type { ResponsesWebSocketResourceLimits } from "~/lib/responses-websocket-limits"
 import {
   UpstreamLifecycleTimeoutError,
@@ -336,4 +336,5 @@ const openWebSocket = ({
 }
 
 const getProxyUrl = (url: string): string =>
-  getProxyForUrl(url.replace(/^wss:/, "https:").replace(/^ws:/, "http:"))
+  resolveProxyUrlForUrl(url.replace(/^wss:/, "https:").replace(/^ws:/, "http:"))
+  ?? ""

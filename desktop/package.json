@@ -28,6 +28,9 @@
   "dependencies": {
     "electron-updater": "^6.3.4"
   },
+  "overrides": {
+    "js-yaml": "4.3.0"
+  },
   "build": {
     "appId": "com.copilot-api.desktop",
     "productName": "Copilot API",

@@ -1,3 +1,4 @@
+export { SETTINGS_RUNTIME_ACTIONS } from "./desktop-ipc"
 export type {
   AuthResult,
   AuthStatus,
@@ -15,6 +16,8 @@ export type {
   QuickProviderName,
   ServerAuthInfo,
   ServerStatus,
+  SettingsRuntimeAction,
+  SettingsSaveResult,
   ThemePreference,
 } from "./desktop-ipc"
 export { MODEL_MAPPINGS_DIAGNOSTIC_CODE_VALUES } from "./model-mappings"

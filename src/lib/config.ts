@@ -5,9 +5,18 @@ import { isDeepStrictEqual } from "node:util"
 
 import { PATHS } from "./paths"
 import {
+  atomicWriteProtectedFileSync,
+  ensurePrivateDirectorySync,
+  repairPrivateFileSync,
+} from "./file-protection"
+import {
   normalizeGatewayReasoningEffort,
   type GatewayReasoningEffort,
 } from "./reasoning-effort"
+import {
+  ProviderBaseUrlPolicyError,
+  validateProviderBaseUrl,
+} from "./provider-url-policy"
 import {
   DEFAULT_RESPONSES_WEBSOCKET_RESOURCE_LIMITS,
   type ResponsesWebSocketResourceLimits,
@@ -155,6 +164,7 @@ export interface ProviderConfig {
   type?: string
   enabled?: boolean
   baseUrl?: string
+  allowInsecureHttp?: boolean
   apiKey?: string
   authType?: ProviderAuthType
   capabilities?: ProviderCapabilities
@@ -361,15 +371,13 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
 function ensureConfigFile(): void {
   try {
     fs.accessSync(PATHS.CONFIG_PATH, fs.constants.R_OK | fs.constants.W_OK)
-  } catch {
-    fs.mkdirSync(PATHS.APP_DIR, { recursive: true })
-    fs.writeFileSync(PATHS.CONFIG_PATH, "{}\n", "utf8")
-    try {
-      fs.chmodSync(PATHS.CONFIG_PATH, 0o600)
-    } catch {
-      return
-    }
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== "ENOENT") throw error
+    atomicWriteProtectedFileSync(PATHS.CONFIG_PATH, "{}\n")
+    return
   }
+  ensurePrivateDirectorySync(PATHS.APP_DIR)
+  repairPrivateFileSync(PATHS.CONFIG_PATH)
 }
 
 function readConfigFromDisk(): AppConfig {
@@ -377,7 +385,7 @@ function readConfigFromDisk(): AppConfig {
   try {
     const raw = fs.readFileSync(PATHS.CONFIG_PATH, "utf8")
     if (!raw.trim()) {
-      fs.writeFileSync(PATHS.CONFIG_PATH, "{}\n", "utf8")
+      atomicWriteProtectedFileSync(PATHS.CONFIG_PATH, "{}\n")
       return {}
     }
     return JSON.parse(raw) as AppConfig
@@ -406,11 +414,9 @@ function readEditableConfigFromDisk(): AppConfig {
 }
 
 function writeConfigToDisk(config: AppConfig): void {
-  fs.mkdirSync(PATHS.APP_DIR, { recursive: true })
-  fs.writeFileSync(
+  atomicWriteProtectedFileSync(
     PATHS.CONFIG_PATH,
     `${JSON.stringify(config, null, 2)}\n`,
-    "utf8",
   )
 }
 
@@ -1060,6 +1066,12 @@ export function setProviderConfig(
     )
   }
 
+  if (provider.baseUrl !== undefined) {
+    validateProviderBaseUrl(provider.baseUrl, {
+      allowInsecureHttp: provider.allowInsecureHttp,
+    })
+  }
+
   const editableConfig = readEditableConfigFromDisk()
   const nextConfig = {
     ...editableConfig,
@@ -1104,7 +1116,16 @@ export function getProviderConfig(name: string): ResolvedProviderConfig | null {
     return null
   }
 
-  const baseUrl = normalizeProviderBaseUrl(provider.baseUrl ?? "")
+  let baseUrl = ""
+  try {
+    baseUrl = validateProviderBaseUrl(provider.baseUrl ?? "", {
+      allowInsecureHttp: provider.allowInsecureHttp,
+    })
+  } catch (error) {
+    if (!(error instanceof ProviderBaseUrlPolicyError)) throw error
+    consola.warn(`Provider ${providerName} is ignored: ${error.message}`)
+    return null
+  }
   const authType = resolveProviderAuthType(
     providerName,
     provider.authType,

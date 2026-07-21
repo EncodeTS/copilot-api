@@ -23,6 +23,7 @@ import {
   hasNoProxyServerSwitch,
 } from './electron-proxy-config'
 import { tMain } from './i18n'
+import { applyDesktopProxyRuntimeTransition } from './desktop-proxy-runtime'
 import { readSettings, readSettingsSync } from './settings-store'
 
 const CLI_ENV_FLAGS = {
@@ -320,7 +321,10 @@ void app.whenReady().then(async () => {
     getEffectiveProxySettings,
     onQuit: quitApplication,
     onSettingsChange: async (settings, prevSettings) => {
-      await applyElectronProxy(getEffectiveProxySettings(settings))
+      const runtimeResult = await applyDesktopProxyRuntimeTransition(
+        getEffectiveProxySettings(prevSettings),
+        getEffectiveProxySettings(settings),
+      )
 
       if (
         settings.theme !== prevSettings.theme
@@ -335,7 +339,7 @@ void app.whenReady().then(async () => {
       if (settings.minimizeToTray) {
         await createTray(win)
         await refreshTrayContextMenu(win)
-        return
+        return runtimeResult
       }
 
       if (prevSettings.minimizeToTray) {
@@ -345,6 +349,7 @@ void app.whenReady().then(async () => {
           showWindow(win)
         }
       }
+      return runtimeResult
     },
   })
 

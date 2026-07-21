@@ -10,7 +10,6 @@ import {
   type GitHubDeviceLoginSession,
   getGitHubUser,
   loginWithGitHubToken,
-  readToken,
   clearToken,
   getCopilotAccountType,
 } from './auth'
@@ -18,24 +17,31 @@ import { tMain } from './i18n'
 import {
   configureProviderWithAuthStatus,
   getDesktopAuthStatus,
-  getEnabledDesktopProviders,
   loginCodexForDesktop,
   shouldStartInProviderMode,
 } from './provider-auth'
 import {
   startServer,
   stopServer,
+  clearServerRestartContext,
   getPort,
   getLogs,
   isRunning,
 } from './server-manager'
 import { readSettings, writeSettings } from './settings-store'
+import { saveAndApplyDesktopSettings } from './settings-apply'
+import {
+  markDesktopServerCredentialsChanged,
+  resolveDesktopServerCredentials,
+} from './server-credentials'
+import { logoutDesktopServerSession } from './server-logout'
 import type {
   DesktopAuthMode,
   DesktopProxySettings,
   DesktopSettings,
   ProviderAuthInput,
   ServerAuthInfo,
+  SettingsSaveResult,
 } from '../src/types/ipc'
 import type {
   ModelMappingsConfigOutcome,
@@ -56,7 +62,7 @@ interface IpcHandlersOptions {
   onSettingsChange?: (
     settings: DesktopSettings,
     prevSettings: DesktopSettings,
-  ) => void | Promise<void>
+  ) => SettingsSaveResult | void | Promise<SettingsSaveResult | void>
   onQuit?: () => void | Promise<void>
 }
 
@@ -180,6 +186,7 @@ export function registerIpcHandlers(
           signal: loginSession.signal,
         })
         if (activeGitHubLogin !== loginSession) return
+        markDesktopServerCredentialsChanged()
         // Detect and persist the account type automatically after sign-in
         const settings = await readSettings()
         await writeSettings({ ...settings, accountType })
@@ -212,6 +219,7 @@ export function registerIpcHandlers(
         activeGitHubLogin = null
       }
       const { accountType } = await loginWithGitHubToken(token)
+      markDesktopServerCredentialsChanged()
       // Detect and persist the account type automatically
       const settings = await readSettings()
       await writeSettings({ ...settings, accountType })
@@ -228,7 +236,9 @@ export function registerIpcHandlers(
     'auth:configure-provider',
     async (_event, input: ProviderAuthInput) => {
       try {
-        return await configureProviderWithAuthStatus(input)
+        const result = await configureProviderWithAuthStatus(input)
+        if (result.success) markDesktopServerCredentialsChanged()
+        return result
       } catch (err) {
         return { success: false, mode: 'none', error: (err as Error).message }
       }
@@ -239,10 +249,12 @@ export function registerIpcHandlers(
     'auth:start-codex-login',
     async (_event, callbackUrlOrCode?: string) => {
       try {
-        return await loginCodexForDesktop({
+        const result = await loginCodexForDesktop({
           callbackUrlOrCode,
           openUrl: (url) => shell.openExternal(url),
         })
+        if (result.success) markDesktopServerCredentialsChanged()
+        return result
       } catch (err) {
         return { success: false, mode: 'none', error: (err as Error).message }
       }
@@ -255,19 +267,25 @@ export function registerIpcHandlers(
       cancelGitHubDeviceLogin(activeGitHubLogin)
       activeGitHubLogin = null
     }
-    await clearToken()
+    await logoutDesktopServerSession({
+      clearRestartContext: clearServerRestartContext,
+      clearToken,
+      markCredentialsChanged: markDesktopServerCredentialsChanged,
+      stopServer,
+    })
   })
 
   // Server: Start
   ipcMain.handle(
     'server:start',
     async (_event, port: number, authMode?: DesktopAuthMode) => {
-      const token = await readToken()
       const providerMode = shouldStartInProviderMode(authMode)
-      const enabledProviders = getEnabledDesktopProviders()
-      const tokenForStart = providerMode ? null : token
+      const credentials = await resolveDesktopServerCredentials(
+        providerMode ? 'provider' : 'copilot',
+        !providerMode,
+      )
 
-      if (!tokenForStart && enabledProviders.length === 0) {
+      if (!credentials) {
         return {
           running: false,
           error: await tMain('server.authRequired'),
@@ -284,7 +302,10 @@ export function registerIpcHandlers(
       // Persist the last used port
       await writeSettings({ ...settings, lastPort: port })
 
-      return startServer(port, tokenForStart, serverOptions)
+      return startServer(port, credentials.token, serverOptions, {
+        generation: credentials.generation,
+        mode: credentials.mode,
+      })
     },
   )
 
@@ -300,14 +321,15 @@ export function registerIpcHandlers(
 
   // Settings
   ipcMain.handle('settings:get', async () => readSettings())
-  ipcMain.handle('settings:save', async (_event, settings: DesktopSettings) => {
-    const prev = await readSettings()
-    await writeSettings(settings)
-    // Notify the main process after settings are saved so tray state and labels stay in sync.
-    if (options.onSettingsChange) {
-      await options.onSettingsChange(settings, prev)
-    }
-  })
+  ipcMain.handle('settings:save', async (_event, settings: DesktopSettings) =>
+    saveAndApplyDesktopSettings(settings, {
+      getPort,
+      isRunning,
+      onSettingsChange: options.onSettingsChange,
+      readSettings,
+      writeSettings,
+    }),
+  )
   ipcMain.handle('config:get-model-mappings', async () =>
     fetchModelMappingsConfig(),
   )

@@ -11,6 +11,7 @@ export interface HermeticTestPaths {
   codexCredentials: string
   config: string
   database: string
+  desktopSettings: string
   deviceId?: string
   githubToken: string
   home: string
@@ -49,6 +50,7 @@ export const buildHermeticTestPaths = (
     codexCredentials: path.join(appHome, "codex_credentials.json"),
     config: path.join(appHome, "config.json"),
     database: path.join(appHome, "copilot-api.sqlite"),
+    desktopSettings: path.join(appHome, "desktop-config.json"),
     deviceId:
       platform === "darwin" ?
         path.join(
@@ -90,6 +92,7 @@ export const createHermeticTestEnvironment = (
   ...base,
   APPDATA: paths.appData,
   COPILOT_API_CODEX_MODEL_CATALOG_PATH: paths.catalog,
+  COPILOT_API_DESKTOP_SETTINGS_PATH: paths.desktopSettings,
   COPILOT_API_HOME: paths.appHome,
   COPILOT_API_LOG_DIR: paths.logs,
   COPILOT_API_SQLITE_DB_PATH: paths.database,
@@ -131,6 +134,7 @@ export const createHermeticSentinels = (
     codexCredentials: sentinel(paths.codexCredentials, "codex-credentials"),
     config: sentinel(paths.config, "config"),
     database: sentinel(paths.database, "database"),
+    desktopSettings: sentinel(paths.desktopSettings, "desktop-settings"),
     githubToken: sentinel(paths.githubToken, "github-token"),
     log: sentinel(path.join(paths.logs, "caller-owned.log"), "log"),
     recovery: sentinel(paths.recovery, "recovery"),

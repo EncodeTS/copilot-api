@@ -1,17 +1,18 @@
 import fsSync from 'node:fs'
 import fs from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 
+import {
+  atomicWriteProtectedFile,
+  ensurePrivateDirectory,
+  ensurePrivateDirectorySync,
+  repairPrivateFile,
+  repairPrivateFileSync,
+} from '../../src/lib/file-protection'
+import { PATHS } from '../../src/lib/paths'
 import type { DesktopProxySettings, DesktopSettings } from '../src/types/ipc'
 
-const SETTINGS_PATH = path.join(
-  os.homedir(),
-  '.local',
-  'share',
-  'copilot-api',
-  'desktop-config.json',
-)
+const SETTINGS_PATH = PATHS.DESKTOP_SETTINGS_PATH
 
 const DEFAULT_SETTINGS: DesktopSettings = {
   apiHome: '',
@@ -121,6 +122,8 @@ export function normalizeSettings(
 }
 
 export function readSettingsSync(): DesktopSettings {
+  ensurePrivateDirectorySync(path.dirname(SETTINGS_PATH))
+  repairPrivateFileSync(SETTINGS_PATH)
   try {
     const raw = fsSync.readFileSync(SETTINGS_PATH, 'utf8')
     return normalizeSettings(JSON.parse(raw) as Partial<DesktopSettings>)
@@ -130,6 +133,8 @@ export function readSettingsSync(): DesktopSettings {
 }
 
 export async function readSettings(): Promise<DesktopSettings> {
+  await ensurePrivateDirectory(path.dirname(SETTINGS_PATH))
+  await repairPrivateFile(SETTINGS_PATH)
   try {
     const raw = await fs.readFile(SETTINGS_PATH, 'utf8')
     return normalizeSettings(JSON.parse(raw) as Partial<DesktopSettings>)
@@ -139,10 +144,8 @@ export async function readSettings(): Promise<DesktopSettings> {
 }
 
 export async function writeSettings(settings: DesktopSettings): Promise<void> {
-  await fs.mkdir(path.dirname(SETTINGS_PATH), { recursive: true })
-  await fs.writeFile(
+  await atomicWriteProtectedFile(
     SETTINGS_PATH,
     JSON.stringify(normalizeSettings(settings), null, 2),
-    'utf8',
   )
 }

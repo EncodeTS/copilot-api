@@ -61,6 +61,24 @@ export interface ServerStatus {
   running: boolean
 }
 
+export const SETTINGS_RUNTIME_ACTIONS = [
+  "applied",
+  "failed",
+  "restarted",
+  "stopped",
+  "unchanged",
+] as const
+
+export type SettingsRuntimeAction = (typeof SETTINGS_RUNTIME_ACTIONS)[number]
+
+export interface SettingsSaveResult {
+  action: SettingsRuntimeAction
+  error?: string
+  proxyChanged: boolean
+  serverStatus: ServerStatus
+  success: boolean
+}
+
 export interface ServerAuthInfo {
   enabled: boolean
   headerName?: string
@@ -120,7 +138,7 @@ export interface DesktopApi {
   saveModelMappings: (
     modelMappings: Record<string, string>,
   ) => Promise<ModelMappingsSaveOutcome>
-  saveSettings: (settings: DesktopSettings) => Promise<void>
+  saveSettings: (settings: DesktopSettings) => Promise<SettingsSaveResult>
   saveToken: (token: string) => Promise<AuthResult>
   startCodexLogin: (callbackUrlOrCode?: string) => Promise<AuthResult>
   startServer: (

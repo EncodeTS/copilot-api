@@ -125,6 +125,9 @@ function buildProviderConfig(
     type: options.type,
     enabled: true,
     baseUrl: options.baseUrl,
+    ...(existingProviderConfig.allowInsecureHttp === true ?
+      { allowInsecureHttp: true }
+    : {}),
     apiKey: options.apiKey,
     ...(options.authType ? { authType: options.authType } : {}),
     pricingCurrency:

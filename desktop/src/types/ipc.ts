@@ -1,4 +1,5 @@
 export {
+  SETTINGS_RUNTIME_ACTIONS,
   TOKEN_USAGE_ERROR_CODE_VALUES,
   TOKEN_USAGE_OUTCOME_VALUES,
   TOKEN_USAGE_TERMINAL_VALUES,
@@ -25,6 +26,8 @@ export type {
   QuickProviderName,
   ServerAuthInfo,
   ServerStatus,
+  SettingsRuntimeAction,
+  SettingsSaveResult,
   ThemePreference,
   TokenUsageCost,
   TokenUsageDailyBucket,

@@ -51,6 +51,25 @@ const getResponsesWebSocketResourceLimits = mock(() => ({
   maxQueuedFrames: 4096,
   perCapacityKeyConnectionLimit: 32,
 }))
+const previewLegacyLogs = mock(() =>
+  Promise.resolve({
+    candidates: [
+      {
+        action: "delete" as const,
+        currentMode: 0o600,
+        filename: "handler-2026-07-01.log",
+        mtimeMs: 1,
+        size: 12,
+      },
+    ],
+    previewId: "a".repeat(64),
+    retentionDays: 7,
+  }),
+)
+const applyLegacyLogs = mock(
+  (_input: { confirmation: string; previewId: string }) =>
+    Promise.resolve({ deleted: 1, permissionsRepaired: 0 }),
+)
 
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
@@ -87,6 +106,59 @@ beforeEach(() => {
     getPooledWebSocketDiagnostics
   configRouteDependencies.getResponsesWebSocketResourceLimits =
     getResponsesWebSocketResourceLimits
+  configRouteDependencies.previewLegacyLogs = previewLegacyLogs
+  configRouteDependencies.applyLegacyLogs = applyLegacyLogs
+})
+
+describe("legacy log cleanup routes", () => {
+  test("previews candidates without mutating logs", async () => {
+    const response = await createApp().request("/admin/config/legacy-logs")
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({
+      candidates: [
+        {
+          action: "delete",
+          currentMode: 0o600,
+          filename: "handler-2026-07-01.log",
+          mtimeMs: 1,
+          size: 12,
+        },
+      ],
+      confirmation: "CONFIRM_LEGACY_LOG_CLEANUP",
+      previewId: "a".repeat(64),
+      retentionDays: 7,
+    })
+    expect(applyLegacyLogs).not.toHaveBeenCalled()
+  })
+
+  test("requires an exact confirmation and preview ID before cleanup", async () => {
+    const rejected = await createApp().request("/admin/config/legacy-logs", {
+      body: JSON.stringify({ confirmation: "yes", previewId: "a".repeat(64) }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+    expect(rejected.status).toBe(400)
+    expect(applyLegacyLogs).not.toHaveBeenCalled()
+
+    const accepted = await createApp().request("/admin/config/legacy-logs", {
+      body: JSON.stringify({
+        confirmation: "CONFIRM_LEGACY_LOG_CLEANUP",
+        previewId: "a".repeat(64),
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+    expect(accepted.status).toBe(200)
+    expect(await accepted.json()).toEqual({
+      deleted: 1,
+      permissionsRepaired: 0,
+    })
+    expect(applyLegacyLogs).toHaveBeenCalledWith({
+      confirmation: "CONFIRM_LEGACY_LOG_CLEANUP",
+      previewId: "a".repeat(64),
+    })
+  })
 })
 
 describe("Responses websocket config routes", () => {

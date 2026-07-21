@@ -38,6 +38,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Audit production dependencies
+        run: bun run audit:production
+
       - name: Run hermetic full suite
         run: bun test
 

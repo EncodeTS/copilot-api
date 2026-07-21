@@ -9,6 +9,12 @@ import {
   validateModelMappingsOutcome,
 } from "~/lib/config"
 import { PATHS } from "~/lib/paths"
+import { getHandlerLogDirectory } from "~/lib/logger"
+import {
+  applyLegacyLogCleanup,
+  LEGACY_LOG_CLEANUP_CONFIRMATION,
+  previewLegacyLogCleanup,
+} from "~/lib/legacy-log-cleanup"
 import { state } from "~/lib/state"
 import { codexStartupCatalogManager } from "~/services/codex/startup-catalog"
 import {
@@ -22,6 +28,13 @@ export const configRouteDependencies = {
   clearResponsesWebSocketConnections: clearPooledWebSocketConnections,
   getPooledWebSocketDiagnostics,
   getResponsesWebSocketResourceLimits,
+  previewLegacyLogs: () =>
+    previewLegacyLogCleanup({ logDirectory: getHandlerLogDirectory() }),
+  applyLegacyLogs: (input: { confirmation: string; previewId: string }) =>
+    applyLegacyLogCleanup({
+      ...input,
+      logDirectory: getHandlerLogDirectory(),
+    }),
   refreshStartupCatalog: ({
     modelMappings,
   }: {
@@ -39,6 +52,45 @@ const modelMappingsRequestSchema = z.object({
 
 const responsesWebSocketClearRequestSchema = z.object({
   reason: z.enum(["network_change", "proxy_change"]),
+})
+
+const legacyLogCleanupRequestSchema = z.object({
+  confirmation: z.literal(LEGACY_LOG_CLEANUP_CONFIRMATION),
+  previewId: z.string().regex(/^[a-f0-9]{64}$/u),
+})
+
+configRoutes.get("/legacy-logs", async (c) => {
+  const preview = await configRouteDependencies.previewLegacyLogs()
+  return c.json({
+    ...preview,
+    confirmation: LEGACY_LOG_CLEANUP_CONFIRMATION,
+  })
+})
+
+configRoutes.post("/legacy-logs", async (c) => {
+  const parseResult = legacyLogCleanupRequestSchema.safeParse(
+    await c.req.json().catch(() => null),
+  )
+  if (!parseResult.success) {
+    return c.json(
+      {
+        error: {
+          message:
+            parseResult.error.issues[0]?.message ?? "Invalid request body.",
+          type: "invalid_request_error",
+        },
+      },
+      400,
+    )
+  }
+
+  try {
+    return c.json(
+      await configRouteDependencies.applyLegacyLogs(parseResult.data),
+    )
+  } catch (error) {
+    return await forwardError(c, error)
+  }
 })
 
 configRoutes.get("/responses-websocket", (c) => {

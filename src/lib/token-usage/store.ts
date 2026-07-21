@@ -1,5 +1,4 @@
 import consola from "consola"
-import path from "node:path"
 
 import {
   TOKEN_USAGE_ERROR_CODE_VALUES,
@@ -94,9 +93,7 @@ export interface PersistedTokenUsageEvent {
   user_id: string
 }
 
-const DB_PATH_ENV = "COPILOT_API_SQLITE_DB_PATH"
 const WRITE_QUEUE_CAPACITY_ENV = "COPILOT_API_TOKEN_USAGE_WRITE_QUEUE_CAPACITY"
-const DEFAULT_DB_FILENAME = "copilot-api.sqlite"
 const DEFAULT_WRITE_QUEUE_CAPACITY = 1_024
 const MAX_WRITE_QUEUE_CAPACITY = 100_000
 const COST_NANOS_PER_UNIT = 1_000_000_000
@@ -152,9 +149,7 @@ export function normalizeTokenUsageTerminal(
 }
 
 function getDbPath(): string {
-  return (
-    process.env[DB_PATH_ENV] ?? path.join(PATHS.APP_DIR, DEFAULT_DB_FILENAME)
-  )
+  return PATHS.getTokenUsageDbPath()
 }
 
 const tokenUsageDbStore = new SqliteDbStore({

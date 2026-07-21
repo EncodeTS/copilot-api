@@ -145,7 +145,7 @@ The settings screen also exposes `OAuth App`, `API Home`, `Enterprise URL`, verb
 
 Handler logs use private permissions (`0700` for the directory and `0600` for opened files). Verbose mode records content-free structured summaries by default, including event type, model, item counts, payload byte size, and error code where available; it omits prompts, message text, tool input/output, reasoning, encrypted content, and signatures. RC9-managed logs use a daily `*.part-N.log` name, are retained for 7 days, rotate at 10 MiB per file, and are pruned oldest-first to a 100 MiB managed-log budget. The asynchronous in-memory queue is capped at 5 MiB and drops new entries after that boundary instead of growing without limit during a disk failure. The byte limits can be changed with `COPILOT_API_LOG_MAX_BUFFER_BYTES`, `COPILOT_API_LOG_MAX_FILE_BYTES`, and `COPILOT_API_LOG_MAX_TOTAL_BYTES`.
 
-Pre-RC9 handler logs (the old `*-YYYY-MM-DD.log` form) and unrelated archive or private-audit files are deliberately left untouched and excluded from automatic retention/budget cleanup. Preserve or remove those legacy files manually after any evidence you need has been copied elsewhere.
+Pre-RC9 handler logs (the old `*-YYYY-MM-DD.log` form) and unrelated archive or private-audit files are deliberately excluded from automatic retention/budget cleanup. `GET /admin/config/legacy-logs` previews only fixed, known legacy handler names; after preserving any evidence you need, submit the unchanged `previewId` and displayed confirmation string to `POST /admin/config/legacy-logs`. Unrelated files are never candidates.
 
 For short-lived local diagnosis only, setting `COPILOT_API_LOG_FULL_PAYLOADS=1` together with verbose mode opts into payload content. Credential fields, authorization/cookie values, bearer tokens, signed query credentials, and media bodies/locators remain redacted. Full payload logs can still contain private prompts and model/tool output, so disable the opt-in immediately after diagnosis.
 
@@ -524,14 +524,15 @@ The following options can be used with any subcommand. When passing them before 
 
 The following command line options are available for the `start` command:
 
-| Option         | Description                                                                   | Default | Alias |
-| -------------- | ----------------------------------------------------------------------------- | ------- | ----- |
-| --port         | Port to listen on                                                             | 4141    | -p    |
-| --verbose      | Enable structured diagnostic logging (payload content omitted by default)     | false   | -v    |
-| --github-token | Provide GitHub token directly (must be generated using the `auth` subcommand) | none    | -g    |
-| --claude-code  | Generate a command to launch Claude Code with Copilot API config              | false   | -c    |
-| --show-token   | Show GitHub and Copilot tokens on fetch and refresh                           | false   | none  |
-| --proxy-env    | Initialize proxy from environment variables                                   | false   | none  |
+| Option           | Description                                                                   | Default | Alias |
+| ---------------- | ----------------------------------------------------------------------------- | ------- | ----- |
+| --port           | Port to listen on                                                             | 4141    | -p    |
+| --verbose        | Enable structured diagnostic logging (payload content omitted by default)     | false   | -v    |
+| --github-token   | Provide GitHub token directly (must be generated using the `auth` subcommand) | none    | -g    |
+| --claude-code    | Generate a command to launch Claude Code with Copilot API config              | false   | -c    |
+| --show-token     | Show GitHub and Copilot tokens on fetch and refresh                           | false   | none  |
+| --proxy-env      | Initialize proxy from environment variables                                   | false   | none  |
+| --proxy-required | Require proxy routing except for explicit `NO_PROXY` destinations             | false   | none  |
 
 ### Auth Command Options
 
@@ -588,6 +589,7 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
 - **providers:** Global upstream provider map. Each provider key (for example `dashscope`) becomes a route prefix (`/dashscope/v1/messages`). Supports `type: "anthropic"`, `type: "openai-compatible"`, and `type: "openai-responses"`. Top-level clients can also use `model: "dashscope/model-id"` with `/v1/messages`, `/v1/messages/count_tokens`, `/v1/responses`, and `/v1/chat/completions`; the gateway strips the `dashscope/` prefix before forwarding upstream. `openai-compatible` providers support both chat and Messages flows: `/v1/chat/completions` is proxied to upstream `/v1/chat/completions`, while `/v1/messages` and `/:provider/v1/messages` are translated to upstream chat completions and translated back to Anthropic Messages responses. An `openai-responses` provider is also available directly at `POST /:provider/v1/responses`; this provider-scoped route expects the upstream model ID without a `provider/` prefix. `GET /v1/models` aggregates enabled provider models with `provider/model-id` IDs; use `GET /dashscope/v1/models` for a single provider's raw model list.
   - `enabled` defaults to `true` if omitted.
   - `baseUrl` should be provider API base URL without the final endpoint. For Anthropic providers, omit `/v1/messages`; for OpenAI-compatible providers, omit `/v1/chat/completions`; for OpenAI Responses providers, omit `/v1/responses`.
+  - `baseUrl` must use HTTPS. Plain HTTP is accepted only for loopback destinations such as `localhost`, `127.0.0.0/8`, or `::1`, unless the provider explicitly sets `allowInsecureHttp: true`.
   - `apiKey` is used as the upstream credential value and is required for regular providers.
   - `authType` (optional): Controls how `apiKey` is sent upstream. Supports `x-api-key` and `authorization` for regular providers. Anthropic providers default to `x-api-key`; OpenAI-compatible and OpenAI Responses providers default to `authorization`. When set to `authorization`, the proxy sends `Authorization: Bearer <apiKey>`. `oauth2` is reserved for the built-in `codex` provider and is written automatically by `auth login --provider codex`.
   - `capabilities.responsesContextManagement` (optional): Set to `true` only when an OpenAI Responses provider accepts the `context_management` compaction extension. Generic providers default to `false`; the built-in Copilot and Codex providers are treated as known-capable.
@@ -680,6 +682,18 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
 - **useResponsesApiWebSearch:** When `true`, the server keeps Responses API tools with `type: "web_search"` and forwards them upstream. Set to `false` to strip those tools from `/responses` payloads. Defaults to `true`.
 - **messageApiWebSearchModel:** Global model used when a top-level Copilot `/v1/messages` request contains only an Anthropic server-side `web_search_*` tool. Defaults to `gpt-5-mini`. If the value is a `provider/model` alias, the request is routed into that provider's Messages API path with the provider prefix stripped. For Copilot GPT models, web search runs through `/responses`, and Anthropic `max_uses` maps to Responses `max_tool_calls`. Copilot's native Messages endpoint currently rejects `web_search_20250305`, `web_search_20260209`, and `web_search_20260318`; newer code-execution dynamic filtering therefore falls back to direct Responses search. The response exposes `x-copilot-api-web-search-mode: direct-fallback` and a comma-separated `x-copilot-api-web-search-downgrade` reason when this happens. Explicit `allowed_callers: ["direct"]` remains a direct search; under Anthropic semantics, direct calls return full result blocks even when `response_inclusion` is `excluded`. Responses fallback results deliberately omit Anthropic's opaque `encrypted_content` and advertise `x-copilot-api-web-search-carrier: synthetic-without-encrypted-content`; full multi-turn carrier fidelity is not claimed. Mixed `web_search` plus custom tools pass through only to native Anthropic providers; non-native adapters return a structured error before dispatch.
 - **claudeTokenMultiplier:** Multiplier applied only to the local fallback estimate for Claude `/v1/messages/count_tokens` requests. Defaults to `1.15`. Claude models with a native Copilot Messages endpoint are counted by Copilot using the same prepared payload and Copilot token as generation; the proxy falls back locally only when that endpoint returns `404` or `501`.
+
+When `--proxy-required` or `COPILOT_API_PROXY_REQUIRED=1` is set, a destination
+without a usable HTTP/HTTPS/SOCKS5 proxy fails before direct connection. SOCKS4
+is rejected as unsupported. An explicit `NO_PROXY` match remains a permitted
+direct route. Desktop custom proxy mode enables the same fail-closed policy
+automatically; changing proxy policy safely restarts a running utility server,
+and apply/restart failures leave it stopped.
+
+Application directories are repaired to mode `0700` and known sensitive state
+files to `0600` on POSIX startup. Windows does not expose equivalent owner-only
+mode bits, so the runtime does not claim a POSIX permission guarantee there.
+
 - **anthropicApiKey:** Deprecated compatibility setting. Top-level Claude `/v1/messages/count_tokens` requests no longer use a separate Anthropic credential; they use Copilot's native Messages token-counting endpoint and the active Copilot token.
 
 Edit this file to customize prompts or swap in your own fast model. Restart the server (or rerun the command) after changes so the cached config is refreshed.
@@ -770,12 +784,14 @@ New endpoints for monitoring your Copilot usage and quotas.
 
 These endpoints are reserved for local administrative actions and only accept `auth.adminApiKey`.
 
-| Endpoint                                       | Method | Description                                                                                                    |
-| ---------------------------------------------- | ------ | -------------------------------------------------------------------------------------------------------------- |
-| `GET /admin/config/model-mappings`             | `GET`  | Returns the current `config.json` path and the active `modelMappings` map.                                     |
-| `POST /admin/config/model-mappings`            | `POST` | Updates only the `modelMappings` field in `config.json` and returns it back.                                   |
-| `GET /admin/config/responses-websocket`        | `GET`  | Returns effective WebSocket resource limits and content-free pool/queue diagnostics.                           |
-| `POST /admin/config/responses-websocket/clear` | `POST` | Closes pooled WebSockets after an explicit known `network_change` or `proxy_change`.                           |
+| Endpoint                                       | Method | Description                                                                                                  |
+| ---------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------ |
+| `GET /admin/config/model-mappings`             | `GET`  | Returns the current `config.json` path and the active `modelMappings` map.                                   |
+| `POST /admin/config/model-mappings`            | `POST` | Updates only the `modelMappings` field in `config.json` and returns it back.                                 |
+| `GET /admin/config/responses-websocket`        | `GET`  | Returns effective WebSocket resource limits and content-free pool/queue diagnostics.                         |
+| `POST /admin/config/responses-websocket/clear` | `POST` | Closes pooled WebSockets after an explicit known `network_change` or `proxy_change`.                         |
+| `GET /admin/config/legacy-logs`                | `GET`  | Previews exact pre-RC9 handler-log permission/retention candidates without changing files.                   |
+| `POST /admin/config/legacy-logs`               | `POST` | Applies the unchanged preview only with its SHA-256 `previewId` and the exact displayed confirmation string. |
 
 ## Example Usage
 

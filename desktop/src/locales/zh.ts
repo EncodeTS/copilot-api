@@ -147,7 +147,7 @@ const zh: Locale = {
     minimizeToTrayDesc: '关闭窗口时隐藏到系统托盘，不退出程序',
     sectionNetwork: '网络',
     proxySystemNote:
-      '默认使用系统代理。选择自定义代理后，Electron 和新启动的本地服务会使用下方配置；选择不使用代理后将直连网络。已运行的服务需重启后生效。',
+      '默认使用系统代理。自定义代理采用失败即关闭策略，并同时应用于 Electron 与本地服务；策略变化时，运行中的服务会自动安全重启。',
     proxyMode: '代理模式',
     proxyModeSystem: '系统代理',
     proxyModeCustom: '自定义代理',
@@ -181,6 +181,7 @@ const zh: Locale = {
     themeAuto: '跟随系统',
     cancel: '取消',
     save: '保存',
+    saveFailed: '设置已保存，但运行时应用失败。',
     saving: '保存中…',
   },
   advancedConfig: {

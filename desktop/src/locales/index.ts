@@ -176,6 +176,7 @@ export interface Locale {
     themeAuto: string
     cancel: string
     save: string
+    saveFailed: string
     saving: string
   }
   advancedConfig: {

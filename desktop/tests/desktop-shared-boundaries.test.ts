@@ -39,6 +39,7 @@ void mock.module('electron', () => ({
 }))
 
 void mock.module('../electron/server-manager', () => ({
+  clearServerRestartContext: () => undefined,
   getLogs: () => [],
   getPort: () => 4510,
   isRunning: () => serverRunning,

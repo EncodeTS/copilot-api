@@ -3,6 +3,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   applyDesktopProxySettingsToEnv,
   applyNoProxyServerOverride,
+  DesktopProxyConfigurationError,
   hasNoProxyServerSwitch,
   resolveElectronProxyConfigFromSettings,
 } from '../electron/electron-proxy-config'
@@ -69,6 +70,27 @@ describe('desktop proxy config', () => {
     })
   })
 
+  test('rejects SOCKS4 with a structured configuration error', () => {
+    let rejection: unknown
+    try {
+      resolveElectronProxyConfigFromSettings(
+        createProxySettings({
+          mode: 'custom',
+          http_proxy: 'socks4://127.0.0.1:1080',
+          https_proxy: '',
+        }),
+      )
+    } catch (error) {
+      rejection = error
+    }
+
+    expect(rejection).toBeInstanceOf(DesktopProxyConfigurationError)
+    expect(rejection).toMatchObject({
+      code: 'unsupported_proxy_protocol',
+      name: 'DesktopProxyConfigurationError',
+    })
+  })
+
   test('clears proxy environment variables for direct mode', () => {
     const env: NodeJS.ProcessEnv = {
       ALL_PROXY: 'http://old.proxy:8080',
@@ -95,6 +117,16 @@ describe('desktop proxy config', () => {
   test('injects normalized proxy environment variables for custom mode', () => {
     const env: NodeJS.ProcessEnv = {
       ALL_PROXY: 'http://old.proxy:8080',
+      NPM_CONFIG_ALL_PROXY: 'http://npm-old.proxy:8080',
+      npm_config_all_proxy: 'http://npm-old.proxy:8080',
+      NPM_CONFIG_HTTP_PROXY: 'http://npm-old.proxy:8080',
+      npm_config_http_proxy: 'http://npm-old.proxy:8080',
+      NPM_CONFIG_HTTPS_PROXY: 'http://npm-old.proxy:8080',
+      npm_config_https_proxy: 'http://npm-old.proxy:8080',
+      NPM_CONFIG_NO_PROXY: '*',
+      npm_config_no_proxy: '*',
+      NPM_CONFIG_PROXY: 'http://npm-old.proxy:8080',
+      npm_config_proxy: 'http://npm-old.proxy:8080',
       OTHER_VALUE: 'keep',
     }
 
@@ -111,6 +143,7 @@ describe('desktop proxy config', () => {
     ).toBe(true)
 
     expect(env).toEqual({
+      COPILOT_API_PROXY_REQUIRED: '1',
       HTTP_PROXY: 'http://127.0.0.1:8888/',
       http_proxy: 'http://127.0.0.1:8888/',
       HTTPS_PROXY: 'https://secure.proxy.example:9443/',
@@ -119,6 +152,30 @@ describe('desktop proxy config', () => {
       no_proxy: 'localhost,127.0.0.1',
       OTHER_VALUE: 'keep',
     })
+  })
+
+  test('fails closed when custom proxy mode has no usable proxy URL', () => {
+    const env: NodeJS.ProcessEnv = { OTHER_VALUE: 'keep' }
+    let rejection: unknown
+
+    try {
+      applyDesktopProxySettingsToEnv(
+        env,
+        createProxySettings({
+          mode: 'custom',
+          http_proxy: 'file:///tmp/proxy.sock',
+          https_proxy: 'not a url://',
+        }),
+      )
+    } catch (error) {
+      rejection = error
+    }
+    expect(rejection).toMatchObject({
+      code: 'unsupported_proxy_protocol',
+      name: 'DesktopProxyConfigurationError',
+    })
+    expect(env.COPILOT_API_PROXY_REQUIRED).toBeUndefined()
+    expect(env.OTHER_VALUE).toBe('keep')
   })
 
   test('detects --no-proxy-server and applies a non-mutating direct override', () => {

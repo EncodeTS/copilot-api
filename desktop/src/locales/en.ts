@@ -152,7 +152,7 @@ const en: Locale = {
     minimizeToTrayDesc: "Hide to system tray when closing, don't quit",
     sectionNetwork: 'Network',
     proxySystemNote:
-      'System proxy is used by default. When custom proxy is selected, Electron and newly started local services use the settings below; when no proxy is selected, network requests connect directly. Restart any running service to apply changes.',
+      'System proxy is used by default. Custom proxy mode is fail-closed and applies to Electron and the local service. A running service is restarted automatically when this policy changes.',
     proxyMode: 'Proxy mode',
     proxyModeSystem: 'System proxy',
     proxyModeCustom: 'Custom proxy',
@@ -187,6 +187,7 @@ const en: Locale = {
     themeAuto: 'Follow system',
     cancel: 'Cancel',
     save: 'Save',
+    saveFailed: 'Settings were saved, but the runtime change failed.',
     saving: 'Saving…',
   },
   advancedConfig: {

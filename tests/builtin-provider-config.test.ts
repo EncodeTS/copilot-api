@@ -57,6 +57,7 @@ interface ConfigFileShape {
       enabled?: boolean
       baseUrl?: string
       apiKey?: string
+      allowInsecureHttp?: boolean
       authType?: string
       capabilities?: {
         responsesContextManagement?: boolean
@@ -787,6 +788,39 @@ describe("builtin provider config", () => {
     )
 
     expect(JSON.parse(output)).toBeNull()
+  })
+
+  test("rejects insecure remote provider URLs unless explicitly opted in", () => {
+    const tempDir = createTempConfigDir()
+    writeConfigFile(tempDir, {
+      providers: {
+        blocked: {
+          apiKey: "provider-key",
+          baseUrl: "http://api.example.com/v1",
+          type: "openai-compatible",
+        },
+        explicit: {
+          allowInsecureHttp: true,
+          apiKey: "provider-key",
+          baseUrl: "http://api.example.com/v1",
+          type: "openai-compatible",
+        },
+      },
+    })
+
+    const output = runScript(
+      tempDir,
+      'const config = await import("./src/lib/config"); let setError = ""; try { config.setProviderConfig("new-provider", { apiKey: "key", baseUrl: "http://remote.example/v1", type: "openai-compatible" }); } catch (error) { setError = error instanceof Error ? error.message : String(error); } console.log(JSON.stringify({ blocked: config.getProviderConfig("blocked"), explicit: config.getProviderConfig("explicit"), setError }));',
+    )
+
+    const result = JSON.parse(output) as {
+      blocked: unknown
+      explicit: { baseUrl?: string } | null
+      setError: string
+    }
+    expect(result.blocked).toBeNull()
+    expect(result.explicit?.baseUrl).toBe("http://api.example.com/v1")
+    expect(result.setError).toContain("must use HTTPS")
   })
 
   test("returns commentary prompt for gpt-5.3+ models by default", () => {
