@@ -25,13 +25,17 @@ test("security-sensitive runtime dependencies stay pinned to audited versions", 
 
   expect(manifest.packageManager).toBe("bun@1.3.14")
   expect(manifest.dependencies?.hono).toBe("4.12.31")
+  expect(manifest.overrides?.["fast-uri"]).toBe("3.1.4")
   expect(manifest.overrides?.hono).toBe("4.12.31")
   expect(manifest.dependencies?.undici).toBe("7.28.0")
   expect(manifest.scripts?.["audit:production"]).toBe(
     "bun audit --production --audit-level=high",
   )
+  expect(lockfile).toContain('"fast-uri": ["fast-uri@3.1.4"')
   expect(lockfile).toContain('"hono": ["hono@4.12.31"')
   expect(lockfile).toContain('"undici": ["undici@7.28.0"')
+  expect(lockfile).not.toContain("fast-uri@3.1.2")
+  expect(lockfile).not.toMatch(/"fast-uri": \["fast-uri@(?!3\.1\.4)/u)
   expect(lockfile).not.toMatch(/"hono": \["hono@(?!4\.12\.31)/u)
   expect(lockfile).not.toMatch(/"undici": \["undici@(?!7\.28\.0)/u)
   expect(desktopManifest.packageManager).toBe("bun@1.3.14")
