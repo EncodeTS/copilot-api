@@ -99,6 +99,8 @@ beforeEach(() => {
   clearResponsesWebSocketConnections.mockClear()
   getPooledWebSocketDiagnostics.mockClear()
   getResponsesWebSocketResourceLimits.mockClear()
+  previewLegacyLogs.mockClear()
+  applyLegacyLogs.mockClear()
   configRouteDependencies.refreshStartupCatalog = refreshStartupCatalog
   configRouteDependencies.clearResponsesWebSocketConnections =
     clearResponsesWebSocketConnections
