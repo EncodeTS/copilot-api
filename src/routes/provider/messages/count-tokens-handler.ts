@@ -57,7 +57,9 @@ export async function handleProviderCountTokensForProvider(
 
   const selectedModel = createFallbackModel(modelId)
 
-  const tokenCount = await getTokenCount(openAIPayload, selectedModel)
+  const tokenCount = await getTokenCount(openAIPayload, selectedModel, {
+    signal: c.req.raw.signal,
+  })
   const finalTokenCount = tokenCount.input + tokenCount.output
 
   logger.debug("provider.count_tokens.success", {
@@ -66,6 +68,7 @@ export async function handleProviderCountTokensForProvider(
     input_tokens: finalTokenCount,
   })
 
+  c.header("x-copilot-api-token-count-mode", "estimate")
   return c.json({
     input_tokens: finalTokenCount,
   })

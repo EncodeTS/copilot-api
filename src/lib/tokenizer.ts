@@ -7,6 +7,7 @@ import type {
 } from "~/services/copilot/create-chat-completions"
 import type { Model } from "~/services/copilot/get-models"
 import { ENCODING_MAP, isSupportedEncoding } from "~/lib/tokenizer-encodings"
+import { estimateChatMediaTokens } from "~/lib/media-token-estimation"
 import { countTextsInTokenizerWorker } from "~/lib/tokenizer-worker-client"
 
 // Define encoder interface
@@ -53,13 +54,9 @@ const calculateContentPartsTokens = (
 ): number => {
   let tokens = 0
   for (const part of contentParts) {
-    if (part.type === "image_url") {
-      tokens += encoder.encode(part.image_url.url).length + 85
-    } else if (part.type === "file") {
-      if (typeof part.file.file_data === "string") {
-        tokens += encoder.encode(part.file.file_data).length
-      }
-      // file_id is an opaque media carrier and never enters the text encoder.
+    if (part.type === "file") {
+      // file_data and file_id are opaque media carriers. Only bounded semantic
+      // metadata is eligible for text tokenization.
       if (part.file.filename) {
         tokens += encoder.encode(part.file.filename).length
       }
@@ -82,7 +79,7 @@ const calculateMessageTokens = (
   const tokensPerName = 1
   let tokens = tokensPerMessage
   for (const [key, value] of Object.entries(message)) {
-    if (key === "reasoning_opaque") {
+    if (key === "audio" || key === "reasoning_opaque") {
       continue
     }
     if (typeof value === "string") {
@@ -470,10 +467,11 @@ export const getTokenCount = async (
     calculationEncoder,
     constants,
   )
+  const mediaTokens = estimateChatMediaTokens(payload)
   options.signal?.throwIfAborted()
 
   return {
-    input: inputTokens,
-    output: outputTokens,
+    input: inputTokens + mediaTokens.input,
+    output: outputTokens + mediaTokens.output,
   }
 }

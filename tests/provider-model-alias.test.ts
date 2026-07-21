@@ -26,8 +26,11 @@ interface TokenCountModel {
 }
 
 const getTokenCount = mock(
-  (_payload: TokenCountPayload, _model: TokenCountModel) =>
-    Promise.resolve({ input: 40, output: 2 }),
+  (
+    _payload: TokenCountPayload,
+    _model: TokenCountModel,
+    _options?: { signal?: AbortSignal },
+  ) => Promise.resolve({ input: 40, output: 2 }),
 )
 const noopTokenUsageRecorder = () => {}
 
@@ -276,6 +279,9 @@ describe("provider/model aliases on top-level messages routes", () => {
     expect(await response.json()).toEqual({
       input_tokens: 42,
     })
+    expect(response.headers.get("x-copilot-api-token-count-mode")).toBe(
+      "estimate",
+    )
     expect(getTokenCount).toHaveBeenCalledTimes(1)
 
     const [openAIPayload, selectedModel] = getTokenCount.mock.calls[0] as [
@@ -346,5 +352,54 @@ describe("provider/model aliases on top-level messages routes", () => {
         type: "error",
       },
     })
+  })
+
+  test("provider token counting propagates caller cancellation and its exact reason", async () => {
+    const controller = new AbortController()
+    const reason = new Error("provider count cancelled")
+    let observedSignal: AbortSignal | undefined
+    let signalReadyResolve: (() => void) | undefined
+    const signalReady = new Promise<void>((resolve) => {
+      signalReadyResolve = resolve
+    })
+    getTokenCount.mockImplementationOnce(
+      (
+        _payload: TokenCountPayload,
+        _model: TokenCountModel,
+        options?: { signal?: AbortSignal },
+      ) => {
+        observedSignal = options?.signal
+        signalReadyResolve?.()
+        return new Promise((_resolve, reject) => {
+          const signal = options?.signal
+          if (!signal) return reject(new Error("missing signal"))
+          // Exact AbortSignal.reason identity is the contract under test.
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          })
+        })
+      },
+    )
+
+    const responsePromise = createApp().fetch(
+      new Request("http://localhost/v1/messages/count_tokens", {
+        body: JSON.stringify({
+          max_tokens: 128,
+          messages: [{ content: "hello", role: "user" }],
+          model: "dash/qwen-plus",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+        signal: controller.signal,
+      }),
+    )
+    await signalReady
+    controller.abort(reason)
+    const response = await responsePromise
+
+    expect(response.status).toBe(500)
+    expect(observedSignal?.aborted).toBeTrue()
+    expect(observedSignal?.reason).toBe(reason)
   })
 })

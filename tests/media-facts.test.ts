@@ -501,6 +501,42 @@ describe("collectMediaFacts", () => {
     expect(result.facts).toEqual([])
   })
 
+  test("reports malformed assistant audio without retaining its carrier", () => {
+    const payload: unknown = {
+      messages: [
+        { audio: "PRIVATE_AUDIO", content: "one", role: "assistant" },
+        { audio: { id: 42 }, content: "two", role: "assistant" },
+        { audio: null, content: "no carrier", role: "assistant" },
+      ],
+      model: "gpt-test",
+    }
+    const result = collectMediaFacts(payload, { protocol: "chat" })
+
+    expect(result.facts).toEqual([
+      {
+        carrier: "chat.message.audio.id",
+        contentFree: true,
+        encodedUtf8Bytes: 0,
+        mediaKind: "audio",
+        path: ["messages", 0, "audio", "id"],
+        protocol: "chat",
+        referenceKind: "unknown",
+        warnings: ["invalid_media_value"],
+      },
+      {
+        carrier: "chat.message.audio.id",
+        contentFree: true,
+        encodedUtf8Bytes: 0,
+        mediaKind: "audio",
+        path: ["messages", 1, "audio", "id"],
+        protocol: "chat",
+        referenceKind: "unknown",
+        warnings: ["invalid_media_value"],
+      },
+    ])
+    expect(JSON.stringify(result)).not.toContain("PRIVATE_AUDIO")
+  })
+
   test("ignores Anthropic assistant pseudo-media and tool results", () => {
     const adversarialPayload: unknown = {
       max_tokens: 128,

@@ -33,6 +33,42 @@ const consume = (
   ancestors: Ancestor,
 ): boolean => collector.visit(value, depth, ancestors).accepted
 
+const visitChatAssistantAudio = (
+  message: Message,
+  path: Array<MediaPathSegment>,
+  ancestors: Ancestor,
+  collector: FactCollector,
+): void => {
+  const audio: unknown = message.audio
+  if (audio === undefined || audio === null) return
+
+  const descriptor: MediaFactDescriptor = {
+    carrier: "chat.message.audio.id",
+    mediaKind: "audio",
+    path: [...path, "audio", "id"],
+    protocol: "chat",
+  }
+  const audioVisit = collector.visit(audio, 3, ancestors)
+  if (!audioVisit.accepted) return
+  if (!isRecord(audio)) {
+    collector.add(createInvalidValueFact(descriptor))
+    return
+  }
+  if (!audioVisit.ancestor) return
+
+  if (typeof audio.id === "string") {
+    if (consume(collector, audio.id, 4, audioVisit.ancestor)) {
+      collector.add(createAudioIdFact(descriptor.path, audio.id))
+    }
+    return
+  }
+
+  if (Object.hasOwn(audio, "id")) {
+    consume(collector, audio.id, 4, audioVisit.ancestor)
+  }
+  collector.add(createInvalidValueFact(descriptor))
+}
+
 const visitChatContentBlock = (
   value: Record<string, unknown>,
   path: Array<MediaPathSegment>,
@@ -200,24 +236,13 @@ export const collectChatMediaFacts = (
     } else if (message.role === "user" && message.content !== undefined) {
       collector.visit(message.content, 3, messageVisit.ancestor)
     }
-    if (
-      message.role === "assistant"
-      && isRecord(message.audio)
-      && typeof message.audio.id === "string"
-    ) {
-      const audioVisit = collector.visit(
-        message.audio,
-        3,
+    if (message.role === "assistant") {
+      visitChatAssistantAudio(
+        message,
+        messagePath,
         messageVisit.ancestor,
+        collector,
       )
-      if (
-        audioVisit.ancestor
-        && consume(collector, message.audio.id, 4, audioVisit.ancestor)
-      ) {
-        collector.add(
-          createAudioIdFact([...messagePath, "audio", "id"], message.audio.id),
-        )
-      }
     }
   }
 }

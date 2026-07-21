@@ -3,6 +3,38 @@ import { Worker } from "node:worker_threads"
 import type { SupportedEncoding } from "~/lib/tokenizer-encodings"
 
 const WORKER_IDLE_TIMEOUT_MS = 5_000
+export const TOKENIZER_WORKER_MAX_PENDING_JOBS = 32
+export const TOKENIZER_WORKER_MAX_PENDING_CODE_UNITS = 8 * 1024 * 1024
+
+export type TokenizerWorkerBusyLimitKind = "code_units" | "jobs"
+
+export class TokenizerWorkerBusyError extends Error {
+  readonly code = "tokenizer_worker_busy"
+  readonly limitKind: TokenizerWorkerBusyLimitKind
+  readonly pendingCodeUnits: number
+  readonly pendingJobs: number
+  readonly requestedCodeUnits: number
+
+  constructor(
+    limitKind: TokenizerWorkerBusyLimitKind,
+    details: {
+      pendingCodeUnits: number
+      pendingJobs: number
+      requestedCodeUnits: number
+    },
+  ) {
+    super(
+      limitKind === "jobs" ?
+        "Tokenizer worker is busy: pending job limit reached"
+      : "Tokenizer worker is busy: pending code-unit limit reached",
+    )
+    this.name = "TokenizerWorkerBusyError"
+    this.limitKind = limitKind
+    this.pendingCodeUnits = details.pendingCodeUnits
+    this.pendingJobs = details.pendingJobs
+    this.requestedCodeUnits = details.requestedCodeUnits
+  }
+}
 
 interface TokenizerJob {
   accounted: boolean
@@ -102,11 +134,22 @@ export const countTextsInTokenizerWorker = (
   signal: AbortSignal,
 ): Promise<Array<number>> => {
   signal.throwIfAborted()
+  const codeUnits = texts.reduce((total, text) => total + text.length, 0)
+  const limitKind = getWorkerBusyLimitKind(codeUnits)
+  if (limitKind) {
+    return Promise.reject(
+      new TokenizerWorkerBusyError(limitKind, {
+        pendingCodeUnits,
+        pendingJobs,
+        requestedCodeUnits: codeUnits,
+      }),
+    )
+  }
   return new Promise((resolve, reject) => {
     const job: TokenizerJob = {
       accounted: false,
       abort: () => {},
-      codeUnits: texts.reduce((total, text) => total + text.length, 0),
+      codeUnits,
       encoding,
       id: nextJobId++,
       reject,
@@ -120,6 +163,20 @@ export const countTextsInTokenizerWorker = (
     queue.push(job)
     startNextJob()
   })
+}
+
+const getWorkerBusyLimitKind = (
+  requestedCodeUnits: number,
+): TokenizerWorkerBusyLimitKind | undefined => {
+  if (pendingJobs >= TOKENIZER_WORKER_MAX_PENDING_JOBS) return "jobs"
+  if (
+    requestedCodeUnits > TOKENIZER_WORKER_MAX_PENDING_CODE_UNITS
+    || pendingCodeUnits
+      > TOKENIZER_WORKER_MAX_PENDING_CODE_UNITS - requestedCodeUnits
+  ) {
+    return "code_units"
+  }
+  return undefined
 }
 
 const startNextJob = () => {

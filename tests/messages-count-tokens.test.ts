@@ -189,6 +189,10 @@ test("Claude count_tokens forwards the final native Messages request to Copilot"
 })
 
 test("Claude count_tokens preserves the official count endpoint's accounting", async () => {
+  const localEstimator = mock(() =>
+    Promise.resolve({ input: 999_999, output: 0 }),
+  )
+  preparedMessagesCountDependencies.getTokenCount = localEstimator
   fetchMock.mockImplementationOnce(() =>
     Promise.resolve(
       new Response(
@@ -218,6 +222,8 @@ test("Claude count_tokens preserves the official count endpoint's accounting", a
     input_tokens: 59,
     accounting: "upstream",
   })
+  expect(response.headers.get("x-copilot-api-token-count-mode")).toBeNull()
+  expect(localEstimator).not.toHaveBeenCalled()
 })
 
 test("Claude count_tokens preserves Copilot validation errors", async () => {
@@ -346,6 +352,31 @@ test("Claude count_tokens falls back only when Copilot has no count endpoint", a
   }
   expect(withTool.input_tokens).toBeGreaterThan(withoutTool.input_tokens)
   expect(fetchMock).toHaveBeenCalledTimes(2)
+})
+
+test("Claude count_tokens also treats 501 as an unavailable native count endpoint", async () => {
+  const localEstimator = mock(() => Promise.resolve({ input: 73, output: 0 }))
+  preparedMessagesCountDependencies.getTokenCount = localEstimator
+  fetchMock.mockImplementationOnce(() =>
+    Promise.resolve(new Response("not implemented", { status: 501 })),
+  )
+
+  const response = await createApp().request("/v1/messages/count_tokens", {
+    body: JSON.stringify({
+      model: "claude-opus-4-8",
+      max_tokens: 128,
+      messages: [{ role: "user", content: "hello" }],
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+  })
+
+  expect(response.status).toBe(200)
+  expect(response.headers.get("x-copilot-api-token-count-mode")).toBe(
+    "estimate",
+  )
+  expect(await response.json()).toEqual({ input_tokens: 84 })
+  expect(localEstimator).toHaveBeenCalledTimes(1)
 })
 
 test("GPT count_tokens estimates the final Responses payload without calling Messages count", async () => {

@@ -8,6 +8,37 @@ const repositoryRoot = fileURLToPath(new URL("..", import.meta.url))
 const cancellationFixture = fileURLToPath(
   new URL("./fixtures/tokenizer-cancellation-child.ts", import.meta.url),
 )
+const mediaBoundaryFixture = fileURLToPath(
+  new URL("./fixtures/chat-media-tokenizer-boundary.ts", import.meta.url),
+)
+
+test("Chat estimates keep every media carrier out of the tokenizer worker", async () => {
+  const child = Bun.spawn([process.execPath, mediaBoundaryFixture], {
+    cwd: repositoryRoot,
+    stderr: "pipe",
+    stdout: "pipe",
+  })
+  const [exitCode, stderr, stdout] = await Promise.all([
+    child.exited,
+    new Response(child.stderr).text(),
+    new Response(child.stdout).text(),
+  ])
+
+  expect(exitCode, stderr).toBe(0)
+  const result = JSON.parse(stdout) as {
+    encodedText: string
+    malformedFileTokens: number
+    malformedMediaTokens: number
+    result: { input: number; output: number }
+    secretSeen: boolean
+  }
+  expect(result.secretSeen).toBeFalse()
+  expect(result.encodedText).toContain("report.pdf")
+  expect(result.encodedText).toContain("stored.pdf")
+  expect(result.malformedFileTokens).toBeGreaterThan(0)
+  expect(result.malformedMediaTokens).toBeGreaterThan(0)
+  expect(result.result.input).toBeGreaterThan(0)
+})
 
 test("Chat file IDs remain media carriers and never reach the text encoder", async () => {
   const payload = {
@@ -46,7 +77,9 @@ test("Chat file IDs remain media carriers and never reach the text encoder", asy
   ])
 
   expect(exitCode, stderr).toBe(0)
-  expect(JSON.parse(stdout)).toEqual({ input: 7, output: 0 })
+  const result = JSON.parse(stdout) as { input: number; output: number }
+  expect(result.input).toBeGreaterThan(7)
+  expect(result.output).toBe(0)
 })
 
 test("worker-backed Chat tokenization cancels deterministically when cold and warm", async () => {
