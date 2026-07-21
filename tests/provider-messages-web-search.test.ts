@@ -1,82 +1,54 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import { events } from "fetch-event-stream"
 import { Hono } from "hono"
 
 import type { ResolvedProviderConfig } from "../src/lib/config"
+import { createProviderResolver } from "../src/lib/provider-resolver"
+import { fetchWithUpstreamLifecycle } from "../src/lib/upstream-lifecycle"
 import type {
   AnthropicMessagesPayload,
   AnthropicResponse,
 } from "../src/routes/messages/anthropic-types"
-import type { ResponsesResult } from "../src/services/copilot/create-responses"
+import { createMessagesHandler } from "../src/routes/messages/handler"
+import { createMessageRoutes } from "../src/routes/messages/route"
+import { createWebSearchFlow } from "../src/routes/messages/web-search/fulfill"
+import { getResponsesTransportForModel } from "../src/routes/responses/utils"
+import { createProviderMessagesHandler } from "../src/routes/provider/messages/handler"
+import { createProviderMessageRoutes } from "../src/routes/provider/messages/route"
+import type {
+  CreateResponsesReturn,
+  ResponsesPayload,
+  ResponsesResult,
+  ResponsesTransport,
+} from "../src/services/copilot/create-responses"
+import type { Model } from "../src/services/copilot/get-models"
 import type { CodexProviderCatalogSnapshot } from "../src/services/codex/get-models"
-
-const actualConfigModule = await import("../src/lib/config")
-const actualModelsModule = await import("../src/lib/models")
-const actualStateModule = await import("../src/lib/state")
-const actualTokenModule = await import("../src/lib/token")
-const actualTokenUsageModule = await import("../src/lib/token-usage")
+import type { TokenUsageRecorder } from "../src/lib/token-usage"
 
 let providerConfigs: Record<string, ResolvedProviderConfig> = {}
 let messageApiWebSearchModel: string | undefined
 
-const providerUsageRecorder = mock(
-  (_usage: Record<string, unknown>, _metadata?: Record<string, unknown>) => {},
-)
+const recordProviderUsage: TokenUsageRecorder = () => "accepted"
+const providerUsageRecorder = mock(recordProviderUsage)
 const createProviderUsageRecorder = () => providerUsageRecorder
-const findEndpointModel = mock((model: string) => ({
-  id: model,
-  supported_endpoints: ["/v1/messages"],
-}))
-
-await mock.module("~/lib/config", () => ({
-  ...actualConfigModule,
-  getMessageApiWebSearchModel: () => messageApiWebSearchModel,
-  getProviderConfig: (name: string) => providerConfigs[name] ?? null,
-  isResponsesApiWebSearchEnabled: () => true,
-  isResponsesApiWebSocketEnabled: () => false,
-  resolveMappedModel: (model: string) => model,
-}))
-
-await mock.module("~/lib/models", () => ({
-  ...actualModelsModule,
-  findEndpointModel,
-}))
-
-await mock.module("~/lib/state", () => ({
-  ...actualStateModule,
-  state: {
-    ...actualStateModule.state,
-    tokenBasedBilling: true,
-    verbose: false,
-  },
-}))
-
-await mock.module("~/lib/token", () => ({
-  ...actualTokenModule,
-  setupCodexToken: async () => {},
-}))
-
-await mock.module("~/lib/token-usage", () => ({
-  ...actualTokenUsageModule,
-  createProviderTokenUsageRecorder: createProviderUsageRecorder,
-}))
-
-const { providerMessageRoutes } = await import(
-  "../src/routes/provider/messages/route"
+const findEndpointModel = mock(
+  (model: string): Model => ({
+    capabilities: {
+      family: model,
+      limits: {},
+      object: "model_capabilities",
+      supports: {},
+      type: "chat",
+    },
+    id: model,
+    model_picker_enabled: true,
+    name: model,
+    object: "model",
+    supported_endpoints: ["/v1/messages"],
+    vendor: "test",
+    version: "test",
+  }),
 )
-const { providerMessagesDependencies } = await import(
-  "../src/routes/provider/messages/handler"
-)
-const { messageRoutes } = await import("../src/routes/messages/route")
-const { state } = await import("../src/lib/state")
-const { responsesUtilsDependencies } = await import(
-  "../src/routes/responses/utils"
-)
-
-const originalCodexAccessToken = state.codexAccessToken
-const originalCodexAccountId = state.codexAccountId
-const defaultResponsesUtilsDependencies = { ...responsesUtilsDependencies }
-const originalLoadCodexProviderModels =
-  providerMessagesDependencies.loadCodexProviderModels
 
 const codexCatalogSnapshot: CodexProviderCatalogSnapshot = {
   catalog: {
@@ -371,10 +343,77 @@ const fetchMock = mock((url: string | URL | Request, init?: RequestInit) => {
   )
 })
 
+const forwardCodexResponses = async (
+  payload: ResponsesPayload,
+  _requestHeaders: Headers,
+  baseUrl = "https://codex.example/backend-api",
+  options: {
+    signal?: AbortSignal
+    transport?: ResponsesTransport
+  } = {},
+): Promise<CreateResponsesReturn> => {
+  const normalizedPayload = { ...payload, store: false }
+  delete normalizedPayload.temperature
+  delete normalizedPayload.top_p
+  delete normalizedPayload.max_output_tokens
+  delete normalizedPayload.metadata
+
+  const response = await fetchWithUpstreamLifecycle(
+    `${baseUrl}/codex/responses`,
+    {
+      body: JSON.stringify(normalizedPayload),
+      headers: {
+        accept:
+          normalizedPayload.stream ? "text/event-stream" : "application/json",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    },
+    { signal: options.signal },
+  )
+  if (normalizedPayload.stream) {
+    return events(response)
+  }
+  return (await response.json()) as ResponsesResult
+}
+
 const createApp = () => {
+  const providerConfigSnapshot = structuredClone(providerConfigs)
+  const providerResolver = createProviderResolver({
+    getCodexAccessToken: () => "codex-token",
+    getProviderConfig: (name) => providerConfigSnapshot[name] ?? null,
+    getRawProviderConfig: (name) => providerConfigSnapshot[name] ?? null,
+    setupCodexToken: async () => {},
+  })
+  const providerMessages = createProviderMessagesHandler({
+    createProviderTokenUsageRecorder: createProviderUsageRecorder,
+    forwardCodexResponses,
+    getModelResponsesApiCompactThreshold: () => undefined,
+    isContextManagementEnabledForMessages: () => true,
+    loadCodexProviderModels,
+    providerResolver,
+    resolveCodexResponsesTransport: () => "http",
+  })
+  const searchFlow = createWebSearchFlow({
+    findEndpointModel,
+    getMessageApiWebSearchModel: () => messageApiWebSearchModel,
+    getResponsesTransportForModel: (selectedModel, options) =>
+      getResponsesTransportForModel(selectedModel, {
+        ...options,
+        useWebSocket: false,
+      }),
+    isResponsesApiWebSearchEnabled: () => true,
+  })
+  const messages = createMessagesHandler({
+    providerMessages,
+    webSearchFlow: searchFlow,
+  })
   const app = new Hono()
-  app.route("/v1/messages", messageRoutes)
-  app.route("/:provider/v1/messages", providerMessageRoutes)
+  app.route("/v1/messages", createMessageRoutes({ messages }))
+  app.route(
+    "/:provider/v1/messages",
+    createProviderMessageRoutes({ messages: providerMessages }),
+  )
   return app
 }
 
@@ -447,19 +486,11 @@ beforeEach(() => {
       },
     },
   }
-  state.codexAccessToken = "codex-token"
-  state.codexAccountId = "codex-account"
   messageApiWebSearchModel = undefined
   responsesResultOverride = undefined
   responsesStreamFactory = undefined
   findEndpointModel.mockClear()
-  responsesUtilsDependencies.getModelResponsesApiCompactThreshold = () =>
-    undefined
-  responsesUtilsDependencies.isContextManagementEnabledForMessages = () => true
-  responsesUtilsDependencies.isContextManagementEnabledForResponses = () =>
-    false
   loadCodexProviderModels.mockClear()
-  providerMessagesDependencies.loadCodexProviderModels = loadCodexProviderModels
   fetchMock.mockClear()
   providerUsageRecorder.mockClear()
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
@@ -468,11 +499,6 @@ beforeEach(() => {
 
 afterEach(() => {
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
-  state.codexAccessToken = originalCodexAccessToken
-  state.codexAccountId = originalCodexAccountId
-  Object.assign(responsesUtilsDependencies, defaultResponsesUtilsDependencies)
-  providerMessagesDependencies.loadCodexProviderModels =
-    originalLoadCodexProviderModels
   providerConfigs = {}
   messageApiWebSearchModel = undefined
   responsesResultOverride = undefined

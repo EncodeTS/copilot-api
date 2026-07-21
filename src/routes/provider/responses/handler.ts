@@ -60,8 +60,57 @@ import {
 
 const logger = createHandlerLogger("provider-responses-handler")
 
-export const providerResponsesDependencies = {
-  loadCodexProviderModels,
+export interface ProviderResponsesHandler {
+  handleForProvider: (
+    c: Context,
+    options: {
+      payload: ResponsesPayload
+      provider: string
+    },
+  ) => Promise<Response>
+}
+
+export interface ProviderResponsesComposition {
+  createProviderTokenUsageRecorder?: typeof createProviderTokenUsageRecorder
+  loadCodexProviderModels?: typeof loadCodexProviderModels
+  resolveProviderModel?: typeof resolveProviderModel
+}
+
+interface ProviderResponsesDependencies {
+  createProviderTokenUsageRecorder: typeof createProviderTokenUsageRecorder
+  loadCodexProviderModels: typeof loadCodexProviderModels
+  resolveProviderModel: typeof resolveProviderModel
+}
+
+const createDefaultProviderResponsesDependencies =
+  (): ProviderResponsesDependencies => ({
+    createProviderTokenUsageRecorder,
+    loadCodexProviderModels,
+    resolveProviderModel,
+  })
+
+export const createProviderResponsesHandler = (
+  composition: ProviderResponsesComposition = {},
+): ProviderResponsesHandler => {
+  const defaults = createDefaultProviderResponsesDependencies()
+  const dependencies = Object.freeze<ProviderResponsesDependencies>({
+    createProviderTokenUsageRecorder:
+      composition.createProviderTokenUsageRecorder
+      ?? defaults.createProviderTokenUsageRecorder,
+    loadCodexProviderModels:
+      composition.loadCodexProviderModels ?? defaults.loadCodexProviderModels,
+    resolveProviderModel:
+      composition.resolveProviderModel ?? defaults.resolveProviderModel,
+  })
+  const handler: ProviderResponsesHandler = {
+    handleForProvider: (c, options) =>
+      handleProviderResponsesForProviderWithDependencies(
+        c,
+        options,
+        dependencies,
+      ),
+  }
+  return Object.freeze(handler)
 }
 
 export async function handleProviderResponsesForProvider(
@@ -71,12 +120,27 @@ export async function handleProviderResponsesForProvider(
     provider: string
   },
 ): Promise<Response> {
+  return await handleProviderResponsesForProviderWithDependencies(
+    c,
+    options,
+    createDefaultProviderResponsesDependencies(),
+  )
+}
+
+async function handleProviderResponsesForProviderWithDependencies(
+  c: Context,
+  options: {
+    payload: ResponsesPayload
+    provider: string
+  },
+  dependencies: ProviderResponsesDependencies,
+): Promise<Response> {
   const { payload, provider } = options
   debugJson(logger, "Responses request payload:", {
     payload,
     provider,
   })
-  const resolvedProviderModel = await resolveProviderModel(
+  const resolvedProviderModel = await dependencies.resolveProviderModel(
     provider,
     payload.model,
     { signal: c.req.raw.signal },
@@ -103,9 +167,7 @@ export async function handleProviderResponsesForProvider(
 
   const codexCatalog =
     providerConfig.name === "codex" ?
-      await providerResponsesDependencies.loadCodexProviderModels(
-        c.req.raw.signal,
-      )
+      await dependencies.loadCodexProviderModels(c.req.raw.signal)
     : undefined
   if (codexCatalog) {
     for (const [name, value] of Object.entries(
@@ -169,6 +231,7 @@ export async function handleProviderResponsesForProvider(
       provider,
       modelConfig,
       providerConfig.pricingCurrency,
+      dependencies,
     )
 
     if (payload.stream && isResponsesStream(upstreamResponse)) {
@@ -204,6 +267,7 @@ export async function handleProviderResponsesForProvider(
     provider,
     modelConfig,
     providerConfig.pricingCurrency,
+    dependencies,
   )
 
   if (payload.stream) {
@@ -228,11 +292,12 @@ const createProviderResponsesUsageRecorder = (
   provider: string,
   modelConfig: ModelConfig | undefined,
   pricingCurrency: string | undefined,
+  dependencies: ProviderResponsesDependencies,
 ): TokenUsageRecorder => {
   const sessionAffinity =
     requestContext.getStore()?.sessionAffinity?.trim() || null
 
-  return createProviderTokenUsageRecorder({
+  return dependencies.createProviderTokenUsageRecorder({
     endpoint: "responses",
     model: payload.model,
     outcome: "completed",

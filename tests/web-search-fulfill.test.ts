@@ -15,14 +15,16 @@ import type { ResponsesWireArtifact } from "~/services/copilot/responses-wire-ar
 
 import {
   buildSyntheticStreamEvents,
-  handleWebSearchViaResponses,
+  createWebSearchFlow,
+  handleWebSearchViaResponses as handleWebSearchViaResponsesWithComposition,
   hasWebSearchServerTool,
   isWebSearchOnlyRequest,
   prepareWebSearchResponsesPayload,
   reconstructWebSearchResponse,
   resolveWebSearchRoute,
-  webSearchFlowDependencies,
+  type WebSearchFlowComposition,
 } from "~/routes/messages/web-search/fulfill"
+import { getResponsesTransportForModel } from "~/routes/responses/utils"
 
 const webSearchTool = {
   type: "web_search_20250305",
@@ -295,10 +297,39 @@ async function* makeResponsesStream(result: ResponsesResult) {
   }
 }
 
-const originalDeps = { ...webSearchFlowDependencies }
+let webSearchFlowDependencies: WebSearchFlowComposition = {}
+
+const handleWebSearchViaResponses = (
+  c: Parameters<
+    ReturnType<typeof createWebSearchFlow>["handleViaResponses"]
+  >[0],
+  payload: Parameters<
+    ReturnType<typeof createWebSearchFlow>["handleViaResponses"]
+  >[1],
+  options: Parameters<
+    ReturnType<typeof createWebSearchFlow>["handleViaResponses"]
+  >[2],
+) => {
+  const composition: WebSearchFlowComposition = {
+    ...webSearchFlowDependencies,
+    getResponsesTransportForModel:
+      webSearchFlowDependencies.getResponsesTransportForModel
+      ?? ((selectedModel, transportOptions) =>
+        getResponsesTransportForModel(selectedModel, {
+          ...transportOptions,
+          useWebSocket: true,
+        })),
+  }
+  return handleWebSearchViaResponsesWithComposition(
+    c,
+    payload,
+    options,
+    composition,
+  )
+}
 
 afterEach(() => {
-  Object.assign(webSearchFlowDependencies, originalDeps)
+  webSearchFlowDependencies = {}
 })
 
 const baseOptions = {
@@ -542,6 +573,16 @@ describe("reconstructWebSearchResponse", () => {
 })
 
 describe("handleWebSearchViaResponses", () => {
+  it("uses the production usage recorder when the flow does not override it", async () => {
+    webSearchFlowDependencies.createResponses = (() =>
+      Promise.resolve(makeResponsesResult())) as never
+
+    const { c, captured } = makeContext()
+    await handleWebSearchViaResponses(c, makePayload(), baseOptions)
+
+    expect((captured.json as AnthropicResponse).content).toHaveLength(3)
+  })
+
   it("preserves explicit effort after validating the selected search model", async () => {
     let sentPayload: ResponsesPayload | undefined
     webSearchFlowDependencies.findEndpointModel = (() => ({

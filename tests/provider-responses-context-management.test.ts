@@ -11,7 +11,7 @@ const actualTokenUsageModule = await import("../src/lib/token-usage")
 
 let providerConfig: ResolvedProviderConfig | null = null
 
-const noopTokenUsageRecorder = () => {}
+const noopTokenUsageRecorder = () => "accepted" as const
 
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
@@ -31,10 +31,14 @@ await mock.module("~/lib/token-usage", () => ({
   createProviderTokenUsageRecorder: () => noopTokenUsageRecorder,
 }))
 
-const { responsesRoutes } = await import("../src/routes/responses/route")
+const { handleResponses } = await import("../src/routes/responses/handler")
+const { createResponsesRoutes } = await import("../src/routes/responses/route")
 const { state } = await import("../src/lib/state")
-const { providerResponsesDependencies } = await import(
+const { createProviderResponsesHandler } = await import(
   "../src/routes/provider/responses/handler"
+)
+const { createProviderModelRouter } = await import(
+  "../src/routes/provider/model-router"
 )
 const { responsesUtilsDependencies } = await import(
   "../src/routes/responses/utils"
@@ -42,8 +46,6 @@ const { responsesUtilsDependencies } = await import(
 
 const defaultResponsesUtilsDependencies = { ...responsesUtilsDependencies }
 const originalFetch = globalThis.fetch
-const originalLoadCodexProviderModels =
-  providerResponsesDependencies.loadCodexProviderModels
 const originalCodexAccessToken = state.codexAccessToken
 const originalCodexAccountId = state.codexAccountId
 
@@ -117,8 +119,20 @@ const fetchMock = mock((_url: string | URL | Request, init?: RequestInit) => {
 })
 
 const createApp = () => {
+  const providerResponses = createProviderResponsesHandler({
+    createProviderTokenUsageRecorder: () => noopTokenUsageRecorder,
+    loadCodexProviderModels,
+  })
+  const providerModelRouter = createProviderModelRouter({
+    handleProviderResponsesForProvider: providerResponses.handleForProvider,
+  })
   const app = new Hono()
-  app.route("/v1/responses", responsesRoutes)
+  app.route(
+    "/v1/responses",
+    createResponsesRoutes({
+      responses: (c) => handleResponses(c, { providerModelRouter }),
+    }),
+  )
   return app
 }
 
@@ -140,8 +154,6 @@ beforeEach(() => {
   responsesUtilsDependencies.isContextManagementEnabledForResponses = () =>
     false
   loadCodexProviderModels.mockClear()
-  providerResponsesDependencies.loadCodexProviderModels =
-    loadCodexProviderModels
   fetchMock.mockClear()
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
     fetchMock as unknown as typeof fetch
@@ -152,8 +164,6 @@ afterEach(() => {
   providerConfig = null
   state.codexAccessToken = originalCodexAccessToken
   state.codexAccountId = originalCodexAccountId
-  providerResponsesDependencies.loadCodexProviderModels =
-    originalLoadCodexProviderModels
   Object.assign(responsesUtilsDependencies, defaultResponsesUtilsDependencies)
 })
 

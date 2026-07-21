@@ -22,6 +22,8 @@ import type {
 import type { Model } from "~/services/copilot/get-models"
 
 import {
+  getModelResponsesApiCompactThreshold,
+  isContextManagementEnabledForMessages,
   type ModelConfig,
   type ResolvedProviderConfig,
   supportsProviderResponsesContextManagement,
@@ -38,7 +40,11 @@ import {
   debugJsonTail,
   debugLazy,
 } from "~/lib/logger"
-import { resolveProviderModel } from "~/lib/provider-resolver"
+import {
+  resolveProviderConfig,
+  resolveProviderModel,
+  type ProviderResolverPort,
+} from "~/lib/provider-resolver"
 import { normalizeMessageReasoningEffort } from "~/lib/reasoning-effort"
 import type { StreamTransport } from "~/lib/stream-lifecycle"
 import { resolveBridgeToolSearchName } from "~/lib/tool-search"
@@ -104,8 +110,87 @@ import {
 
 const logger = createHandlerLogger("provider-messages-handler")
 
-export const providerMessagesDependencies = {
-  loadCodexProviderModels,
+export interface ProviderMessagesHandler {
+  handle: (c: Context<Env, "/:provider">) => Promise<Response>
+  handleForProvider: (
+    c: Context,
+    options: {
+      payload: AnthropicMessagesPayload
+      provider: string
+    },
+  ) => Promise<Response>
+}
+
+export interface ProviderMessagesComposition {
+  createProviderTokenUsageRecorder?: typeof createProviderTokenUsageRecorder
+  forwardCodexResponses?: typeof forwardCodexResponses
+  getModelResponsesApiCompactThreshold?: typeof getModelResponsesApiCompactThreshold
+  isContextManagementEnabledForMessages?: typeof isContextManagementEnabledForMessages
+  loadCodexProviderModels?: typeof loadCodexProviderModels
+  providerResolver?: ProviderResolverPort
+  resolveCodexResponsesTransport?: typeof resolveCodexResponsesTransport
+}
+
+interface ProviderMessagesDependencies {
+  createProviderTokenUsageRecorder: typeof createProviderTokenUsageRecorder
+  forwardCodexResponses: typeof forwardCodexResponses
+  getModelResponsesApiCompactThreshold: typeof getModelResponsesApiCompactThreshold
+  isContextManagementEnabledForMessages: typeof isContextManagementEnabledForMessages
+  loadCodexProviderModels: typeof loadCodexProviderModels
+  providerResolver: ProviderResolverPort
+  resolveCodexResponsesTransport: typeof resolveCodexResponsesTransport
+}
+
+const createDefaultProviderMessagesDependencies =
+  (): ProviderMessagesDependencies => ({
+    createProviderTokenUsageRecorder,
+    forwardCodexResponses,
+    getModelResponsesApiCompactThreshold,
+    isContextManagementEnabledForMessages,
+    loadCodexProviderModels,
+    providerResolver: {
+      resolveConfig: resolveProviderConfig,
+      resolveModel: resolveProviderModel,
+    },
+    resolveCodexResponsesTransport,
+  })
+
+export const createProviderMessagesHandler = (
+  composition: ProviderMessagesComposition = {},
+): ProviderMessagesHandler => {
+  const dependencies = Object.freeze<ProviderMessagesDependencies>({
+    createProviderTokenUsageRecorder:
+      composition.createProviderTokenUsageRecorder
+      ?? createProviderTokenUsageRecorder,
+    forwardCodexResponses:
+      composition.forwardCodexResponses ?? forwardCodexResponses,
+    getModelResponsesApiCompactThreshold:
+      composition.getModelResponsesApiCompactThreshold
+      ?? getModelResponsesApiCompactThreshold,
+    isContextManagementEnabledForMessages:
+      composition.isContextManagementEnabledForMessages
+      ?? isContextManagementEnabledForMessages,
+    loadCodexProviderModels:
+      composition.loadCodexProviderModels ?? loadCodexProviderModels,
+    providerResolver: Object.freeze({
+      ...(composition.providerResolver
+        ?? createDefaultProviderMessagesDependencies().providerResolver),
+    }),
+    resolveCodexResponsesTransport:
+      composition.resolveCodexResponsesTransport
+      ?? resolveCodexResponsesTransport,
+  })
+
+  const handler: ProviderMessagesHandler = {
+    handle: (c) => handleProviderMessagesWithDependencies(c, dependencies),
+    handleForProvider: (c, options) =>
+      handleProviderMessagesForProviderWithDependencies(
+        c,
+        options,
+        dependencies,
+      ),
+  }
+  return Object.freeze(handler)
 }
 
 const applyCodexProviderReasoningEffort = (
@@ -158,9 +243,23 @@ const codexReasoningError = (c: Context, message: string): Response =>
 export async function handleProviderMessages(
   c: Context<Env, "/:provider">,
 ): Promise<Response> {
+  return await handleProviderMessagesWithDependencies(
+    c,
+    createDefaultProviderMessagesDependencies(),
+  )
+}
+
+async function handleProviderMessagesWithDependencies(
+  c: Context<Env, "/:provider">,
+  dependencies: ProviderMessagesDependencies,
+): Promise<Response> {
   const provider = c.req.param("provider")
   const payload = await c.req.json<AnthropicMessagesPayload>()
-  return await handleProviderMessagesForProvider(c, { payload, provider })
+  return await handleProviderMessagesForProviderWithDependencies(
+    c,
+    { payload, provider },
+    dependencies,
+  )
 }
 
 export async function handleProviderMessagesForProvider(
@@ -170,12 +269,26 @@ export async function handleProviderMessagesForProvider(
     provider: string
   },
 ): Promise<Response> {
-  const { payload, provider } = options
-  const resolvedProviderModel = await resolveProviderModel(
-    provider,
-    payload.model,
-    { signal: c.req.raw.signal },
+  return await handleProviderMessagesForProviderWithDependencies(
+    c,
+    options,
+    createDefaultProviderMessagesDependencies(),
   )
+}
+
+async function handleProviderMessagesForProviderWithDependencies(
+  c: Context,
+  options: {
+    payload: AnthropicMessagesPayload
+    provider: string
+  },
+  dependencies: ProviderMessagesDependencies,
+): Promise<Response> {
+  const { payload, provider } = options
+  const resolvedProviderModel =
+    await dependencies.providerResolver.resolveModel(provider, payload.model, {
+      signal: c.req.raw.signal,
+    })
   if (!resolvedProviderModel) {
     return c.json(
       {
@@ -218,9 +331,7 @@ export async function handleProviderMessagesForProvider(
 
       const codexCatalog =
         forwardingConfig.name === "codex" ?
-          await providerMessagesDependencies.loadCodexProviderModels(
-            c.req.raw.signal,
-          )
+          await dependencies.loadCodexProviderModels(c.req.raw.signal)
         : undefined
       if (codexCatalog) {
         for (const [name, value] of Object.entries(
@@ -236,6 +347,7 @@ export async function handleProviderMessagesForProvider(
       if (hasWebSearchServerTool(payload)) {
         if (isWebSearchOnlyRequest(payload)) {
           return await handleOpenAIResponsesProviderWebSearchMessages(c, {
+            dependencies,
             modelConfig,
             payload,
             provider,
@@ -247,6 +359,7 @@ export async function handleProviderMessagesForProvider(
       }
 
       return await handleOpenAIResponsesProviderMessages(c, {
+        dependencies,
         modelConfig,
         payload,
         provider,
@@ -266,6 +379,7 @@ export async function handleProviderMessagesForProvider(
       }
 
       return await handleOpenAICompatibleProviderMessages(c, {
+        dependencies,
         modelConfig,
         payload,
         provider,
@@ -300,6 +414,7 @@ export async function handleProviderMessagesForProvider(
     if (isStreamingResponse) {
       return streamProviderMessages({
         c,
+        dependencies,
         modelConfig,
         payload,
         pricingCurrency: providerConfig.pricingCurrency,
@@ -311,6 +426,7 @@ export async function handleProviderMessagesForProvider(
     const jsonBody = (await upstreamResponse.json()) as AnthropicResponse
     return respondProviderMessagesJson(c, {
       body: jsonBody,
+      dependencies,
       modelConfig,
       payload,
       pricingCurrency: providerConfig.pricingCurrency,
@@ -328,6 +444,7 @@ export async function handleProviderMessagesForProvider(
 const handleOpenAIResponsesProviderWebSearchMessages = async (
   c: Context,
   options: {
+    dependencies: ProviderMessagesDependencies
     modelConfig: ModelConfig | undefined
     payload: AnthropicMessagesPayload
     provider: string
@@ -335,13 +452,20 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
     selectedCodexModel?: Model
   },
 ): Promise<Response> => {
-  const { modelConfig, payload, provider, providerConfig, selectedCodexModel } =
-    options
+  const {
+    dependencies,
+    modelConfig,
+    payload,
+    provider,
+    providerConfig,
+    selectedCodexModel,
+  } = options
   const recordUsage = createProviderMessagesUsageRecorder(
     payload,
     provider,
     modelConfig,
     providerConfig.pricingCurrency,
+    dependencies,
   )
   applyWebSearchFallbackHeaders(c, payload, logger)
   const responsesPayload = prepareWebSearchResponsesPayload(payload)
@@ -363,7 +487,7 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
   })
 
   if (providerConfig.name === "codex") {
-    const upstreamResponse = await forwardCodexResponses(
+    const upstreamResponse = await dependencies.forwardCodexResponses(
       responsesPayload,
       c.req.raw.headers,
       providerConfig.baseUrl,
@@ -441,6 +565,7 @@ const handleOpenAIResponsesProviderWebSearchMessages = async (
 const handleOpenAIResponsesProviderMessages = async (
   c: Context,
   options: {
+    dependencies: ProviderMessagesDependencies
     modelConfig: ModelConfig | undefined
     payload: AnthropicMessagesPayload
     provider: string
@@ -448,13 +573,20 @@ const handleOpenAIResponsesProviderMessages = async (
     selectedCodexModel?: Model
   },
 ): Promise<Response> => {
-  const { modelConfig, payload, provider, providerConfig, selectedCodexModel } =
-    options
+  const {
+    dependencies,
+    modelConfig,
+    payload,
+    provider,
+    providerConfig,
+    selectedCodexModel,
+  } = options
   const recordUsage = createProviderMessagesUsageRecorder(
     payload,
     provider,
     modelConfig,
     providerConfig.pricingCurrency,
+    dependencies,
   )
   const wantsStream = payload.stream === true
   const responsesPayload = translateAnthropicMessagesToResponsesPayload(
@@ -488,6 +620,12 @@ const handleOpenAIResponsesProviderMessages = async (
       responsesPayload,
       selectedCodexModel?.capabilities.limits,
       {
+        contextManagementEnabled:
+          dependencies.isContextManagementEnabledForMessages(),
+        modelCompactThreshold:
+          dependencies.getModelResponsesApiCompactThreshold(
+            responsesPayload.model,
+          ) ?? null,
         source: "messages",
       },
     )
@@ -502,13 +640,13 @@ const handleOpenAIResponsesProviderMessages = async (
   })
 
   if (providerConfig.name === "codex") {
-    const transport = resolveCodexResponsesTransport()
+    const transport = dependencies.resolveCodexResponsesTransport()
     const streamControl =
       wantsStream && transport === "http" ?
         createProviderResponsesStreamControl(c.req.raw.signal)
       : undefined
     const upstreamSignal = streamControl?.signal ?? c.req.raw.signal
-    const upstreamResponse = await forwardCodexResponses(
+    const upstreamResponse = await dependencies.forwardCodexResponses(
       responsesPayload,
       c.req.raw.headers,
       providerConfig.baseUrl,
@@ -519,6 +657,7 @@ const handleOpenAIResponsesProviderMessages = async (
       if (wantsStream) {
         return streamResponsesProviderMessages({
           c,
+          dependencies,
           modelConfig,
           payload,
           pricingCurrency: providerConfig.pricingCurrency,
@@ -576,6 +715,7 @@ const handleOpenAIResponsesProviderMessages = async (
   if (responsesPayload.stream) {
     return streamResponsesProviderMessages({
       c,
+      dependencies,
       modelConfig,
       payload,
       pricingCurrency: providerConfig.pricingCurrency,
@@ -659,13 +799,15 @@ const applyOpenAICompatibleExtraBodyThinkingBudget = (
 const handleOpenAICompatibleProviderMessages = async (
   c: Context,
   options: {
+    dependencies: ProviderMessagesDependencies
     modelConfig: ModelConfig | undefined
     payload: AnthropicMessagesPayload
     provider: string
     providerConfig: ResolvedProviderConfig
   },
 ): Promise<Response> => {
-  const { modelConfig, payload, provider, providerConfig } = options
+  const { dependencies, modelConfig, payload, provider, providerConfig } =
+    options
   const openAIPayload = createOpenAICompatiblePayload(
     payload,
     modelConfig,
@@ -701,6 +843,7 @@ const handleOpenAICompatibleProviderMessages = async (
   if (isStreamingResponse) {
     return streamOpenAICompatibleProviderMessages({
       c,
+      dependencies,
       modelConfig,
       payload,
       pricingCurrency: providerConfig.pricingCurrency,
@@ -712,6 +855,7 @@ const handleOpenAICompatibleProviderMessages = async (
   const jsonBody = (await upstreamResponse.json()) as ChatCompletionResponse
   return respondOpenAICompatibleProviderMessagesJson(c, {
     body: jsonBody,
+    dependencies,
     modelConfig,
     payload,
     pricingCurrency: providerConfig.pricingCurrency,
@@ -816,6 +960,7 @@ const applyOpenAICompatibleRequestOverrides = (
 
 const streamProviderMessages = ({
   c,
+  dependencies,
   modelConfig,
   payload,
   pricingCurrency,
@@ -823,6 +968,7 @@ const streamProviderMessages = ({
   upstreamResponse,
 }: {
   c: Context
+  dependencies: ProviderMessagesDependencies
   modelConfig: ModelConfig | undefined
   payload: AnthropicMessagesPayload
   pricingCurrency: string | undefined
@@ -835,6 +981,7 @@ const streamProviderMessages = ({
     provider,
     modelConfig,
     pricingCurrency,
+    dependencies,
   )
   return streamSSE(c, async (stream) => {
     let usage: UsageTokens = {}
@@ -910,6 +1057,7 @@ const streamProviderMessages = ({
 
 const streamOpenAICompatibleProviderMessages = ({
   c,
+  dependencies,
   modelConfig,
   payload,
   pricingCurrency,
@@ -917,6 +1065,7 @@ const streamOpenAICompatibleProviderMessages = ({
   upstreamResponse,
 }: {
   c: Context
+  dependencies: ProviderMessagesDependencies
   modelConfig: ModelConfig | undefined
   payload: AnthropicMessagesPayload
   pricingCurrency: string | undefined
@@ -929,6 +1078,7 @@ const streamOpenAICompatibleProviderMessages = ({
     provider,
     modelConfig,
     pricingCurrency,
+    dependencies,
   )
   return streamSSE(c, async (stream) => {
     let usage: UsageTokens = {}
@@ -1077,6 +1227,7 @@ const streamOpenAICompatibleProviderMessages = ({
 
 const streamResponsesProviderMessages = ({
   c,
+  dependencies,
   modelConfig,
   payload,
   pricingCurrency,
@@ -1088,6 +1239,7 @@ const streamResponsesProviderMessages = ({
   upstreamResponse,
 }: {
   c: Context
+  dependencies: ProviderMessagesDependencies
   modelConfig: ModelConfig | undefined
   payload: AnthropicMessagesPayload
   pricingCurrency: string | undefined
@@ -1106,6 +1258,7 @@ const streamResponsesProviderMessages = ({
     provider,
     modelConfig,
     pricingCurrency,
+    dependencies,
   )
   return streamSSE(c, (stream) =>
     consumeResponsesStream({
@@ -1337,18 +1490,27 @@ const respondProviderMessagesJson = (
   c: Context,
   options: {
     body: AnthropicResponse
+    dependencies: ProviderMessagesDependencies
     modelConfig: ModelConfig | undefined
     payload: AnthropicMessagesPayload
     pricingCurrency: string | undefined
     provider: string
   },
 ): Response => {
-  const { body, modelConfig, payload, pricingCurrency, provider } = options
+  const {
+    body,
+    dependencies,
+    modelConfig,
+    payload,
+    pricingCurrency,
+    provider,
+  } = options
   const recordUsage = createProviderMessagesUsageRecorder(
     payload,
     provider,
     modelConfig,
     pricingCurrency,
+    dependencies,
   )
   recordUsage(normalizeAnthropicUsage(body.usage))
 
@@ -1360,18 +1522,27 @@ const respondOpenAICompatibleProviderMessagesJson = (
   c: Context,
   options: {
     body: ChatCompletionResponse
+    dependencies: ProviderMessagesDependencies
     modelConfig: ModelConfig | undefined
     payload: AnthropicMessagesPayload
     pricingCurrency: string | undefined
     provider: string
   },
 ): Response => {
-  const { body, modelConfig, payload, pricingCurrency, provider } = options
+  const {
+    body,
+    dependencies,
+    modelConfig,
+    payload,
+    pricingCurrency,
+    provider,
+  } = options
   const recordUsage = createProviderMessagesUsageRecorder(
     payload,
     provider,
     modelConfig,
     pricingCurrency,
+    dependencies,
   )
   recordUsage(normalizeOpenAIUsage(body.usage))
 
@@ -1510,8 +1681,9 @@ const createProviderMessagesUsageRecorder = (
   provider: string,
   modelConfig: ModelConfig | undefined,
   pricingCurrency: string | undefined,
+  dependencies: ProviderMessagesDependencies,
 ): TokenUsageRecorder =>
-  createProviderTokenUsageRecorder({
+  dependencies.createProviderTokenUsageRecorder({
     endpoint: "provider_messages",
     model: payload.model,
     outcome: "completed",

@@ -62,21 +62,104 @@ import {
 export * from "./policy"
 export * from "./reconstruction"
 
-export const webSearchFlowDependencies = {
-  createResponses: createCopilotResponses,
-  findEndpointModel,
-  createUsageRecorder: (
+type CreateWebSearchUsageRecorder = (
+  payload: AnthropicMessagesPayload,
+  sessionId?: string,
+  webSearchModel?: string,
+) => TokenUsageRecorder
+
+export interface WebSearchFlow {
+  handleViaResponses: (
+    c: Context,
     payload: AnthropicMessagesPayload,
-    sessionId?: string,
-    webSearchModel?: string,
-  ): TokenUsageRecorder =>
-    createCopilotTokenUsageRecorder({
-      endpoint: "responses",
-      fallbackSessionId: sessionId,
-      model: webSearchModel ?? payload.model,
-      outcome: "completed",
-      sessionId: parseUserIdMetadata(payload.metadata?.user_id).sessionId,
-    }),
+    options: WebSearchFlowOptions,
+  ) => Promise<Response>
+  tryHandle: (
+    c: Context,
+    payload: AnthropicMessagesPayload,
+    options: {
+      logger: ConsolaInstance
+      forwardToProvider: (
+        c: Context,
+        payload: AnthropicMessagesPayload,
+        provider: string,
+      ) => Promise<Response>
+    },
+  ) => Promise<Response | null>
+}
+
+export interface WebSearchFlowComposition {
+  createResponses?: typeof createCopilotResponses
+  createUsageRecorder?: CreateWebSearchUsageRecorder
+  findEndpointModel?: typeof findEndpointModel
+  getMessageApiWebSearchModel?: typeof getMessageApiWebSearchModel
+  getResponsesTransportForModel?: typeof getResponsesTransportForModel
+  isResponsesApiWebSearchEnabled?: typeof isResponsesApiWebSearchEnabled
+}
+
+interface WebSearchFlowDependencies {
+  createResponses: typeof createCopilotResponses
+  createUsageRecorder: CreateWebSearchUsageRecorder
+  findEndpointModel: typeof findEndpointModel
+  getMessageApiWebSearchModel: typeof getMessageApiWebSearchModel
+  getResponsesTransportForModel: typeof getResponsesTransportForModel
+  isResponsesApiWebSearchEnabled: typeof isResponsesApiWebSearchEnabled
+}
+
+const createDefaultWebSearchFlowDependencies =
+  (): WebSearchFlowDependencies => ({
+    createResponses: createCopilotResponses,
+    createUsageRecorder: (
+      payload,
+      sessionId,
+      webSearchModel,
+    ): TokenUsageRecorder =>
+      createCopilotTokenUsageRecorder({
+        endpoint: "responses",
+        fallbackSessionId: sessionId,
+        model: webSearchModel ?? payload.model,
+        outcome: "completed",
+        sessionId: parseUserIdMetadata(payload.metadata?.user_id).sessionId,
+      }),
+    findEndpointModel,
+    getMessageApiWebSearchModel,
+    getResponsesTransportForModel,
+    isResponsesApiWebSearchEnabled,
+  })
+
+export const createWebSearchFlow = (
+  composition: WebSearchFlowComposition = {},
+): WebSearchFlow => {
+  const defaults = createDefaultWebSearchFlowDependencies()
+  const dependencies = Object.freeze<WebSearchFlowDependencies>({
+    createResponses: composition.createResponses ?? defaults.createResponses,
+    createUsageRecorder:
+      composition.createUsageRecorder ?? defaults.createUsageRecorder,
+    findEndpointModel:
+      composition.findEndpointModel ?? defaults.findEndpointModel,
+    getMessageApiWebSearchModel:
+      composition.getMessageApiWebSearchModel
+      ?? defaults.getMessageApiWebSearchModel,
+    getResponsesTransportForModel:
+      composition.getResponsesTransportForModel
+      ?? defaults.getResponsesTransportForModel,
+    isResponsesApiWebSearchEnabled:
+      composition.isResponsesApiWebSearchEnabled
+      ?? defaults.isResponsesApiWebSearchEnabled,
+  })
+
+  const flow: WebSearchFlow = {
+    handleViaResponses: (c, payload, options) =>
+      handleWebSearchViaResponsesWithDependencies(
+        c,
+        payload,
+        options,
+        dependencies,
+      ),
+    tryHandle: (c, payload, options) =>
+      tryHandleWebSearchWithDependencies(c, payload, options, dependencies),
+  }
+  return Object.freeze(flow)
 }
 
 export interface WebSearchFlowOptions {
@@ -95,17 +178,6 @@ const isWebSearchResponsesStream = (value: unknown): value is ResponsesStream =>
   Boolean(value)
   && typeof (value as ResponsesStream)[Symbol.asyncIterator] === "function"
 
-const createUsageRecorder = (
-  payload: AnthropicMessagesPayload,
-  sessionId?: string,
-  webSearchModel?: string,
-): TokenUsageRecorder =>
-  webSearchFlowDependencies.createUsageRecorder(
-    payload,
-    sessionId,
-    webSearchModel,
-  )
-
 /** Resolve the configured fallback after explicit provider aliases are handled. */
 export const tryHandleWebSearch = async (
   c: Context,
@@ -118,14 +190,30 @@ export const tryHandleWebSearch = async (
       provider: string,
     ) => Promise<Response>
   },
+  composition: WebSearchFlowComposition = {},
+): Promise<Response | null> =>
+  await createWebSearchFlow(composition).tryHandle(c, payload, options)
+
+const tryHandleWebSearchWithDependencies = async (
+  c: Context,
+  payload: AnthropicMessagesPayload,
+  options: {
+    logger: ConsolaInstance
+    forwardToProvider: (
+      c: Context,
+      payload: AnthropicMessagesPayload,
+      provider: string,
+    ) => Promise<Response>
+  },
+  dependencies: WebSearchFlowDependencies,
 ): Promise<Response | null> => {
   if (!hasWebSearchServerTool(payload)) return null
 
   normalizeSystemMessages(payload)
 
   const route = resolveWebSearchRoute(payload, {
-    webSearchModel: getMessageApiWebSearchModel(),
-    responsesWebSearchEnabled: isResponsesApiWebSearchEnabled(),
+    webSearchModel: dependencies.getMessageApiWebSearchModel(),
+    responsesWebSearchEnabled: dependencies.isResponsesApiWebSearchEnabled(),
   })
 
   if (route.kind === "provider") {
@@ -143,16 +231,21 @@ export const tryHandleWebSearch = async (
     if (!sessionId) {
       sessionId = getUUID(requestId)
     }
-    return await handleWebSearchViaResponses(c, payload, {
-      subagentMarker: null,
-      webSearchModel: route.model,
-      reasoningRecoverySessionId,
-      requestId,
-      sessionId,
-      signal: c.req.raw.signal,
-      compactType: 0,
-      logger: options.logger,
-    })
+    return await handleWebSearchViaResponsesWithDependencies(
+      c,
+      payload,
+      {
+        subagentMarker: null,
+        webSearchModel: route.model,
+        reasoningRecoverySessionId,
+        requestId,
+        sessionId,
+        signal: c.req.raw.signal,
+        compactType: 0,
+        logger: options.logger,
+      },
+      dependencies,
+    )
   }
 
   return createWebSearchUnsupportedResponse(c, route.message)
@@ -163,7 +256,16 @@ export const handleWebSearchViaResponses = async (
   c: Context,
   payload: AnthropicMessagesPayload,
   options: WebSearchFlowOptions,
-) => {
+  composition: WebSearchFlowComposition = {},
+): Promise<Response> =>
+  await createWebSearchFlow(composition).handleViaResponses(c, payload, options)
+
+const handleWebSearchViaResponsesWithDependencies = async (
+  c: Context,
+  payload: AnthropicMessagesPayload,
+  options: WebSearchFlowOptions,
+  dependencies: WebSearchFlowDependencies,
+): Promise<Response> => {
   const { logger, webSearchModel } = options
   const wantsStream = Boolean(payload.stream)
   applyWebSearchFallbackHeaders(c, payload, logger)
@@ -174,7 +276,7 @@ export const handleWebSearchViaResponses = async (
   })
 
   const selectedModel: Model | undefined =
-    webSearchFlowDependencies.findEndpointModel(webSearchModel)
+    dependencies.findEndpointModel(webSearchModel)
   const reasoningError = applyWebSearchReasoningEffort(
     payload,
     responsesPayload,
@@ -186,7 +288,7 @@ export const handleWebSearchViaResponses = async (
   const endpointCapabilities = getResponsesEndpointCapabilities(selectedModel)
   const { vision, initiator } = getResponsesRequestOptions(responsesPayload)
   const transport =
-    getResponsesTransportForModel(selectedModel, {
+    dependencies.getResponsesTransportForModel(selectedModel, {
       compactType: options.compactType,
     }) ?? "http"
 
@@ -199,7 +301,7 @@ export const handleWebSearchViaResponses = async (
   const upstreamResult = await createOptimizedCopilotResponses(
     responsesPayload,
     {
-      createResponses: webSearchFlowDependencies.createResponses,
+      createResponses: dependencies.createResponses,
       logger,
       requestOptions: {
         allowHttpFallback:
@@ -218,7 +320,7 @@ export const handleWebSearchViaResponses = async (
     },
   )
 
-  const recordUsage = createUsageRecorder(
+  const recordUsage = dependencies.createUsageRecorder(
     payload,
     options.sessionId,
     webSearchModel,

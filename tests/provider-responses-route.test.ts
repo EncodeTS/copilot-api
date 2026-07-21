@@ -1,38 +1,48 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import { Hono } from "hono"
 
-import type { ResolvedProviderConfig } from "../src/lib/config"
+import {
+  getConfig,
+  type AppConfig,
+  type ResolvedProviderConfig,
+} from "../src/lib/config"
+import { createProviderResolver } from "../src/lib/provider-resolver"
+import { createAuthMiddleware } from "../src/lib/request-auth"
+import { handleResponses } from "../src/routes/responses/handler"
+import { createResponsesRoutes } from "../src/routes/responses/route"
+import { createProviderModelRouter } from "../src/routes/provider/model-router"
+import { createProviderResponsesHandler } from "../src/routes/provider/responses/handler"
+import { createProviderResponsesRoutes } from "../src/routes/provider/responses/route"
 import type { ResponsesResult } from "../src/services/copilot/create-responses"
 
-const actualConfigModule = await import("../src/lib/config")
-const actualTokenUsageModule = await import("../src/lib/token-usage")
-
-let gatewayApiKeys: Array<string> = []
 let providerConfigs: Record<string, ResolvedProviderConfig> = {}
 const recordUsage = mock(() => "accepted" as const)
 
-await mock.module("~/lib/config", () => ({
-  ...actualConfigModule,
-  getConfig: () => ({
-    auth: { apiKeys: gatewayApiKeys },
-    contextManagement: { messages: false, responses: false },
-  }),
-  getModelResponsesApiCompactThreshold: () => undefined,
-  getProviderConfig: (provider: string) => providerConfigs[provider] ?? null,
-  getRawProviderConfig: (provider: string) => providerConfigs[provider] ?? null,
-  isContextManagementEnabledForMessages: () => false,
-  isContextManagementEnabledForResponses: () => false,
-  isResponsesApiWebSearchEnabled: () => true,
-  resolveMappedModel: (model: string) => model,
-}))
-
-await mock.module("~/lib/token-usage", () => ({
-  ...actualTokenUsageModule,
-  createProviderTokenUsageRecorder: () => recordUsage,
-}))
-
-const { server } = await import("../src/server")
-
 const originalFetch = globalThis.fetch
+const config = getConfig()
+const isolatedConfigKeys = [
+  "auth",
+  "contextManagement",
+  "modelMappings",
+  "modelResponsesApiCompactThresholds",
+  "providers",
+  "useResponsesApiWebSearch",
+] as const satisfies ReadonlyArray<keyof AppConfig>
+const originalConfigFields = isolatedConfigKeys.map((key) => ({
+  hadOwnProperty: Object.hasOwn(config, key),
+  key,
+  value: config[key],
+}))
+
+const restoreConfigFields = (): void => {
+  for (const { hadOwnProperty, key, value } of originalConfigFields) {
+    if (hadOwnProperty) {
+      Object.assign(config, { [key]: value })
+    } else {
+      Reflect.deleteProperty(config, key)
+    }
+  }
+}
 
 const createResponsesResult = (model: string): ResponsesResult => ({
   created_at: 1_784_000_000,
@@ -79,7 +89,7 @@ const requestProviderResponses = (
   payload: Record<string, unknown>,
   headers: Record<string, string> = {},
 ) =>
-  server.request(path, {
+  createApp().request(path, {
     body: JSON.stringify(payload),
     headers: {
       "content-type": "application/json",
@@ -89,8 +99,34 @@ const requestProviderResponses = (
     method: "POST",
   })
 
+const createApp = (): Hono => {
+  const providerResolver = createProviderResolver({
+    getProviderConfig: (provider) => providerConfigs[provider] ?? null,
+    getRawProviderConfig: (provider) => providerConfigs[provider] ?? null,
+  })
+  const providerResponses = createProviderResponsesHandler({
+    createProviderTokenUsageRecorder: () => recordUsage,
+    resolveProviderModel: providerResolver.resolveModel,
+  })
+  const providerModelRouter = createProviderModelRouter({
+    handleProviderResponsesForProvider: providerResponses.handleForProvider,
+  })
+  const app = new Hono()
+  app.use("*", createAuthMiddleware())
+  app.route(
+    "/v1/responses",
+    createResponsesRoutes({
+      responses: (c) => handleResponses(c, { providerModelRouter }),
+    }),
+  )
+  app.route(
+    "/:provider/v1/responses",
+    createProviderResponsesRoutes({ responses: providerResponses }),
+  )
+  return app
+}
+
 beforeEach(() => {
-  gatewayApiKeys = ["gateway-key"]
   providerConfigs = {
     openai: {
       apiKey: "provider-key",
@@ -103,6 +139,14 @@ beforeEach(() => {
       type: "openai-responses",
     },
   }
+  Object.assign(config, {
+    auth: { apiKeys: ["gateway-key"] },
+    contextManagement: { messages: false, responses: false },
+    modelMappings: {},
+    modelResponsesApiCompactThresholds: {},
+    providers: providerConfigs,
+    useResponsesApiWebSearch: true,
+  })
   fetchMock.mockClear()
   recordUsage.mockClear()
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
@@ -111,13 +155,13 @@ beforeEach(() => {
 
 afterEach(() => {
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
-  gatewayApiKeys = []
+  restoreConfigFields()
   providerConfigs = {}
 })
 
 describe("versioned provider Responses route", () => {
   test("requires the gateway API key before forwarding", async () => {
-    const response = await server.request("/openai/v1/responses", {
+    const response = await createApp().request("/openai/v1/responses", {
       body: JSON.stringify({ input: "hello", model: "gpt-test" }),
       headers: { "content-type": "application/json" },
       method: "POST",

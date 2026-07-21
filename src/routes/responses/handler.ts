@@ -18,7 +18,10 @@ import { summarizeResponsesPayload } from "~/lib/responses-diagnostics"
 import { getResponsesEndpointCapabilities } from "~/lib/responses-capabilities"
 import type { ResponsesStreamSessionFrame } from "~/lib/responses-stream-session"
 import { normalizeGatewayReasoningEffort } from "~/lib/reasoning-effort"
-import { routeProviderModelAlias } from "~/routes/provider/model-router"
+import {
+  routeProviderModelAlias,
+  type ProviderModelRouter,
+} from "~/routes/provider/model-router"
 import { state } from "~/lib/state"
 import {
   createCopilotTokenUsageRecorder,
@@ -56,7 +59,14 @@ export const responsesHandlerDependencies = {
   resolveMappedModel,
 }
 
-export const handleResponses = async (c: Context) => {
+export interface ResponsesHandlerComposition {
+  providerModelRouter?: ProviderModelRouter
+}
+
+export const handleResponses = async (
+  c: Context,
+  composition: ResponsesHandlerComposition = {},
+) => {
   const payload = await c.req.json<ResponsesPayload>()
   if (
     typeof payload.reasoning === "object"
@@ -88,7 +98,9 @@ export const handleResponses = async (c: Context) => {
     )
   }
 
-  const providerResponse = await routeProviderModelAlias(c, {
+  const providerResponse = await (
+    composition.providerModelRouter?.route ?? routeProviderModelAlias
+  )(c, {
     endpoint: "responses",
     payload,
   })
