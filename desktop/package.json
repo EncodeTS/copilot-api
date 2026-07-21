@@ -1,6 +1,6 @@
 {
   "name": "copilot-api-desktop",
-  "version": "2.0.0-rc.13",
+  "version": "2.0.0-rc.14",
   "packageManager": "bun@1.3.14",
   "description": "Copilot API Desktop App",
   "main": "out/main/index.js",
