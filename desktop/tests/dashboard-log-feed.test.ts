@@ -15,6 +15,10 @@ import type {
   DesktopApi,
   LogFeedUpdate,
   ServerStatus,
+  TokenUsageDailySummary,
+  TokenUsageEventsPage,
+  TokenUsageSummary,
+  TokenUsageTotals,
 } from '../../shared-types'
 import { LanguageProvider } from '../src/contexts/LanguageContext'
 import DashboardPage from '../src/pages/DashboardPage'
@@ -95,6 +99,7 @@ function createServerStatus(
 async function mountDashboard(
   api: DesktopApi,
   strictMode = false,
+  authMode: 'copilot' | 'provider' = 'provider',
 ): Promise<{
   cleanup: () => void
   renderer: ReactTestRenderer
@@ -111,7 +116,7 @@ async function mountDashboard(
       LanguageProvider,
       null,
       createElement(DashboardPage, {
-        authMode: 'provider',
+        authMode,
         defaultPort: 4510,
         onChangeAuth: () => undefined,
       }),
@@ -200,6 +205,96 @@ async function resolveDashboardStatus(
     deferred.resolve(status)
     await Promise.resolve()
   })
+}
+
+const tokenUsageTotals: TokenUsageTotals = {
+  cache_creation_input_tokens: 50,
+  cache_read_input_tokens: 100,
+  costs: [{ amount: 0.001, currency: 'USD', total_cost_nanos: 1_000_000 }],
+  input_tokens: 1_000,
+  output_tokens: 250,
+  request_count: 2,
+  total_nano_aiu: null,
+  total_tokens: 1_400,
+}
+
+const tokenUsageRange = {
+  end_ms: 1_753_132_800_000,
+  end_utc: '2025-07-22T00:00:00.000Z',
+  start_ms: 1_753_046_400_000,
+  start_utc: '2025-07-21T00:00:00.000Z',
+}
+
+function createTokenUsageSummary(
+  period: TokenUsageSummary['period'],
+): TokenUsageSummary {
+  return {
+    byModel: [{ ...tokenUsageTotals, model: `summary-${period}-model` }],
+    period,
+    range: tokenUsageRange,
+    totals: tokenUsageTotals,
+  }
+}
+
+function createTokenUsageDaily(
+  period: TokenUsageDailySummary['period'],
+): TokenUsageDailySummary {
+  return {
+    ...createTokenUsageSummary(period),
+    byModel: [{ ...tokenUsageTotals, model: `daily-${period}-model` }],
+    days: [
+      {
+        byModel: [{ ...tokenUsageTotals, model: `daily-${period}-model` }],
+        date: '2025-07-21',
+        end_ms: tokenUsageRange.end_ms,
+        start_ms: tokenUsageRange.start_ms,
+        totals: tokenUsageTotals,
+      },
+    ],
+  }
+}
+
+function createTokenUsageEvents(
+  period: TokenUsageEventsPage['period'],
+  page: number,
+): TokenUsageEventsPage {
+  return {
+    items: [
+      {
+        cache_creation_input_tokens: 50,
+        cache_read_input_tokens: 100,
+        cost: {
+          amount: 0.001,
+          currency: 'USD',
+          source: 'catalog',
+          total_cost_nanos: 1_000_000,
+        },
+        created_at_ms: 1_753_089_661_000,
+        created_at_utc: '2025-07-21T12:01:01.000Z',
+        endpoint: 'responses',
+        error_code: null,
+        id: page,
+        input_tokens: 1_000,
+        model: `event-${period}-page-${page}-model`,
+        outcome: 'completed',
+        output_tokens: 250,
+        provider_name: null,
+        session_id: 'session-public',
+        source: 'copilot',
+        terminal: 'response.completed',
+        total_nano_aiu: null,
+        total_tokens: 1_400,
+        trace_id: `trace-${period}-${page}`,
+        user_id: 'user-public',
+      },
+    ],
+    page,
+    page_size: 10,
+    period,
+    range: tokenUsageRange,
+    total: 2,
+    total_pages: 2,
+  }
 }
 
 describe('Dashboard log feed hook', () => {
@@ -426,6 +521,161 @@ describe('Dashboard log feed hook', () => {
       })
     }
     expect(unsubscribeCalls).toBe(1)
+  })
+
+  test('Dashboard shows Copilot usage, models, and the last successful refresh', async () => {
+    let usageCalls = 0
+    let modelCalls = 0
+    const lastSuccessAt = new Date(2025, 6, 21, 8, 9, 10).getTime()
+    const api = createRunningDashboardApi({
+      fetchModels: () => {
+        modelCalls += 1
+        return Promise.resolve({
+          data: [{ id: 'gpt-5.6-sol' }, { id: 'claude-opus-4.1' }],
+        })
+      },
+      fetchUsage: () => {
+        usageCalls += 1
+        return Promise.resolve({
+          _copilot_api: {
+            freshness: 'fresh',
+            last_attempt_at_ms: lastSuccessAt,
+            last_success_at_ms: lastSuccessAt,
+            stale_since_at_ms: null,
+          },
+          copilot_plan: 'Business',
+          quota_reset_date: '2025-08-01',
+          quota_snapshots: {
+            chat: {
+              entitlement: 1_000,
+              quota_remaining: 900,
+              unlimited: false,
+            },
+            completions: {
+              entitlement: 0,
+              quota_remaining: 0,
+              unlimited: true,
+            },
+            premium_interactions: {
+              entitlement: 100,
+              quota_remaining: 75,
+              unlimited: false,
+            },
+          },
+        })
+      },
+    })
+    const { cleanup, renderer } = await mountDashboard(api, false, 'copilot')
+
+    try {
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      const text = renderedText(renderer.root)
+      expect(usageCalls).toBe(1)
+      expect(modelCalls).toBe(1)
+      expect(text).toContain('Business')
+      expect(text).toContain('25 / 100')
+      expect(text).toContain('gpt-5.6-sol')
+      expect(text).toContain('claude-opus-4.1')
+      expect(text).toContain('08:09:10')
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('Dashboard renders token summary, daily trend, and event pagination', async () => {
+    const summaryPeriods: TokenUsageSummary['period'][] = []
+    const dailyPeriods: TokenUsageDailySummary['period'][] = []
+    const eventRequests: Array<{
+      page: number
+      pageSize: number
+      period: TokenUsageEventsPage['period']
+    }> = []
+    const api = createRunningDashboardApi({
+      fetchTokenUsage: (period) => {
+        summaryPeriods.push(period)
+        return Promise.resolve(createTokenUsageSummary(period))
+      },
+      fetchTokenUsageDaily: (period) => {
+        dailyPeriods.push(period)
+        return Promise.resolve(createTokenUsageDaily(period))
+      },
+      fetchTokenUsageEvents: (period, page, pageSize) => {
+        eventRequests.push({ page, pageSize, period })
+        return Promise.resolve(createTokenUsageEvents(period, page))
+      },
+    })
+    const { cleanup, renderer } = await mountDashboard(api)
+
+    try {
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      await clickDashboardButton(renderer, 'Token usage')
+
+      expect(
+        renderer.root
+          .findAllByType('table')
+          .map(renderedText)
+          .some((text) => text.includes('summary-day-model')),
+      ).toBeTrue()
+      expect(
+        renderer.root
+          .findAllByType('table')
+          .map(renderedText)
+          .some(
+            (text) =>
+              text.includes('event-day-page-1-model')
+              && text.includes('trace-day-1'),
+          ),
+      ).toBeTrue()
+      expect(summaryPeriods).toEqual(['day'])
+      expect(dailyPeriods).toEqual(['day'])
+      expect(eventRequests).toEqual([{ page: 1, pageSize: 10, period: 'day' }])
+
+      await clickDashboardButton(renderer, '7 days')
+      expect(summaryPeriods).toEqual(['day', 'week'])
+      expect(dailyPeriods).toEqual(['day', 'week'])
+      expect(eventRequests.at(-1)).toEqual({
+        page: 1,
+        pageSize: 10,
+        period: 'week',
+      })
+      expect(
+        renderer.root
+          .findAllByType('table')
+          .map(renderedText)
+          .some((text) => text.includes('summary-week-model')),
+      ).toBeTrue()
+      expect(renderer.root.findAllByType('option').map(renderedText)).toContain(
+        'daily-week-model',
+      )
+      expect(renderedText(renderer.root)).not.toContain('summary-day-model')
+      expect(renderedText(renderer.root)).toContain('07/21')
+
+      await clickDashboardButton(renderer, 'Next')
+      expect(eventRequests.at(-1)).toEqual({
+        page: 2,
+        pageSize: 10,
+        period: 'week',
+      })
+      expect(
+        renderer.root
+          .findAllByType('table')
+          .map(renderedText)
+          .some(
+            (text) =>
+              text.includes('event-week-page-2-model')
+              && text.includes('trace-week-2'),
+          ),
+      ).toBeTrue()
+      expect(renderedText(renderer.root)).not.toContain('trace-week-1')
+    } finally {
+      cleanup()
+    }
   })
 
   test('Dashboard keeps an owned child running and restores Stop after timeout', async () => {
