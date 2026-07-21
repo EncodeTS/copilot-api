@@ -121,13 +121,16 @@ export const createResponsesTransportErrorDiagnostic = (options: {
 export const createResponsesUpstreamErrorDiagnostic = (options: {
   failure: ResponsesFailureLike
   payload: ResponsesDiagnosticPayload
+  payloadBytes?: number
   requestHeaders: Record<string, string>
   responseHeaders?: Headers
   status?: number
   transport: "http" | "websocket"
 }): Record<string, boolean | null | number | string | undefined> => {
   const promptLimit = parseResponsesPromptLimitFailure(options.failure)
-  const payload = summarizeResponsesPayload(options.payload)
+  const payload = summarizeResponsesPayload(options.payload, {
+    includePayloadBytes: options.payloadBytes === undefined,
+  })
   return {
     compactThreshold: payload.compactThreshold,
     contextManagementItems: payload.contextManagementItems,
@@ -141,7 +144,7 @@ export const createResponsesUpstreamErrorDiagnostic = (options: {
     inputItems: payload.inputItems,
     model: payload.model,
     overLimitTokens: promptLimit.overLimitTokens,
-    payloadBytes: payload.payloadBytes,
+    payloadBytes: options.payloadBytes ?? payload.payloadBytes,
     promptLimitTokens: promptLimit.promptLimitTokens,
     promptTokens: promptLimit.promptTokens,
     requestId: getRequestHeader(options.requestHeaders, "x-request-id"),

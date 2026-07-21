@@ -36,15 +36,17 @@ export {
   type PooledWebSocketIdentityParts,
 } from "~/services/responses-websocket-identity"
 
-export interface PooledWebSocketRequest<TPayload> {
+interface PooledWebSocketRequestBase {
   headers: Record<string, string>
   identity: PooledWebSocketIdentity
-  payload: TPayload
   resourceLimits: ResponsesWebSocketResourceLimits
   signal?: AbortSignal
   timeouts?: UpstreamLifecycleTimeouts
   url: string
 }
+
+export type PooledWebSocketRequest<TPayload> = PooledWebSocketRequestBase
+  & ({ frame: string; payload?: never } | { frame?: never; payload: TPayload })
 
 export interface PooledWebSocketStreamOptions<TChunk> {
   createChunk: (data: string) => TChunk
@@ -166,6 +168,15 @@ const runPooledWebSocketRequest = async function* <TPayload, TChunk>(
   let sendAttempted = false
 
   try {
+    const hasFrame = Object.hasOwn(request, "frame")
+    const hasPayload = Object.hasOwn(request, "payload")
+    if (hasFrame === hasPayload) {
+      throw new TypeError(
+        "Responses websocket request must contain exactly one wire source",
+      )
+    }
+    const frame = hasFrame ? request.frame! : JSON.stringify(request.payload)
+    const requestFrameBytes = Buffer.byteLength(frame, "utf8")
     lease = await acquirePooledWebSocketConnection({
       identity: request.identity,
       limits: request.resourceLimits,
@@ -188,10 +199,11 @@ const runPooledWebSocketRequest = async function* <TPayload, TChunk>(
       connectionAgeMs: lease.connectionAgeMs(),
       pooled: lease.pooled,
       readyState: websocket.readyState,
+      requestFrameBytes,
       reused: lease.reused,
     })
     sendAttempted = true
-    websocket.send(JSON.stringify(request.payload))
+    websocket.send(frame)
 
     for await (const data of createBoundedWebSocketMessageStream(websocket, {
       limits: request.resourceLimits,

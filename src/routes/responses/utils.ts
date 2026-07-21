@@ -8,6 +8,14 @@ import type {
   ResponsesPayload,
   ResponsesTransport,
 } from "~/services/copilot/create-responses"
+import {
+  getResponsesPayloadSerializationSource,
+  isImmutableResponsesPayloadSerialization,
+  serializeResponsesPayload,
+  type ImmutableResponsesPayloadSerialization,
+  type ResponsesPayloadSerialization,
+  type ResponsesWireSerializationObserver,
+} from "~/services/copilot/responses-wire-artifact"
 
 import { COMPACT_REQUEST, type CompactType } from "~/lib/compact"
 import {
@@ -183,6 +191,10 @@ export interface ImagePayloadBudgetOptions {
   compressionAdapter?: ImageCompressionAdapter
   maxCompressionActions?: number
   initialCloneCount?: number
+  initialSerializationCount?: number
+  initialPayloadMutable?: boolean
+  initialPayloadSerialization?: ImmutableResponsesPayloadSerialization
+  serializationObserver?: ResponsesWireSerializationObserver
   signal?: AbortSignal
 }
 
@@ -225,6 +237,7 @@ export interface ImagePayloadBudgetResult {
   fileIdCount: number
   nonImageDataUrlBytes: number
   outboundPayload: ResponsesPayload
+  payloadSerialization: ResponsesPayloadSerialization
   textAndToolBytes: number
   unoptimizableMediaBytes: number
   bodyBytesOverBudget: number
@@ -273,6 +286,7 @@ interface ImagePayloadBudgetInventory {
 interface ImagePayloadBudgetLedger {
   instrumentation: ImagePayloadBudgetInstrumentation
   payloadBytes: number
+  payloadSerialization: ResponsesPayloadSerialization
 }
 
 interface ImagePayloadMutationContext {
@@ -281,6 +295,7 @@ interface ImagePayloadMutationContext {
   maxPromptImageSize?: number
   originalPayload: ResponsesPayload
   payload: ResponsesPayload
+  serializationObserver?: ResponsesWireSerializationObserver
 }
 
 export interface ImageCompressionProfile {
@@ -482,11 +497,30 @@ export const optimizeInputImagesForPayloadBudget = async (
 
   const instrumentation = createImagePayloadBudgetInstrumentation(
     options.initialCloneCount,
+    options.initialSerializationCount,
   )
-  const initialPayloadBytes = serializeImageBudgetPayload(
-    payload,
-    instrumentation,
-  )
+  if (
+    options.initialPayloadSerialization
+    && (!isImmutableResponsesPayloadSerialization(
+      options.initialPayloadSerialization,
+    )
+      || getResponsesPayloadSerializationSource(
+        options.initialPayloadSerialization,
+      ) !== payload)
+  ) {
+    throw new TypeError(
+      "Initial Responses payload serialization does not match its payload",
+    )
+  }
+  const initialSerialization =
+    options.initialPayloadSerialization
+    ?? serializeImageBudgetPayload(
+      payload,
+      instrumentation,
+      "budget_initial",
+      options.serializationObserver,
+    )
+  const initialPayloadBytes = initialSerialization.payloadBytes
   const inventory = collectImagePayloadBudgetInventory(
     payload,
     options.maxPromptImageSize,
@@ -496,13 +530,15 @@ export const optimizeInputImagesForPayloadBudget = async (
   const ledger: ImagePayloadBudgetLedger = {
     instrumentation,
     payloadBytes: initialPayloadBytes,
+    payloadSerialization: initialSerialization,
   }
   const mutationContext: ImagePayloadMutationContext = {
     candidates,
-    cloned: instrumentation.clones > 0,
+    cloned: options.initialPayloadMutable ?? instrumentation.clones > 0,
     maxPromptImageSize: options.maxPromptImageSize,
     originalPayload: payload,
     payload,
+    serializationObserver: options.serializationObserver,
   }
   const oversizedInputImageCount = candidates.filter(
     (candidate) => candidate.oversized,
@@ -517,6 +553,7 @@ export const optimizeInputImagesForPayloadBudget = async (
     nearBudgetRatio,
     mediaStats,
     outboundPayload: payload,
+    payloadSerialization: initialSerialization,
     oversizedInputImageCount,
     replacedCount: 0,
     sendHardLimitBytes,
@@ -810,6 +847,7 @@ export const optimizeInputImagesForPayloadBudget = async (
     nearBudgetRatio,
     mediaStats,
     outboundPayload: mutationContext.payload,
+    payloadSerialization: ledger.payloadSerialization,
     oversizedInputImageCount,
     compressionActionLimit,
     compressionAttemptedCount,
@@ -916,6 +954,7 @@ const replaceInputImageWithPlaceholder = (image: InputImageDataUrl): void => {
 
 const createImagePayloadBudgetInstrumentation = (
   initialCloneCount?: number,
+  initialSerializationCount?: number,
 ): ImagePayloadBudgetInstrumentation => ({
   clones:
     typeof initialCloneCount === "number" && initialCloneCount > 0 ?
@@ -923,16 +962,24 @@ const createImagePayloadBudgetInstrumentation = (
     : 0,
   decodedBuffers: 0,
   ledgerMismatches: 0,
-  serializations: 0,
+  serializations:
+    (
+      typeof initialSerializationCount === "number"
+      && initialSerializationCount > 0
+    ) ?
+      Math.floor(initialSerializationCount)
+    : 0,
   traversals: 0,
 })
 
 const serializeImageBudgetPayload = (
   payload: ResponsesPayload,
   instrumentation: ImagePayloadBudgetInstrumentation,
-): number => {
+  stage: "budget_initial" | "budget_mutation",
+  observer?: ResponsesWireSerializationObserver,
+): ResponsesPayloadSerialization => {
   instrumentation.serializations += 1
-  return calculateResponsesPayloadBytes(payload)
+  return serializeResponsesPayload(payload, { observer, stage })
 }
 
 const collectImagePayloadBudgetInventory = (
@@ -1297,15 +1344,18 @@ const reconcileImagePayloadLedger = (
   ledger: ImagePayloadBudgetLedger,
   expectedBytes: number,
 ): void => {
-  const actualBytes = serializeImageBudgetPayload(
+  const actual = serializeImageBudgetPayload(
     context.payload,
     ledger.instrumentation,
+    "budget_mutation",
+    context.serializationObserver,
   )
-  if (actualBytes !== expectedBytes) {
+  if (actual.payloadBytes !== expectedBytes) {
     ledger.instrumentation.ledgerMismatches += 1
     refreshImagePayloadCandidateSemantics(context, ledger.instrumentation)
   }
-  ledger.payloadBytes = actualBytes
+  ledger.payloadBytes = actual.payloadBytes
+  ledger.payloadSerialization = actual
 }
 
 const refreshImagePayloadCandidateSemantics = (
@@ -1680,6 +1730,7 @@ const createImagePayloadBudgetResult = ({
   initialPayloadBytes,
   mediaStats,
   outboundPayload,
+  payloadSerialization,
   nearBudgetRatio,
   oversizedInputImageCount,
   oversizedResolvedCount = 0,
@@ -1704,6 +1755,7 @@ const createImagePayloadBudgetResult = ({
   initialPayloadBytes: number
   mediaStats: PayloadMediaStats
   outboundPayload: ResponsesPayload
+  payloadSerialization: ResponsesPayloadSerialization
   nearBudgetRatio: number
   oversizedInputImageCount: number
   oversizedResolvedCount?: number
@@ -1752,7 +1804,10 @@ const createImagePayloadBudgetResult = ({
     undefined,
   )
 
-  const result: Omit<ImagePayloadBudgetResult, "outboundPayload"> = {
+  const result: Omit<
+    ImagePayloadBudgetResult,
+    "outboundPayload" | "payloadSerialization"
+  > = {
     bodyBytesOverBudget: Math.max(0, finalPayloadBytes - budgetBytes),
     budgetBytes,
     budgetInstrumentation: { ...budgetInstrumentation },
@@ -1804,11 +1859,19 @@ const createImagePayloadBudgetResult = ({
     unoptimizableMediaBytes: mediaStats.unoptimizableMediaBytes,
     unresolvedReason: resolvedUnresolvedReason,
   }
-  return Object.defineProperty(result, "outboundPayload", {
-    configurable: false,
-    enumerable: false,
-    value: outboundPayload,
-    writable: false,
+  return Object.defineProperties(result, {
+    outboundPayload: {
+      configurable: false,
+      enumerable: false,
+      value: outboundPayload,
+      writable: false,
+    },
+    payloadSerialization: {
+      configurable: false,
+      enumerable: false,
+      value: payloadSerialization,
+      writable: false,
+    },
   }) as ImagePayloadBudgetResult
 }
 

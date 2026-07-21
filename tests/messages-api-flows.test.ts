@@ -19,6 +19,8 @@ import type {
   ResponsesResult,
   ResponsesTransport,
 } from "../src/services/copilot/create-responses"
+import type { ResponsesWireArtifact } from "../src/services/copilot/responses-wire-artifact"
+import type { SubagentMarker } from "../src/lib/subagent"
 
 import { COMPACT_REQUEST } from "../src/lib/compact"
 import { createMessagesResponseContext } from "../src/routes/messages/request-context"
@@ -51,9 +53,12 @@ let capturedMessagesSignal: AbortSignal | undefined
 let capturedResponsesPayload: ResponsesPayload | null = null
 let capturedResponsesOptions: {
   allowHttpFallback?: boolean
+  initiator?: "agent" | "user"
   reasoningRecoverySessionId?: string
   signal?: AbortSignal
+  subagentMarker?: SubagentMarker | null
   transport?: ResponsesTransport
+  wireArtifact?: ResponsesWireArtifact
 } | null = null
 let responsesApiWebSocketEnabled = true
 
@@ -99,9 +104,12 @@ const createResponses = mock(
     payload: ResponsesPayload,
     options: {
       allowHttpFallback?: boolean
+      initiator?: "agent" | "user"
       reasoningRecoverySessionId?: string
       signal?: AbortSignal
+      subagentMarker?: SubagentMarker | null
       transport?: ResponsesTransport
+      wireArtifact?: ResponsesWireArtifact
     },
   ): Promise<CreateResponsesReturn> => {
     capturedResponsesPayload = payload
@@ -1186,7 +1194,7 @@ test("messages Messages flow records Copilot AIU from non-streaming response", a
   })
 })
 
-test("messages Responses flow uses websocket transport by default for dual-endpoint models", async () => {
+test("messages Responses flow uses the actual HTTP transport when not streaming", async () => {
   const payload: AnthropicMessagesPayload = {
     max_tokens: 128,
     messages: [{ role: "user", content: "hello" }],
@@ -1202,11 +1210,11 @@ test("messages Responses flow uses websocket transport by default for dual-endpo
 
   expect(response.status).toBe(200)
   expect(createResponses).toHaveBeenCalledTimes(1)
-  expect(capturedResponsesOptions?.transport).toBe("websocket")
+  expect(capturedResponsesOptions?.transport).toBe("http")
   expect(capturedResponsesOptions?.reasoningRecoverySessionId).toBe(
     "stable-session",
   )
-  expect(capturedResponsesOptions?.allowHttpFallback).toBe(true)
+  expect(capturedResponsesOptions?.allowHttpFallback).toBe(false)
 })
 
 test("messages Responses flow maps disabled thinking to effort none", async () => {
@@ -1507,6 +1515,35 @@ test("messages Responses flow keeps streaming transport for deferred tool search
   expect(createResponses).toHaveBeenCalledTimes(1)
   expect(capturedResponsesPayload?.stream).toBe(true)
   expect(capturedResponsesOptions?.transport).toBe("websocket")
+})
+
+test("messages Responses flow admits subagent websocket initiator once", async () => {
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const subagentMarker: SubagentMarker = {
+    agent_id: "synthetic-agent",
+    agent_type: "review",
+    session_id: "synthetic-session",
+  }
+
+  const response = await handleWithResponsesApi(createContext(), payload, {
+    logger,
+    requestId: "request-subagent-initiator",
+    selectedModel: createModel(["/responses", "ws:/responses"]),
+    subagentMarker,
+  })
+
+  expect(response.status).toBe(200)
+  expect(capturedResponsesOptions?.initiator).toBe("agent")
+  expect(capturedResponsesOptions?.subagentMarker).toEqual(subagentMarker)
+  const frame = JSON.parse(
+    capturedResponsesOptions?.wireArtifact?.websocketFrame ?? "{}",
+  ) as { initiator?: string }
+  expect(frame.initiator).toBe("agent")
 })
 
 test("messages Responses flow preserves the configured tool_search alias in non-streaming responses", async () => {

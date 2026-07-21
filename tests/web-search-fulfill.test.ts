@@ -11,6 +11,7 @@ import type {
   ResponsesPayload,
   ResponsesResult,
 } from "~/services/copilot/create-responses"
+import type { ResponsesWireArtifact } from "~/services/copilot/responses-wire-artifact"
 
 import {
   buildSyntheticStreamEvents,
@@ -625,6 +626,44 @@ describe("handleWebSearchViaResponses", () => {
 
     expect(allowHttpFallback).toBe(true)
     expect(reasoningRecoverySessionId).toBe("stable-sess-1")
+  })
+
+  it("admits the effective subagent initiator for websocket search", async () => {
+    let captured:
+      | {
+          initiator?: "agent" | "user"
+          wireArtifact?: ResponsesWireArtifact
+        }
+      | undefined
+    webSearchFlowDependencies.findEndpointModel = (() => ({
+      capabilities: { limits: {}, supports: {} },
+      id: "gpt-5-mini",
+      supported_endpoints: ["/responses", "ws:/responses"],
+    })) as never
+    webSearchFlowDependencies.createResponses = ((
+      _payload: ResponsesPayload,
+      options: typeof captured,
+    ) => {
+      captured = options
+      return Promise.resolve(makeResponsesResult())
+    }) as never
+    webSearchFlowDependencies.createUsageRecorder = (() => () => {}) as never
+    const { c } = makeContext()
+
+    await handleWebSearchViaResponses(c, makePayload(), {
+      ...baseOptions,
+      subagentMarker: {
+        agent_id: "synthetic-agent",
+        agent_type: "review",
+        session_id: "synthetic-session",
+      },
+    })
+
+    expect(captured?.initiator).toBe("agent")
+    const frame = JSON.parse(
+      captured?.wireArtifact?.websocketFrame ?? "{}",
+    ) as { initiator?: string }
+    expect(frame.initiator).toBe("agent")
   })
 
   it("forwards the caller abort signal to the Responses search", async () => {

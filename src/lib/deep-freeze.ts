@@ -3,12 +3,17 @@ export const deepFreeze = <T extends object>(
   value: T,
   seen = new WeakSet<object>(),
 ): T => {
-  if (seen.has(value)) return value
-  seen.add(value)
-  for (const nested of Object.values(value)) {
-    if (typeof nested === "object" && nested !== null) {
-      deepFreeze(nested, seen)
+  const pending: object[] = [value]
+  while (pending.length > 0) {
+    const current = pending.pop()
+    if (!current || seen.has(current)) continue
+    seen.add(current)
+    for (const nested of Object.values(current as Record<string, unknown>)) {
+      if (typeof nested === "object" && nested !== null) {
+        pending.push(nested)
+      }
     }
+    Object.freeze(current)
   }
-  return Object.freeze(value)
+  return value
 }

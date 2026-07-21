@@ -1,6 +1,7 @@
 import consola, { type ConsolaInstance } from "consola"
 
-import { copilotBaseUrl } from "~/lib/api-config"
+import { copilotBaseUrl, resolveInteractionInitiator } from "~/lib/api-config"
+import { COMPACT_REQUEST } from "~/lib/compact"
 import {
   getResponsesImageNearBudgetRatio,
   getResponsesImageCompressionCacheBytes,
@@ -32,12 +33,17 @@ import type {
   ResponsesTransport,
 } from "~/services/copilot/create-responses"
 import {
-  buildResponsesWebSocketPayload,
-  ensureEncryptedReasoningIncluded,
-} from "~/services/copilot/create-responses"
+  createResponsesWireArtifact,
+  prepareResponsesWirePayloadWithSummary,
+  serializeImmutableResponsesPayload,
+  serializeResponsesPayload,
+  serializeResponsesWirePayload,
+  type ResponsesWireArtifact,
+  type ResponsesWireSerialization,
+} from "~/services/copilot/responses-wire-artifact"
+import { createReasoningRecoveryScope } from "~/services/copilot/responses-reasoning-recovery-registry"
 
 import {
-  calculateResponsesPayloadBytes,
   optimizeInputImagesForPayloadBudget,
   type ImageCompressionAdapter,
   type ImagePayloadBudgetResult,
@@ -46,8 +52,6 @@ import { createSharpImageCompressionAdapter } from "./image-compression"
 
 type CreateResponses = typeof createCopilotResponses
 type CreateResponsesOptions = Parameters<CreateResponses>[1]
-
-const ENCRYPTED_REASONING_INCLUDE = "reasoning.encrypted_content"
 
 export interface OptimizedResponsesCreateOptions {
   createResponses: CreateResponses
@@ -63,25 +67,33 @@ export const createOptimizedCopilotResponses = async (
   payload: ResponsesPayload,
   options: OptimizedResponsesCreateOptions,
 ): Promise<CreateResponsesReturn> => {
+  const requestOptions: CreateResponsesOptions = {
+    ...options.requestOptions,
+    initiator: resolveInteractionInitiator({
+      compactType: options.requestOptions.compactType,
+      initiator: options.requestOptions.initiator,
+      isSubagent: Boolean(options.requestOptions.subagentMarker),
+    }),
+  }
   const firstPrepare = await prepareCopilotResponsesPayloadForSend(payload, {
     ...options,
     mode: "normal",
+    requestOptions,
   })
 
   const firstRequestOptions = {
-    ...options.requestOptions,
-    transport: resolveEffectiveTransport(
-      options.requestOptions.transport,
-      firstPrepare.imageBudget,
-      options.selectedModel,
-    ),
+    ...requestOptions,
+    allowHttpFallback:
+      firstPrepare.transport === "websocket"
+      && requestOptions.allowHttpFallback === true,
+    transport: firstPrepare.transport,
   }
 
   try {
-    return await options.createResponses(
-      firstPrepare.payload,
-      firstRequestOptions,
-    )
+    return await options.createResponses(firstPrepare.payload, {
+      ...firstRequestOptions,
+      wireArtifact: firstPrepare.wireArtifact,
+    })
   } catch (error) {
     if (
       !shouldRetryAfterPayloadTooLarge(error, firstRequestOptions.transport)
@@ -93,7 +105,7 @@ export const createOptimizedCopilotResponses = async (
       ...options,
       mode: "retry",
       requestOptions: {
-        ...options.requestOptions,
+        ...requestOptions,
         transport: "http",
       },
     })
@@ -116,8 +128,10 @@ export const createOptimizedCopilotResponses = async (
     )
 
     return await options.createResponses(retryPrepare.payload, {
-      ...options.requestOptions,
-      transport: "http",
+      ...requestOptions,
+      allowHttpFallback: false,
+      transport: retryPrepare.transport,
+      wireArtifact: retryPrepare.wireArtifact,
     })
   }
 }
@@ -132,20 +146,77 @@ export const prepareCopilotResponsesPayloadForSend = async (
 ): Promise<{
   imageBudget: ImagePayloadBudgetResult
   payload: ResponsesPayload
+  transport: ResponsesTransport
+  wireArtifact: ResponsesWireArtifact
 }> => {
+  const requestOptions: CreateResponsesOptions = {
+    ...options.requestOptions,
+    initiator: resolveInteractionInitiator({
+      compactType: options.requestOptions.compactType,
+      initiator: options.requestOptions.initiator,
+      isSubagent: Boolean(options.requestOptions.subagentMarker),
+    }),
+  }
   if (payload.service_tier !== undefined) {
     options.logger?.debug?.(
       "Removed unsupported Copilot Responses service_tier",
       payload.service_tier,
     )
   }
-  const basePreparation = prepareResponsesPayloadCopyOnWrite(payload)
-  const preparedPayload = basePreparation.payload
-  const sendHardLimitBytes = getResponsesSendHardLimitForTransport(
+  const preparation = prepareResponsesWirePayloadWithSummary(payload, {
+    reasoningRecoveryScope: createReasoningRecoveryScope({
+      agentId: requestOptions.subagentMarker?.agent_id,
+      agentType: requestOptions.subagentMarker?.agent_type,
+      model: payload.model,
+      sessionId:
+        requestOptions.reasoningRecoverySessionId
+        ?? requestOptions.subagentMarker?.session_id,
+    }),
+  })
+  const preparedPayload = preparation.payload
+  if (preparation.removedReasoningItems > 0) {
+    consola.debug("responses.reasoning_history_prefilter", {
+      model: preparedPayload.model,
+      reason: "known_incompatible_reasoning_history",
+      removedReasoningItems: preparation.removedReasoningItems,
+      subagent: Boolean(requestOptions.subagentMarker),
+    })
+  }
+  const websocketAdmissionRequired = isWebSocketAdmissionRequired(
     preparedPayload,
-    getResponsesPayloadSendHardLimitBytes(),
-    options.requestOptions,
+    requestOptions,
+    options.selectedModel,
   )
+  const initialPayloadSerialization = serializeImmutableResponsesPayload(
+    preparedPayload,
+    {
+      observer: requestOptions.wireSerializationObserver,
+      stage: "budget_initial",
+    },
+  )
+  const initialWireSerialization =
+    websocketAdmissionRequired ?
+      serializeResponsesWirePayload(
+        initialPayloadSerialization,
+        requestOptions.initiator,
+        requestOptions.wireSerializationObserver,
+      )
+    : undefined
+  const configuredSendHardLimitBytes = getResponsesPayloadSendHardLimitBytes()
+  const sendHardLimitBytes =
+    websocketAdmissionRequired ?
+      Math.min(
+        requestOptions.allowHttpFallback === true ?
+          configuredSendHardLimitBytes
+        : Number.POSITIVE_INFINITY,
+        getResponsesSendHardLimitForTransport(
+          preparedPayload,
+          configuredSendHardLimitBytes,
+          requestOptions,
+          initialWireSerialization,
+        ),
+      )
+    : configuredSendHardLimitBytes
   const imageBudget = await optimizeInputImagesForPayloadBudget(
     preparedPayload,
     {
@@ -162,14 +233,18 @@ export const prepareCopilotResponsesPayloadForSend = async (
       compressionEnabled: isResponsesImageCompressionEnabled(),
       enabled: isResponsesImageOptimizationEnabled(),
       maxCompressionActions: getResponsesImageCompressionMaxActionsPerRequest(),
-      initialCloneCount: basePreparation.cloneCount,
+      initialCloneCount: 1,
+      initialPayloadMutable: false,
+      initialPayloadSerialization,
+      initialSerializationCount: 1,
+      serializationObserver: requestOptions.wireSerializationObserver,
       maxPromptImageSize:
         options.maxInputImageBytesOverride
         ?? getResponsesImageMaxInputImageBytes(),
       nearBudgetRatio: getResponsesImageNearBudgetRatio(),
       preserveLatestUserImageGroup: shouldPreserveLatestUserImageGroup(),
       sendHardLimitBytes,
-      signal: options.requestOptions.signal,
+      signal: requestOptions.signal,
     },
   )
 
@@ -215,53 +290,76 @@ export const prepareCopilotResponsesPayloadForSend = async (
     )
   }
 
-  return { imageBudget, payload: imageBudget.outboundPayload }
-}
-
-const prepareResponsesPayloadCopyOnWrite = (
-  payload: ResponsesPayload,
-): { cloneCount: number; payload: ResponsesPayload } => {
-  const include = Array.isArray(payload.include) ? payload.include : []
-  const requiresMutation =
-    payload.service_tier !== undefined
-    || !include.includes(ENCRYPTED_REASONING_INCLUDE)
-    || hasToolSchemaPreparation(payload)
-  if (!requiresMutation) return { cloneCount: 0, payload }
-
-  const outboundPayload = structuredClone(payload)
-  if (outboundPayload.service_tier !== undefined) {
-    outboundPayload.service_tier = undefined
+  const transport = resolveEffectiveTransport(
+    imageBudget.outboundPayload,
+    requestOptions,
+    imageBudget,
+    options.selectedModel,
+  )
+  const wireSerialization =
+    transport === "websocket" ?
+      (
+        initialWireSerialization?.payloadSerialization
+        === imageBudget.payloadSerialization
+      ) ?
+        initialWireSerialization
+      : serializeResponsesWirePayload(
+          imageBudget.payloadSerialization,
+          requestOptions.initiator,
+          requestOptions.wireSerializationObserver,
+        )
+    : undefined
+  const wireArtifact = createResponsesWireArtifact(
+    imageBudget.payloadSerialization,
+    requestOptions.initiator,
+    transport,
+    wireSerialization,
+  )
+  const exactWireBytes =
+    transport === "websocket" ?
+      (wireArtifact.summary.websocketFrameBytes ?? Number.POSITIVE_INFINITY)
+    : wireArtifact.summary.httpBodyBytes
+  const fallbackBodyExceedsHardLimit =
+    transport === "websocket"
+    && requestOptions.allowHttpFallback === true
+    && wireArtifact.summary.httpBodyBytes > configuredSendHardLimitBytes
+  if (
+    exactWireBytes > configuredSendHardLimitBytes
+    || fallbackBodyExceedsHardLimit
+  ) {
+    throw createWirePayloadTooLargeError(
+      imageBudget,
+      Math.max(exactWireBytes, wireArtifact.summary.httpBodyBytes),
+      configuredSendHardLimitBytes,
+    )
   }
-  ensureEncryptedReasoningIncluded(outboundPayload)
-  return { cloneCount: 1, payload: outboundPayload }
-}
 
-const hasToolSchemaPreparation = (payload: ResponsesPayload): boolean =>
-  Boolean(payload.tools?.length)
-  || (Array.isArray(payload.input)
-    && payload.input.some(
-      (item) =>
-        typeof item === "object"
-        && item !== null
-        && "tools" in item
-        && Array.isArray(item.tools)
-        && item.tools.length > 0,
-    ))
+  return {
+    imageBudget,
+    payload: wireArtifact.payload,
+    transport,
+    wireArtifact,
+  }
+}
 
 export const getResponsesSendHardLimitForTransport = (
   payload: ResponsesPayload,
   configuredLimitBytes: number,
   requestOptions: Pick<CreateResponsesOptions, "initiator" | "transport">,
+  wireSerialization?: ResponsesWireSerialization,
 ): number => {
   if (requestOptions.transport !== "websocket") {
     return configuredLimitBytes
   }
 
-  const payloadBytes = calculateResponsesPayloadBytes(payload)
-  const websocketBytes = calculateResponsesPayloadBytes(
-    buildResponsesWebSocketPayload(payload, requestOptions.initiator),
-  )
-  const transportOverheadBytes = Math.max(0, websocketBytes - payloadBytes)
+  const transportOverheadBytes =
+    (
+      wireSerialization
+      ?? serializeResponsesWirePayload(
+        serializeResponsesPayload(payload),
+        requestOptions.initiator,
+      )
+    ).summary.websocketFrameDeltaBytes ?? 0
   return Math.max(1, configuredLimitBytes - transportOverheadBytes)
 }
 
@@ -294,24 +392,43 @@ const getConfiguredImageCompressionAdapter = (
 }
 
 const resolveEffectiveTransport = (
-  requestedTransport: ResponsesTransport | undefined,
+  payload: ResponsesPayload,
+  requestOptions: Pick<CreateResponsesOptions, "compactType" | "transport">,
   imageBudget: ImagePayloadBudgetResult,
   selectedModel: { supported_endpoints?: Array<string> } | undefined,
-): ResponsesTransport | undefined => {
+): ResponsesTransport => {
   if (
-    requestedTransport !== "websocket"
-    || !shouldResponsesImageRetryRequireHttp()
+    payload.stream !== true
+    || requestOptions.compactType === COMPACT_REQUEST
+    || requestOptions.transport !== "websocket"
+  ) {
+    return "http"
+  }
+
+  if (
+    !shouldResponsesImageRetryRequireHttp()
     || !canUseHttpResponses(selectedModel)
   ) {
-    return requestedTransport
+    return "websocket"
   }
 
   if (imageBudget.changed || imageBudget.nearLimit || !imageBudget.targetMet) {
     return "http"
   }
 
-  return requestedTransport
+  return "websocket"
 }
+
+const isWebSocketAdmissionRequired = (
+  payload: ResponsesPayload,
+  requestOptions: CreateResponsesOptions,
+  selectedModel: OptimizedResponsesCreateOptions["selectedModel"],
+): boolean =>
+  payload.stream === true
+  && requestOptions.compactType !== COMPACT_REQUEST
+  && requestOptions.transport === "websocket"
+  && (!shouldResponsesImageRetryRequireHttp()
+    || !canUseHttpResponses(selectedModel))
 
 const canUseHttpResponses = (
   selectedModel: { supported_endpoints?: Array<string> } | undefined,
@@ -324,6 +441,27 @@ const shouldRetryAfterPayloadTooLarge = (
   transport === "http"
   && error instanceof HTTPError
   && error.response.status === 413
+
+const createWirePayloadTooLargeError = (
+  result: ImagePayloadBudgetResult,
+  payloadBytes: number,
+  sendHardLimitBytes: number,
+): LocalPayloadTooLargeError =>
+  new LocalPayloadTooLargeError(
+    "Request exceeds the configured Copilot Responses transport limit.",
+    {
+      budgetBytes: result.budgetBytes,
+      currentVisualWorkingSetReplaced: result.currentVisualGroupsAffected > 0,
+      fileDataBytes: result.inputFileDataBytes,
+      imageBytes: result.inlineImageBytes,
+      imageCount: result.imageCount,
+      latestImageReplaced: result.latestImageReplaced,
+      payloadBytes,
+      replacedCount: result.replacedCount,
+      sendHardLimitBytes,
+      textAndToolBytes: result.textAndToolBytes,
+    },
+  )
 
 const logImageBudgetResult = (
   logger: Pick<ConsolaInstance, "debug" | "info" | "warn"> | undefined,

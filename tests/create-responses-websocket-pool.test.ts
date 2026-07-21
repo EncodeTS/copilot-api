@@ -11,6 +11,10 @@ import {
   DEFAULT_RESPONSES_WEBSOCKET_RESOURCE_LIMITS,
   type ResponsesWebSocketResourceLimits,
 } from "../src/lib/responses-websocket-limits"
+import {
+  admitResponsesWirePayload,
+  prepareResponsesWirePayload,
+} from "../src/services/copilot/responses-wire-artifact"
 
 type ListenerEvent = {
   code?: number
@@ -381,6 +385,29 @@ test("Responses websocket pool reuses the same connection for matching pool keys
   expect(MockWebSocket.instances[0]?.sent).toHaveLength(2)
 })
 
+test("Responses websocket admits the effective subagent initiator", async () => {
+  const response = await createResponses(
+    { input: "hello", model: "gpt-test", stream: true },
+    {
+      initiator: "user",
+      requestId: "subagent-effective-initiator",
+      subagentMarker: {
+        agent_id: "synthetic-agent",
+        agent_type: "review",
+        session_id: "synthetic-session",
+      },
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  await collectStreamChunks(response as AsyncIterable<unknown>)
+
+  const frame = JSON.parse(MockWebSocket.instances[0]?.sent[0] ?? "{}") as {
+    initiator?: string
+  }
+  expect(frame.initiator).toBe("agent")
+})
+
 test("pooled websocket rejects global capacity before sending", async () => {
   MockWebSocket.autoComplete = false
   const limits = createResourceLimits({
@@ -415,6 +442,89 @@ test("pooled websocket rejects global capacity before sending", async () => {
   MockWebSocket.instances[0]?.completeLatestResponse()
   await firstChunk
   await first.next()
+})
+
+test("pooled websocket classifies serialization failure before acquisition", async () => {
+  const circularPayload: Record<string, unknown> = { model: "gpt-test" }
+  circularPayload.self = circularPayload
+  const stream = responsesWebSocketModule.createPooledWebSocketStream(
+    {
+      headers: {},
+      identity: responsesWebSocketModule.createPooledWebSocketIdentity({
+        accountFingerprint: "serialization-account",
+        origin: "https://api.githubcopilot.com",
+        poolScope: ["serialization-scope"],
+        provider: "test",
+      }),
+      payload: circularPayload,
+      resourceLimits: createResourceLimits(),
+      url: "wss://api.githubcopilot.com/responses",
+    },
+    {
+      createChunk: (data) => data,
+      isTerminalChunk: () => false,
+      openErrorMessage: "test websocket open error",
+      streamErrorMessage: "test websocket stream error",
+      terminalChunkMissingMessage: "test websocket terminal missing",
+    },
+  )
+
+  const error = await captureError(async () => {
+    for await (const _chunk of stream) {
+      // consume stream
+    }
+  })
+
+  expect(error).toBeInstanceOf(
+    responsesWebSocketModule.PooledWebSocketRequestError,
+  )
+  expect(
+    (
+      error as InstanceType<
+        typeof responsesWebSocketModule.PooledWebSocketRequestError
+      >
+    ).sendState,
+  ).toBe("not-sent")
+  expect(MockWebSocket.instances).toHaveLength(0)
+})
+
+test("pooled websocket rejects competing structured and serialized wire sources", async () => {
+  const request = {
+    frame: '{"model":"admitted"}',
+    headers: {},
+    identity: responsesWebSocketModule.createPooledWebSocketIdentity({
+      accountFingerprint: "dual-source-account",
+      origin: "https://api.githubcopilot.com",
+      poolScope: ["dual-source-scope"],
+      provider: "test",
+    }),
+    payload: { model: "different" },
+    resourceLimits: createResourceLimits(),
+    url: "wss://api.githubcopilot.com/responses",
+  } as unknown as Parameters<
+    typeof responsesWebSocketModule.createPooledWebSocketStream<
+      Record<string, unknown>,
+      string
+    >
+  >[0]
+  const stream = responsesWebSocketModule.createPooledWebSocketStream(request, {
+    createChunk: (data) => data,
+    isTerminalChunk: () => false,
+    openErrorMessage: "test websocket open error",
+    streamErrorMessage: "test websocket stream error",
+    terminalChunkMissingMessage: "test websocket terminal missing",
+  })
+
+  const error = await captureError(async () => {
+    for await (const _chunk of stream) {
+      // consume stream
+    }
+  })
+  expect(error).toMatchObject({
+    message: "Responses websocket request must contain exactly one wire source",
+    sendState: "not-sent",
+  })
+  expect(MockWebSocket.instances).toHaveLength(0)
 })
 
 test("pooled websocket enforces capacity independently per account key", async () => {
@@ -746,6 +856,9 @@ test("pooled websocket reports fresh, immediate, and logical-idle reuse safely",
   expect(requests.map((request) => request.connectionAgeMs)).toEqual([
     0, 0, 12_000,
   ])
+  expect(requests.map((request) => request.requestFrameBytes)).toEqual([
+    20, 20, 20,
+  ])
   expect(requests.every((request) => request.pooled === true)).toBe(true)
 
   MockWebSocket.instances[0]?.close(1006, "private conversation text", false)
@@ -1059,9 +1172,10 @@ test("Responses websocket falls back before sending on a pooled connection that 
   expect(secondChunks[0]?.event).toBe("response.completed")
 })
 
-test("Responses websocket retries an initial internal error over HTTP", async () => {
+test("Responses websocket retries an initial internal error over the admitted HTTP body", async () => {
   MockWebSocket.autoComplete = false
-  const fetchMock = mock(() =>
+  const serializationStages: Array<string> = []
+  const fetchMock = mock((_input: unknown, _init?: RequestInit) =>
     Promise.resolve(
       new Response(
         [
@@ -1098,6 +1212,9 @@ test("Responses websocket retries an initial internal error over HTTP", async ()
       requestId: "initial-internal-error",
       transport: "websocket",
       vision: false,
+      wireSerializationObserver: {
+        onSerialization: (stage) => serializationStages.push(stage),
+      },
     },
   )
   const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
@@ -1112,8 +1229,20 @@ test("Responses websocket retries an initial internal error over HTTP", async ()
     }),
   )
   const chunks = await chunksPromise
+  const admitted = admitResponsesWirePayload(
+    prepareResponsesWirePayload({
+      input: "hello",
+      model: "gpt-test",
+      stream: true,
+    }),
+    "user",
+    "websocket",
+  )
 
   expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(MockWebSocket.instances[0]?.sent[0]).toBe(admitted.websocketFrame!)
+  expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(admitted.httpBody)
+  expect(serializationStages).toEqual(["http_body", "websocket_frame"])
   expect(chunks).toHaveLength(1)
   expect(chunks[0]?.event).toBe("response.completed")
   expect(chunks[0]?.data).toContain("resp-http-internal-error-retry")
@@ -1923,6 +2052,7 @@ test("Responses HTTP does not retry after forwarding the first event", async () 
 })
 
 test("Responses HTTP recovers incompatible reasoning history once", async () => {
+  const serializationStages: Array<string> = []
   const fetchMock = mock((_input: unknown, init?: RequestInit) => {
     if (fetchMock.mock.calls.length === 1) {
       return Promise.resolve(
@@ -1992,11 +2122,28 @@ test("Responses HTTP recovers incompatible reasoning history once", async () => 
       requestId: "http-reasoning-recovery",
       transport: "http",
       vision: false,
+      wireSerializationObserver: {
+        onSerialization: (stage) => serializationStages.push(stage),
+      },
     },
   )
   const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
 
   expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(
+    parseRequestBody(fetchMock.mock.calls[0]?.[1]).input.map(
+      (item) => item.type,
+    ),
+  ).toEqual(["reasoning", "message"])
+  expect(
+    parseRequestBody(fetchMock.mock.calls[1]?.[1]).input.map(
+      (item) => item.type,
+    ),
+  ).toEqual(["message"])
+  expect(fetchMock.mock.calls[0]?.[1]?.body).not.toBe(
+    fetchMock.mock.calls[1]?.[1]?.body,
+  )
+  expect(serializationStages).toEqual(["http_body", "recovery_http_body"])
   expect(chunks).toHaveLength(1)
   expect(chunks[0]?.event).toBe("response.completed")
   expect(chunks[0]?.data).toContain('"id":"resp-http-reasoning-recovery"')
@@ -2872,13 +3019,21 @@ test("Responses websocket capacity stays on the same account across Copilot toke
   const payload = { input: "hello", model: "gpt-test", stream: true }
   state.copilotToken = "short-lived-token-1"
   const first = copilotResponsesModule.prepareResponsesWebSocketRequest(
-    payload,
+    admitResponsesWirePayload(
+      prepareResponsesWirePayload(payload),
+      "user",
+      "websocket",
+    ),
     {},
     { requestId: "request-1" },
   )
   state.copilotToken = "short-lived-token-2"
   const second = copilotResponsesModule.prepareResponsesWebSocketRequest(
-    payload,
+    admitResponsesWirePayload(
+      prepareResponsesWirePayload(payload),
+      "user",
+      "websocket",
+    ),
     {},
     { requestId: "request-1" },
   )

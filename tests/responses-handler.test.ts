@@ -278,7 +278,7 @@ describe("responses handler token usage", () => {
     expect(createResponses.mock.calls[0][1]?.signal).toBe(controller.signal)
   })
 
-  test("uses websocket transport by default for dual-endpoint models", async () => {
+  test("uses the actual HTTP transport for a non-streaming request", async () => {
     state.models = {
       object: "list",
       data: [
@@ -311,8 +311,8 @@ describe("responses handler token usage", () => {
 
     expect(response.status).toBe(200)
     expect(createResponses).toHaveBeenCalledTimes(1)
-    expect(createResponses.mock.calls[0][1]?.transport).toBe("websocket")
-    expect(createResponses.mock.calls[0][1]?.allowHttpFallback).toBe(true)
+    expect(createResponses.mock.calls[0][1]?.transport).toBe("http")
+    expect(createResponses.mock.calls[0][1]?.allowHttpFallback).toBe(false)
     expect(createResponses.mock.calls[0][1]?.initiator).toBe("user")
     expect(createResponses.mock.calls[0][1]?.subagentMarker).toBeNull()
   })

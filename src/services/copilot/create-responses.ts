@@ -10,6 +10,7 @@ import {
   copilotWebSocketHeaders,
   prepareForCompact,
   prepareInteractionHeaders,
+  resolveInteractionInitiator,
 } from "~/lib/api-config"
 import { COMPACT_REQUEST, type CompactType } from "~/lib/compact"
 import { getResponsesWebSocketResourceLimits } from "~/lib/config"
@@ -55,12 +56,17 @@ import {
   responsesReasoningRecoveryRegistry,
   type ReasoningRecoveryScope,
 } from "~/services/copilot/responses-reasoning-recovery-registry"
+import {
+  admitResponsesWirePayload,
+  isResponsesWireArtifact,
+  prepareResponsesWirePayload,
+  prepareResponsesWirePayloadWithSummary,
+  type ResponsesWireArtifact,
+  type ResponsesWireSerializationObserver,
+} from "~/services/copilot/responses-wire-artifact"
 
-const ENCRYPTED_REASONING_INCLUDE: ResponseIncludable =
-  "reasoning.encrypted_content"
 const CONNECTION_OWNERSHIP_ERROR =
   "input item does not belong to this connection"
-const MAX_RESPONSES_TOOL_GRAPH_ENTRIES = 10_000
 
 export interface ResponsesPayload {
   model: string
@@ -701,7 +707,18 @@ interface ResponsesRequestOptions {
   timeouts?: UpstreamLifecycleTimeouts
   compactType?: CompactType
   transport?: ResponsesTransport
+  wireArtifact?: ResponsesWireArtifact
+  wireSerializationObserver?: ResponsesWireSerializationObserver
 }
+
+const resolveResponsesTransport = (
+  payload: ResponsesPayload,
+  requestedTransport: ResponsesTransport,
+  compactType?: CompactType,
+): ResponsesTransport =>
+  payload.stream !== true || compactType === COMPACT_REQUEST ?
+    "http"
+  : requestedTransport
 
 export const createResponses = async (
   payload: ResponsesPayload,
@@ -709,7 +726,7 @@ export const createResponses = async (
     vision,
     allowHttpFallback = false,
     fetcher,
-    initiator,
+    initiator: requestedInitiator,
     subagentMarker,
     requestId,
     reasoningRecoverySessionId,
@@ -718,31 +735,73 @@ export const createResponses = async (
     timeouts,
     compactType,
     transport = "http",
+    wireArtifact,
+    wireSerializationObserver,
   }: ResponsesRequestOptions,
 ): Promise<CreateResponsesReturn> => {
   if (!state.copilotToken) throw new Error("Copilot token not found")
+  const initiator = resolveInteractionInitiator({
+    compactType,
+    initiator: requestedInitiator,
+    isSubagent: Boolean(subagentMarker),
+  })
 
-  const reasoningRecoveryScope = createReasoningRecoveryScope({
+  if (wireArtifact) {
+    if (!isResponsesWireArtifact(wireArtifact)) {
+      throw new TypeError("Invalid Responses wire artifact")
+    }
+    if (wireArtifact.summary.initiator !== initiator) {
+      throw new TypeError(
+        "Responses wire artifact initiator does not match the request",
+      )
+    }
+    payload = wireArtifact.payload
+    const actualTransport = resolveResponsesTransport(
+      payload,
+      transport,
+      compactType,
+    )
+    if (wireArtifact.transport !== actualTransport) {
+      throw new TypeError(
+        "Responses wire artifact transport does not match the request",
+      )
+    }
+  }
+  const preparationReasoningRecoveryScope = createReasoningRecoveryScope({
     agentId: subagentMarker?.agent_id,
     agentType: subagentMarker?.agent_type,
     model: payload.model,
     sessionId: reasoningRecoverySessionId ?? subagentMarker?.session_id,
   })
+  if (!wireArtifact) {
+    const preparation = prepareResponsesWirePayloadWithSummary(payload, {
+      reasoningRecoveryScope: preparationReasoningRecoveryScope,
+    })
+    if (preparation.removedReasoningItems > 0) {
+      consola.debug("responses.reasoning_history_prefilter", {
+        model: payload.model,
+        reason: "known_incompatible_reasoning_history",
+        removedReasoningItems: preparation.removedReasoningItems,
+        subagent: Boolean(subagentMarker),
+      })
+    }
+    payload = preparation.payload
+    wireArtifact = admitResponsesWirePayload(
+      payload,
+      initiator,
+      resolveResponsesTransport(payload, transport, compactType),
+      { observer: wireSerializationObserver },
+    )
+    payload = wireArtifact.payload
+  }
+  const reasoningRecoveryScope = createReasoningRecoveryScope({
+    agentId: subagentMarker?.agent_id,
+    agentType: subagentMarker?.agent_type,
+    model: wireArtifact.payload.model,
+    sessionId: reasoningRecoverySessionId ?? subagentMarker?.session_id,
+  })
   const transportRetryBudget =
     payload.stream === true ? createStreamRetryBudget() : undefined
-  const knownReasoning = responsesReasoningRecoveryRegistry.filterKnown(
-    reasoningRecoveryScope,
-    payload.input,
-  )
-  if (knownReasoning.removedCount > 0) {
-    payload = { ...payload, input: knownReasoning.input }
-    consola.debug("responses.reasoning_history_prefilter", {
-      model: payload.model,
-      reason: "known_incompatible_reasoning_history",
-      removedReasoningItems: knownReasoning.removedCount,
-      subagent: Boolean(subagentMarker),
-    })
-  }
 
   const headers: Record<string, string> = {
     ...copilotHeaders(state, requestId, vision),
@@ -753,20 +812,14 @@ export const createResponses = async (
 
   prepareForCompact(headers, compactType)
 
-  // service_tier is not supported by github copilot
-  if (payload.service_tier !== undefined) {
-    payload.service_tier = undefined
-  }
-  normalizeResponsesToolSchemas(payload)
-  ensureEncryptedReasoningIncluded(payload)
-
   consola.log(`<-- model: ${payload.model}`)
 
-  const effectiveTransport =
-    compactType === COMPACT_REQUEST ? "http" : transport
+  const effectiveTransport = wireArtifact.transport
 
   if (state.verbose) {
-    const outgoing = summarizeResponsesPayload(payload)
+    const outgoing = summarizeResponsesPayload(payload, {
+      includePayloadBytes: false,
+    })
     logDiagnosticEvent(
       responsesDiagnosticsLogger,
       "debug",
@@ -783,7 +836,10 @@ export const createResponses = async (
         instructionsBytes: outgoing.instructionsBytes,
         messageItems: outgoing.inputTypeCounts.message,
         model: outgoing.model,
-        payloadBytes: outgoing.payloadBytes,
+        payloadBytes:
+          effectiveTransport === "websocket" ?
+            wireArtifact.summary.websocketFrameBytes
+          : wireArtifact.summary.httpBodyBytes,
         reasoningItems: outgoing.inputTypeCounts.reasoning,
         requestId,
         sessionId,
@@ -799,7 +855,7 @@ export const createResponses = async (
 
   if (payload.stream === true && effectiveTransport === "websocket") {
     const websocketRequest = prepareResponsesWebSocketRequest(
-      payload,
+      wireArtifact,
       headers,
       {
         reasoningRecoverySessionId,
@@ -818,11 +874,12 @@ export const createResponses = async (
         allowHttpFallback,
         fetcher,
         headers,
-        payload,
         reasoningRecoveryScope,
         retryBudget: transportRetryBudget,
         signal,
         timeouts,
+        wireArtifact,
+        wireSerializationObserver,
       },
     )
     return createResponsesSafeStream(transportStream, signal)
@@ -832,11 +889,12 @@ export const createResponses = async (
     const httpOptions = {
       fetcher,
       headers,
-      payload,
       reasoningRecoveryScope,
       retryBudget: transportRetryBudget,
       signal,
       timeouts,
+      wireArtifact,
+      wireSerializationObserver,
     }
     let primaryStream: AsyncIterable<ResponsesStreamChunk>
     try {
@@ -856,87 +914,23 @@ export const createResponses = async (
     )
   }
 
-  return await createHttpResponses(payload, headers, {
+  return await createHttpResponses(headers, {
     fetcher,
     reasoningRecoveryScope,
     signal,
     timeouts,
+    wireArtifact,
+    wireSerializationObserver,
   })
-}
-
-const normalizeResponsesToolSchemas = (payload: ResponsesPayload): void => {
-  const toolGroups: Array<Array<Tool>> = []
-  if (payload.tools) {
-    toolGroups.push(payload.tools)
-  }
-
-  if (Array.isArray(payload.input)) {
-    for (const item of payload.input) {
-      if (isRecord(item) && isToolArray(item.tools)) {
-        toolGroups.push(item.tools)
-      }
-    }
-  }
-
-  normalizeToolSchemas(toolGroups)
-}
-
-const normalizeToolSchemas = (toolGroups: Array<Array<Tool>>): void => {
-  const pending: Array<Tool> = []
-  let enqueued = 0
-  const enqueue = (tools: Array<Tool>): void => {
-    for (const tool of tools) {
-      enqueued += 1
-      if (enqueued > MAX_RESPONSES_TOOL_GRAPH_ENTRIES) {
-        throw new RangeError("Responses tool graph exceeds 10000 entries")
-      }
-      pending.push(tool)
-    }
-  }
-  for (const tools of toolGroups) {
-    enqueue(tools)
-  }
-
-  while (pending.length > 0) {
-    const tool = pending.pop()
-    if (!isRecord(tool)) {
-      continue
-    }
-    const parameters = tool.parameters
-    if (
-      tool.type === "function"
-      && isRecord(parameters)
-      && typeof parameters.type === "string"
-      && parameters.type.trim().toLowerCase() === "none"
-    ) {
-      tool.parameters = {
-        properties: {},
-        type: "object",
-      }
-    }
-
-    if (tool.type === "namespace" && isToolArray(tool.tools)) {
-      enqueue(tool.tools)
-    }
-  }
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
 
-const isToolArray = (value: unknown): value is Array<Tool> =>
-  Array.isArray(value) && value.every((tool: unknown) => isRecord(tool))
-
-export const ensureEncryptedReasoningIncluded = (
-  payload: ResponsesPayload,
-): void => {
-  const include = Array.isArray(payload.include) ? payload.include : []
-  if (include.includes(ENCRYPTED_REASONING_INCLUDE)) {
-    return
-  }
-
-  payload.include = [...include, ENCRYPTED_REASONING_INCLUDE]
-}
+export {
+  buildResponsesWebSocketPayload,
+  ensureEncryptedReasoningIncluded,
+} from "~/services/copilot/responses-wire-artifact"
 
 interface HttpResponsesOptions {
   fetcher?: UpstreamFetch
@@ -945,11 +939,12 @@ interface HttpResponsesOptions {
   retryBudget?: StreamRetryBudget
   signal?: AbortSignal
   timeouts?: UpstreamLifecycleTimeouts
+  wireArtifact: ResponsesWireArtifact
+  wireSerializationObserver?: ResponsesWireSerializationObserver
 }
 
 interface HttpResponsesStreamOptions extends HttpResponsesOptions {
   headers: Record<string, string>
-  payload: ResponsesPayload
 }
 
 interface WebSocketResponsesStreamOptions extends HttpResponsesStreamOptions {
@@ -973,10 +968,10 @@ interface ResponsesReasoningRecoveryPlan {
 }
 
 const createHttpResponses = async (
-  payload: ResponsesPayload,
   headers: Record<string, string>,
-  options: HttpResponsesOptions = {},
+  options: HttpResponsesOptions,
 ): Promise<CreateResponsesReturn> => {
+  const payload = options.wireArtifact.payload
   let response: Response
   try {
     response = await fetchWithUpstreamLifecycle(
@@ -984,7 +979,7 @@ const createHttpResponses = async (
       {
         method: "POST",
         headers,
-        body: JSON.stringify(payload),
+        body: options.wireArtifact.httpBody,
       },
       {
         fetcher: options.fetcher,
@@ -1059,6 +1054,7 @@ const createHttpResponses = async (
           message: "unparsed upstream error",
         },
         payload,
+        payloadBytes: options.wireArtifact.summary.httpBodyBytes,
         requestHeaders: headers,
         responseHeaders: response.headers,
         status: response.status,
@@ -1080,16 +1076,10 @@ const createHttpResponses = async (
   return (await response.json()) as ResponsesResult
 }
 
-type ResponsesWebSocketPayload = ResponsesPayload & {
-  type: "response.create"
-  initiator: "agent" | "user"
-}
-
-type ResponsesWebSocketRequest =
-  PooledWebSocketRequest<ResponsesWebSocketPayload>
+type ResponsesWebSocketRequest = PooledWebSocketRequest<never>
 
 export const prepareResponsesWebSocketRequest = (
-  payload: ResponsesPayload,
+  wireArtifact: ResponsesWireArtifact,
   preparedHeaders: Record<string, string>,
   options: {
     reasoningRecoverySessionId?: string
@@ -1102,6 +1092,20 @@ export const prepareResponsesWebSocketRequest = (
 ): ResponsesWebSocketRequest => {
   const initiator = getResponsesWebSocketInitiator(preparedHeaders)
   const websocketHeaders = copilotWebSocketHeaders(preparedHeaders)
+  if (
+    wireArtifact.transport !== "websocket"
+    || wireArtifact.websocketFrame === undefined
+  ) {
+    throw new TypeError(
+      "Responses websocket request requires a websocket wire artifact",
+    )
+  }
+  if (wireArtifact.summary.initiator !== initiator) {
+    throw new TypeError(
+      "Responses websocket headers do not match the admitted initiator",
+    )
+  }
+  const payload = wireArtifact.payload
 
   return {
     headers: websocketHeaders,
@@ -1111,7 +1115,7 @@ export const prepareResponsesWebSocketRequest = (
     }),
     signal: options.signal,
     timeouts: options.timeouts,
-    payload: buildResponsesWebSocketPayload(payload, initiator),
+    frame: wireArtifact.websocketFrame,
     resourceLimits: getResponsesWebSocketResourceLimits(),
     url: buildResponsesWebSocketUrl(copilotBaseUrl(state)),
   }
@@ -1250,7 +1254,7 @@ const createRetryableResponsesWebSocketStream = async function* (
         canRetryHttp: options.allowHttpFallback,
         failure,
         forwardedChunk,
-        payload: options.payload,
+        payload: options.wireArtifact.payload,
         signalAborted: options.signal?.aborted ?? false,
         sourceTransport: "websocket",
       })
@@ -1264,6 +1268,8 @@ const createRetryableResponsesWebSocketStream = async function* (
               retryBudget: options.retryBudget,
               signal: options.signal,
               timeouts: options.timeouts,
+              wireArtifact: options.wireArtifact,
+              wireSerializationObserver: options.wireSerializationObserver,
             },
           )
         : null
@@ -1296,7 +1302,8 @@ const createRetryableResponsesWebSocketStream = async function* (
           "responses.upstream_error",
           createResponsesUpstreamErrorDiagnostic({
             failure,
-            payload: options.payload,
+            payload: options.wireArtifact.payload,
+            payloadBytes: options.wireArtifact.summary.websocketFrameBytes,
             requestHeaders: options.headers,
             status: failure.status,
             transport: "websocket",
@@ -1315,7 +1322,7 @@ const createRetryableResponsesWebSocketStream = async function* (
         "responses.transport_error",
         createResponsesTransportErrorDiagnostic({
           error,
-          payload: options.payload,
+          payload: options.wireArtifact.payload,
           requestHeaders: options.headers,
           transport: "websocket",
         }),
@@ -1331,12 +1338,14 @@ const createRetryableResponsesWebSocketStream = async function* (
 const createHttpResponsesStream = async (
   options: HttpResponsesStreamOptions,
 ): Promise<AsyncIterable<ResponsesStreamChunk>> => {
-  const response = await createHttpResponses(options.payload, options.headers, {
+  const response = await createHttpResponses(options.headers, {
     reasoningRecoveryAttempted: options.reasoningRecoveryAttempted,
     reasoningRecoveryScope: options.reasoningRecoveryScope,
     retryBudget: options.retryBudget,
     signal: options.signal,
     timeouts: options.timeouts,
+    wireArtifact: options.wireArtifact,
+    wireSerializationObserver: options.wireSerializationObserver,
   })
   if (!isResponsesStream(response)) {
     throw new Error("Streaming HTTP attempt returned a non-streaming response")
@@ -1471,20 +1480,30 @@ const executeResponsesReasoningHistoryRecovery = async (
     retryTransport: "http",
     sourceTransport: plan.sourceTransport,
   })
+  const recoveryPayload = prepareResponsesWirePayload(plan.payload)
+  const recoveryWireArtifact = admitResponsesWirePayload(
+    recoveryPayload,
+    getResponsesWebSocketInitiator(headers),
+    "http",
+    {
+      observer: options.wireSerializationObserver,
+      payloadStage: "recovery_http_body",
+    },
+  )
   const recoveryOptions: HttpResponsesStreamOptions = {
     ...options,
     headers,
-    payload: plan.payload,
     reasoningRecoveryAttempted: true,
+    wireArtifact: recoveryWireArtifact,
   }
-  if (plan.payload.stream === true) {
+  if (recoveryWireArtifact.payload.stream === true) {
     if (plan.sourceTransport === "http") {
       const primaryStream = await createHttpResponsesStream(recoveryOptions)
       return createSupervisedHttpResponsesStream(recoveryOptions, primaryStream)
     }
     return createSupervisedHttpResponsesStream(recoveryOptions)
   }
-  return await createHttpResponses(plan.payload, headers, recoveryOptions)
+  return await createHttpResponses(headers, recoveryOptions)
 }
 
 const createFailedResponsesStream = (
@@ -1533,23 +1552,6 @@ const createResponsesSafeStream = async function* (
 const isResponsesStream = (value: unknown): value is ResponsesStream =>
   Boolean(value)
   && typeof (value as ResponsesStream)[Symbol.asyncIterator] === "function"
-
-export const buildResponsesWebSocketPayload = (
-  payload: ResponsesPayload,
-  initiator: "agent" | "user",
-): ResponsesWebSocketPayload => {
-  const websocketPayload: ResponsesWebSocketPayload = {
-    ...payload,
-    type: "response.create",
-    initiator,
-  }
-
-  delete websocketPayload.stream
-  delete websocketPayload["background"]
-  delete websocketPayload.service_tier
-
-  return websocketPayload
-}
 
 export const buildResponsesWebSocketUrl = (baseUrl: string): string => {
   return createWebSocketUrl(`${baseUrl.replace(/\/+$/u, "")}/responses`)

@@ -22,6 +22,10 @@ import {
   ensureEncryptedReasoningIncluded,
   prepareResponsesWebSocketRequest,
 } from "../src/services/copilot/create-responses"
+import {
+  admitResponsesWirePayload,
+  prepareResponsesWirePayload,
+} from "../src/services/copilot/responses-wire-artifact"
 
 const originalFetch = globalThis.fetch
 const originalOauthApp = process.env.COPILOT_API_OAUTH_APP
@@ -216,6 +220,94 @@ describe("createResponses", () => {
     expect(body.initiator).toBeUndefined()
     expect(body.type).toBeUndefined()
     expect(body.include).toEqual(["reasoning.encrypted_content"])
+  })
+
+  test("sends the admitted HTTP body even when the payload argument diverges", async () => {
+    const admitted = admitResponsesWirePayload(
+      prepareResponsesWirePayload({
+        input: "admitted input",
+        model: "gpt-test",
+      }),
+      "user",
+      "http",
+    )
+    const divergentPayload: ResponsesPayload = {
+      ...admitted.payload,
+      instructions: "late mutation",
+    }
+
+    await createResponses(divergentPayload, {
+      initiator: "user",
+      requestId: "request-admitted-http",
+      vision: false,
+      wireArtifact: admitted,
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    expect(init?.body).toBe(admitted.httpBody)
+    expect(init?.body).not.toContain("late mutation")
+  })
+
+  test("rejects a structurally forged wire artifact", async () => {
+    const admitted = admitResponsesWirePayload(
+      prepareResponsesWirePayload({ input: "real", model: "gpt-test" }),
+      "user",
+      "http",
+    )
+    const forged = {
+      ...admitted,
+      httpBody: '{"input":"forged","model":"gpt-test"}',
+      payload: { input: "forged", model: "gpt-test" },
+    } as typeof admitted
+
+    const error = await createResponses(forged.payload, {
+      initiator: "user",
+      requestId: "request-forged-artifact",
+      vision: false,
+      wireArtifact: forged,
+    }).then(
+      () => null,
+      (reason: unknown) => reason,
+    )
+    expect(error).toBeInstanceOf(TypeError)
+    expect(error).toMatchObject({
+      message: "Invalid Responses wire artifact",
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("rejects an artifact whose private symbol brand was reflected", async () => {
+    const admitted = admitResponsesWirePayload(
+      prepareResponsesWirePayload({ input: "real", model: "gpt-test" }),
+      "user",
+      "http",
+    )
+    const forged = {
+      httpBody: '{"input":"forged","model":"gpt-test"}',
+      payload: { input: "forged", model: "gpt-test" },
+      serializedPayload: '{"input":"forged","model":"gpt-test"}',
+      summary: admitted.summary,
+      transport: "http" as const,
+    } as typeof admitted
+    for (const symbol of Object.getOwnPropertySymbols(admitted)) {
+      Object.defineProperty(forged, symbol, {
+        value: Reflect.get(admitted, symbol),
+      })
+    }
+
+    const error = await createResponses(forged.payload, {
+      initiator: "user",
+      requestId: "request-reflected-artifact",
+      vision: false,
+      wireArtifact: forged,
+    }).then(
+      () => null,
+      (reason: unknown) => reason,
+    )
+    expect(error).toMatchObject({
+      message: "Invalid Responses wire artifact",
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   test("normalizes a None function schema before forwarding Responses", async () => {
@@ -571,6 +663,35 @@ describe("createResponses", () => {
     expect("service_tier" in websocketPayload).toBe(false)
   })
 
+  test("prepares the exact admitted websocket frame for transport", () => {
+    const admitted = admitResponsesWirePayload(
+      prepareResponsesWirePayload({
+        input: "admitted websocket input",
+        model: "gpt-test",
+        stream: true,
+      }),
+      "agent",
+      "websocket",
+    )
+    const preparedHeaders = {
+      ...copilotHeaders(state, "request-admitted-websocket", false),
+      "x-initiator": "agent",
+    }
+    const request = prepareResponsesWebSocketRequest(
+      admitted,
+      preparedHeaders,
+      {
+        requestId: "request-admitted-websocket",
+      },
+    )
+
+    expect("payload" in request).toBe(false)
+    expect(request.frame).toBe(admitted.websocketFrame)
+    expect(Buffer.byteLength(request.frame ?? "", "utf8")).toBe(
+      admitted.summary.websocketFrameBytes!,
+    )
+  })
+
   test("builds websocket URLs from the Copilot base URL", () => {
     expect(buildResponsesWebSocketUrl("https://api.githubcopilot.com")).toBe(
       "wss://api.githubcopilot.com/responses",
@@ -630,12 +751,17 @@ describe("createResponses", () => {
     prepareInteractionHeaders("interaction-1", true, preparedHeaders)
     prepareForCompact(preparedHeaders, COMPACT_REQUEST)
 
-    const request = prepareResponsesWebSocketRequest(
-      {
+    const admitted = admitResponsesWirePayload(
+      prepareResponsesWirePayload({
         input: "hello",
         model: "gpt-test",
         stream: true,
-      },
+      }),
+      "agent",
+      "websocket",
+    )
+    const request = prepareResponsesWebSocketRequest(
+      admitted,
       preparedHeaders,
       {
         requestId: "request-1",
@@ -647,7 +773,7 @@ describe("createResponses", () => {
       },
     )
 
-    expect(request.payload).toMatchObject({
+    expect(JSON.parse(request.frame ?? "{}")).toMatchObject({
       initiator: "agent",
       input: "hello",
       model: "gpt-test",
@@ -671,19 +797,25 @@ describe("createResponses", () => {
     prepareInteractionHeaders("interaction-1", true, preparedHeaders)
     prepareForCompact(preparedHeaders, COMPACT_REQUEST)
 
-    const request = prepareResponsesWebSocketRequest(
-      {
+    const admitted = admitResponsesWirePayload(
+      prepareResponsesWirePayload({
         input: "hello",
         model: "gpt-test",
         stream: true,
-      },
+      }),
+      "agent",
+      "websocket",
+    )
+    const request = prepareResponsesWebSocketRequest(
+      admitted,
       preparedHeaders,
       {
         requestId: "request-1",
       },
     )
 
-    expect(request.payload.initiator).toBe("agent")
+    const frame = JSON.parse(request.frame ?? "{}") as { initiator?: string }
+    expect(frame.initiator).toBe("agent")
     expect(request.headers).toMatchObject({
       Authorization: "Bearer test-token",
       "Openai-Intent": "conversation-edits",
