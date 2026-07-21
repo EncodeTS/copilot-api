@@ -1,9 +1,12 @@
-import type { DesktopSettings, SettingsSaveResult } from '../src/types/ipc'
+import type {
+  DesktopSettings,
+  ServerStatus,
+  SettingsSaveResult,
+} from '../src/types/ipc'
 import { hasProxyPolicyChanged } from './proxy-runtime-transition'
 
 export interface SettingsApplyDependencies {
-  getPort: () => number
-  isRunning: () => boolean
+  getStatus: () => ServerStatus
   onSettingsChange?: (
     settings: DesktopSettings,
     previous: DesktopSettings,
@@ -21,31 +24,23 @@ export const saveAndApplyDesktopSettings = async (
 
   try {
     const result = await dependencies.onSettingsChange?.(settings, previous)
-    const running = dependencies.isRunning()
     return (
       result ?? {
         action: 'unchanged',
         proxyChanged: false,
-        serverStatus: {
-          port: running ? dependencies.getPort() : undefined,
-          running,
-        },
+        serverStatus: dependencies.getStatus(),
         success: true,
       }
     )
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Failed to apply settings'
-    const running = dependencies.isRunning()
+    const status = dependencies.getStatus()
     return {
       action: 'failed',
       error: message,
       proxyChanged: hasProxyPolicyChanged(previous.proxy, settings.proxy),
-      serverStatus: {
-        error: message,
-        port: running ? dependencies.getPort() : undefined,
-        running,
-      },
+      serverStatus: { ...status, error: message },
       success: false,
     }
   }

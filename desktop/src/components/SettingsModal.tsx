@@ -216,7 +216,6 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
     minimizeToTray: false,
     accountType: 'individual',
     verbose: false,
-    showToken: false,
     language: 'auto',
     theme: 'auto',
     proxy: {
@@ -612,17 +611,6 @@ export default function SettingsModal({ onClose }: SettingsModalProps) {
                   <Toggle
                     checked={settings.verbose}
                     onChange={(v) => setSettings((s) => ({ ...s, verbose: v }))}
-                  />
-                </SettingRow>
-                <SettingRow
-                  label={t('settings.showToken')}
-                  description={t('settings.showTokenDesc')}
-                >
-                  <Toggle
-                    checked={settings.showToken}
-                    onChange={(v) =>
-                      setSettings((s) => ({ ...s, showToken: v }))
-                    }
                   />
                 </SettingRow>
               </div>

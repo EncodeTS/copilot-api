@@ -134,6 +134,7 @@ const zh: Locale = {
     portInUse: '端口 {{port}} 已被占用，请更换其他端口',
     startFailed: '服务进程启动失败（退出码 {{code}}），可参考下方服务日志排查',
     startTimeout: '服务启动超时，端口 {{port}} 可能已被占用',
+    stopTimeout: '服务进程在正常终止请求后仍未退出',
     processExit: '进程退出，代码 {{code}}',
   },
   settings: {
@@ -169,8 +170,6 @@ const zh: Locale = {
     verbose: '详细日志',
     verboseDesc:
       '写入结构化诊断信息；默认不记录提示词、消息文本、工具数据和推理内容',
-    showToken: '显示 Token',
-    showTokenDesc: '在日志中打印 GitHub/Copilot Token 值',
     sectionLanguage: '语言',
     langAuto: '跟随系统',
     langEn: 'English',

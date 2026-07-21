@@ -24,6 +24,13 @@ import { initOpencodeVersion } from "./lib/opencode"
 import { ensurePaths, PATHS } from "./lib/paths"
 import { initProxyFromEnv, isProxyRequired } from "./lib/proxy"
 import { generateEnvScript } from "./lib/shell"
+import {
+  assertProviderSetupAllowed,
+  launchStartupAuthentication,
+  parseDesktopStartupAuthMode,
+  resolveStartupAuthentication,
+  type DesktopStartupAuthMode,
+} from "./lib/start-auth-mode"
 import { state } from "./lib/state"
 import { logUser, setupCopilotToken } from "./lib/token"
 import {
@@ -39,10 +46,11 @@ export interface RunServerOptions {
   verbose: boolean
   githubToken?: string
   claudeCode: boolean
-  lan: boolean
+  lan?: boolean
   showToken: boolean
   proxyEnv: boolean
   proxyRequired?: boolean
+  desktopAuthMode?: DesktopStartupAuthMode
 }
 
 export const startDependencies = {
@@ -148,16 +156,20 @@ async function runClaudeCode(serverUrl: string): Promise<void> {
   }
 }
 
-async function setupProviderMode(
+export async function setupProviderMode(
   serverUrl: string,
   claudeCode: boolean,
+  allowInteractiveSetup: boolean,
+  getEnabledProviders: () => string[] = listEnabledProviders,
 ): Promise<void> {
-  const enabledProviders = listEnabledProviders()
+  const enabledProviders = getEnabledProviders()
 
   if (enabledProviders.length > 0) {
     consola.info(`Using enabled providers: ${enabledProviders.join(", ")}`)
     return
   }
+
+  assertProviderSetupAllowed(allowInteractiveSetup, enabledProviders.length)
 
   consola.info("No enabled providers found. Setting one up...")
   await runProviderSetup()
@@ -176,6 +188,51 @@ async function setupProviderMode(
   consola.info(`Configured providers: ${providersAfterSetup.join(", ")}`)
 }
 
+export interface StartupAuthenticationDependencies {
+  readStoredGitHubToken: () => Promise<string | null>
+  startCopilot: typeof setupCopilotMode
+  startProvider: typeof setupProviderMode
+}
+
+const defaultStartupAuthenticationDependencies: StartupAuthenticationDependencies =
+  {
+    readStoredGitHubToken: readGitHubToken,
+    startCopilot: setupCopilotMode,
+    startProvider: setupProviderMode,
+  }
+
+export async function startSelectedAuthentication(
+  options: Pick<
+    RunServerOptions,
+    "claudeCode" | "desktopAuthMode" | "githubToken"
+  >,
+  serverUrl: string,
+  enabledProviderCount: number,
+  dependencies: StartupAuthenticationDependencies = defaultStartupAuthenticationDependencies,
+): Promise<void> {
+  const authentication = await resolveStartupAuthentication({
+    desktopAuthMode: options.desktopAuthMode,
+    enabledProviderCount,
+    explicitGitHubToken: options.githubToken,
+    readStoredGitHubToken: dependencies.readStoredGitHubToken,
+  })
+  await launchStartupAuthentication(authentication, {
+    startCopilot: (githubToken) =>
+      dependencies.startCopilot(
+        githubToken,
+        Boolean(options.githubToken),
+        serverUrl,
+        options.claudeCode,
+      ),
+    startProvider: (allowInteractiveSetup) =>
+      dependencies.startProvider(
+        serverUrl,
+        options.claudeCode,
+        allowInteractiveSetup,
+      ),
+  })
+}
+
 export async function runServer(options: RunServerOptions): Promise<void> {
   const tlsModule = await import("./lib/tls")
   tlsModule.enableSystemCACompat()
@@ -187,7 +244,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   const networkOptions = resolveServerNetworkOptions({
     apiKeys: getConfiguredApiKeys(),
-    lan: options.lan,
+    lan: options.lan === true,
   })
 
   await initOpencodeVersion()
@@ -212,17 +269,11 @@ export async function runServer(options: RunServerOptions): Promise<void> {
 
   const serverUrl = `http://${networkOptions.displayHost}:${options.port}`
 
-  const githubToken = options.githubToken || (await readGitHubToken())
-  if (githubToken) {
-    await setupCopilotMode(
-      githubToken,
-      Boolean(options.githubToken),
-      serverUrl,
-      options.claudeCode,
-    )
-  } else {
-    await setupProviderMode(serverUrl, options.claudeCode)
-  }
+  await startSelectedAuthentication(
+    options,
+    serverUrl,
+    listEnabledProviders().length,
+  )
 
   consola.box(`🌐 Usage Viewer: ${serverUrl}/usage-viewer`)
 
@@ -291,17 +342,42 @@ export const start = defineCommand({
       description:
         "Require proxy routing except for explicit NO_PROXY destinations",
     },
+    "desktop-auth-mode": {
+      type: "string",
+      description: "Require Copilot or provider-only Desktop startup",
+    },
   },
   run({ args }) {
-    return runServer({
-      port: Number.parseInt(args.port, 10),
-      verbose: args.verbose,
-      githubToken: args["github-token"],
-      claudeCode: args["claude-code"],
-      lan: args.lan,
-      showToken: args["show-token"],
-      proxyEnv: args["proxy-env"],
-      proxyRequired: args["proxy-required"],
-    })
+    return runServer(createRunServerOptions(args))
   },
 })
+
+interface StartCommandArgs {
+  "claude-code": boolean
+  "desktop-auth-mode"?: string
+  "github-token"?: string
+  "proxy-env": boolean
+  "proxy-required"?: boolean
+  "show-token": boolean
+  lan?: boolean
+  port: string
+  verbose: boolean
+}
+
+export function createRunServerOptions(
+  args: StartCommandArgs,
+): RunServerOptions {
+  return {
+    port: Number.parseInt(args.port, 10),
+    verbose: args.verbose,
+    githubToken: args["github-token"],
+    claudeCode: args["claude-code"],
+    showToken: args["show-token"],
+    proxyEnv: args["proxy-env"],
+    desktopAuthMode: parseDesktopStartupAuthMode(args["desktop-auth-mode"]),
+    ...(args.lan === undefined ? {} : { lan: args.lan }),
+    ...(args["proxy-required"] === undefined ?
+      {}
+    : { proxyRequired: args["proxy-required"] }),
+  }
+}

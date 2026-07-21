@@ -1,4 +1,11 @@
-import { useState, useEffect, useRef, type ReactNode } from 'react'
+import {
+  useCallback,
+  useState,
+  useEffect,
+  useRef,
+  type ReactNode,
+  type RefObject,
+} from 'react'
 
 import Header from '../components/Header'
 import {
@@ -16,11 +23,15 @@ import {
   shouldShowCopilotUsageSummary,
 } from '../lib/copilot-usage-display'
 import { createDashboardRefreshOrchestrator } from '../lib/dashboard-refresh-controller'
+import { useDashboardLogFeed } from '../lib/dashboard-log-feed'
+import { createEffectLifecycleGuard } from '../lib/effect-lifecycle-guard'
 import { formatTokenCost, formatTokenCosts } from '../lib/token-usage-format'
 import ModelMappingsPage from './ModelMappingsPage'
 import type {
   DesktopAuthMode,
+  LogFeedEntry,
   ServerAuthInfo,
+  ServerStatus,
   TokenUsageDailySummary,
   TokenUsageEventRecord,
   TokenUsageEventsPage,
@@ -95,6 +106,30 @@ const EMPTY_TOKEN_USAGE_TOTALS: TokenUsageTotals = {
   request_count: 0,
   total_nano_aiu: null,
   total_tokens: 0,
+}
+
+export function DashboardLogRows({
+  emptyText,
+  entries,
+  endRef,
+}: {
+  emptyText: string
+  entries: LogFeedEntry[]
+  endRef: RefObject<HTMLDivElement>
+}) {
+  return (
+    <>
+      {entries.length === 0 ?
+        <span className="text-ink-soft">{emptyText}</span>
+      : entries.map((entry) => (
+          <div key={entry.cursor} className="whitespace-pre-wrap break-all">
+            {entry.message.trimEnd()}
+          </div>
+        ))
+      }
+      <div ref={endRef} />
+    </>
+  )
 }
 
 const IconLaunch = () => (
@@ -275,6 +310,7 @@ export default function DashboardPage({
 }: DashboardPageProps) {
   const { t } = useLanguage()
   const [started, setStarted] = useState(false)
+  const [owned, setOwned] = useState(false)
   const [port, setPort] = useState<string>(String(defaultPort))
   const [starting, setStarting] = useState(false)
   const [startError, setStartError] = useState('')
@@ -304,11 +340,52 @@ export default function DashboardPage({
   const [serverError, setServerError] = useState('')
   const [copied, setCopied] = useState<string>('')
 
-  const [logs, setLogs] = useState<string[]>([])
+  const { clear: clearLogs, entries: logs } = useDashboardLogFeed(
+    window.electronAPI,
+  )
   const logEndRef = useRef<HTMLDivElement>(null)
   const intentionalStop = useRef(false)
+  const ownedNotReady = useRef(false)
+  const serverOperationEpoch = useRef(0)
+  const serverStatusInitialized = useRef(false)
+  const [serverStatusLifecycle] = useState(createEffectLifecycleGuard)
+  const serverStatusSnapshot = useRef<ServerStatus>({
+    owned: false,
+    port: defaultPort,
+    running: false,
+    statusRevision: -1,
+  })
   const dashboardRefreshOrchestrator = useRef(
     createDashboardRefreshOrchestrator(),
+  )
+
+  const isServerStatusLifecycleCurrent = useCallback(
+    (expectedLifecycle: number) =>
+      serverStatusLifecycle.isCurrent(expectedLifecycle),
+    [serverStatusLifecycle],
+  )
+
+  const applyServerStatus = useCallback(
+    (status: ServerStatus, expectedLifecycle: number) => {
+      if (!isServerStatusLifecycleCurrent(expectedLifecycle)) return null
+
+      const currentStatus = serverStatusSnapshot.current
+      if (status.statusRevision < currentStatus.statusRevision) return null
+      if (status.statusRevision === currentStatus.statusRevision) {
+        return { kind: 'duplicate' as const }
+      }
+      const isInitialStatus = !serverStatusInitialized.current
+      serverStatusInitialized.current = true
+      const wasOwnedNotReady = ownedNotReady.current
+      ownedNotReady.current = status.owned && !status.running
+      serverStatusSnapshot.current = {
+        ...status,
+      }
+      setStarted(status.running)
+      setOwned(status.owned)
+      return { isInitialStatus, kind: 'applied' as const, wasOwnedNotReady }
+    },
+    [isServerStatusLifecycleCurrent],
   )
 
   const portNum = parseInt(port, 10)
@@ -316,54 +393,69 @@ export default function DashboardPage({
 
   useEffect(() => {
     let active = true
+    const lifecycle = serverStatusLifecycle.begin()
+    const unsubscribe = window.electronAPI.onServerStatus((status) => {
+      const applied = applyServerStatus(status, lifecycle)
+      if (!applied || applied.kind === 'duplicate') return
+      setPort(String(status.port))
+      const { isInitialStatus: isInitialLive, wasOwnedNotReady } = applied
+      if (!status.running) {
+        dashboardRefreshOrchestrator.current.invalidateAll()
+        if (isInitialLive) {
+          if (status.error) {
+            if (status.owned) {
+              setStartError(status.error)
+              setServerError('')
+            } else {
+              setStartError('')
+              setServerError(status.error)
+            }
+          } else {
+            setStartError('')
+            setServerError('')
+          }
+        } else if (wasOwnedNotReady && !status.owned) {
+          setStartError('')
+          setServerError('')
+        } else if (status.owned && status.error) {
+          setStartError(status.error)
+        } else if (!intentionalStop.current) {
+          setServerError(status.error ?? t('dashboard.serverUnexpectedStop'))
+        } else {
+          setServerError('')
+        }
+        intentionalStop.current = false
+      } else {
+        setStartError('')
+        setServerError(status.error ?? '')
+      }
+    })
 
     window.electronAPI
       .getServerStatus()
       .then((status) => {
-        if (!active) return
-        if (status.port) setPort(String(status.port))
-        setStarted(status.running)
+        if (!active || !serverStatusLifecycle.isCurrent(lifecycle)) {
+          return
+        }
+        const applied = applyServerStatus(status, lifecycle)
+        if (!applied || applied.kind === 'duplicate') return
+        setPort(String(status.port))
+        if (status.error) {
+          if (status.running) setServerError(status.error)
+          else setStartError(status.error)
+        } else if (!status.running) {
+          setStartError('')
+          setServerError('')
+        }
       })
       .catch(() => {})
 
     return () => {
       active = false
+      serverStatusLifecycle.end(lifecycle)
+      unsubscribe()
     }
-  }, [])
-
-  // Watch server status changes and only surface unexpected stops.
-  useEffect(() => {
-    const unsubscribe = window.electronAPI.onServerStatus((status) => {
-      if (!status.running) {
-        dashboardRefreshOrchestrator.current.invalidateAll()
-        if (!intentionalStop.current) {
-          setServerError(status.error ?? t('dashboard.serverUnexpectedStop'))
-          setStarted(false)
-          void window.electronAPI
-            .getLogs()
-            .then(setLogs)
-            .catch(() => {})
-        }
-        intentionalStop.current = false
-      }
-    })
-    return unsubscribe
-  }, [])
-
-  useEffect(() => {
-    void window.electronAPI
-      .getLogs()
-      .then(setLogs)
-      .catch(() => {})
-  }, [])
-
-  // Subscribe to live logs.
-  useEffect(() => {
-    const unsubscribe = window.electronAPI.onServerLog((log) => {
-      setLogs((prev) => [...prev, log])
-    })
-    return unsubscribe
-  }, [])
+  }, [applyServerStatus])
 
   // Auto-scroll the log view.
   useEffect(() => {
@@ -394,44 +486,8 @@ export default function DashboardPage({
       })
   }, [started])
 
-  const handleStart = async () => {
-    if (Number.isNaN(portNum) || portNum < 1 || portNum > 65535) {
-      setStartError(t('dashboard.invalidPort'))
-      return
-    }
-    setStarting(true)
-    setStartError('')
-    setServerError('')
-    setLogs([])
-    try {
-      const status = await window.electronAPI.startServer(portNum, authMode)
-      if (status.running) {
-        setStarted(true)
-      } else {
-        setStartError(status.error ?? t('dashboard.serverUnexpectedStop'))
-        void window.electronAPI
-          .getLogs()
-          .then(setLogs)
-          .catch(() => {})
-      }
-    } catch (err) {
-      setStartError((err as Error).message)
-      void window.electronAPI
-        .getLogs()
-        .then(setLogs)
-        .catch(() => {})
-    } finally {
-      setStarting(false)
-    }
-  }
-
-  const handleStop = async () => {
-    dashboardRefreshOrchestrator.current.invalidateAll()
-    intentionalStop.current = true
-    setStopping(true)
-    await window.electronAPI.stopServer()
-    setStopping(false)
-    setStarted(false)
+  const finalizeStoppedDashboard = (error = '') => {
+    intentionalStop.current = false
     setUsage(null)
     setTokenUsage(null)
     setTokenUsageDaily(null)
@@ -441,7 +497,119 @@ export default function DashboardPage({
     setTokenUsageEventsLoading(false)
     setModels([])
     setLastDashboardRefreshAt(null)
+    setStartError('')
+    setServerError(error)
+  }
+
+  const handleStart = async () => {
+    if (Number.isNaN(portNum) || portNum < 1 || portNum > 65535) {
+      setStartError(t('dashboard.invalidPort'))
+      return
+    }
+    setStarting(true)
+    setStartError('')
     setServerError('')
+    const operation = serverOperationEpoch.current + 1
+    serverOperationEpoch.current = operation
+    const lifecycle = serverStatusLifecycle.current() ?? -1
+    const operationRevision = serverStatusSnapshot.current.statusRevision
+    try {
+      const status = await window.electronAPI.startServer(portNum, authMode)
+      if (serverOperationEpoch.current !== operation) return
+      const applied = applyServerStatus(status, lifecycle)
+      if (!applied || applied.kind === 'duplicate') return
+      if (status.running || status.owned) setPort(String(status.port))
+      if (status.running) {
+        setServerError(status.error ?? '')
+      } else {
+        setStartError(status.error ?? t('dashboard.serverUnexpectedStop'))
+      }
+    } catch (err) {
+      if (
+        !isServerStatusLifecycleCurrent(lifecycle)
+        || serverOperationEpoch.current !== operation
+        || serverStatusSnapshot.current.statusRevision !== operationRevision
+      ) {
+        return
+      }
+      const operationError = (err as Error).message
+      setStartError(operationError)
+      try {
+        const status = await window.electronAPI.getServerStatus()
+        if (serverOperationEpoch.current !== operation) return
+        const recovered = applyServerStatus(status, lifecycle)
+        if (recovered) setPort(String(status.port))
+        if (recovered && status.running) {
+          setStartError('')
+          setServerError(status.error ?? '')
+        } else if (recovered && status.error) {
+          setStartError(status.error)
+        }
+      } catch {
+        // Keep the response error when status IPC is also unavailable.
+      }
+    } finally {
+      if (isServerStatusLifecycleCurrent(lifecycle)) {
+        setStarting(false)
+      }
+    }
+  }
+
+  const handleStop = async () => {
+    dashboardRefreshOrchestrator.current.invalidateAll()
+    intentionalStop.current = true
+    setStopping(true)
+    const operation = serverOperationEpoch.current + 1
+    serverOperationEpoch.current = operation
+    const lifecycle = serverStatusLifecycle.current() ?? -1
+    let operationRevision = serverStatusSnapshot.current.statusRevision
+    try {
+      const outcome = await window.electronAPI.stopServer()
+      if (serverOperationEpoch.current !== operation) return
+      const applied = applyServerStatus(outcome.status, lifecycle)
+      if (!applied) {
+        intentionalStop.current = false
+        return
+      }
+      operationRevision = outcome.status.statusRevision
+      setPort(String(outcome.status.port))
+      if (!outcome.stopped) {
+        setServerError(outcome.error)
+        return
+      }
+      finalizeStoppedDashboard()
+    } catch (error) {
+      if (
+        !isServerStatusLifecycleCurrent(lifecycle)
+        || serverOperationEpoch.current !== operation
+      ) {
+        return
+      }
+      const currentStatus = serverStatusSnapshot.current
+      if (currentStatus.statusRevision !== operationRevision) {
+        if (!currentStatus.owned && !currentStatus.running) {
+          finalizeStoppedDashboard(currentStatus.error ?? '')
+        }
+        return
+      }
+      intentionalStop.current = false
+      setServerError((error as Error).message)
+      try {
+        const status = await window.electronAPI.getServerStatus()
+        if (serverOperationEpoch.current !== operation) return
+        const recovered = applyServerStatus(status, lifecycle)
+        if (recovered) setPort(String(status.port))
+        if (!status.owned && !status.running) {
+          finalizeStoppedDashboard(status.error ?? '')
+        }
+      } catch {
+        // Keep the last ownership state when status IPC is also unavailable.
+      }
+    } finally {
+      if (isServerStatusLifecycleCurrent(lifecycle)) {
+        setStopping(false)
+      }
+    }
   }
 
   const handleRestart = async () => {
@@ -455,19 +623,40 @@ export default function DashboardPage({
     setRestarting(true)
     setStartError('')
     setServerError('')
-    setLogs([])
+    const operation = serverOperationEpoch.current + 1
+    serverOperationEpoch.current = operation
+    const lifecycle = serverStatusLifecycle.current() ?? -1
+    let operationRevision = serverStatusSnapshot.current.statusRevision
     try {
-      await window.electronAPI.stopServer()
+      const stopOutcome = await window.electronAPI.stopServer()
+      if (serverOperationEpoch.current !== operation) return
+      const stoppedStatus = applyServerStatus(stopOutcome.status, lifecycle)
+      if (!stoppedStatus) {
+        intentionalStop.current = false
+        return
+      }
+      operationRevision = stopOutcome.status.statusRevision
+      setPort(String(stopOutcome.status.port))
+      if (!stopOutcome.stopped) {
+        setServerError(stopOutcome.error)
+        return
+      }
+      intentionalStop.current = false
       const status = await window.electronAPI.startServer(portNum, authMode)
+      if (serverOperationEpoch.current !== operation) return
+      const startedStatus = applyServerStatus(status, lifecycle)
+      if (!startedStatus) {
+        intentionalStop.current = false
+        return
+      }
+      operationRevision = status.statusRevision
+      setPort(String(status.port))
       if (status.running) {
-        if (status.port) setPort(String(status.port))
-        setStarted(true)
         if (started) {
           void fetchData()
           void fetchTokenUsageData(tokenUsagePeriod, tokenUsageEventsPage)
         }
       } else {
-        setStarted(false)
         setUsage(null)
         setTokenUsage(null)
         setTokenUsageDaily(null)
@@ -478,20 +667,36 @@ export default function DashboardPage({
         setModels([])
         setLastDashboardRefreshAt(null)
         setStartError(status.error ?? t('dashboard.serverUnexpectedStop'))
-        void window.electronAPI
-          .getLogs()
-          .then(setLogs)
-          .catch(() => {})
       }
     } catch (err) {
-      setStarted(false)
-      setStartError((err as Error).message)
-      void window.electronAPI
-        .getLogs()
-        .then(setLogs)
-        .catch(() => {})
+      if (
+        !isServerStatusLifecycleCurrent(lifecycle)
+        || serverOperationEpoch.current !== operation
+        || serverStatusSnapshot.current.statusRevision !== operationRevision
+      ) {
+        return
+      }
+      intentionalStop.current = false
+      const operationError = (err as Error).message
+      setStartError(operationError)
+      try {
+        const status = await window.electronAPI.getServerStatus()
+        if (serverOperationEpoch.current !== operation) return
+        const recovered = applyServerStatus(status, lifecycle)
+        if (recovered) setPort(String(status.port))
+        if (recovered && status.running) {
+          setStartError('')
+          setServerError(status.error ?? '')
+        } else if (recovered && status.error) {
+          setStartError(status.error)
+        }
+      } catch {
+        // Keep the last ownership state when status IPC is also unavailable.
+      }
     } finally {
-      setRestarting(false)
+      if (isServerStatusLifecycleCurrent(lifecycle)) {
+        setRestarting(false)
+      }
     }
   }
 
@@ -622,12 +827,7 @@ export default function DashboardPage({
     }
     if (tab === 'tokenUsage') {
       void fetchTokenUsageData()
-      return
     }
-    void window.electronAPI
-      .getLogs()
-      .then(setLogs)
-      .catch(() => {})
   }
 
   const handleCopy = (text: string, key: string) => {
@@ -732,6 +932,7 @@ export default function DashboardPage({
         onRestart={handleRestart}
         onStop={handleStop}
         isRunning={started && !stopping}
+        hasOwnedProcess={owned && !stopping}
         isRestarting={restarting}
       />
 
@@ -817,7 +1018,7 @@ export default function DashboardPage({
               )}
               <button
                 onClick={handleStart}
-                disabled={starting}
+                disabled={starting || owned}
                 className="inline-flex w-full items-center justify-center gap-1.5 py-2 bg-accent-strong text-white text-[13px] font-semibold rounded-lg hover:bg-accent-strong/90 disabled:opacity-50 transition-colors"
               >
                 <IconLaunch />
@@ -834,17 +1035,11 @@ export default function DashboardPage({
                   </span>
                 </div>
                 <div className="max-h-60 overflow-y-auto font-mono text-[13px] text-green-400 space-y-0.5 leading-relaxed">
-                  {logs.length === 0 ?
-                    <span className="text-ink-soft">
-                      {t('dashboard.noLogs')}
-                    </span>
-                  : logs.map((line, i) => (
-                      <div key={i} className="whitespace-pre-wrap break-all">
-                        {line.trimEnd()}
-                      </div>
-                    ))
-                  }
-                  <div ref={logEndRef} />
+                  <DashboardLogRows
+                    emptyText={t('dashboard.noLogs')}
+                    entries={logs}
+                    endRef={logEndRef}
+                  />
                 </div>
               </div>
             )}
@@ -1103,22 +1298,18 @@ export default function DashboardPage({
                   {t('dashboard.serverLog')}
                 </span>
                 <button
-                  onClick={() => setLogs([])}
+                  onClick={() => void clearLogs()}
                   className="text-[13px] text-ink-soft hover:text-ink-faint transition-colors"
                 >
                   {t('dashboard.clear')}
                 </button>
               </div>
               <div className="flex-1 overflow-y-auto font-mono text-[13px] text-green-400 space-y-0.5 leading-relaxed">
-                {logs.length === 0 ?
-                  <span className="text-ink-soft">{t('dashboard.noLogs')}</span>
-                : logs.map((line, i) => (
-                    <div key={i} className="whitespace-pre-wrap break-all">
-                      {line.trimEnd()}
-                    </div>
-                  ))
-                }
-                <div ref={logEndRef} />
+                <DashboardLogRows
+                  emptyText={t('dashboard.noLogs')}
+                  entries={logs}
+                  endRef={logEndRef}
+                />
               </div>
             </div>
           </div>

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { existsSync, lstatSync, mkdirSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { spawnSync } from "node:child_process"
 import { parseArgs } from "node:util"
@@ -16,6 +16,15 @@ import {
   writeCoverageAttestation,
   verifyCoverageAttestation,
 } from "./coverage-attestation"
+import { filterLcovSources, mergeLcovFilesSync } from "./merge-lcov"
+
+const DESKTOP_BOUNDARY_COVERAGE_SOURCES = new Set([
+  "electron/ipc-handlers.ts",
+  "electron/main.ts",
+  "electron/preload.ts",
+  "electron/server-manager-runtime.ts",
+  "src/types/ipc.ts",
+])
 
 export interface CoverageRunnerContext {
   attestationPath: string
@@ -47,6 +56,119 @@ function assertCoverageRunStillCurrent(
   if (resolveGitCommit(repository) !== initialCommit) {
     throw new Error("HEAD changed while coverage was running")
   }
+}
+
+function readRealLcovReport(path: string, label: string): string {
+  if (!existsSync(path)) {
+    throw new Error(`${label} was not produced`)
+  }
+  if (!lstatSync(path).isFile()) {
+    throw new Error(`${label} must be a regular file: ${JSON.stringify(path)}`)
+  }
+  const contents = readFileSync(path, "utf8")
+  if (!/^SF:.+$/m.test(contents) || !/^DA:\d+,\d+/m.test(contents)) {
+    throw new Error(`${label} must contain SF and DA records`)
+  }
+  return contents
+}
+
+function runDesktopBoundaryCoverage(
+  repository: string,
+  lcovPath: string,
+): number {
+  const probePath = resolve(
+    repository,
+    "desktop/tests/desktop-shared-boundaries.probe.ts",
+  )
+  if (!existsSync(probePath)) return 0
+
+  readRealLcovReport(lcovPath, "coverage LCOV")
+  const boundaryDirectory = resolve(repository, "coverage/desktop-boundary")
+  const boundaryLcovPath = resolve(boundaryDirectory, "lcov.info")
+  assertCoveragePathHasNoSymlinks(
+    repository,
+    boundaryDirectory,
+    "Desktop boundary coverage output directory",
+  )
+  if (
+    existsSync(boundaryDirectory)
+    && !lstatSync(boundaryDirectory).isDirectory()
+  ) {
+    throw new Error(
+      `Desktop boundary coverage output path must be a directory: ${JSON.stringify(boundaryDirectory)}`,
+    )
+  }
+  mkdirSync(boundaryDirectory, { recursive: true })
+  assertCoveragePathHasNoSymlinks(
+    repository,
+    boundaryLcovPath,
+    "Desktop boundary coverage LCOV path",
+  )
+  if (existsSync(boundaryLcovPath)) {
+    if (!lstatSync(boundaryLcovPath).isFile()) {
+      throw new Error(
+        `Desktop boundary coverage LCOV path must be a regular file: ${JSON.stringify(boundaryLcovPath)}`,
+      )
+    }
+    if (
+      !invalidateCoverageArtifactSafely(
+        repository,
+        boundaryLcovPath,
+        "Desktop boundary coverage LCOV path",
+      )
+    ) {
+      throw new Error(
+        `Desktop boundary coverage LCOV could not be invalidated safely: ${JSON.stringify(boundaryLcovPath)}`,
+      )
+    }
+  }
+
+  const result = spawnSync(
+    process.execPath,
+    [
+      "test",
+      "./tests/desktop-shared-boundaries.probe.ts",
+      "--coverage",
+      "--coverage-reporter=lcov",
+      `--coverage-dir=${boundaryDirectory}`,
+    ],
+    {
+      cwd: resolve(repository, "desktop"),
+      stdio: process.env.NODE_ENV === "test" ? "pipe" : "inherit",
+    },
+  )
+  if (result.error) throw result.error
+  if (result.status !== 0) return result.status ?? 1
+
+  assertCoveragePathHasNoSymlinks(
+    repository,
+    boundaryLcovPath,
+    "Desktop boundary coverage LCOV path",
+  )
+  const boundaryLcov = readRealLcovReport(
+    boundaryLcovPath,
+    "Desktop boundary coverage LCOV",
+  )
+  const admittedBoundaryLcov = filterLcovSources(
+    boundaryLcov,
+    DESKTOP_BOUNDARY_COVERAGE_SOURCES,
+  )
+  if (
+    !/^SF:.+$/m.test(admittedBoundaryLcov)
+    || !/^DA:\d+,\d+/m.test(admittedBoundaryLcov)
+  ) {
+    throw new Error(
+      "Desktop boundary coverage produced no allowlisted SF and DA records",
+    )
+  }
+
+  mergeLcovFilesSync(
+    lcovPath,
+    [lcovPath, boundaryLcovPath],
+    DESKTOP_BOUNDARY_COVERAGE_SOURCES,
+  )
+  readRealLcovReport(lcovPath, "merged Desktop coverage LCOV")
+  return 0
 }
 
 export function runCoverageCli(
@@ -129,6 +251,12 @@ export function runCoverageCli(
     }
     if (result.status !== 0) {
       return result.status ?? 1
+    }
+    assertCoverageRunStillCurrent(repository, domain, initialCommit)
+    if (domain === "desktop") {
+      const boundaryStatus = runDesktopBoundaryCoverage(repository, lcovPath)
+      if (boundaryStatus !== 0) return boundaryStatus
+      assertCoverageRunStillCurrent(repository, domain, initialCommit)
     }
     const context: CoverageRunnerContext = {
       attestationPath,

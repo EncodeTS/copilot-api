@@ -57,8 +57,10 @@ export type ProviderAuthInput =
 
 export interface ServerStatus {
   error?: string
-  port?: number
+  owned: boolean
+  port: number
   running: boolean
+  statusRevision: number
 }
 
 export const SETTINGS_RUNTIME_ACTIONS = [
@@ -78,6 +80,33 @@ export interface SettingsSaveResult {
   serverStatus: ServerStatus
   success: boolean
 }
+
+export type ServerStopOutcome =
+  | { status: ServerStatus; stopped: true }
+  | {
+      error: string
+      reason: "timeout"
+      status: ServerStatus
+      stopped: false
+    }
+
+export interface LogFeedEntry {
+  cursor: number
+  message: string
+}
+
+export interface LogFeedSnapshot {
+  cursor: number
+  entries: LogFeedEntry[]
+}
+
+export interface LogFeedBatch extends LogFeedSnapshot {
+  reset: boolean
+}
+
+export type LogFeedUpdate =
+  | { kind: "snapshot"; snapshot: LogFeedSnapshot }
+  | { batch: LogFeedBatch; kind: "batch" }
 
 export interface ServerAuthInfo {
   enabled: boolean
@@ -104,13 +133,13 @@ export interface DesktopSettings {
   minimizeToTray: boolean
   oauthApp: "default" | "opencode"
   proxy: DesktopProxySettings
-  showToken: boolean
   theme: ThemePreference
   verbose: boolean
 }
 
 export interface DesktopApi {
   checkSavedToken: () => Promise<AuthResult>
+  clearServerLogs: () => Promise<LogFeedSnapshot>
   configureProvider: (input: ProviderAuthInput) => Promise<AuthResult>
   fetchModels: () => Promise<unknown>
   fetchTokenUsage: (period: TokenUsagePeriod) => Promise<unknown>
@@ -123,14 +152,13 @@ export interface DesktopApi {
   fetchUsage: () => Promise<unknown>
   getAuthStatus: () => Promise<AuthStatus>
   getDeviceCode: () => Promise<DeviceCodeInfo>
-  getLogs: () => Promise<string[]>
+  getServerLogSnapshot: () => Promise<LogFeedSnapshot>
   getModelMappingsConfig: () => Promise<ModelMappingsConfigOutcome>
   getServerAuthInfo: () => Promise<ServerAuthInfo>
   getServerStatus: () => Promise<ServerStatus>
   getSettings: () => Promise<DesktopSettings>
   logout: () => Promise<void>
   onAuthSuccess: (callback: (result: AuthResult) => void) => () => void
-  onServerLog: (callback: (log: string) => void) => () => void
   onServerStatus: (callback: (status: ServerStatus) => void) => () => void
   onWindowMaximizeChange: (callback: (maximized: boolean) => void) => () => void
   openUrl: (url: string) => Promise<void>
@@ -145,7 +173,8 @@ export interface DesktopApi {
     port: number,
     authMode?: DesktopAuthMode,
   ) => Promise<ServerStatus>
-  stopServer: () => Promise<void>
+  stopServer: () => Promise<ServerStopOutcome>
+  subscribeServerLogs: (callback: (update: LogFeedUpdate) => void) => () => void
   windowClose: () => void
   windowIsMaximized: () => Promise<boolean>
   windowMaximizeToggle: () => void

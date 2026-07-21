@@ -229,7 +229,6 @@ describe('desktop proxy config', () => {
       minimizeToTray: false,
       accountType: 'individual',
       verbose: false,
-      showToken: false,
       language: 'auto',
       theme: 'auto',
       proxy: {
@@ -249,7 +248,6 @@ describe('desktop proxy config', () => {
         minimizeToTray: true,
         accountType: 'enterprise',
         verbose: true,
-        showToken: true,
         language: 'zh',
         proxy: createProxySettings({ mode: 'direct' }),
       }),
@@ -261,11 +259,15 @@ describe('desktop proxy config', () => {
       minimizeToTray: true,
       accountType: 'enterprise',
       verbose: true,
-      showToken: true,
       language: 'zh',
       theme: 'auto',
       proxy: createProxySettings({ mode: 'direct' }),
     })
+
+    const legacyTokenLogging = normalizeSettings({
+      showToken: true,
+    } as unknown as Partial<import('../src/types/ipc').DesktopSettings>)
+    expect('showToken' in legacyTokenLogging).toBeFalse()
   })
 
   test('normalizes theme preference with fallback to auto', () => {

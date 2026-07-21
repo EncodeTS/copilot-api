@@ -6,6 +6,7 @@ import type {
 
 export interface ProxyRuntimeTransitionDependencies {
   applyProxy: (proxy: DesktopProxySettings) => Promise<void>
+  getStatus: () => ServerStatus
   isRunning: () => boolean
   restartServerWithProxy: (proxy: DesktopProxySettings) => Promise<ServerStatus>
   stopServer: () => Promise<void>
@@ -32,11 +33,12 @@ const errorMessage = (error: unknown): string =>
 const stoppedFailure = (
   message: string,
   proxyChanged: boolean,
+  status: ServerStatus,
 ): SettingsSaveResult => ({
   action: 'stopped',
   error: message,
   proxyChanged,
-  serverStatus: { error: message, running: false },
+  serverStatus: { ...status, error: message },
   success: false,
 })
 
@@ -46,12 +48,13 @@ export const applyProxyRuntimeTransition = async ({
   previous,
 }: ProxyRuntimeTransitionInput): Promise<SettingsSaveResult> => {
   const proxyChanged = hasProxyPolicyChanged(previous, next)
-  const wasRunning = dependencies.isRunning()
+  const initialStatus = dependencies.getStatus()
+  const wasRunning = initialStatus.running
   if (!proxyChanged) {
     return {
       action: 'unchanged',
       proxyChanged: false,
-      serverStatus: { running: wasRunning },
+      serverStatus: initialStatus,
       success: true,
     }
   }
@@ -60,24 +63,28 @@ export const applyProxyRuntimeTransition = async ({
     try {
       await dependencies.stopServer()
     } catch (error) {
-      return stoppedFailure(errorMessage(error), true)
+      return stoppedFailure(errorMessage(error), true, dependencies.getStatus())
     }
     if (dependencies.isRunning()) {
-      return stoppedFailure('Utility server did not stop safely', true)
+      return stoppedFailure(
+        'Utility server did not stop safely',
+        true,
+        dependencies.getStatus(),
+      )
     }
   }
 
   try {
     await dependencies.applyProxy(next)
   } catch (error) {
-    return stoppedFailure(errorMessage(error), true)
+    return stoppedFailure(errorMessage(error), true, dependencies.getStatus())
   }
 
   if (!wasRunning) {
     return {
       action: 'applied',
       proxyChanged: true,
-      serverStatus: { running: false },
+      serverStatus: dependencies.getStatus(),
       success: true,
     }
   }
@@ -86,12 +93,13 @@ export const applyProxyRuntimeTransition = async ({
   try {
     serverStatus = await dependencies.restartServerWithProxy(next)
   } catch (error) {
-    return stoppedFailure(errorMessage(error), true)
+    return stoppedFailure(errorMessage(error), true, dependencies.getStatus())
   }
   if (!serverStatus.running) {
     return stoppedFailure(
       serverStatus.error ?? 'Utility server failed to restart',
       true,
+      serverStatus,
     )
   }
 

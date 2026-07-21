@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, expect, mock, test } from 'bun:test'
 import { EventEmitter } from 'node:events'
 
-import type { DesktopProxySettings } from '../src/types/ipc'
+import type { DesktopProxySettings, ServerStatus } from '../src/types/ipc'
 
 class FakeUtilityProcess extends EventEmitter {
   killCount = 0
@@ -61,7 +61,6 @@ const testSettings = {
     https_proxy: '',
     no_proxy: '',
   },
-  showToken: false,
   theme: 'auto' as const,
   verbose: false,
 }
@@ -133,6 +132,14 @@ const manager = await import('../electron/server-manager')
 const { applyElectronProxy } = await import('../electron/electron-proxy')
 const runtime = await import('../electron/desktop-proxy-runtime')
 const originalFetch = globalThis.fetch
+
+function expectVersionedStatus(
+  status: ServerStatus,
+  expected: Partial<ServerStatus>,
+): void {
+  expect(status).toMatchObject(expected)
+  expect(Number.isInteger(status.statusRevision)).toBeTrue()
+}
 
 beforeAll(() => {
   globalThis.fetch = mock(async () => {
@@ -212,7 +219,7 @@ test('server manager restarts the last launch with the new required proxy env', 
     },
     { generation: 1, mode: 'copilot' },
   )
-  expect(initial).toEqual({ port: 0, running: true })
+  expectVersionedStatus(initial, { owned: true, port: 0, running: true })
   expect(manager.getServerRestartContextDiagnostics()).toEqual({
     generation: 1,
     mode: 'copilot',
@@ -222,6 +229,7 @@ test('server manager restarts the last launch with the new required proxy env', 
     'token',
   )
   expect(forks).toHaveLength(1)
+  expect(JSON.stringify(forks[0])).not.toContain('old-token')
 
   await manager.stopServer()
   process.env.npm_config_https_proxy = 'http://poison.example:8080'
@@ -233,7 +241,12 @@ test('server manager restarts the last launch with the new required proxy env', 
     }),
   )
 
-  expect(restarted).toEqual({ port: 0, running: true })
+  expectVersionedStatus(restarted, {
+    owned: true,
+    port: 0,
+    running: true,
+  })
+  expect(restarted.statusRevision).toBeGreaterThan(initial.statusRevision)
   expect(manager.getServerRestartContextDiagnostics()).toEqual({
     generation: 2,
     mode: 'copilot',
@@ -243,7 +256,9 @@ test('server manager restarts the last launch with the new required proxy env', 
   const restart = forks[1]
   expect(restart?.args).toContain('--proxy-env')
   expect(restart?.args).toContain('--verbose')
-  expect(restart?.args).toContain('new-token')
+  expect(restart?.args).toContain('--desktop-auth-mode')
+  expect(restart?.args).toContain('copilot')
+  expect(restart?.args).not.toContain('new-token')
   expect(restart?.args).not.toContain('old-token')
   expect(restart?.options.env).toMatchObject({
     COPILOT_API_PROXY_REQUIRED: '1',
@@ -253,17 +268,18 @@ test('server manager restarts the last launch with the new required proxy env', 
   })
   expect(restart?.options.env?.npm_config_https_proxy).toBeUndefined()
 
-  expect(
-    await manager.restartServerWithProxy(customProxy, () =>
-      Promise.resolve({
-        generation: 2,
-        mode: 'copilot',
-        token: 'new-token',
-      }),
-    ),
-  ).toEqual({
+  const alreadyRunning = await manager.restartServerWithProxy(customProxy, () =>
+    Promise.resolve({
+      generation: 2,
+      mode: 'copilot',
+      token: 'new-token',
+    }),
+  )
+  expectVersionedStatus(alreadyRunning, {
     error: 'Utility server must be stopped before applying a proxy restart',
-    running: false,
+    owned: true,
+    port: 0,
+    running: true,
   })
   manager.clearServerRestartContext()
   expect(manager.getServerRestartContextDiagnostics()).toBeNull()
@@ -280,38 +296,47 @@ test('server manager restarts the last launch with the new required proxy env', 
     success: true,
   })
   expect(forks).toHaveLength(clearedForkCount)
-  expect(
-    await manager.restartServerWithProxy(customProxy, () =>
-      Promise.resolve({
-        generation: 3,
-        mode: 'copilot',
-        token: 'new-token',
-      }),
-    ),
-  ).toEqual({
+  const missingContext = await manager.restartServerWithProxy(customProxy, () =>
+    Promise.resolve({
+      generation: 3,
+      mode: 'copilot',
+      token: 'new-token',
+    }),
+  )
+  expectVersionedStatus(missingContext, {
     error: 'No safe utility server restart context is available',
+    owned: false,
+    port: 0,
     running: false,
   })
   expect(forks).toHaveLength(clearedForkCount)
 
-  expect(
-    await manager.startServer(
-      0,
-      null,
-      { proxy: customProxy },
-      { generation: 4, mode: 'provider' },
-    ),
-  ).toEqual({ port: 0, running: true })
+  const providerStart = await manager.startServer(
+    0,
+    null,
+    { proxy: customProxy },
+    { generation: 4, mode: 'provider' },
+  )
+  expectVersionedStatus(providerStart, {
+    owned: true,
+    port: 0,
+    running: true,
+  })
   await manager.stopServer()
-  expect(
-    await manager.restartServerWithProxy(customProxy, () =>
+  const providerRestartStatus = await manager.restartServerWithProxy(
+    customProxy,
+    () =>
       Promise.resolve({
         generation: 5,
         mode: 'provider',
         token: null,
       }),
-    ),
-  ).toEqual({ port: 0, running: true })
+  )
+  expectVersionedStatus(providerRestartStatus, {
+    owned: true,
+    port: 0,
+    running: true,
+  })
   const providerRestart = forks.at(-1)
   expect(providerRestart?.args).not.toContain('--github-token')
   expect(providerRestart?.args).not.toContain('old-token')
@@ -330,6 +355,19 @@ test('server manager restarts the last launch with the new required proxy env', 
     running: false,
   })
   expect(forks).toHaveLength(forkCount)
+
+  const raceContextStart = await manager.startServer(
+    0,
+    null,
+    { proxy: customProxy },
+    { generation: 5, mode: 'provider' },
+  )
+  expectVersionedStatus(raceContextStart, {
+    owned: true,
+    port: 0,
+    running: true,
+  })
+  await manager.stopServer()
 
   const secondResolveStarted = deferred<void>()
   const releaseSecondResolve = deferred<void>()
@@ -363,14 +401,17 @@ test('server manager restarts the last launch with the new required proxy env', 
   expect(forks).toHaveLength(forkCountBeforeLogoutRace)
   expect(manager.getServerRestartContextDiagnostics()).toBeNull()
 
-  expect(
-    await manager.startServer(
-      0,
-      'rotation-old-token',
-      { proxy: customProxy },
-      { generation: 10, mode: 'copilot' },
-    ),
-  ).toEqual({ port: 0, running: true })
+  const rotationStart = await manager.startServer(
+    0,
+    'rotation-old-token',
+    { proxy: customProxy },
+    { generation: 10, mode: 'copilot' },
+  )
+  expectVersionedStatus(rotationStart, {
+    owned: true,
+    port: 0,
+    running: true,
+  })
   await manager.stopServer()
 
   const rotationSecondResolveStarted = deferred<void>()
@@ -408,35 +449,45 @@ test('server manager restarts the last launch with the new required proxy env', 
   expect(forks).toHaveLength(forkCountBeforeRotationRace)
   expect(forks.slice(forkCountBeforeRotationRace)).toEqual([])
 
-  expect(
-    await manager.restartServerWithProxy(customProxy, () =>
-      Promise.resolve(null),
-    ),
-  ).toEqual({
+  const unavailableCredentials = await manager.restartServerWithProxy(
+    customProxy,
+    () => Promise.resolve(null),
+  )
+  expectVersionedStatus(unavailableCredentials, {
     error:
       'Current credentials are unavailable; utility server remains stopped',
+    owned: false,
+    port: 0,
     running: false,
   })
   expect(manager.getServerRestartContextDiagnostics()).toBeNull()
 
   nextForkError = new Error('fork failed safely')
-  expect(
-    await manager.startServer(
-      0,
-      null,
-      { proxy: customProxy },
-      { generation: 12, mode: 'provider' },
-    ),
-  ).toEqual({ error: 'fork failed safely', running: false })
+  const forkFailure = await manager.startServer(
+    0,
+    null,
+    { proxy: customProxy },
+    { generation: 12, mode: 'provider' },
+  )
+  expectVersionedStatus(forkFailure, {
+    owned: false,
+    port: 0,
+    running: false,
+  })
+  expect(forkFailure.error).toBeDefined()
 
-  expect(
-    await manager.startServer(
-      0,
-      'post-fork-old-token',
-      { proxy: customProxy },
-      { generation: 20, mode: 'copilot' },
-    ),
-  ).toEqual({ port: 0, running: true })
+  const postForkStart = await manager.startServer(
+    0,
+    'post-fork-old-token',
+    { proxy: customProxy },
+    { generation: 20, mode: 'copilot' },
+  )
+  expectVersionedStatus(postForkStart, {
+    owned: true,
+    port: 0,
+    running: true,
+  })
+  expect(JSON.stringify(forks.at(-1))).not.toContain('post-fork-old-token')
   await manager.stopServer()
 
   let currentGeneration = 20
@@ -462,14 +513,17 @@ test('server manager restarts the last launch with the new required proxy env', 
   releaseReady.resolve()
   readinessBarrier = null
 
-  expect(await postForkRotation).toEqual({
+  const postForkRotationStatus = await postForkRotation
+  expectVersionedStatus(postForkRotationStatus, {
     error: 'Credential state changed while utility server was starting',
+    owned: false,
+    port: 0,
     running: false,
   })
   expect(oldCredentialChild.killCount).toBeGreaterThanOrEqual(1)
   expect(manager.isRunning()).toBe(false)
   expect(manager.getServerRestartContextDiagnostics()).toBeNull()
-})
+}, 15_000)
 
 test('Desktop proxy runtime, IPC, and main wiring load against the shared contract', async () => {
   const ipc = await import('../electron/ipc-handlers')

@@ -22,7 +22,6 @@ const DEFAULT_SETTINGS: DesktopSettings = {
   minimizeToTray: false,
   accountType: 'individual',
   verbose: false,
-  showToken: false,
   language: 'auto',
   theme: 'auto',
   proxy: {
@@ -97,10 +96,6 @@ export function normalizeSettings(
       typeof settings?.verbose === 'boolean' ?
         settings.verbose
       : DEFAULT_SETTINGS.verbose,
-    showToken:
-      typeof settings?.showToken === 'boolean' ?
-        settings.showToken
-      : DEFAULT_SETTINGS.showToken,
     language:
       (
         settings?.language === 'en'

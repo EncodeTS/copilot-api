@@ -4,10 +4,36 @@ import type {
   DesktopApi,
   DesktopAuthMode,
   DesktopSettings,
+  LogFeedBatch,
+  LogFeedSnapshot,
+  LogFeedUpdate,
   ProviderAuthInput,
   ServerStatus,
   TokenUsagePeriod,
 } from '../../shared-types'
+
+const LOG_QUEUE_CAPACITY = 2000
+let nextLogSubscriptionRequestId = 1
+
+function mergeQueuedLogBatch(
+  previous: LogFeedBatch | undefined,
+  next: LogFeedBatch,
+): LogFeedBatch {
+  if (previous && next.cursor < previous.cursor) return previous
+
+  const combined =
+    next.reset ? next.entries : [...(previous?.entries ?? []), ...next.entries]
+  const byCursor = new Map(combined.map((entry) => [entry.cursor, entry]))
+  const ordered = [...byCursor.values()].sort(
+    (left, right) => left.cursor - right.cursor,
+  )
+  const overflowed = ordered.length > LOG_QUEUE_CAPACITY
+  return {
+    cursor: next.cursor,
+    entries: ordered.slice(-LOG_QUEUE_CAPACITY),
+    reset: Boolean(previous?.reset || next.reset || overflowed),
+  }
+}
 
 const electronApi = {
   getAuthStatus: () => ipcRenderer.invoke('auth:get-status'),
@@ -52,7 +78,8 @@ const electronApi = {
       pageSize,
     ),
   getServerAuthInfo: () => ipcRenderer.invoke('server:get-auth-info'),
-  getLogs: () => ipcRenderer.invoke('server:get-logs'),
+  getServerLogSnapshot: () => ipcRenderer.invoke('server:logs-snapshot'),
+  clearServerLogs: () => ipcRenderer.invoke('server:logs-clear'),
 
   onAuthSuccess: (callback: (result: AuthResult) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, result: AuthResult) =>
@@ -68,11 +95,83 @@ const electronApi = {
     return () => ipcRenderer.off('server:status', handler)
   },
 
-  onServerLog: (callback: (log: string) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, log: string) =>
-      callback(log)
-    ipcRenderer.on('server:log', handler)
-    return () => ipcRenderer.off('server:log', handler)
+  subscribeServerLogs: (callback: (update: LogFeedUpdate) => void) => {
+    type SubscriptionResult = {
+      snapshot: LogFeedSnapshot
+      subscriptionId: string
+    }
+    type BatchEnvelope = {
+      batch: LogFeedBatch
+      requestId: string
+      subscriptionId: string
+    }
+
+    let disposed = false
+    let mainUnsubscribeRequested = false
+    let subscriptionId: string | null = null
+    let queuedBatch: LogFeedBatch | undefined
+    const requestId = `renderer-log-${nextLogSubscriptionRequestId}`
+    nextLogSubscriptionRequestId += 1
+
+    const requestMainUnsubscribe = () => {
+      if (subscriptionId === null || mainUnsubscribeRequested) return
+      mainUnsubscribeRequested = true
+      void ipcRenderer
+        .invoke('server:logs-unsubscribe', subscriptionId)
+        .catch(() => undefined)
+    }
+    const dispose = (notifyMain: boolean) => {
+      if (!disposed) {
+        disposed = true
+        queuedBatch = undefined
+        ipcRenderer.off('server:log-batch', handler)
+      }
+      if (notifyMain) requestMainUnsubscribe()
+    }
+    const deliver = (update: LogFeedUpdate): boolean => {
+      try {
+        callback(update)
+        return true
+      } catch {
+        dispose(true)
+        return false
+      }
+    }
+    function handler(
+      _event: Electron.IpcRendererEvent,
+      envelope: BatchEnvelope,
+    ) {
+      if (disposed || envelope.requestId !== requestId) return
+      if (subscriptionId === null) {
+        queuedBatch = mergeQueuedLogBatch(queuedBatch, envelope.batch)
+        return
+      }
+      if (envelope.subscriptionId === subscriptionId) {
+        deliver({ batch: envelope.batch, kind: 'batch' })
+      }
+    }
+    ipcRenderer.on('server:log-batch', handler)
+
+    void ipcRenderer
+      .invoke('server:logs-subscribe', requestId)
+      .then((result: SubscriptionResult) => {
+        subscriptionId = result.subscriptionId
+        if (disposed) {
+          requestMainUnsubscribe()
+          return
+        }
+
+        if (!deliver({ kind: 'snapshot', snapshot: result.snapshot })) return
+        if (queuedBatch) {
+          if (!deliver({ batch: queuedBatch, kind: 'batch' })) return
+        }
+        queuedBatch = undefined
+      })
+      .catch(() => {
+        dispose(false)
+      })
+
+    return () => dispose(true)
   },
 
   platform: process.platform,

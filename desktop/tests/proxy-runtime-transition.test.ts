@@ -7,6 +7,7 @@ import {
   SETTINGS_RUNTIME_ACTIONS,
   type DesktopProxySettings,
   type DesktopSettings,
+  type ServerStatus,
 } from '../src/types/ipc'
 
 const systemProxy: DesktopProxySettings = {
@@ -32,9 +33,18 @@ const createSettings = (proxy: DesktopProxySettings): DesktopSettings => ({
   minimizeToTray: false,
   oauthApp: 'default',
   proxy,
-  showToken: false,
   theme: 'auto',
   verbose: false,
+})
+
+const createServerStatus = (
+  overrides: Partial<ServerStatus> = {},
+): ServerStatus => ({
+  owned: false,
+  port: 4141,
+  running: false,
+  statusRevision: 0,
+  ...overrides,
 })
 
 test('running system proxy transitions to required custom proxy by stop-apply-restart', async () => {
@@ -43,6 +53,7 @@ test('running system proxy transitions to required custom proxy by stop-apply-re
     npm_config_https_proxy: 'http://poison.example:8080',
   }
   let running = true
+  let statusRevision = 1
 
   const result = await applyProxyRuntimeTransition({
     next: customProxy,
@@ -51,16 +62,28 @@ test('running system proxy transitions to required custom proxy by stop-apply-re
       applyProxy: async (proxy) => {
         events.push(`apply:${proxy.mode}`)
       },
+      getStatus: () =>
+        createServerStatus({
+          owned: running,
+          running,
+          statusRevision,
+        }),
       isRunning: () => running,
       restartServerWithProxy: async (proxy) => {
         events.push(`restart:${proxy.mode}`)
         applyDesktopProxySettingsToEnv(restartedEnv, proxy)
         running = true
-        return { running: true, port: 4141 }
+        statusRevision += 1
+        return createServerStatus({
+          owned: true,
+          running: true,
+          statusRevision,
+        })
       },
       stopServer: async () => {
         events.push('stop')
         running = false
+        statusRevision += 1
       },
     },
   })
@@ -69,7 +92,12 @@ test('running system proxy transitions to required custom proxy by stop-apply-re
   expect(result).toEqual({
     action: 'restarted',
     proxyChanged: true,
-    serverStatus: { running: true, port: 4141 },
+    serverStatus: {
+      owned: true,
+      port: 4141,
+      running: true,
+      statusRevision: 3,
+    },
     success: true,
   })
   expect(restartedEnv.COPILOT_API_PROXY_REQUIRED).toBe('1')
@@ -79,10 +107,14 @@ test('running system proxy transitions to required custom proxy by stop-apply-re
 
 test('proxy apply failure leaves the previously running server stopped', async () => {
   let running = true
-  const restartServerWithProxy = mock(async (_proxy: DesktopProxySettings) => ({
-    running: true,
-    port: 4141,
-  }))
+  let statusRevision = 1
+  const restartServerWithProxy = mock(async (_proxy: DesktopProxySettings) =>
+    createServerStatus({
+      owned: true,
+      running: true,
+      statusRevision: 3,
+    }),
+  )
 
   const result = await applyProxyRuntimeTransition({
     next: customProxy,
@@ -91,10 +123,17 @@ test('proxy apply failure leaves the previously running server stopped', async (
       applyProxy: async () => {
         throw new Error('proxy activation failed')
       },
+      getStatus: () =>
+        createServerStatus({
+          owned: running,
+          running,
+          statusRevision,
+        }),
       isRunning: () => running,
       restartServerWithProxy,
       stopServer: async () => {
         running = false
+        statusRevision += 1
       },
     },
   })
@@ -103,7 +142,13 @@ test('proxy apply failure leaves the previously running server stopped', async (
     action: 'stopped',
     error: 'proxy activation failed',
     proxyChanged: true,
-    serverStatus: { error: 'proxy activation failed', running: false },
+    serverStatus: {
+      error: 'proxy activation failed',
+      owned: false,
+      port: 4141,
+      running: false,
+      statusRevision: 2,
+    },
     success: false,
   })
   expect(running).toBe(false)
@@ -112,18 +157,27 @@ test('proxy apply failure leaves the previously running server stopped', async (
 
 test('proxy restart failure remains stopped with a structured outcome', async () => {
   let running = true
+  let statusRevision = 1
   const result = await applyProxyRuntimeTransition({
     next: customProxy,
     previous: systemProxy,
     dependencies: {
       applyProxy: async () => {},
+      getStatus: () =>
+        createServerStatus({
+          owned: running,
+          running,
+          statusRevision,
+        }),
       isRunning: () => running,
-      restartServerWithProxy: async () => ({
-        error: 'utility server failed to restart',
-        running: false,
-      }),
+      restartServerWithProxy: async () =>
+        createServerStatus({
+          error: 'utility server failed to restart',
+          statusRevision: 3,
+        }),
       stopServer: async () => {
         running = false
+        statusRevision += 1
       },
     },
   })
@@ -134,7 +188,10 @@ test('proxy restart failure remains stopped with a structured outcome', async ()
     proxyChanged: true,
     serverStatus: {
       error: 'utility server failed to restart',
+      owned: false,
+      port: 4141,
       running: false,
+      statusRevision: 3,
     },
     success: false,
   })
@@ -142,15 +199,20 @@ test('proxy restart failure remains stopped with a structured outcome', async ()
 })
 
 test('stopped server applies a changed proxy without starting utility runtime', async () => {
-  const restartServerWithProxy = mock(async (_proxy: DesktopProxySettings) => ({
-    port: 4141,
-    running: true,
-  }))
+  const stoppedStatus = createServerStatus({ statusRevision: 4 })
+  const restartServerWithProxy = mock(async (_proxy: DesktopProxySettings) =>
+    createServerStatus({
+      owned: true,
+      running: true,
+      statusRevision: 5,
+    }),
+  )
   const result = await applyProxyRuntimeTransition({
     next: customProxy,
     previous: systemProxy,
     dependencies: {
       applyProxy: async () => {},
+      getStatus: () => stoppedStatus,
       isRunning: () => false,
       restartServerWithProxy,
       stopServer: async () => {},
@@ -160,7 +222,7 @@ test('stopped server applies a changed proxy without starting utility runtime', 
   expect(result).toEqual({
     action: 'applied',
     proxyChanged: true,
-    serverStatus: { running: false },
+    serverStatus: stoppedStatus,
     success: true,
   })
   expect(restartServerWithProxy).not.toHaveBeenCalled()
@@ -168,15 +230,28 @@ test('stopped server applies a changed proxy without starting utility runtime', 
 
 test('stop and thrown restart failures return stopped outcomes', async () => {
   let stoppedBeforeFailure = false
+  let stopFailureRevision = 1
   const stopFailure = await applyProxyRuntimeTransition({
     next: customProxy,
     previous: systemProxy,
     dependencies: {
       applyProxy: async () => {},
+      getStatus: () =>
+        createServerStatus({
+          owned: !stoppedBeforeFailure,
+          running: !stoppedBeforeFailure,
+          statusRevision: stopFailureRevision,
+        }),
       isRunning: () => !stoppedBeforeFailure,
-      restartServerWithProxy: async () => ({ running: true }),
+      restartServerWithProxy: async () =>
+        createServerStatus({
+          owned: true,
+          running: true,
+          statusRevision: 3,
+        }),
       stopServer: async () => {
         stoppedBeforeFailure = true
+        stopFailureRevision += 1
         throw new Error('stop failed')
       },
     },
@@ -188,17 +263,25 @@ test('stop and thrown restart failures return stopped outcomes', async () => {
   })
 
   let running = true
+  let restartFailureRevision = 1
   const restartFailure = await applyProxyRuntimeTransition({
     next: customProxy,
     previous: systemProxy,
     dependencies: {
       applyProxy: async () => {},
+      getStatus: () =>
+        createServerStatus({
+          owned: running,
+          running,
+          statusRevision: restartFailureRevision,
+        }),
       isRunning: () => running,
       restartServerWithProxy: async () => {
         throw new Error('restart threw')
       },
       stopServer: async () => {
         running = false
+        restartFailureRevision += 1
       },
     },
   })
@@ -210,18 +293,23 @@ test('stop and thrown restart failures return stopped outcomes', async () => {
 })
 
 test('unchanged proxy policy does not disturb a running server', async () => {
+  const runningStatus = createServerStatus({
+    owned: true,
+    running: true,
+    statusRevision: 7,
+  })
   const stopServer = mock(async () => {})
   const applyProxy = mock(async (_proxy: DesktopProxySettings) => {})
-  const restartServerWithProxy = mock(async (_proxy: DesktopProxySettings) => ({
-    running: true,
-    port: 4141,
-  }))
+  const restartServerWithProxy = mock(
+    async (_proxy: DesktopProxySettings) => runningStatus,
+  )
 
   const result = await applyProxyRuntimeTransition({
     next: { ...customProxy },
     previous: customProxy,
     dependencies: {
       applyProxy,
+      getStatus: () => runningStatus,
       isRunning: () => true,
       restartServerWithProxy,
       stopServer,
@@ -231,7 +319,7 @@ test('unchanged proxy policy does not disturb a running server', async () => {
   expect(result).toEqual({
     action: 'unchanged',
     proxyChanged: false,
-    serverStatus: { running: true },
+    serverStatus: runningStatus,
     success: true,
   })
   expect(stopServer).not.toHaveBeenCalled()
@@ -243,10 +331,10 @@ test('settings apply returns a structured failure while preserving stopped state
   const previous = createSettings(systemProxy)
   const next = createSettings(customProxy)
   const writes: DesktopSettings[] = []
+  const stoppedStatus = createServerStatus({ statusRevision: 2 })
 
   const result = await saveAndApplyDesktopSettings(next, {
-    getPort: () => 4141,
-    isRunning: () => false,
+    getStatus: () => stoppedStatus,
     onSettingsChange: async () => {
       throw new Error('runtime apply failed')
     },
@@ -263,8 +351,10 @@ test('settings apply returns a structured failure while preserving stopped state
     proxyChanged: true,
     serverStatus: {
       error: 'runtime apply failed',
-      port: undefined,
+      owned: false,
+      port: 4141,
       running: false,
+      statusRevision: 2,
     },
     success: false,
   })
@@ -272,9 +362,14 @@ test('settings apply returns a structured failure while preserving stopped state
 
 test('settings apply returns the default runtime snapshot without a callback', async () => {
   const settings = createSettings(systemProxy)
+  const runningStatus = createServerStatus({
+    owned: true,
+    port: 4510,
+    running: true,
+    statusRevision: 5,
+  })
   const result = await saveAndApplyDesktopSettings(settings, {
-    getPort: () => 4510,
-    isRunning: () => true,
+    getStatus: () => runningStatus,
     readSettings: async () => settings,
     writeSettings: async () => {},
   })
@@ -282,7 +377,7 @@ test('settings apply returns the default runtime snapshot without a callback', a
   expect(result).toEqual({
     action: 'unchanged',
     proxyChanged: false,
-    serverStatus: { port: 4510, running: true },
+    serverStatus: runningStatus,
     success: true,
   })
 })
@@ -296,7 +391,10 @@ test('settings UI and shared runtime action contract are loadable', async () => 
       {
         action: 'stopped',
         proxyChanged: true,
-        serverStatus: { error: 'proxy restart failed', running: false },
+        serverStatus: createServerStatus({
+          error: 'proxy restart failed',
+          statusRevision: 8,
+        }),
         success: false,
       },
       'fallback',
@@ -307,7 +405,11 @@ test('settings UI and shared runtime action contract are loadable', async () => 
       {
         action: 'restarted',
         proxyChanged: true,
-        serverStatus: { port: 4141, running: true },
+        serverStatus: createServerStatus({
+          owned: true,
+          running: true,
+          statusRevision: 9,
+        }),
         success: true,
       },
       'fallback',

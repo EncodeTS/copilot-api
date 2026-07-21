@@ -47,6 +47,7 @@ const IconStop = () => (
 )
 
 interface HeaderProps {
+  hasOwnedProcess?: boolean
   onChangeAuth?: () => void
   onRestart?: () => void
   onStop?: () => void
@@ -55,6 +56,7 @@ interface HeaderProps {
 }
 
 export default function Header({
+  hasOwnedProcess,
   onChangeAuth,
   onRestart,
   onStop,
@@ -122,7 +124,7 @@ export default function Header({
             </button>
           )}
 
-          {isRunning && onStop && (
+          {hasOwnedProcess && onStop && (
             <button
               onClick={onStop}
               className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[13px] border border-red-200 text-red-500 rounded-md hover:bg-red-50 dark:border-red-500/30 dark:hover:bg-red-500/15 transition-colors"

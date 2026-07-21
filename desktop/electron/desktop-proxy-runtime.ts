@@ -13,6 +13,7 @@ export const applyDesktopProxyRuntimeTransition = async (
   return applyProxyRuntimeTransition({
     dependencies: {
       applyProxy: applyElectronProxy,
+      getStatus: serverManager.getStatus,
       isRunning: serverManager.isRunning,
       restartServerWithProxy: (proxy) =>
         serverManager.restartServerWithProxy(

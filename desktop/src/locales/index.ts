@@ -135,6 +135,7 @@ export interface Locale {
     portInUse: string
     startFailed: string
     startTimeout: string
+    stopTimeout: string
     processExit: string
   }
   settings: {
@@ -164,8 +165,6 @@ export interface Locale {
     enterpriseUrlDesc: string
     verbose: string
     verboseDesc: string
-    showToken: string
-    showTokenDesc: string
     sectionLanguage: string
     langAuto: string
     langEn: string

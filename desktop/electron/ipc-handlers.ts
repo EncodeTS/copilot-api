@@ -10,6 +10,7 @@ import {
   type GitHubDeviceLoginSession,
   getGitHubUser,
   loginWithGitHubToken,
+  readToken,
   clearToken,
   getCopilotAccountType,
 } from './auth'
@@ -17,24 +18,34 @@ import { tMain } from './i18n'
 import {
   configureProviderWithAuthStatus,
   getDesktopAuthStatus,
+  getEnabledDesktopProviders,
   loginCodexForDesktop,
-  shouldStartInProviderMode,
 } from './provider-auth'
 import {
+  clearServerRestartContext,
+  startServerResolvingCredentials,
+} from './server-manager'
+import {
+  clearLogs,
+  getLogSnapshot,
+  getStatus,
   startServer,
   stopServer,
-  clearServerRestartContext,
   getPort,
-  getLogs,
   isRunning,
-} from './server-manager'
+  reportServerError,
+  subscribeLogs,
+} from './server-manager-runtime'
+import {
+  desktopServerIpcCoordinator,
+  startDesktopServerFromIpc,
+} from './server-ipc-lifecycle'
 import { readSettings, writeSettings } from './settings-store'
 import { saveAndApplyDesktopSettings } from './settings-apply'
 import {
   markDesktopServerCredentialsChanged,
   resolveDesktopServerCredentials,
 } from './server-credentials'
-import { logoutDesktopServerSession } from './server-logout'
 import type {
   DesktopAuthMode,
   DesktopProxySettings,
@@ -65,6 +76,31 @@ interface IpcHandlersOptions {
     prevSettings: DesktopSettings,
   ) => SettingsSaveResult | void | Promise<SettingsSaveResult | void>
   onQuit?: () => void | Promise<void>
+  serverRuntime?: DesktopServerRuntime
+}
+
+interface DesktopServerRuntime {
+  clearLogs: typeof clearLogs
+  getLogSnapshot: typeof getLogSnapshot
+  getPort: typeof getPort
+  getStatus: typeof getStatus
+  isRunning: typeof isRunning
+  reportServerError: typeof reportServerError
+  startServer: typeof startServer
+  stopServer: typeof stopServer
+  subscribeLogs: typeof subscribeLogs
+}
+
+const defaultServerRuntime: DesktopServerRuntime = {
+  clearLogs,
+  getLogSnapshot,
+  getPort,
+  getStatus,
+  isRunning,
+  reportServerError,
+  startServer,
+  stopServer,
+  subscribeLogs,
 }
 
 function normalizeApiKey(apiKey: unknown): string | null {
@@ -119,12 +155,15 @@ async function getServerRequestHeaders(
   }
 }
 
-function getConfigApiBaseUrl(): string | null {
-  if (!isRunning()) {
+function getConfigApiBaseUrl(runtime: DesktopServerRuntime): string | null {
+  if (!runtime.isRunning()) {
     return null
   }
 
-  return buildServerLoopbackUrl(getPort(), '/admin/config/model-mappings')
+  return buildServerLoopbackUrl(
+    runtime.getPort(),
+    '/admin/config/model-mappings',
+  )
 }
 
 function serverUnavailableError(): ModelMappingsRequestError {
@@ -136,8 +175,10 @@ function serverUnavailableError(): ModelMappingsRequestError {
   }
 }
 
-async function fetchModelMappingsConfig(): Promise<ModelMappingsConfigOutcome> {
-  const url = getConfigApiBaseUrl()
+async function fetchModelMappingsConfig(
+  runtime: DesktopServerRuntime,
+): Promise<ModelMappingsConfigOutcome> {
+  const url = getConfigApiBaseUrl(runtime)
   if (!url) {
     return { error: serverUnavailableError(), ok: false }
   }
@@ -150,8 +191,9 @@ async function fetchModelMappingsConfig(): Promise<ModelMappingsConfigOutcome> {
 
 async function saveModelMappingsViaApi(
   modelMappings: Record<string, string>,
+  runtime: DesktopServerRuntime,
 ): Promise<ModelMappingsSaveOutcome> {
-  const url = getConfigApiBaseUrl()
+  const url = getConfigApiBaseUrl(runtime)
   if (!url) {
     return { error: serverUnavailableError(), ok: false }
   }
@@ -167,7 +209,17 @@ export function registerIpcHandlers(
   mainWindow: BrowserWindow,
   options: IpcHandlersOptions = {},
 ): void {
+  const serverRuntime = options.serverRuntime ?? defaultServerRuntime
   let activeGitHubLogin: GitHubDeviceLoginSession | null = null
+  const logSubscriptions = new Map<
+    string,
+    { senderId: number; unsubscribe: () => void }
+  >()
+  const clearLogSubscriptionsForSender = (senderId: number) => {
+    for (const subscription of logSubscriptions.values()) {
+      if (subscription.senderId === senderId) subscription.unsubscribe()
+    }
+  }
   ipcMain.handle('auth:get-status', async () => getDesktopAuthStatus())
 
   // Auth: Start the OAuth device flow
@@ -268,11 +320,14 @@ export function registerIpcHandlers(
       cancelGitHubDeviceLogin(activeGitHubLogin)
       activeGitHubLogin = null
     }
-    await logoutDesktopServerSession({
-      clearRestartContext: clearServerRestartContext,
-      clearToken,
-      markCredentialsChanged: markDesktopServerCredentialsChanged,
-      stopServer,
+    clearServerRestartContext()
+    await desktopServerIpcCoordinator.logout({
+      clearLogs: serverRuntime.clearLogs,
+      clearToken: async () => {
+        await clearToken()
+        markDesktopServerCredentialsChanged()
+      },
+      stopServer: serverRuntime.stopServer,
     })
   })
 
@@ -280,64 +335,62 @@ export function registerIpcHandlers(
   ipcMain.handle(
     'server:start',
     async (_event, port: number, authMode?: DesktopAuthMode) => {
-      const providerMode = shouldStartInProviderMode(authMode)
-      const credentials = await resolveDesktopServerCredentials(
-        providerMode ? 'provider' : 'copilot',
-        !providerMode,
+      return desktopServerIpcCoordinator.start((signal) =>
+        startDesktopServerFromIpc(
+          port,
+          authMode,
+          {
+            getEffectiveProxySettings: (settings) =>
+              options.getEffectiveProxySettings?.(settings) ?? settings.proxy,
+            getEnabledProviders: getEnabledDesktopProviders,
+            getServerStatus: serverRuntime.getStatus,
+            readSettings,
+            readToken,
+            reportServerError: serverRuntime.reportServerError,
+            startServer:
+              options.serverRuntime ?
+                serverRuntime.startServer
+              : (requestedPort, launchMode, serverOptions) =>
+                  startServerResolvingCredentials(
+                    requestedPort,
+                    launchMode,
+                    serverOptions,
+                    (preferredMode) =>
+                      resolveDesktopServerCredentials(preferredMode, false),
+                  ),
+            translateAuthRequired: () => tMain('server.authRequired'),
+            writeSettings,
+          },
+          signal,
+        ),
       )
-
-      if (!credentials) {
-        return {
-          running: false,
-          error: await tMain('server.authRequired'),
-        }
-      }
-
-      const settings = await readSettings()
-      const serverOptions = {
-        verbose: settings.verbose,
-        showToken: settings.showToken,
-        proxy: options.getEffectiveProxySettings?.(settings) ?? settings.proxy,
-      }
-
-      // Persist the last used port
-      await writeSettings({ ...settings, lastPort: port })
-
-      return startServer(port, credentials.token, serverOptions, {
-        generation: credentials.generation,
-        mode: credentials.mode,
-      })
     },
   )
 
   // Server: Stop
   ipcMain.handle('server:stop', async () => {
-    await stopServer()
+    return await desktopServerIpcCoordinator.stop(serverRuntime.stopServer)
   })
 
-  ipcMain.handle('server:get-status', () => ({
-    running: isRunning(),
-    port: getPort(),
-  }))
+  ipcMain.handle('server:get-status', () => serverRuntime.getStatus())
 
   // Settings
   ipcMain.handle('settings:get', async () => readSettings())
   ipcMain.handle('settings:save', async (_event, settings: DesktopSettings) =>
     saveAndApplyDesktopSettings(settings, {
-      getPort,
-      isRunning,
+      getStatus: serverRuntime.getStatus,
       onSettingsChange: options.onSettingsChange,
       readSettings,
       writeSettings,
     }),
   )
   ipcMain.handle('config:get-model-mappings', async () =>
-    fetchModelMappingsConfig(),
+    fetchModelMappingsConfig(serverRuntime),
   )
   ipcMain.handle(
     'config:save-model-mappings',
     async (_event, modelMappings: Record<string, string>) =>
-      await saveModelMappingsViaApi(modelMappings),
+      await saveModelMappingsViaApi(modelMappings, serverRuntime),
   )
 
   // Shell: Open the system browser
@@ -347,7 +400,7 @@ export function registerIpcHandlers(
 
   // Server: Proxy HTTP requests through the main process to bypass file:// origin CORS in the renderer
   ipcMain.handle('server:fetch-usage', async () => {
-    const port = getPort()
+    const port = serverRuntime.getPort()
     try {
       const headers = await getServerRequestHeaders()
       const res = await fetch(buildServerLoopbackUrl(port, '/usage'), {
@@ -362,7 +415,7 @@ export function registerIpcHandlers(
   })
 
   ipcMain.handle('server:fetch-models', async () => {
-    const port = getPort()
+    const port = serverRuntime.getPort()
     try {
       const headers = await getServerRequestHeaders()
       const res = await fetch(buildServerLoopbackUrl(port, '/models'), {
@@ -377,7 +430,7 @@ export function registerIpcHandlers(
   })
 
   ipcMain.handle('server:fetch-token-usage', async (_event, period: string) => {
-    const port = getPort()
+    const port = serverRuntime.getPort()
     const normalizedPeriod =
       period === 'week' || period === 'month' ? period : 'day'
     try {
@@ -399,7 +452,7 @@ export function registerIpcHandlers(
   ipcMain.handle(
     'server:fetch-token-usage-daily',
     async (_event, period: string) => {
-      const port = getPort()
+      const port = serverRuntime.getPort()
       const normalizedPeriod =
         period === 'week' || period === 'month' ? period : 'day'
       try {
@@ -425,7 +478,7 @@ export function registerIpcHandlers(
   ipcMain.handle(
     'server:fetch-token-usage-events',
     async (_event, period: string, page: number, pageSize: number) => {
-      const port = getPort()
+      const port = serverRuntime.getPort()
       const normalizedPeriod =
         period === 'week' || period === 'month' ? period : 'day'
       const normalizedPage =
@@ -459,11 +512,63 @@ export function registerIpcHandlers(
 
   ipcMain.handle('server:get-auth-info', async () => getServerAuthInfo())
 
-  // Server: Return the in-memory log buffer
-  ipcMain.handle('server:get-logs', () => getLogs())
+  ipcMain.handle('server:logs-snapshot', () => serverRuntime.getLogSnapshot())
+  ipcMain.handle('server:logs-clear', () => serverRuntime.clearLogs())
+  ipcMain.handle('server:logs-subscribe', (event, rawRequestId: unknown) => {
+    const requestId =
+      typeof rawRequestId === 'string' && rawRequestId.length <= 128 ?
+        rawRequestId
+      : ''
+    let subscriptionId = ''
+    let cleanup = () => undefined
+    const cleanupOnNavigation = (
+      details: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>,
+    ) => {
+      if (details.isMainFrame && !details.isSameDocument) cleanup()
+    }
+    const subscription = serverRuntime.subscribeLogs((batch) => {
+      if (event.sender.isDestroyed()) return
+      try {
+        event.sender.send('server:log-batch', {
+          batch,
+          requestId,
+          subscriptionId,
+        })
+      } catch {
+        cleanup()
+      }
+    })
+    subscriptionId = subscription.id
+    let cleaned = false
+    cleanup = () => {
+      if (cleaned) return
+      cleaned = true
+      event.sender.removeListener('destroyed', cleanup)
+      event.sender.removeListener('did-start-navigation', cleanupOnNavigation)
+      subscription.unsubscribe()
+      logSubscriptions.delete(subscription.id)
+    }
+    logSubscriptions.set(subscription.id, {
+      senderId: event.sender.id,
+      unsubscribe: cleanup,
+    })
+    event.sender.once('destroyed', cleanup)
+    event.sender.on('did-start-navigation', cleanupOnNavigation)
+    return {
+      snapshot: subscription.snapshot,
+      subscriptionId: subscription.id,
+    }
+  })
+  ipcMain.handle('server:logs-unsubscribe', (event, subscriptionId: string) => {
+    const subscription = logSubscriptions.get(subscriptionId)
+    if (subscription?.senderId === event.sender.id) subscription.unsubscribe()
+  })
 
   // Window controls (used by the custom title bar menu)
-  ipcMain.on('window:reload', () => mainWindow.reload())
+  ipcMain.on('window:reload', () => {
+    clearLogSubscriptionsForSender(mainWindow.webContents.id)
+    mainWindow.reload()
+  })
   ipcMain.on('window:minimize', () => mainWindow.minimize())
   ipcMain.on('window:maximize-toggle', () => {
     if (mainWindow.isMaximized()) {

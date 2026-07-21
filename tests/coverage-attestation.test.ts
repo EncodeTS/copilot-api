@@ -82,6 +82,56 @@ function createCoverageRepository(
   return { base, repository }
 }
 
+function createDesktopBoundaryCoverageRepository(): string {
+  const repository = mkdtempSync(join(tmpdir(), "coverage-attestation-"))
+  temporaryDirectories.push(repository)
+  runGit(repository, "init", "--quiet")
+  runGit(repository, "config", "user.email", "coverage@example.invalid")
+  runGit(repository, "config", "user.name", "Coverage Test")
+  writeFixtureFile(
+    repository,
+    "desktop/electron/main.ts",
+    "export const mainValue = (): number => 1\n",
+  )
+  writeFixtureFile(
+    repository,
+    "desktop/electron/preload.ts",
+    "export const boundaryValue = (): number => 2\n",
+  )
+  writeFixtureFile(
+    repository,
+    "desktop/electron/not-allowlisted.ts",
+    "export const excludedBoundaryValue = (): number => 3\n",
+  )
+  writeFixtureFile(
+    repository,
+    "desktop/tests/main.test.ts",
+    [
+      'import { expect, test } from "bun:test"',
+      'import { mainValue } from "../electron/main"',
+      'test("covers main", () => expect(mainValue()).toBe(1))',
+      "",
+    ].join("\n"),
+  )
+  writeFixtureFile(
+    repository,
+    "desktop/tests/desktop-shared-boundaries.probe.ts",
+    [
+      'import { expect, test } from "bun:test"',
+      'import { boundaryValue } from "../electron/preload"',
+      'import { excludedBoundaryValue } from "../electron/not-allowlisted"',
+      'test("covers isolated boundaries", () => {',
+      "  expect(boundaryValue()).toBe(2)",
+      "  expect(excludedBoundaryValue()).toBe(3)",
+      "})",
+      "",
+    ].join("\n"),
+  )
+  runGit(repository, "add", "desktop")
+  runGit(repository, "commit", "--quiet", "-m", "desktop fixture")
+  return repository
+}
+
 function createModifiedCoverageRepository(
   beforeSource: string,
   afterSource: string,
@@ -166,6 +216,42 @@ function expectRootAttestationInvalidated(repository: string): void {
 }
 
 describe("coverage attestation", () => {
+  test("merges only allowlisted isolated Desktop coverage before attestation", () => {
+    const repository = createDesktopBoundaryCoverageRepository()
+    let inspectedBeforeAttestation = false
+
+    const result = runCoverageCli(
+      ["--domain", "desktop", "--repository", repository],
+      {
+        beforeAttestation: ({ attestationPath, lcovPath }) => {
+          inspectedBeforeAttestation = true
+          expect(existsSync(attestationPath)).toBe(false)
+          const merged = readFileSync(lcovPath, "utf8")
+          expect(merged).toContain("SF:electron/main.ts")
+          expect(merged).toContain("SF:electron/preload.ts")
+          expect(merged).not.toContain("SF:electron/not-allowlisted.ts")
+        },
+      },
+    )
+
+    expect(result).toBe(0)
+    expect(inspectedBeforeAttestation).toBe(true)
+    expect(
+      readFileSync(
+        join(repository, "coverage/desktop-boundary/lcov.info"),
+        "utf8",
+      ),
+    ).toContain("SF:electron/not-allowlisted.ts")
+    expect(
+      readVerifiedCoverageArtifact(
+        repository,
+        "desktop",
+        join(repository, "coverage/desktop/lcov.info"),
+        join(repository, "coverage/desktop/attestation.json"),
+      ).ok,
+    ).toBe(true)
+  })
+
   test("runs real Bun coverage and records a fresh root attestation", () => {
     const { repository } = createCoverageRepository(
       [
@@ -218,6 +304,41 @@ describe("coverage attestation", () => {
       ].join("\n"),
     )
     writeFixtureFile(repository, "src/value.ts", "export const value = 2\n")
+
+    const result = spawnSync(
+      process.execPath,
+      [coverageRunner, "--domain", "root", "--repository", repository],
+      { encoding: "utf8" },
+    )
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain(
+      "root production sources must be committed before coverage generation",
+    )
+  })
+
+  test("refuses to attest a dirty LCOV merge helper", () => {
+    const { repository } = createCoverageRepository(
+      "export const value = 1\n",
+      [
+        'import { expect, test } from "bun:test"',
+        'import { value } from "../src/value"',
+        'test("covers value", () => expect(value).toBe(1))',
+        "",
+      ].join("\n"),
+    )
+    writeFixtureFile(
+      repository,
+      "scripts/coverage/merge-lcov.ts",
+      "export const merge = 1\n",
+    )
+    runGit(repository, "add", "scripts/coverage/merge-lcov.ts")
+    runGit(repository, "commit", "--quiet", "-m", "add merge helper")
+    writeFixtureFile(
+      repository,
+      "scripts/coverage/merge-lcov.ts",
+      "export const merge = 2\n",
+    )
 
     const result = spawnSync(
       process.execPath,

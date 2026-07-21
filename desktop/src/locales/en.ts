@@ -139,6 +139,7 @@ const en: Locale = {
       'Server process failed to start (exit code {{code}}); refer to the log panel below for details',
     startTimeout:
       'Server startup timed out, port {{port}} may already be in use',
+    stopTimeout: 'Server process did not exit after graceful termination',
     processExit: 'Process exited with code {{code}}',
   },
   settings: {
@@ -175,8 +176,6 @@ const en: Locale = {
     verbose: 'Verbose logging',
     verboseDesc:
       'Write structured diagnostics; prompts, message text, tool data, and reasoning content are omitted by default',
-    showToken: 'Show token',
-    showTokenDesc: 'Print GitHub/Copilot token values in logs',
     sectionLanguage: 'Language',
     langAuto: 'Follow system',
     langEn: 'English',

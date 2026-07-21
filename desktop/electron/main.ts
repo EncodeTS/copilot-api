@@ -22,6 +22,14 @@ import {
   applyNoProxyServerOverride,
   hasNoProxyServerSwitch,
 } from './electron-proxy-config'
+import {
+  createApplicationShutdownBarrier,
+  type ApplicationShutdownBarrier,
+} from './application-shutdown'
+import {
+  desktopServerIpcCoordinator,
+  type DesktopServerIpcCoordinator,
+} from './server-ipc-lifecycle'
 import { tMain } from './i18n'
 import { applyDesktopProxyRuntimeTransition } from './desktop-proxy-runtime'
 import { readSettings, readSettingsSync } from './settings-store'
@@ -77,11 +85,44 @@ function resolveTitleBarOptions(): Electron.BaseWindowConstructorOptions {
 
 interface RuntimeDependencies {
   registerIpcHandlers: typeof import('./ipc-handlers').registerIpcHandlers
-  stopServer: typeof import('./server-manager').stopServer
-  onStatusChange: typeof import('./server-manager').onStatusChange
-  onLog: typeof import('./server-manager').onLog
-  clearCallbacks: typeof import('./server-manager').clearCallbacks
+  stopServer: typeof import('./server-manager-runtime').stopServer
+  onStatusChange: typeof import('./server-manager-runtime').onStatusChange
+  clearCallbacks: typeof import('./server-manager-runtime').clearCallbacks
   readSettings: typeof readSettings
+}
+
+interface RuntimeModuleLoaders {
+  loadIpcHandlers: () => Promise<typeof import('./ipc-handlers')>
+  loadServerManager: () => Promise<typeof import('./server-manager-runtime')>
+}
+
+const defaultRuntimeModuleLoaders: RuntimeModuleLoaders = {
+  loadIpcHandlers: () => import('./ipc-handlers'),
+  loadServerManager: () => import('./server-manager-runtime'),
+}
+
+export async function loadServerRuntimeDependencies(
+  loaders: RuntimeModuleLoaders = defaultRuntimeModuleLoaders,
+): Promise<Omit<RuntimeDependencies, 'readSettings'>> {
+  const [
+    { registerIpcHandlers },
+    { stopServer, onStatusChange, clearCallbacks },
+  ] = await Promise.all([
+    loaders.loadIpcHandlers(),
+    loaders.loadServerManager(),
+  ])
+  return { clearCallbacks, onStatusChange, registerIpcHandlers, stopServer }
+}
+
+export function bindServerLifecycleToWindow(
+  win: BrowserWindow,
+  onStatusChange: RuntimeDependencies['onStatusChange'],
+): void {
+  onStatusChange((status) => {
+    if (!win.isDestroyed()) {
+      win.webContents.send('server:status', status)
+    }
+  })
 }
 
 function getEffectiveProxySettings(
@@ -119,20 +160,10 @@ function getRuntimeDependencies(): Promise<RuntimeDependencies> {
     applySettingsEnvOverrides(await readSettings())
     warmOpencodeVersion()
 
-    const [
-      { registerIpcHandlers },
-      { stopServer, onStatusChange, onLog, clearCallbacks },
-    ] = await Promise.all([
-      import('./ipc-handlers'),
-      import('./server-manager'),
-    ])
+    const runtime = await loadServerRuntimeDependencies()
 
     return {
-      registerIpcHandlers,
-      stopServer,
-      onStatusChange,
-      onLog,
-      clearCallbacks,
+      ...runtime,
       readSettings,
     }
   })()
@@ -144,6 +175,52 @@ let tray: Tray | null = null
 let mainWindow: BrowserWindow | null = null
 // Track exits triggered by menu or system actions instead of the close button
 let isQuitting = false
+
+interface MainApplicationShutdownDependencies {
+  coordinator: DesktopServerIpcCoordinator
+  loadRuntime: () => Promise<
+    Pick<RuntimeDependencies, 'clearCallbacks' | 'stopServer'>
+  >
+  quit: () => void
+}
+
+export function createMainApplicationShutdown({
+  coordinator,
+  loadRuntime,
+  quit,
+}: MainApplicationShutdownDependencies): ApplicationShutdownBarrier {
+  return createApplicationShutdownBarrier({
+    clearCallbacks: async () => {
+      const { clearCallbacks } = await loadRuntime()
+      clearCallbacks()
+    },
+    quit,
+    stopServer: async () => {
+      const { stopServer } = await loadRuntime()
+      return coordinator.stopForShutdown(stopServer)
+    },
+  })
+}
+
+export function handleApplicationBeforeQuit(
+  event: { preventDefault: () => void },
+  shutdown: ApplicationShutdownBarrier,
+  setQuitting: (quitting: boolean) => void,
+): void {
+  setQuitting(true)
+  shutdown.handleBeforeQuit(event)
+  if (!shutdown.isComplete()) {
+    void shutdown.requestQuit().then((stopped) => {
+      if (!stopped) setQuitting(false)
+    })
+  }
+}
+
+const applicationShutdown = createMainApplicationShutdown({
+  coordinator: desktopServerIpcCoordinator,
+  loadRuntime: getRuntimeDependencies,
+  quit: () => app.quit(),
+})
 
 function createTrayNativeImage(): Electron.NativeImage {
   // macOS uses a template image so the system adapts it for light and dark mode.
@@ -180,10 +257,7 @@ function showWindow(win: BrowserWindow): void {
 
 async function quitApplication(): Promise<void> {
   isQuitting = true
-  const { clearCallbacks, stopServer } = await getRuntimeDependencies()
-  clearCallbacks()
-  await stopServer()
-  app.quit()
+  if (!(await applicationShutdown.requestQuit())) isQuitting = false
 }
 
 async function refreshTrayContextMenu(win: BrowserWindow): Promise<void> {
@@ -292,11 +366,7 @@ function createWindow(): BrowserWindow {
         app.dock?.hide()
       }
     } else {
-      isQuitting = true
-      const { clearCallbacks, stopServer } = await getRuntimeDependencies()
-      clearCallbacks()
-      await stopServer()
-      app.quit()
+      await quitApplication()
     }
   })
 
@@ -310,7 +380,7 @@ function createWindow(): BrowserWindow {
 }
 
 void app.whenReady().then(async () => {
-  const { registerIpcHandlers, readSettings, onStatusChange, onLog } =
+  const { registerIpcHandlers, readSettings, onStatusChange } =
     await getRuntimeDependencies()
   const settings = await readSettings()
   await applyElectronProxy(getEffectiveProxySettings(settings))
@@ -358,17 +428,7 @@ void app.whenReady().then(async () => {
     await createTray(win)
   }
 
-  onStatusChange((status) => {
-    if (!win.isDestroyed()) {
-      win.webContents.send('server:status', status)
-    }
-  })
-
-  onLog((log) => {
-    if (!win.isDestroyed()) {
-      win.webContents.send('server:log', log)
-    }
-  })
+  bindServerLifecycleToWindow(win, onStatusChange)
 
   app.on('activate', () => {
     if (!mainWindow || mainWindow.isDestroyed()) {
@@ -379,10 +439,10 @@ void app.whenReady().then(async () => {
   })
 })
 
-app.on('before-quit', async () => {
-  isQuitting = true
-  const { stopServer } = await getRuntimeDependencies()
-  await stopServer()
+app.on('before-quit', (event) => {
+  handleApplicationBeforeQuit(event, applicationShutdown, (quitting) => {
+    isQuitting = quitting
+  })
 })
 
 // This will not fire in the macOS tray flow because the close event is intercepted.

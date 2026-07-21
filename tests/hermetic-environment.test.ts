@@ -31,6 +31,20 @@ test("Bun tests keep persistent and platform state in one isolated root", () => 
   expect(getHandlerLogDirectory()).toBe(paths.logs)
 })
 
+test("hermetic test environments clear caller auth-routing overrides", () => {
+  const paths = createHermeticTestPaths("copilot-api-hostile-env-")
+  try {
+    const environment = createHermeticTestEnvironment(paths, {
+      COPILOT_API_ENTERPRISE_URL: "https://example.invalid",
+      COPILOT_API_OAUTH_APP: "opencode",
+    })
+    expect(environment.COPILOT_API_ENTERPRISE_URL).toBe("")
+    expect(environment.COPILOT_API_OAUTH_APP).toBe("")
+  } finally {
+    fs.rmSync(paths.root, { force: true, recursive: true })
+  }
+})
+
 test("a caller-owned application and device-id home remains untouched", () => {
   const callerPaths = createHermeticTestPaths("copilot-api-caller-home-")
   const sentinels = createHermeticSentinels(callerPaths)

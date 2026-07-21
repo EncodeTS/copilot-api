@@ -271,6 +271,8 @@ describe("differential coverage gate", () => {
     )
     expect(isProductionSource("scripts/check-diff-coverage.ts")).toBe(true)
     expect(isProductionSource("scripts/coverage/diff-coverage.ts")).toBe(true)
+    expect(isProductionSource("scripts/coverage/merge-lcov.ts")).toBe(true)
+    expect(isProductionSource("scripts/merge-lcov.ts")).toBe(false)
     expect(isProductionSource("scripts/lib/git.ts")).toBe(true)
     expect(isProductionSource("scripts/benchmarks/runner.ts")).toBe(false)
   })
@@ -291,6 +293,43 @@ describe("differential coverage gate", () => {
     expect(result.passed).toBe(false)
     expect(result.failures).toContain(
       'changed production file is missing from coverage: "scripts/release/publish-artifact.ts"',
+    )
+  })
+
+  test("fails when the changed LCOV merge helper is missing from root coverage", () => {
+    const productionPath = "scripts/coverage/merge-lcov.ts"
+    const fixture = createChangedProductionFile(productionPath)
+    writeLcov(fixture.lcovPath, "src/other.ts", 1)
+
+    const result = checkDiffCoverage({
+      base: fixture.base,
+      coverage: [{ path: fixture.lcovPath, sourcePrefix: "." }],
+      repository: fixture.repository,
+      threshold: 85,
+    })
+
+    expect(result.passed).toBe(false)
+    expect(result.failures).toContain(
+      `changed production file is missing from coverage: ${JSON.stringify(productionPath)}`,
+    )
+  })
+
+  test("fails when the changed LCOV merge helper is uncovered", () => {
+    const productionPath = "scripts/coverage/merge-lcov.ts"
+    const fixture = createChangedProductionFile(productionPath)
+    writeLcov(fixture.lcovPath, productionPath, 0)
+
+    const result = checkDiffCoverage({
+      base: fixture.base,
+      coverage: [{ path: fixture.lcovPath, sourcePrefix: "." }],
+      repository: fixture.repository,
+      threshold: 85,
+    })
+
+    expect(result.passed).toBe(false)
+    expect(result.percentage).toBe(0)
+    expect(result.failures).toContain(
+      "diff coverage 0.00% is below required 85.00%",
     )
   })
 
