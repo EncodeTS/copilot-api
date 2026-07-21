@@ -179,6 +179,34 @@ describe("optimizeInputImagesForPayloadBudget", () => {
     })
   })
 
+  test("keeps hard admission active when image optimization is disabled", async () => {
+    const payload = {
+      input: [
+        {
+          content: [{ image_url: imageDataUrl(4096), type: "input_image" }],
+          role: "user",
+        },
+      ],
+      model: "gpt-test",
+    } as unknown as ResponsesPayload
+    const initialPayloadBytes = calculateResponsesPayloadBytes(payload)
+
+    const result = await optimizeInputImagesForPayloadBudget(payload, {
+      enabled: false,
+      sendHardLimitBytes: initialPayloadBytes - 1,
+    })
+
+    expect(result.sendAllowed).toBe(false)
+    expect(result.changed).toBe(false)
+    expect(result.outboundPayload).toBe(payload)
+    expect(result.budgetInstrumentation).toMatchObject({
+      clones: 0,
+      decodedBuffers: 0,
+      serializations: 1,
+      traversals: 1,
+    })
+  })
+
   test("matches the legacy golden decision and bytes while cloning only on mutation", async () => {
     const oldImageUrl = imageDataUrl(4096)
     const latestImageUrl = imageDataUrl(128)

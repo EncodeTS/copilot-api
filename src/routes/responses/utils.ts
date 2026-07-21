@@ -181,6 +181,7 @@ export interface ImagePayloadBudgetOptions {
   compressionAdapter?: ImageCompressionAdapter
   maxCompressionActions?: number
   initialCloneCount?: number
+  signal?: AbortSignal
 }
 
 export interface ImagePayloadBudgetResult {
@@ -296,10 +297,12 @@ export interface ImageCompressionProfile {
 export interface ImageCompressionInput {
   dataUrl: string
   decodedBytes: number
+  detail?: "low" | "high" | "auto" | "original"
   group: ImageBudgetCandidateGroup
   mimeType: string
   onBase64Decoded?: () => void
   profile: ImageCompressionProfile
+  signal?: AbortSignal
 }
 
 export interface ImageCompressionOutput {
@@ -308,8 +311,10 @@ export interface ImageCompressionOutput {
 }
 
 export type ImageCompressionStatus =
+  | "aborted"
   | "adapter_error"
   | "already_optimized"
+  | "capacity_limit"
   | "compressed"
   | "decode_limit"
   | "invalid_data_url"
@@ -1486,12 +1491,14 @@ const applyCompressionProfile = async (
       await options.compressionAdapter?.compress({
         dataUrl,
         decodedBytes: candidate.decodedBytes,
+        detail: currentRecord?.detail,
         group: candidate.group,
         mimeType: candidate.mimeType,
         onBase64Decoded: () => {
           ledger.instrumentation.decodedBuffers += 1
         },
         profile,
+        signal: options.signal,
       }),
     )
     if (compressionResult.cacheHit === "positive") {

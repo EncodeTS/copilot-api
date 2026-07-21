@@ -1,5 +1,6 @@
 import consola, { type ConsolaInstance } from "consola"
 
+import { copilotBaseUrl } from "~/lib/api-config"
 import {
   getResponsesImageNearBudgetRatio,
   getResponsesImageCompressionCacheBytes,
@@ -46,7 +47,6 @@ import { createSharpImageCompressionAdapter } from "./image-compression"
 type CreateResponses = typeof createCopilotResponses
 type CreateResponsesOptions = Parameters<CreateResponses>[1]
 
-const imageCompressionAdapters = new Map<string, ImageCompressionAdapter>()
 const ENCRYPTED_REASONING_INCLUDE = "reasoning.encrypted_content"
 
 export interface OptimizedResponsesCreateOptions {
@@ -169,6 +169,7 @@ export const prepareCopilotResponsesPayloadForSend = async (
       nearBudgetRatio: getResponsesImageNearBudgetRatio(),
       preserveLatestUserImageGroup: shouldPreserveLatestUserImageGroup(),
       sendHardLimitBytes,
+      signal: options.requestOptions.signal,
     },
   )
 
@@ -267,12 +268,8 @@ export const getResponsesSendHardLimitForTransport = (
 const getConfiguredImageCompressionAdapter = (
   payload: ResponsesPayload,
 ): ImageCompressionAdapter | undefined => {
-  if (!isResponsesImageCompressionEnabled()) {
-    return undefined
-  }
-
   const decodeLimits = getResponsesImageDecodeSafetyLimits()
-  const options = {
+  const adapter = createSharpImageCompressionAdapter({
     cacheBytes: getResponsesImageCompressionCacheBytes(),
     cacheEntries: getResponsesImageCompressionCacheEntries(),
     concurrency: getResponsesImageCompressionConcurrency(),
@@ -281,21 +278,19 @@ const getConfiguredImageCompressionAdapter = (
     decodeMaxLongEdge: decodeLimits.maxLongEdge,
     decodeMaxPixels: decodeLimits.maxPixels,
     format: getResponsesImageCompressionFormat(),
-    namespace: [
-      "copilot",
-      state.accountType ?? "unknown-account",
-      payload.model,
-    ].join(":"),
+    namespace: {
+      account:
+        state.userName
+        ?? state.githubToken
+        ?? state.copilotToken
+        ?? "missing-account",
+      model: payload.model,
+      origin: copilotBaseUrl(state),
+      tenant: state.accountType ?? "unknown-tenant",
+    },
     timeoutMs: getResponsesImageCompressionTimeoutMs(),
-  }
-  const key = JSON.stringify(options)
-  let adapter = imageCompressionAdapters.get(key)
-  if (!adapter) {
-    adapter = createSharpImageCompressionAdapter(options)
-    imageCompressionAdapters.set(key, adapter)
-  }
-
-  return adapter
+  })
+  return isResponsesImageCompressionEnabled() ? adapter : undefined
 }
 
 const resolveEffectiveTransport = (

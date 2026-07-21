@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto"
-
 import type { Metadata } from "sharp"
 
 import type {
@@ -10,10 +8,21 @@ import type {
   ImageCompressionResult,
   ImageCompressionStatus,
 } from "./utils"
+import {
+  type BinaryImageCompressionResult,
+  type ImageCompressionNamespace,
+  type ImageCompressionRuntime,
+  processImageCompressionRuntime,
+} from "./image-compression-runtime"
 
 type Sharp = typeof import("sharp").default
 
 export interface SharpImageCompressionAdapterOptions {
+  binaryCompressor?: (
+    buffer: Buffer,
+    input: ImageCompressionInput,
+    signal: AbortSignal,
+  ) => Promise<BinaryImageCompressionResult>
   cacheBytes: number
   cacheEntries: number
   concurrency: number
@@ -22,53 +31,42 @@ export interface SharpImageCompressionAdapterOptions {
   decodeMaxLongEdge?: number
   decodeMaxPixels?: number
   format: "jpeg" | "webp" | "auto"
-  namespace: string
+  maxPendingBytes?: number
+  maxPendingEntries?: number
+  namespace: ImageCompressionNamespace
+  negativeCacheTtlMs?: number
+  positiveCacheTtlMs?: number
+  runtime?: ImageCompressionRuntime
   timeoutMs: number
 }
-
-interface CacheEntry {
-  output: ImageCompressionOutput
-  size: number
-}
-
-interface NegativeCacheEntry {
-  diagnostic?: string
-  diagnosticDetail?: ImageCompressionDiagnosticDetail
-  inputBytes?: number
-  outputBytes?: number
-  status: NegativeCacheStatus
-}
-
-type NegativeCacheStatus = "already_optimized" | "decode_limit" | "no_smaller"
 
 const OPTIMIZER_VERSION = "responses-image-v1"
 const DATA_URL_PATTERN =
   /^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\r\n]+)$/u
-const OPTIMIZED_OUTPUT_RECORD_LIMIT = 4096
-const PROFILE_RANK: Record<ImageCompressionInput["profile"]["name"], number> = {
-  "latest-soft": 1,
-  "history-soft": 2,
-  "latest-hard": 3,
-  "history-hard": 4,
-  "latest-extreme": 5,
-  "history-extreme": 6,
-}
+const DEFAULT_MAX_PENDING_BYTES = 256 * 1024 * 1024
+const DEFAULT_MAX_PENDING_ENTRIES = 64
+const DEFAULT_NEGATIVE_CACHE_TTL_MS = 30_000
+const DEFAULT_POSITIVE_CACHE_TTL_MS = 10 * 60_000
 
 let sharpImportPromise: Promise<Sharp | null> | undefined
 let sharpImportError: unknown
-let globalSemaphore: CompressionSemaphore | undefined
-let globalSemaphoreConcurrency = 0
-const optimizedOutputRanks = new Map<string, number>()
 
 export const createSharpImageCompressionAdapter = (
   options: SharpImageCompressionAdapterOptions,
 ): ImageCompressionAdapter => {
-  const cache = new LruCache(options.cacheEntries, options.cacheBytes)
-  const negativeCache = new NegativeLruCache(
-    Math.max(options.cacheEntries * 4, 512),
-  )
-  const semaphore = getGlobalSemaphore(options.concurrency)
-  const inFlight = new Map<string, Promise<ImageCompressionResult>>()
+  const runtime = options.runtime ?? processImageCompressionRuntime
+  const namespace = options.namespace
+  runtime.configure({
+    cacheBytes: options.cacheBytes,
+    cacheEntries: options.cacheEntries,
+    concurrency: options.concurrency,
+    maxPendingBytes: options.maxPendingBytes ?? DEFAULT_MAX_PENDING_BYTES,
+    maxPendingEntries: options.maxPendingEntries ?? DEFAULT_MAX_PENDING_ENTRIES,
+    negativeCacheTtlMs:
+      options.negativeCacheTtlMs ?? DEFAULT_NEGATIVE_CACHE_TTL_MS,
+    positiveCacheTtlMs:
+      options.positiveCacheTtlMs ?? DEFAULT_POSITIVE_CACHE_TTL_MS,
+  })
 
   return {
     async compress(input) {
@@ -79,115 +77,45 @@ export const createSharpImageCompressionAdapter = (
           inputBytes: Buffer.byteLength(input.dataUrl, "utf8"),
         })
       }
-      input.onBase64Decoded?.()
-
-      if (
-        isAlreadyOptimizedForProfile(options.namespace, input, parsed.buffer)
-      ) {
-        return createCompressionResult("already_optimized", startedAt, {
-          inputBytes: Buffer.byteLength(input.dataUrl, "utf8"),
-        })
-      }
-
-      const key = createCacheKey(options.namespace, input, parsed.buffer)
-      const cached = cache.get(key)
-      if (cached) {
-        return createCompressionResult("compressed", startedAt, {
-          cacheHit: "positive",
-          inputBytes: Buffer.byteLength(input.dataUrl, "utf8"),
-          output: cached,
-          outputBytes: cached.outputBytes,
-        })
-      }
-
-      const negativeCached = negativeCache.get(key)
-      if (negativeCached) {
-        return createCompressionResult(negativeCached.status, startedAt, {
-          cacheHit: "negative",
-          diagnostic: negativeCached.diagnostic,
-          diagnosticDetail: negativeCached.diagnosticDetail,
-          inputBytes: negativeCached.inputBytes,
-          outputBytes: negativeCached.outputBytes,
-        })
-      }
-
-      const running = inFlight.get(key)
-      if (running) {
-        return await running
-      }
-
-      const createTimeoutResult = (): ImageCompressionResult =>
-        createCompressionResult("timeout", startedAt, {
-          diagnostic: "compression_timeout",
-          diagnosticDetail: {
-            message: `Compression exceeded ${options.timeoutMs}ms timeout.`,
-            stage: "timeout",
-          },
-        })
-      const abortController = new AbortController()
-      const operation = semaphore
-        .run(async () => {
-          const result = await compressWithSharp(
-            parsed.buffer,
-            input,
-            options,
-            startedAt,
+      const result = await runtime.run({
+        contentBytes: parsed.decodedBytes,
+        contentIdentity: parsed.base64Payload,
+        format: options.format,
+        inputBytes: Buffer.byteLength(input.dataUrl, "utf8"),
+        mimeType: parsed.mimeType,
+        namespace,
+        optimizerVersion: OPTIMIZER_VERSION,
+        policyKey: createCompressionPolicyKey(options),
+        profile: input.profile,
+        signal: input.signal,
+        sourceDetail: input.detail,
+        timeoutMs: options.timeoutMs,
+        work: async (signal) => {
+          const buffer = Buffer.from(
+            parsed.base64Payload.replaceAll(/\s+/g, ""),
+            "base64",
           )
-          if (result.output) {
-            if (result.output.outputBytes < Buffer.byteLength(input.dataUrl)) {
-              registerOptimizedOutput(options.namespace, input, result.output)
-              cache.set(key, result.output)
-              return result
-            }
-
-            const noSmallerResult = createCompressionResult(
-              "no_smaller",
-              startedAt,
-              {
-                inputBytes: Buffer.byteLength(input.dataUrl, "utf8"),
-                diagnostic: "no_smaller_output",
-                outputBytes: result.output.outputBytes,
-              },
-            )
-            negativeCache.set(key, {
-              diagnostic: noSmallerResult.diagnostic,
-              diagnosticDetail: noSmallerResult.diagnosticDetail,
-              inputBytes: noSmallerResult.inputBytes,
-              outputBytes: noSmallerResult.outputBytes,
-              status: "no_smaller",
-            })
-            return noSmallerResult
+          input.onBase64Decoded?.()
+          if (options.binaryCompressor) {
+            return await options.binaryCompressor(buffer, input, signal)
           }
-
-          if (isNegativeCacheableStatus(result.status)) {
-            negativeCache.set(key, {
-              diagnostic: result.diagnostic,
-              diagnosticDetail: result.diagnosticDetail,
-              inputBytes: result.inputBytes,
-              outputBytes: result.outputBytes,
-              status: result.status,
-            })
-          }
-          return result
-        }, abortController.signal)
-        .catch((error: unknown) => {
-          if (isAbortError(error)) {
-            return createTimeoutResult()
-          }
-          throw error
-        })
-      const promise = withTimeout(operation, options.timeoutMs, () =>
-        abortController.abort(),
-      ).then((result) => result ?? createTimeoutResult())
-      const clearInFlight = () => {
-        if (inFlight.get(key) === promise) {
-          inFlight.delete(key)
-        }
+          return await compressWithSharp(buffer, input, options, signal)
+        },
+      })
+      if (!result.binaryOutput) {
+        return result
       }
-      void operation.then(clearInFlight, clearInFlight)
-
-      inFlight.set(key, promise)
-      return await promise
+      const { binaryOutput, ...publicResult } = result
+      const output = createDataUrlOutput(
+        binaryOutput.mimeType,
+        binaryOutput.buffer,
+      )
+      return {
+        ...publicResult,
+        elapsedMs: Math.max(result.elapsedMs ?? 0, Date.now() - startedAt),
+        output,
+        outputBytes: output.outputBytes,
+      }
     },
   }
 }
@@ -196,16 +124,16 @@ const compressWithSharp = async (
   buffer: Buffer,
   input: ImageCompressionInput,
   options: SharpImageCompressionAdapterOptions,
-  startedAt: number,
-): Promise<ImageCompressionResult> => {
-  const inputBytes = Buffer.byteLength(input.dataUrl, "utf8")
+  signal: AbortSignal,
+): Promise<BinaryImageCompressionResult> => {
+  throwIfAborted(signal)
   const sharp = await loadSharp()
   if (!sharp) {
-    return createCompressionResult("adapter_error", startedAt, {
+    return {
       diagnostic: "sharp_import_failed",
       diagnosticDetail: createErrorDiagnosticDetail(sharpImportError, "import"),
-      inputBytes,
-    })
+      status: "adapter_error",
+    }
   }
 
   let metadata: Metadata
@@ -214,31 +142,32 @@ const compressWithSharp = async (
       limitInputPixels: options.decodeMaxPixels ?? 67_108_864,
     })
     metadata = await base.metadata()
+    throwIfAborted(signal)
   } catch (error) {
-    return createSharpFailureResult(error, "metadata", startedAt, inputBytes)
+    return createSharpFailureResult(error, "metadata")
   }
 
   const width = metadata.width ?? 0
   const height = metadata.height ?? 0
   if (width <= 0 || height <= 0) {
-    return createCompressionResult("decode_limit", startedAt, {
+    return {
       diagnostic: "missing_image_dimensions",
       diagnosticDetail: {
         message: `metadata width=${width} height=${height}`,
         stage: "metadata",
       },
-      inputBytes,
-    })
+      status: "decode_limit",
+    }
   }
   if (!isMetadataWithinSafetyLimits(metadata, options)) {
-    return createCompressionResult("decode_limit", startedAt, {
+    return {
       diagnostic: "decode_safety_limit",
       diagnosticDetail: {
         message: createDecodeSafetyLimitMessage(metadata, options),
         stage: "metadata",
       },
-      inputBytes,
-    })
+      status: "decode_limit",
+    }
   }
 
   const resizeOptions =
@@ -286,56 +215,49 @@ const compressWithSharp = async (
         .toBuffer()
 
     if (options.format === "webp") {
-      const output = createDataUrlOutput("image/webp", await webpPromise())
-      return createCompressionResult("compressed", startedAt, {
-        inputBytes,
-        output,
-        outputBytes: output.outputBytes,
-      })
+      const output = await webpPromise()
+      throwIfAborted(signal)
+      return { buffer: output, mimeType: "image/webp" }
     }
 
     if (options.format === "auto") {
       const [jpeg, webp] = await Promise.all([jpegPromise(), webpPromise()])
-      const output =
-        webp.byteLength < jpeg.byteLength ?
-          createDataUrlOutput("image/webp", webp)
-        : createDataUrlOutput("image/jpeg", jpeg)
-      return createCompressionResult("compressed", startedAt, {
-        inputBytes,
-        output,
-        outputBytes: output.outputBytes,
-      })
+      throwIfAborted(signal)
+      return webp.byteLength < jpeg.byteLength ?
+          { buffer: webp, mimeType: "image/webp" }
+        : { buffer: jpeg, mimeType: "image/jpeg" }
     }
 
-    const output = createDataUrlOutput("image/jpeg", await jpegPromise())
-    return createCompressionResult("compressed", startedAt, {
-      inputBytes,
-      output,
-      outputBytes: output.outputBytes,
-    })
+    const output = await jpegPromise()
+    throwIfAborted(signal)
+    return { buffer: output, mimeType: "image/jpeg" }
   } catch (error) {
-    return createSharpFailureResult(error, "encode", startedAt, inputBytes)
+    return createSharpFailureResult(error, "encode")
   }
 }
 
 const createSharpFailureResult = (
   error: unknown,
   stage: string,
-  startedAt: number,
-  inputBytes: number,
-): ImageCompressionResult => {
+): BinaryImageCompressionResult => {
+  if (isAbortError(error)) {
+    return { diagnostic: "compression_aborted", status: "aborted" }
+  }
   const diagnostic = classifySharpFailure(error, stage)
-  return createCompressionResult(diagnostic.status, startedAt, {
+  return {
     diagnostic: diagnostic.diagnostic,
     diagnosticDetail: createErrorDiagnosticDetail(error, stage),
-    inputBytes,
-  })
+    status: diagnostic.status,
+  }
 }
 
 const classifySharpFailure = (
   error: unknown,
   stage: string,
-): { diagnostic: string; status: ImageCompressionStatus } => {
+): {
+  diagnostic: string
+  status: Exclude<ImageCompressionStatus, "compressed">
+} => {
   const text = getErrorSearchText(error)
   if (
     text.includes("pixel")
@@ -378,14 +300,8 @@ const createErrorDiagnosticDetail = (
   const detail: ImageCompressionDiagnosticDetail = { stage }
   if (error instanceof Error) {
     detail.name = truncateDiagnosticText(error.name, 80)
-    detail.message = truncateDiagnosticText(
-      redactDiagnosticText(error.message),
-      600,
-    )
-    detail.stack = truncateDiagnosticText(
-      redactDiagnosticText(error.stack),
-      1600,
-    )
+    detail.message = truncateDiagnosticText(error.message, 600)
+    detail.stack = truncateDiagnosticText(error.stack, 1600)
     const errorWithCode = error as Error & { code?: unknown }
     if (typeof errorWithCode.code === "string") {
       detail.code = truncateDiagnosticText(errorWithCode.code, 80)
@@ -393,10 +309,7 @@ const createErrorDiagnosticDetail = (
     return detail
   }
 
-  detail.message = truncateDiagnosticText(
-    redactDiagnosticText(String(error)),
-    600,
-  )
+  detail.message = truncateDiagnosticText(String(error), 600)
   return detail
 }
 
@@ -406,14 +319,6 @@ const getErrorSearchText = (error: unknown): string => {
   }
   return String(error).toLowerCase()
 }
-
-const redactDiagnosticText = (value: string | undefined): string | undefined =>
-  value
-    ?.replaceAll(
-      /data:[^,\s]+;base64,[A-Za-z0-9+/=_-]+/giu,
-      "[redacted-data-url]",
-    )
-    .replaceAll(/[A-Za-z0-9+/=_-]{256,}/gu, "[redacted-long-token]")
 
 const truncateDiagnosticText = (
   value: string | undefined,
@@ -467,13 +372,6 @@ const createCompressionResult = (
   status,
 })
 
-const isNegativeCacheableStatus = (
-  status: ImageCompressionStatus,
-): status is NegativeCacheStatus =>
-  status === "already_optimized"
-  || status === "decode_limit"
-  || status === "no_smaller"
-
 const isMetadataWithinSafetyLimits = (
   metadata: Metadata,
   options: SharpImageCompressionAdapterOptions,
@@ -522,16 +420,33 @@ const createDataUrlOutput = (
 
 const parseDataUrl = (
   value: string,
-): { buffer: Buffer; mimeType: string } | null => {
+): { base64Payload: string; decodedBytes: number; mimeType: string } | null => {
   const match = DATA_URL_PATTERN.exec(value)
   if (!match) {
     return null
   }
 
+  const base64Payload = match[2]
   return {
-    buffer: Buffer.from(match[2].replaceAll(/\s+/g, ""), "base64"),
+    base64Payload,
+    decodedBytes: calculateDecodedBase64Bytes(base64Payload),
     mimeType: match[1],
   }
+}
+
+const calculateDecodedBase64Bytes = (value: string): number => {
+  let encodedCharacters = 0
+  let paddingCharacters = 0
+  for (let index = value.length - 1; index >= 0; index -= 1) {
+    const character = value[index]
+    if (character === "\r" || character === "\n") continue
+    if (encodedCharacters < 2 && character === "=") paddingCharacters += 1
+    encodedCharacters += 1
+  }
+  return Math.max(
+    0,
+    Math.floor((encodedCharacters * 3) / 4) - paddingCharacters,
+  )
 }
 
 const loadSharp = async (): Promise<Sharp | null> => {
@@ -544,286 +459,25 @@ const loadSharp = async (): Promise<Sharp | null> => {
   return await sharpImportPromise
 }
 
-const getGlobalSemaphore = (concurrency: number): CompressionSemaphore => {
-  const normalizedConcurrency = Math.max(1, Math.floor(concurrency))
-  if (
-    !globalSemaphore
-    || globalSemaphoreConcurrency !== normalizedConcurrency
-  ) {
-    globalSemaphore = new CompressionSemaphore(normalizedConcurrency)
-    globalSemaphoreConcurrency = normalizedConcurrency
-  }
-  return globalSemaphore
-}
+const createCompressionPolicyKey = (
+  options: SharpImageCompressionAdapterOptions,
+): string =>
+  JSON.stringify({
+    decodeMaxBytesEstimate: options.decodeMaxBytesEstimate,
+    decodeMaxFrames: options.decodeMaxFrames,
+    decodeMaxLongEdge: options.decodeMaxLongEdge,
+    decodeMaxPixels: options.decodeMaxPixels,
+  })
 
-const isAlreadyOptimizedForProfile = (
-  namespace: string,
-  input: ImageCompressionInput,
-  buffer: Buffer,
-): boolean => {
-  const previousRank = optimizedOutputRanks.get(
-    createMediaIdentityKey(namespace, buffer),
-  )
-  return (
-    previousRank !== undefined
-    && previousRank >= getProfileRank(input.profile.name)
-  )
-}
-
-const registerOptimizedOutput = (
-  namespace: string,
-  input: ImageCompressionInput,
-  output: ImageCompressionOutput,
-): void => {
-  const parsed = parseDataUrl(output.dataUrl)
-  if (!parsed) {
-    return
-  }
-
-  const key = createMediaIdentityKey(namespace, parsed.buffer)
-  optimizedOutputRanks.delete(key)
-  optimizedOutputRanks.set(key, getProfileRank(input.profile.name))
-
-  while (optimizedOutputRanks.size > OPTIMIZED_OUTPUT_RECORD_LIMIT) {
-    const firstKey = optimizedOutputRanks.keys().next().value
-    if (!firstKey) {
-      return
-    }
-    optimizedOutputRanks.delete(firstKey)
-  }
-}
-
-const getProfileRank = (
-  profileName: ImageCompressionInput["profile"]["name"],
-): number => PROFILE_RANK[profileName]
-
-const createCacheKey = (
-  namespace: string,
-  input: ImageCompressionInput,
-  buffer: Buffer,
-): string => {
-  return createHash("sha256")
-    .update(namespace)
-    .update("\0")
-    .update(input.mimeType)
-    .update("\0")
-    .update(createBinaryHash(buffer))
-    .update("\0")
-    .update(JSON.stringify(input.profile))
-    .update("\0")
-    .update(OPTIMIZER_VERSION)
-    .digest("hex")
-}
-
-const createMediaIdentityKey = (namespace: string, buffer: Buffer): string =>
-  createHash("sha256")
-    .update(namespace)
-    .update("\0")
-    .update(createBinaryHash(buffer))
-    .update("\0")
-    .update(OPTIMIZER_VERSION)
-    .digest("hex")
-
-const createBinaryHash = (buffer: Buffer): string =>
-  createHash("sha256").update(buffer).digest("hex")
-
-class LruCache {
-  private entries = new Map<string, CacheEntry>()
-  private readonly maxBytes: number
-  private readonly maxEntries: number
-  private totalBytes = 0
-
-  constructor(maxEntries: number, maxBytes: number) {
-    this.maxEntries = maxEntries
-    this.maxBytes = maxBytes
-  }
-
-  get(key: string): ImageCompressionOutput | null {
-    const entry = this.entries.get(key)
-    if (!entry) {
-      return null
-    }
-
-    this.entries.delete(key)
-    this.entries.set(key, entry)
-    return entry.output
-  }
-
-  set(key: string, output: ImageCompressionOutput): void {
-    const size = output.outputBytes
-    if (this.maxEntries <= 0 || this.maxBytes <= 0 || size > this.maxBytes) {
-      return
-    }
-
-    const existing = this.entries.get(key)
-    if (existing) {
-      this.totalBytes -= existing.size
-      this.entries.delete(key)
-    }
-
-    this.entries.set(key, { output, size })
-    this.totalBytes += size
-    this.evict()
-  }
-
-  private evict(): void {
-    while (
-      this.entries.size > this.maxEntries
-      || this.totalBytes > this.maxBytes
-    ) {
-      const firstKey = this.entries.keys().next().value
-      if (!firstKey) {
-        return
-      }
-      const first = this.entries.get(firstKey)
-      if (first) {
-        this.totalBytes -= first.size
-      }
-      this.entries.delete(firstKey)
-    }
-  }
-}
-
-class NegativeLruCache {
-  private entries = new Map<string, NegativeCacheEntry>()
-  private readonly maxEntries: number
-
-  constructor(maxEntries: number) {
-    this.maxEntries = maxEntries
-  }
-
-  get(key: string): NegativeCacheEntry | null {
-    const entry = this.entries.get(key)
-    if (!entry) {
-      return null
-    }
-
-    this.entries.delete(key)
-    this.entries.set(key, entry)
-    return entry
-  }
-
-  set(key: string, entry: NegativeCacheEntry): void {
-    if (this.maxEntries <= 0) {
-      return
-    }
-
-    this.entries.delete(key)
-    this.entries.set(key, entry)
-    this.evict()
-  }
-
-  private evict(): void {
-    while (this.entries.size > this.maxEntries) {
-      const firstKey = this.entries.keys().next().value
-      if (!firstKey) {
-        return
-      }
-      this.entries.delete(firstKey)
-    }
-  }
-}
-
-interface SemaphoreWaiter {
-  abort?: () => void
-  reject: (error: Error) => void
-  resolve: () => void
-  signal?: AbortSignal
-}
-
-export class CompressionSemaphore {
-  private active = 0
-  private readonly limit: number
-  private readonly queue: Array<SemaphoreWaiter> = []
-
-  constructor(limit: number) {
-    this.limit = limit
-  }
-
-  async run<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-    const release = await this.acquire(signal)
-    try {
-      return await task()
-    } finally {
-      release()
-    }
-  }
-
-  private async acquire(signal?: AbortSignal): Promise<() => void> {
-    if (signal?.aborted) {
-      throw createAbortError()
-    }
-
-    if (this.active < this.limit) {
-      this.active += 1
-      return () => this.release()
-    }
-
-    await new Promise<void>((resolve, reject) => {
-      const waiter: SemaphoreWaiter = {
-        reject,
-        resolve,
-        signal,
-      }
-      if (signal) {
-        waiter.abort = () => {
-          const index = this.queue.indexOf(waiter)
-          if (index >= 0) {
-            this.queue.splice(index, 1)
-          }
-          reject(createAbortError())
-        }
-        signal.addEventListener("abort", waiter.abort, { once: true })
-      }
-      this.queue.push(waiter)
-    })
-    this.active += 1
-    return () => this.release()
-  }
-
-  private release(): void {
-    this.active -= 1
-    const waiter = this.queue.shift()
-    if (!waiter) {
-      return
-    }
-
-    if (waiter.abort && waiter.signal) {
-      waiter.signal.removeEventListener("abort", waiter.abort)
-    }
-    waiter.resolve()
-  }
+const throwIfAborted = (signal: AbortSignal): void => {
+  if (signal.aborted) throw createAbortError()
 }
 
 const createAbortError = (): Error => {
-  const error = new Error("Semaphore acquisition aborted")
+  const error = new Error("Image compression aborted")
   error.name = "AbortError"
   return error
 }
 
 const isAbortError = (error: unknown): boolean =>
   error instanceof Error && error.name === "AbortError"
-
-const withTimeout = async <T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  onTimeout?: () => void,
-): Promise<T | null> => {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<null>((resolve) => {
-        timer = setTimeout(() => {
-          resolve(null)
-          onTimeout?.()
-        }, timeoutMs)
-        timer.unref()
-      }),
-    ])
-  } finally {
-    if (timer) {
-      clearTimeout(timer)
-    }
-  }
-}

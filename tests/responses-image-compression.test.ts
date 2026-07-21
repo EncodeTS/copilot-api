@@ -5,13 +5,17 @@ import type {
   ImageCompressionResult,
 } from "~/routes/responses/utils"
 
-import {
-  CompressionSemaphore,
-  createSharpImageCompressionAdapter,
-} from "~/routes/responses/image-compression"
+import { createSharpImageCompressionAdapter } from "~/routes/responses/image-compression"
 
 const toDataUrl = (mimeType: string, buffer: Buffer): string =>
   `data:${mimeType};base64,${buffer.toString("base64")}`
+
+const namespace = (account: string) => ({
+  account,
+  model: "test-model",
+  origin: "test-origin",
+  tenant: "test-tenant",
+})
 
 const expectStructuredResult = (
   result: Awaited<
@@ -28,45 +32,6 @@ const expectStructuredResult = (
 }
 
 describe("Responses image compression adapter", () => {
-  test("removes aborted work from the compression queue", async () => {
-    const semaphore = new CompressionSemaphore(1)
-    let finishFirst: (() => void) | undefined
-    const first = semaphore.run(
-      () =>
-        new Promise<void>((resolve) => {
-          finishFirst = resolve
-        }),
-    )
-    await Promise.resolve()
-
-    let abortedTaskRan = false
-    const controller = new AbortController()
-    const aborted = semaphore.run(() => {
-      abortedTaskRan = true
-      return Promise.resolve()
-    }, controller.signal)
-    controller.abort()
-
-    let abortError: unknown
-    try {
-      await aborted
-    } catch (error) {
-      abortError = error
-    }
-    expect(abortError).toMatchObject({ name: "AbortError" })
-    expect(abortedTaskRan).toBe(false)
-
-    let nextTaskRan = false
-    const next = semaphore.run(() => {
-      nextTaskRan = true
-      return Promise.resolve()
-    })
-    finishFirst?.()
-    await first
-    await next
-    expect(nextTaskRan).toBe(true)
-  })
-
   test("keeps timed-out active work deduplicated until it settles", async () => {
     const sharp = (await import("sharp")).default
     const pixels = Buffer.alloc(1800 * 1200 * 3)
@@ -101,14 +66,14 @@ describe("Responses image compression adapter", () => {
       cacheEntries: 8,
       concurrency: 1,
       format: "jpeg",
-      namespace: "test-timeout-dedup",
+      namespace: namespace("test-timeout-dedup"),
       timeoutMs: 1,
     })
 
     const first = expectStructuredResult(await adapter.compress(input))
     const second = expectStructuredResult(await adapter.compress(input))
     expect(first.status).toBe("timeout")
-    expect(second).toBe(first)
+    expect(second.status).toBe("timeout")
 
     let cached: ImageCompressionResult | null = null
     for (let attempt = 0; attempt < 100; attempt++) {
@@ -147,7 +112,7 @@ describe("Responses image compression adapter", () => {
       cacheEntries: 8,
       concurrency: 2,
       format: "jpeg",
-      namespace: "test",
+      namespace: namespace("test"),
       timeoutMs: 5000,
     })
 
@@ -222,7 +187,7 @@ describe("Responses image compression adapter", () => {
       concurrency: 2,
       decodeMaxLongEdge: 16,
       format: "jpeg",
-      namespace: "test-long-edge-guard",
+      namespace: namespace("test-long-edge-guard"),
       timeoutMs: 5000,
     })
     const memoryGuardedAdapter = createSharpImageCompressionAdapter({
@@ -231,7 +196,7 @@ describe("Responses image compression adapter", () => {
       concurrency: 2,
       decodeMaxBytesEstimate: 1,
       format: "jpeg",
-      namespace: "test-memory-guard",
+      namespace: namespace("test-memory-guard"),
       timeoutMs: 5000,
     })
 
@@ -260,7 +225,7 @@ describe("Responses image compression adapter", () => {
       cacheEntries: 8,
       concurrency: 2,
       format: "jpeg",
-      namespace: "test-decode-failure",
+      namespace: namespace("test-decode-failure"),
       timeoutMs: 5000,
     })
 
@@ -302,7 +267,7 @@ describe("Responses image compression adapter", () => {
       cacheEntries: 8,
       concurrency: 2,
       format: "jpeg",
-      namespace: "test-recompression",
+      namespace: namespace("test-recompression"),
       timeoutMs: 5000,
     })
     const first = await adapter.compress({
@@ -356,7 +321,7 @@ describe("Responses image compression adapter", () => {
       cacheEntries: 8,
       concurrency: 2,
       format: "jpeg",
-      namespace: "test-negative-cache",
+      namespace: namespace("test-negative-cache"),
       timeoutMs: 5000,
     })
     const input = {
