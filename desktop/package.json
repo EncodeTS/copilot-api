@@ -1,12 +1,13 @@
 {
   "name": "copilot-api-desktop",
-  "version": "1.14.7",
+  "version": "2.0.0-rc.17",
+  "packageManager": "bun@1.3.14",
   "description": "Copilot API Desktop App",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "build:server": "bun run --cwd .. build:desktop",
+    "build:server": "bun run --cwd .. build:desktop && node ../scripts/prepare-desktop-server-node-modules.mjs",
     "test": "bun test tests",
     "preview": "electron-vite preview",
     "gen-icons": "rsvg-convert -w 1024 -h 1024 assets/tray-icon-colored.svg -o assets/icon.png",
@@ -15,10 +16,20 @@
     "package": "bun run build:server && electron-vite build && electron-builder",
     "package:mac": "bun run build:server && electron-vite build && electron-builder --mac",
     "package:win": "bun run build:server && electron-vite build && electron-builder --win",
-    "package:linux": "bun run build:server && electron-vite build && electron-builder --linux"
+    "package:linux": "bun run build:server && electron-vite build && electron-builder --linux",
+    "smoke:server-sharp": "node ../scripts/smoke-packaged-sharp.mjs",
+    "smoke:server-zstd": "node ../scripts/run-electron-zstd-smoke.mjs",
+    "test:coverage": "bun ../scripts/coverage/run-coverage.ts --domain desktop --repository ..",
+    "typecheck": "bun run typecheck:main && bun run typecheck:preload && bun run typecheck:web",
+    "typecheck:main": "tsc --project tsconfig.node.json --noEmit --composite false --pretty false",
+    "typecheck:preload": "tsc --project tsconfig.preload.json --noEmit --composite false --pretty false",
+    "typecheck:web": "tsc --project tsconfig.web.json --noEmit --composite false --pretty false"
   },
   "dependencies": {
     "electron-updater": "^6.3.4"
+  },
+  "overrides": {
+    "js-yaml": "4.3.0"
   },
   "build": {
     "appId": "com.copilot-api.desktop",
@@ -31,11 +42,17 @@
       "out/**/*",
       "resources/**/*"
     ],
+    "asarUnpack": [
+      "**/node_modules/sharp/**/*",
+      "**/node_modules/@img/**/*"
+    ],
     "extraResources": [
       {
         "from": "../dist",
         "to": "server",
-        "filter": ["**/*.js"]
+        "filter": [
+          "**/*.js"
+        ]
       },
       {
         "from": "../pages",
@@ -44,6 +61,10 @@
       {
         "from": "build/server-package.json",
         "to": "server/package.json"
+      },
+      {
+        "from": "build/server-node_modules",
+        "to": "server/node_modules"
       },
       {
         "from": "assets/tray-icon.png",
@@ -93,6 +114,7 @@
     "@types/bun": "^1.2.23",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
+    "@types/react-test-renderer": "18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^39.8.6",
     "electron-builder": "^26.8.1",
@@ -106,6 +128,7 @@
     "prettier": "^3.6.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-test-renderer": "18.3.1",
     "tailwindcss": "^4.1.4",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.41.0",
