@@ -2,29 +2,60 @@ name: CI
 
 on:
   push:
-    branches: [ "main", "dev" ]
+    branches: ["master", "dev"]
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+env:
+  BUN_VERSION: "1.3.14"
+  NODE_VERSION: "22.13.0"
 
 jobs:
-  test:
+  linux-quality:
+    name: Linux full quality
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: "22.13.0"
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
 
       - name: Verify Node sqlite support
         run: node -e "import('node:sqlite').then(() => console.log('node:sqlite ok')).catch((error) => { console.error(error); process.exit(1) })"
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
-          bun-version: latest
+          bun-version: ${{ env.BUN_VERSION }}
 
-      - name: Install dependencies
+      - name: Install root dependencies
         run: bun install --frozen-lockfile
+
+      - name: Install Desktop dependencies
+        working-directory: desktop
+        run: bun install --frozen-lockfile
+
+      - name: Audit production dependencies
+        run: bun run audit:production
+
+      - name: Run hermetic full suite
+        run: bun test
+
+      - name: Run randomized suite with seed 101
+        run: bun test --randomize --seed=101 --reporter=dots
+
+      - name: Run randomized suite with seed 424242
+        run: bun test --randomize --seed=424242 --reporter=dots
+
+      - name: Run randomized suite with seed 20260720
+        run: bun test --randomize --seed=20260720 --reporter=dots
 
       - name: Run linter
         run: bun run lint:all
@@ -32,8 +63,224 @@ jobs:
       - name: Run type check
         run: bun run typecheck
 
-      - name: Run tests
-        run: bun test
-
-      - name: Build
+      - name: Build server
         run: bun run build
+
+      - name: Build desktop server bundle
+        run: bun run build:desktop
+
+      - name: Verify Node 22.13 zstd runtime contract
+        run: bun run smoke:zstd-runtime
+
+      - name: Select minimum supported Node runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "20.20.0"
+          package-manager-cache: false
+
+      - name: Verify Node 20 zstd runtime contract
+        run: bun run smoke:zstd-runtime
+
+  windows-codex:
+    name: Windows Codex
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      COPILOT_API_REAL_CODEX_VERSION: "0.144.1"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
+      - name: Verify Node sqlite support
+        run: node -e "import('node:sqlite').then(() => console.log('node:sqlite ok')).catch((error) => { console.error(error); process.exit(1) })"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install pinned official Codex CLI
+        run: npm install --global @openai/codex@0.144.1
+
+      - name: Run Codex model discovery tests
+        run: bun test tests/codex-installed-catalog.test.ts tests/codex-client-models.test.ts tests/codex-version.test.ts tests/models-route.test.ts tests/responses-capabilities.test.ts
+
+      - name: Run coverage harness contract tests
+        run: bun test tests/coverage-attestation.test.ts tests/diff-coverage-harness.test.ts
+
+      - name: Run type check
+        run: bun run typecheck
+
+      - name: Build server
+        run: bun run build
+
+      - name: Build desktop server bundle
+        run: bun run build:desktop
+
+  desktop-quality:
+    name: Desktop quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install root dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install Desktop dependencies
+        working-directory: desktop
+        run: bun install --frozen-lockfile
+
+      - name: Run Desktop linter
+        run: bun run --cwd desktop lint
+
+      - name: Run Desktop type check
+        run: bun run --cwd desktop typecheck
+
+      - name: Run Desktop tests
+        run: bun run --cwd desktop test
+
+      - name: Build Desktop application
+        run: bun run --cwd desktop build
+
+  desktop-package-closure:
+    name: Desktop package closure
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install root dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install Desktop dependencies
+        working-directory: desktop
+        run: bun install --frozen-lockfile
+
+      - name: Test package-closure implementation
+        run: bun test tests/package-closure.test.js
+
+      - name: Build packaged-server dependency closure
+        run: bun run --cwd desktop build:server
+
+      - name: Verify Electron zstd utility-process runtime
+        run: xvfb-run --auto-servernum bun run --cwd desktop smoke:server-zstd
+
+      - name: Stage packaged-server layout
+        shell: bash
+        env:
+          PACKAGED_SERVER_DIR: ${{ runner.temp }}/packaged-server
+        run: |
+          mkdir -p "$PACKAGED_SERVER_DIR"
+          cp desktop/build/server-package.json "$PACKAGED_SERVER_DIR/package.json"
+          cp -R desktop/build/server-node_modules "$PACKAGED_SERVER_DIR/node_modules"
+          cp -R dist/. "$PACKAGED_SERVER_DIR/"
+
+      - name: Verify isolated Sharp import and JPEG encode
+        env:
+          PACKAGED_SERVER_DIR: ${{ runner.temp }}/packaged-server
+        run: node scripts/smoke-packaged-sharp.mjs "$PACKAGED_SERVER_DIR"
+
+  differential-coverage:
+    name: Differential coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Resolve comparison merge-base
+        id: comparison
+        shell: bash
+        env:
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          zero_sha="0000000000000000000000000000000000000000"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            candidate="$PR_BASE_SHA"
+          elif [[ "$GITHUB_EVENT_NAME" == "merge_group" ]]; then
+            candidate="$MERGE_GROUP_BASE_SHA"
+          elif [[ -n "$PUSH_BEFORE_SHA" && "$PUSH_BEFORE_SHA" != "$zero_sha" ]]; then
+            candidate="$PUSH_BEFORE_SHA"
+          else
+            candidate="$(git rev-parse HEAD^)"
+          fi
+
+          if ! git cat-file -e "${candidate}^{commit}"; then
+            git fetch --no-tags origin "$candidate"
+          fi
+
+          merge_base="$(git merge-base HEAD "$candidate")"
+          if [[ -z "$merge_base" ]]; then
+            echo "Unable to resolve a merge-base for HEAD and $candidate" >&2
+            exit 1
+          fi
+
+          echo "sha=$merge_base" >> "$GITHUB_OUTPUT"
+          echo "Differential coverage base: $merge_base"
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install root dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install Desktop dependencies
+        working-directory: desktop
+        run: bun install --frozen-lockfile
+
+      - name: Generate root LCOV and attestation
+        run: bun run test:coverage:root
+
+      - name: Generate Desktop LCOV and attestation
+        run: bun run test:coverage:desktop
+
+      - name: Enforce changed-line coverage
+        run: bun run test:coverage:diff -- --base "${{ steps.comparison.outputs.sha }}" --threshold 85
+
+      - name: Upload LCOV reports and attestations
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: differential-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            coverage/root/lcov.info
+            coverage/root/attestation.json
+            coverage/desktop/lcov.info
+            coverage/desktop/attestation.json
+          if-no-files-found: warn
+          retention-days: 14
