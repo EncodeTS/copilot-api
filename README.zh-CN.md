@@ -706,13 +706,14 @@ curl http://localhost:4141/admin/config/model-mappings \
 
 这些端点模拟 OpenAI API 结构。
 
-| 端点                           | 方法   | 说明                                                                                                                                                                                           |
-| ------------------------------ | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /v1/responses`           | `POST` | OpenAI 中用于生成模型响应的高级接口。支持 `openai-responses` provider 的 `provider/model` 别名。                                                                                               |
-| `POST /:provider/v1/responses` | `POST` | 将 Responses 请求直接代理到指定的 `openai-responses` provider。模型应使用不带 `provider/` 前缀的上游模型 ID。                                                                                  |
-| `POST /v1/chat/completions`    | `POST` | 为给定聊天对话创建模型响应。支持 `openai-compatible` provider 的 `provider/model` 别名；目标 provider 已配置时可在没有 Copilot 的情况下使用。                                                  |
-| `GET /v1/models`               | `GET`  | 列出 Copilot 模型以及已启用 provider 的 `provider/model-id` 模型。Codex 客户端会收到与自身版本匹配的 bundled descriptor，并叠加 Copilot 官方实时上下文能力；无法匹配时安全回退为空的远端列表。 |
-| `POST /v1/embeddings`          | `POST` | 创建表示输入文本的向量嵌入。                                                                                                                                                                   |
+| 端点                              | 方法   | 说明                                                                                                                                                                                           |
+| --------------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /v1/responses`              | `POST` | OpenAI 中用于生成模型响应的高级接口。支持 `openai-responses` provider 的 `provider/model` 别名。                                                                                               |
+| `POST /:provider/v1/responses`    | `POST` | 将 Responses 请求直接代理到指定的 `openai-responses` provider。模型应使用不带 `provider/` 前缀的上游模型 ID。                                                                                  |
+| `POST /:provider/v1/alpha/search` | `POST` | 将 Alpha Search 直接代理到指定的 `openai-responses` provider。网关会精确保留 query string 和 JSON 请求字节、以 provider 鉴权覆盖调用方凭据，并且不提供无版本前缀的 provider 路由。             |
+| `POST /v1/chat/completions`       | `POST` | 为给定聊天对话创建模型响应。支持 `openai-compatible` provider 的 `provider/model` 别名；目标 provider 已配置时可在没有 Copilot 的情况下使用。                                                  |
+| `GET /v1/models`                  | `GET`  | 列出 Copilot 模型以及已启用 provider 的 `provider/model-id` 模型。Codex 客户端会收到与自身版本匹配的 bundled descriptor，并叠加 Copilot 官方实时上下文能力；无法匹配时安全回退为空的远端列表。 |
+| `POST /v1/embeddings`             | `POST` | 创建表示输入文本的向量嵌入。                                                                                                                                                                   |
 
 ### Codex 后端代理端点
 
@@ -720,7 +721,7 @@ curl http://localhost:4141/admin/config/model-mappings \
 
 | 端点                                                        | 方法   | 说明                                                                                                                                                                   |
 | ----------------------------------------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /alpha/search`<br>`POST /v1/alpha/search`             | `POST` | 将 JSON 请求体和查询参数透明转发到 Codex Alpha Search 上游。                                                                                                           |
+| `POST /alpha/search`<br>`POST /v1/alpha/search`             | `POST` | 兼容性别名：将 JSON 请求体原始字节和 query string 精确转发到 Codex Alpha Search 上游。                                                                                 |
 | `POST /images/generations`<br>`POST /v1/images/generations` | `POST` | 将 JSON 图片生成请求转发到 Codex Images 上游。请求未携带 `Content-Type` 时，网关默认补充 `application/json`。                                                          |
 | `POST /images/edits`<br>`POST /v1/images/edits`             | `POST` | 将图片编辑请求转发到 Codex Images 上游。请使用 `multipart/form-data`，并让 HTTP 客户端自动生成 `boundary`；网关会保留传入的 content type，并以流式方式转发上传请求体。 |
 

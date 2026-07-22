@@ -2,6 +2,7 @@ import { Hono, type ErrorHandler } from "hono"
 import { logger } from "hono/logger"
 import { readFileSync } from "node:fs"
 
+import { createQuerySafeAccessLogOutput } from "./lib/access-logger"
 import {
   createNetworkSecurityMiddleware,
   createUsageViewerContentSecurityPolicy,
@@ -54,7 +55,7 @@ server.onError(serverErrorHandler)
 
 server.use("*", createNetworkSecurityMiddleware())
 server.use(traceIdMiddleware)
-server.use(logger())
+server.use(logger(createQuerySafeAccessLogOutput()))
 server.use(
   "*",
   createAuthMiddleware({
@@ -111,6 +112,7 @@ server.route("/v1/images", imageRoutes)
 server.route("/v1/messages", messageRoutes)
 
 // Provider-scoped endpoints
+server.route("/:provider/v1/alpha/search", alphaSearchRoutes)
 server.route("/:provider/v1/messages", providerMessageRoutes)
 server.route("/:provider/v1/models", providerModelRoutes)
 server.route("/:provider/v1/responses", providerResponsesRoutes)
