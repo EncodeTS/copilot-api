@@ -34,64 +34,80 @@ export const fixStreamIds = (
 ): string => {
   if (!data) return data
   const parsed = JSON.parse(data) as ResponseStreamEvent
-  switch (event) {
+  return fixParsedStreamIds(data, parsed, tracker, event)
+}
+
+export const fixParsedStreamIds = (
+  data: string,
+  parsed: ResponseStreamEvent,
+  tracker: StreamIdTracker,
+  wireEvent: string | undefined = parsed.type,
+): string => {
+  switch (wireEvent) {
     case "response.output_item.added": {
-      return handleOutputItemAdded(
+      return handleOutputItemAddedData(
+        data,
         parsed as ResponseOutputItemAddedEvent,
         tracker,
       )
     }
     case "response.output_item.done": {
-      return handleOutputItemDone(
+      return handleOutputItemDoneData(
+        data,
         parsed as ResponseOutputItemDoneEvent,
         tracker,
       )
     }
     default: {
-      return handleItemId(parsed, tracker)
+      return handleItemIdData(data, parsed, tracker)
     }
   }
 }
 
-const handleOutputItemAdded = (
+const handleOutputItemAddedData = (
+  data: string,
   parsed: ResponseOutputItemAddedEvent,
   tracker: StreamIdTracker,
 ): string => {
-  if (!parsed.item.id) {
-    let randomSuffix = ""
-    while (randomSuffix.length < 16) {
-      randomSuffix += Math.random().toString(36).slice(2)
-    }
-    parsed.item.id = `oi_${parsed.output_index}_${randomSuffix.slice(0, 16)}`
+  if (parsed.item.id) {
+    tracker.outputItems.set(parsed.output_index, parsed.item.id)
+    return data
   }
 
-  const outputIndex = parsed.output_index
-  tracker.outputItems.set(outputIndex, parsed.item.id)
-  return JSON.stringify(parsed)
+  let randomSuffix = ""
+  while (randomSuffix.length < 16) {
+    randomSuffix += Math.random().toString(36).slice(2)
+  }
+  const id = `oi_${parsed.output_index}_${randomSuffix.slice(0, 16)}`
+  tracker.outputItems.set(parsed.output_index, id)
+  return JSON.stringify({ ...parsed, item: { ...parsed.item, id } })
 }
 
-const handleOutputItemDone = (
+const handleOutputItemDoneData = (
+  data: string,
   parsed: ResponseOutputItemDoneEvent,
   tracker: StreamIdTracker,
 ): string => {
   const outputIndex = parsed.output_index
   const originalId = tracker.outputItems.get(outputIndex)
-  if (originalId) {
-    parsed.item.id = originalId
-  }
-  return JSON.stringify(parsed)
+  if (!originalId || parsed.item.id === originalId) return data
+  return JSON.stringify({
+    ...parsed,
+    item: { ...parsed.item, id: originalId },
+  })
 }
 
-const handleItemId = (
+const handleItemIdData = (
+  data: string,
   parsed: ResponseStreamEvent & { output_index?: number; item_id?: string },
   tracker: StreamIdTracker,
 ): string => {
   const outputIndex = parsed.output_index
   if (outputIndex !== undefined) {
     const itemId = tracker.outputItems.get(outputIndex)
-    if (itemId) {
-      parsed.item_id = itemId
+    if (itemId && parsed.item_id !== itemId) {
+      return JSON.stringify({ ...parsed, item_id: itemId })
     }
   }
-  return JSON.stringify(parsed)
+  return data
 }

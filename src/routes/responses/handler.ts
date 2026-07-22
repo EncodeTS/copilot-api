@@ -6,15 +6,27 @@ import {
   isResponsesApiWebSearchEnabled as isConfiguredResponsesApiWebSearchEnabled,
   resolveMappedModel,
 } from "~/lib/config"
-import { createHandlerLogger, debugJson, debugJsonTail } from "~/lib/logger"
-import { parseProviderModelAlias } from "~/lib/provider-model"
-import { handleProviderResponsesForProvider } from "~/routes/provider/responses/handler"
+import {
+  createHandlerLogger,
+  debugJson,
+  debugJsonTail,
+  logDiagnosticEvent,
+} from "~/lib/logger"
+import { observeCopilotResponsesMetadata } from "~/lib/copilot-rate-limit"
+import { responsesDiagnosticsLogger } from "~/lib/responses-diagnostic-logger"
+import { summarizeResponsesPayload } from "~/lib/responses-diagnostics"
+import { getResponsesEndpointCapabilities } from "~/lib/responses-capabilities"
+import type { ResponsesStreamSessionFrame } from "~/lib/responses-stream-session"
+import { normalizeGatewayReasoningEffort } from "~/lib/reasoning-effort"
+import {
+  routeProviderModelAlias,
+  type ProviderModelRouter,
+} from "~/routes/provider/model-router"
 import { state } from "~/lib/state"
 import {
   createCopilotTokenUsageRecorder,
   normalizeOptionalToken,
   normalizeResponsesUsage,
-  type UsageTokens,
 } from "~/lib/token-usage"
 import { generateRequestIdFromPayload, getUUID } from "~/lib/utils"
 import type { SubagentMarker } from "~/lib/subagent"
@@ -25,14 +37,18 @@ import {
   type ResponseStreamEvent,
 } from "~/services/copilot/create-responses"
 
-import { createStreamIdTracker, fixStreamIds } from "./stream-id-sync"
+import { createStreamIdTracker, fixParsedStreamIds } from "./stream-id-sync"
+import {
+  projectResponsesSessionFrame,
+  relayResponsesStreamSession,
+} from "./stream-session-adapter"
 import {
   applyResponsesApiContextManagement,
   compactInputByLatestCompaction,
   getResponsesTransportForModel,
   getResponsesRequestOptions,
-  sanitizeOversizedInputImages,
 } from "./utils"
+import { createOptimizedCopilotResponses } from "./optimized-create"
 import consola from "consola"
 
 const logger = createHandlerLogger("responses-handler")
@@ -40,28 +56,75 @@ const logger = createHandlerLogger("responses-handler")
 export const responsesHandlerDependencies = {
   createResponses: createCopilotResponses,
   isResponsesApiWebSearchEnabled: isConfiguredResponsesApiWebSearchEnabled,
+  resolveMappedModel,
 }
 
-export const handleResponses = async (c: Context) => {
+export interface ResponsesHandlerComposition {
+  providerModelRouter?: ProviderModelRouter
+}
+
+export const handleResponses = async (
+  c: Context,
+  composition: ResponsesHandlerComposition = {},
+) => {
   const payload = await c.req.json<ResponsesPayload>()
+  if (
+    typeof payload.reasoning === "object"
+    && payload.reasoning !== null
+    && Object.hasOwn(payload.reasoning, "effort")
+    && payload.reasoning.effort !== null
+  ) {
+    const effort = normalizeGatewayReasoningEffort(payload.reasoning.effort)
+    if (!effort) {
+      return c.json(
+        {
+          error: {
+            code: "unsupported_value",
+            message: "Unsupported Responses reasoning effort",
+            param: "reasoning.effort",
+            type: "invalid_request_error",
+          },
+        },
+        400,
+      )
+    }
+    payload.reasoning.effort = effort
+  }
   const requestedModel = payload.model
-  payload.model = resolveMappedModel(payload.model)
+  payload.model = responsesHandlerDependencies.resolveMappedModel(payload.model)
   if (payload.model !== requestedModel) {
     consola.debug(
       `Resolved model mapping: ${requestedModel} -> ${payload.model}`,
     )
   }
 
-  const providerModelAlias = parseProviderModelAlias(payload.model)
-  if (providerModelAlias) {
-    payload.model = providerModelAlias.model
-    return await handleProviderResponsesForProvider(c, {
-      payload,
-      provider: providerModelAlias.provider,
-    })
+  const providerResponse = await (
+    composition.providerModelRouter?.route ?? routeProviderModelAlias
+  )(c, {
+    endpoint: "responses",
+    payload,
+  })
+  if (providerResponse) return providerResponse
+
+  const unsupportedIntent = getUnsupportedCopilotResponsesIntent(payload)
+  if (unsupportedIntent) {
+    return c.json(
+      {
+        error: {
+          code: "unsupported_value",
+          message: `GitHub Copilot Responses does not support ${unsupportedIntent.label}; the request was not modified.`,
+          param: unsupportedIntent.param,
+          type: "invalid_request_error",
+        },
+      },
+      400,
+    )
   }
 
-  debugJson(logger, "Responses request payload:", payload)
+  debugJsonTail(logger, "Responses request payload:", {
+    value: payload,
+    tailLength: 2_000,
+  })
 
   const subagentMarker = getCodexResponsesSubagentMarker(c)
   if (subagentMarker) {
@@ -82,9 +145,8 @@ export const handleResponses = async (c: Context) => {
     endpoint: "responses",
     fallbackSessionId,
     model: payload.model,
+    outcome: "completed",
   })
-
-  removeUnsupportedTools(payload)
 
   if (!responsesHandlerDependencies.isResponsesApiWebSearchEnabled()) {
     removeWebSearchTool(payload)
@@ -94,6 +156,7 @@ export const handleResponses = async (c: Context) => {
     (model) => model.id === payload.model,
   )
   const responsesTransport = getResponsesTransportForModel(selectedModel)
+  const endpointCapabilities = getResponsesEndpointCapabilities(selectedModel)
 
   if (!responsesTransport) {
     return c.json(
@@ -108,81 +171,104 @@ export const handleResponses = async (c: Context) => {
     )
   }
 
-  const sanitizedImageCount = sanitizeOversizedInputImages(
-    payload,
-    selectedModel?.capabilities.limits.vision?.max_prompt_image_size,
-  )
-  if (sanitizedImageCount > 0) {
-    logger.warn(
-      `Omitted ${sanitizedImageCount} oversized input image(s) before forwarding to Copilot Responses`,
-    )
-  }
-
   // Smaller than the client compaction threshold, use server-side compaction to maintain cache hit rate
-  const maxPromptTokens = selectedModel?.capabilities.limits.max_prompt_tokens
-  const shouldCompactInput = applyResponsesApiContextManagement(
+  const contextManagementDecision = applyResponsesApiContextManagement(
     payload,
-    maxPromptTokens,
+    selectedModel?.capabilities.limits,
     {
       compactThresholdRatio: 0.8,
       source: "responses",
     },
   )
-  if (shouldCompactInput) {
+  if (contextManagementDecision.shouldPruneInput) {
     compactInputByLatestCompaction(payload)
   }
 
-  debugJson(logger, "Translated Responses payload:", payload)
+  const requestDiagnostic = summarizeResponsesPayload(payload, {
+    includePayloadBytes: false,
+  })
+  logDiagnosticEvent(responsesDiagnosticsLogger, "info", "responses.request", {
+    compactThreshold: requestDiagnostic.compactThreshold,
+    contextOwner: contextManagementDecision.owner,
+    inputItems: requestDiagnostic.inputItems,
+    model: requestDiagnostic.model,
+    requestId,
+    requestedModel,
+    sessionId: fallbackSessionId,
+    stream: requestDiagnostic.stream,
+    transport: responsesTransport,
+  })
+  const modelLimits = selectedModel?.capabilities.limits
+  logDiagnosticEvent(
+    responsesDiagnosticsLogger,
+    "debug",
+    "responses.context_management",
+    {
+      compactThreshold: requestDiagnostic.compactThreshold,
+      contextInjected: contextManagementDecision.injected,
+      contextOwner: contextManagementDecision.owner,
+      maxContextTokens: modelLimits?.max_context_window_tokens,
+      maxOutputTokens: modelLimits?.max_output_tokens,
+      promptLimitTokens: modelLimits?.max_prompt_tokens,
+      requestId,
+      sessionId: fallbackSessionId,
+      shouldPruneInput: contextManagementDecision.shouldPruneInput,
+    },
+  )
+  debugJsonTail(logger, "Translated Responses payload:", {
+    value: payload,
+    tailLength: 2_000,
+  })
 
   const { vision, initiator: inferredInitiator } =
     getResponsesRequestOptions(payload)
   const initiator = subagentMarker ? "agent" : inferredInitiator
 
-  const response = await responsesHandlerDependencies.createResponses(payload, {
-    vision,
-    initiator,
-    subagentMarker,
-    requestId,
-    sessionId: fallbackSessionId,
-    transport: responsesTransport,
+  const response = await createOptimizedCopilotResponses(payload, {
+    createResponses: responsesHandlerDependencies.createResponses,
+    logger,
+    requestOptions: {
+      allowHttpFallback:
+        responsesTransport === "websocket" && endpointCapabilities.http,
+      vision,
+      initiator,
+      reasoningRecoverySessionId: sessionId,
+      subagentMarker,
+      requestId,
+      sessionId: fallbackSessionId,
+      signal: c.req.raw.signal,
+      transport: responsesTransport,
+    },
+    selectedModel,
   })
 
   if (isStreamingRequested(payload) && isAsyncIterable(response)) {
     logger.debug("Forwarding native Responses stream")
     return streamSSE(c, async (stream) => {
       const idTracker = createStreamIdTracker()
-      let usage: UsageTokens = {}
-
-      for await (const chunk of response) {
-        debugJson(logger, "Responses stream chunk:", chunk)
-        const parsedEvent = parseResponsesStreamEvent(chunk)
-        if (
-          parsedEvent?.type === "response.completed"
-          || parsedEvent?.type === "response.failed"
-          || parsedEvent?.type === "response.incomplete"
-        ) {
-          usage = {
-            ...normalizeResponsesUsage(parsedEvent.response.usage),
-            total_nano_aiu: normalizeOptionalToken(
-              parsedEvent.copilot_usage?.total_nano_aiu,
-            ),
+      await relayResponsesStreamSession({
+        eofErrorMessage: "Responses stream ended without a terminal event",
+        flow: "responses",
+        logger,
+        observeFrame: (frame) => {
+          debugJsonTail(logger, "Responses stream chunk:", {
+            value: frame.wire,
+            tailLength: 1_000,
+          })
+          if (frame.kind === "event") {
+            observeCopilotResponsesMetadata(frame.event)
           }
-        }
-
-        const processedData = fixStreamIds(
-          (chunk as { data?: string }).data ?? "",
-          (chunk as { event?: string }).event,
-          idTracker,
-        )
-
-        await stream.writeSSE({
-          id: (chunk as { id?: string }).id,
-          event: (chunk as { event?: string }).event,
-          data: processedData,
-        })
-      }
-
-      recordUsage(usage)
+          if (frame.kind === "unknown") {
+            observeCopilotResponsesMetadata(frame.parsed)
+          }
+        },
+        output: stream,
+        projectFrame: (frame) => projectNativeResponsesFrame(frame, idTracker),
+        recordUsage,
+        signal: c.req.raw.signal,
+        source: response,
+        transport: responsesTransport,
+      })
     })
   }
 
@@ -207,19 +293,19 @@ const isAsyncIterable = <T>(value: unknown): value is AsyncIterable<T> =>
 const isStreamingRequested = (payload: ResponsesPayload): boolean =>
   Boolean(payload.stream)
 
-const parseResponsesStreamEvent = (
-  chunk: unknown,
-): ResponseStreamEvent | null => {
-  const data = (chunk as { data?: string }).data
-  if (!data || data === "[DONE]") {
-    return null
-  }
-
-  try {
-    return JSON.parse(data) as ResponseStreamEvent
-  } catch {
-    return null
-  }
+const projectNativeResponsesFrame = (
+  frame: ResponsesStreamSessionFrame,
+  idTracker: ReturnType<typeof createStreamIdTracker>,
+) => {
+  const message = projectResponsesSessionFrame(frame)
+  if (frame.kind !== "event" || !message) return message
+  message.data = fixParsedStreamIds(
+    message.data,
+    frame.event as unknown as ResponseStreamEvent,
+    idTracker,
+    frame.wire.event,
+  )
+  return message
 }
 
 const removeWebSearchTool = (payload: ResponsesPayload): void => {
@@ -230,29 +316,20 @@ const removeWebSearchTool = (payload: ResponsesPayload): void => {
   })
 }
 
-const COPILOT_UNSUPPORTED_TOOL_TYPES = new Set(["image_generation"])
-const COPILOT_UNSUPPORTED_TOOL_NAMESPACES = new Set(["image_gen"])
-
-export const removeUnsupportedTools = (payload: ResponsesPayload): void => {
-  if (!Array.isArray(payload.tools) || payload.tools.length === 0) return
-
-  const dropped: Array<string> = []
-  payload.tools = payload.tools.filter((t) => {
-    const type = t.type as string
-    const name = "name" in t && typeof t.name === "string" ? t.name : undefined
-    const isUnsupportedNamespace =
-      type === "namespace"
-      && name !== undefined
-      && COPILOT_UNSUPPORTED_TOOL_NAMESPACES.has(name)
-    if (COPILOT_UNSUPPORTED_TOOL_TYPES.has(type) || isUnsupportedNamespace) {
-      dropped.push(isUnsupportedNamespace ? `${type}:${name}` : type)
-      return false
-    }
-    return true
-  })
-  if (dropped.length > 0) {
-    logger.debug("Removed unsupported tools:", dropped)
+const getUnsupportedCopilotResponsesIntent = (
+  payload: ResponsesPayload,
+): { label: string; param: string } | undefined => {
+  if (payload.background === true) {
+    return { label: "background", param: "background" }
   }
+  if (
+    payload.tools?.some(
+      (tool) => (tool as { type?: unknown }).type === "image_generation",
+    )
+  ) {
+    return { label: "image_generation", param: "tools" }
+  }
+  return undefined
 }
 
 const getIncomingResponsesSessionId = (c: Context): string | undefined =>
