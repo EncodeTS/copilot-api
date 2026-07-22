@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import fs from "node:fs"
 import { fileURLToPath } from "node:url"
+import { stripVTControlCharacters } from "node:util"
 
 import {
   createHermeticTestEnvironment,
@@ -36,9 +37,11 @@ test("query-safe access output preserves the ordinary log grammar", () => {
 
 test("production access logs omit every query while preserving path and status", async () => {
   const paths = createHermeticTestPaths("copilot-api-access-log-")
+  const environment = createHermeticTestEnvironment(paths)
+  delete environment.NO_COLOR
   const child = Bun.spawn([process.execPath, serverFixture], {
     cwd: repositoryRoot,
-    env: createHermeticTestEnvironment(paths),
+    env: environment,
     stderr: "pipe",
     stdout: "pipe",
   })
@@ -55,13 +58,14 @@ test("production access logs omit every query while preserving path and status",
     statuses: [number, number]
   }
   expect(result.statuses).toEqual([404, 200])
-  expect(result.accessLines).toHaveLength(4)
-  expect(result.accessLines[0]).toBe("<-- POST /missing/v1/alpha/search")
-  expect(result.accessLines[1]).toMatch(
+  const accessLines = result.accessLines.map(stripVTControlCharacters)
+  expect(accessLines).toHaveLength(4)
+  expect(accessLines[0]).toBe("<-- POST /missing/v1/alpha/search")
+  expect(accessLines[1]).toMatch(
     /^--> POST \/missing\/v1\/alpha\/search 404 \d+(?:ms|s)$/u,
   )
-  expect(result.accessLines[2]).toBe("<-- GET /")
-  expect(result.accessLines[3]).toMatch(/^--> GET \/ 200 \d+(?:ms|s)$/u)
+  expect(accessLines[2]).toBe("<-- GET /")
+  expect(accessLines[3]).toMatch(/^--> GET \/ 200 \d+(?:ms|s)$/u)
   expect(JSON.stringify(result.accessLines)).not.toContain("private-query")
   expect(JSON.stringify(result.accessLines)).not.toContain("private-token")
   expect(JSON.stringify(result.accessLines)).not.toContain("private-probe")
