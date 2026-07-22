@@ -1,77 +1,532 @@
 name: Release
 
-permissions:
-  id-token: write
-  contents: write
-
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BUN_VERSION: "1.3.14"
+  NODE_VERSION: "22.13.0"
 
 jobs:
-  release:
+  quality:
+    name: Release quality
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      is-prerelease: ${{ steps.release-identity.outputs.is_prerelease }}
+      npm-tag: ${{ steps.release-identity.outputs.npm_tag }}
+      tag: ${{ steps.release-identity.outputs.tag }}
+      version: ${{ steps.release-identity.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      # actions/checkout v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - uses: oven-sh/setup-bun@v2
+      # actions/setup-node v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
-          bun-version: latest
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
 
-      - name: Install dependencies
+      # oven-sh/setup-bun v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Verify tag, manifest, embedded version, and lock identity
+        id: release-identity
+        run: >-
+          bun scripts/release/quality.ts
+          --tag "$GITHUB_REF_NAME"
+          --commit "$GITHUB_SHA"
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Install root dependencies from the verified lock
         run: bun install --frozen-lockfile
+
+      - name: Install Desktop dependencies from the verified lock
+        run: bun install --cwd desktop --frozen-lockfile
+
+      - name: Run hermetic tests
+        run: bun test
 
       - name: Run linter
         run: bun run lint:all
 
-      - name: Run type check
-        run: bun run typecheck
-
-      - name: Run tests
-        run: bun test
-
-      - name: Build
-        run: bun run build
-
-      - name: Setup Node for npm publish
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-          registry-url: "https://registry.npmjs.org"
-
-      - name: Detect pre-release
-        id: prerelease
+      - name: Run type checks
         run: |
-          TAG="${{ github.ref_name }}"
-          if [[ "$TAG" == *"-"* ]]; then
-            PRERELEASE_PART="${TAG#*-}"
-            PRERELEASE_PART="${PRERELEASE_PART%%+*}"
-            NPM_TAG="${PRERELEASE_PART%%.*}"
+          bun run typecheck
+          bun run --cwd desktop typecheck
 
-            if [[ ! "$NPM_TAG" =~ ^[A-Za-z][A-Za-z0-9._-]*$ ]]; then
-              echo "Unsupported prerelease channel in tag: $TAG"
+      - name: Build server and Desktop application
+        run: |
+          bun run build
+          bun run --cwd desktop build
+
+      - name: Verify packaged-server dependency closure
+        run: |
+          bun test tests/package-closure.test.js
+          bun run --cwd desktop build:server
+          mkdir -p "${RUNNER_TEMP}/packaged-server"
+          cp desktop/build/server-package.json "${RUNNER_TEMP}/packaged-server/package.json"
+          cp -R desktop/build/server-node_modules "${RUNNER_TEMP}/packaged-server/node_modules"
+          cp -R dist/. "${RUNNER_TEMP}/packaged-server/"
+          node scripts/smoke-packaged-sharp.mjs "${RUNNER_TEMP}/packaged-server"
+          node scripts/smoke-zstd-runtime.mjs "${RUNNER_TEMP}/packaged-server"
+
+      - name: Pin OIDC-capable npm CLI
+        run: npm install --global npm@11.17.0
+
+      - name: Build npm publication artifact
+        run: |
+          # build:server above intentionally produced the Desktop-flavored bundle.
+          # Restore the root publication bundle before creating the npm tarball.
+          bun run build
+          mkdir -p release-artifacts/npm
+          npm pack --ignore-scripts --pack-destination release-artifacts/npm
+          test "$(find release-artifacts/npm -maxdepth 1 -name '*.tgz' | wc -l | tr -d ' ')" = "1"
+
+      # actions/upload-artifact v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: npm-package-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-artifacts/npm/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  build-desktop:
+    name: Build Desktop (${{ matrix.platform }}-${{ matrix.arch }})
+    needs: quality
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: mac
+            arch: arm64
+            runner: macos-latest
+          - platform: mac
+            arch: x64
+            runner: macos-15-intel
+          - platform: windows
+            arch: x64
+            runner: windows-latest
+    steps:
+      # actions/checkout v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      # actions/setup-node v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
+
+      # oven-sh/setup-bun v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install verified dependencies
+        shell: bash
+        run: |
+          bun install --frozen-lockfile
+          bun install --cwd desktop --frozen-lockfile
+
+      - name: Build native Desktop package
+        shell: bash
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          if [[ "${{ matrix.platform }}" == "mac" ]]; then
+            bun run --cwd desktop package:mac -- --${{ matrix.arch }}
+          else
+            bun run --cwd desktop package:win
+          fi
+
+      - name: Smoke actual packaged server, Sharp, and zstd runtime
+        shell: bash
+        run: >-
+          node scripts/release/smoke-packaged-desktop.mjs
+          --release-directory desktop/release
+          --version "${{ needs.quality.outputs.version }}"
+
+      - name: Stage platform assets and checksums
+        shell: bash
+        run: >-
+          bun scripts/release/desktop-assets.ts stage
+          --tag "${{ needs.quality.outputs.tag }}"
+          --platform "${{ matrix.platform }}"
+          --arch "${{ matrix.arch }}"
+          --release-directory desktop/release
+          --output desktop/upload
+
+      # actions/upload-artifact v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: desktop-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: desktop/upload/*
+          if-no-files-found: error
+          retention-days: 7
+
+  build-docker:
+    name: Build and smoke Docker (${{ matrix.arch }})
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      # actions/checkout v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      # oven-sh/setup-bun v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      # docker/setup-qemu-action v3; arm64 runtime smoke uses registered binfmt.
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
+        with:
+          platforms: arm64,amd64
+
+      # docker/setup-buildx-action v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      # oras-project/setup-oras v1, ORAS CLI 1.3.0
+      - uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6
+        with:
+          version: 1.3.0
+
+      - name: Build one immutable platform OCI result
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ needs.quality.outputs.version }}
+        run: |
+          artifact="release-artifacts/docker/${ARCH}"
+          image="copilot-api-release:${ARCH}-${GITHUB_SHA}"
+          mkdir -p "$artifact"
+          docker buildx build \
+            --platform "linux/${ARCH}" \
+            --tag "$image" \
+            --build-arg "VERSION=${VERSION}" \
+            --provenance=false \
+            --sbom=false \
+            --output "type=oci,dest=${artifact}/oci-layout,tar=false" \
+            --metadata-file "${artifact}/build-metadata.json" \
+            .
+
+      - name: Verify the exported OCI manifest and config digests
+        id: docker-descriptor
+        shell: bash
+        run: >-
+          bun scripts/release/docker-oci.ts verify
+          --layout "release-artifacts/docker/${{ matrix.arch }}/oci-layout"
+          --metadata "release-artifacts/docker/${{ matrix.arch }}/build-metadata.json"
+          --platform "linux/${{ matrix.arch }}"
+          --version "${{ needs.quality.outputs.version }}"
+          --descriptor-output "release-artifacts/docker/${{ matrix.arch }}/descriptor.json"
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Load and smoke the exact OCI platform manifest digest
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          CONFIG_DIGEST: ${{ steps.docker-descriptor.outputs.config_digest }}
+          MANIFEST_DIGEST: ${{ steps.docker-descriptor.outputs.manifest_digest }}
+          VERSION: ${{ needs.quality.outputs.version }}
+        run: |
+          registry_name="copilot-release-registry-${ARCH}"
+          registry_ref="localhost:5000/copilot-api:${ARCH}-${GITHUB_SHA}"
+          docker run --detach --name "$registry_name" \
+            --publish 127.0.0.1:5000:5000 \
+            registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          trap 'docker rm --force "$registry_name" >/dev/null' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent --show-error http://127.0.0.1:5000/v2/ >/dev/null; then
+              break
+            fi
+            if [[ "$attempt" == "30" ]]; then
+              echo "Local OCI registry did not become ready."
               exit 1
             fi
-
-            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=${NPM_TAG}" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+            sleep 1
+          done
+          oras cp --from-oci-layout --to-plain-http \
+            "release-artifacts/docker/${ARCH}/oci-layout@${MANIFEST_DIGEST}" \
+            "$registry_ref"
+          resolved="$(oras resolve --plain-http "$registry_ref")"
+          if [[ "$resolved" != "$MANIFEST_DIGEST" ]]; then
+            echo "Local registry manifest digest mismatch: ${resolved} != ${MANIFEST_DIGEST}"
+            exit 1
           fi
+          exact_image="localhost:5000/copilot-api@${MANIFEST_DIGEST}"
+          docker pull "$exact_image"
+          node scripts/release/smoke-docker-image.mjs \
+            --image "$exact_image" \
+            --config-digest "$CONFIG_DIGEST" \
+            --version "$VERSION"
 
-      - name: Generate GitHub Release notes
+      # actions/upload-artifact v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: docker-oci-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-artifacts/docker
+          if-no-files-found: error
+          retention-days: 7
+
+  docker-artifact-quality:
+    name: Docker artifact quality
+    needs: [quality, build-docker]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # actions/checkout v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      # oven-sh/setup-bun v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      # actions/download-artifact v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: docker-oci-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: docker-oci
+          merge-multiple: true
+
+      - name: Rehash and verify both tested OCI artifacts
+        run: >-
+          bun scripts/release/docker-oci.ts verify-set
+          --directory docker-oci
+          --version "${{ needs.quality.outputs.version }}"
+
+  publish-npm:
+    name: Publish npm
+    needs: quality
+    # Keep npm publishing opt-in until Trusted Publisher binding is complete.
+    # A failed/skipped `needs` dependency still prevents this job from running.
+    if: ${{ vars.ENABLE_NPM_PUBLISH == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      # actions/download-artifact v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: npm-package-${{ github.run_id }}-${{ github.run_attempt }}
+          path: npm-package
+
+      # actions/setup-node v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: "24"
+          package-manager-cache: false
+          registry-url: https://registry.npmjs.org
+
+      - name: Pin OIDC-capable npm CLI
+        run: npm install --global npm@11.17.0
+
+      - name: Publish the quality-built tarball with OIDC
+        shell: bash
         run: |
-          if [[ "${{ steps.prerelease.outputs.is_prerelease }}" == "true" ]]; then
-            bunx changelogithub --prerelease
-          else
-            bunx changelogithub
-          fi
+          shopt -s nullglob
+          tarballs=(./npm-package/*.tgz)
+          test "${#tarballs[@]}" -eq 1
+          npm publish --access public --tag "${{ needs.quality.outputs.npm-tag }}" "${tarballs[0]}"
+
+  publish-desktop:
+    name: Publish immutable GitHub Release
+    needs: [quality, build-desktop]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      # actions/checkout v6: release scripts only; credentials stay out of the worktree.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      # oven-sh/setup-bun v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      # actions/download-artifact v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: desktop-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: desktop-assets
+          merge-multiple: true
+
+      - name: Verify the complete platform asset and checksum set
+        run: >-
+          bun scripts/release/desktop-assets.ts verify
+          --tag "${{ needs.quality.outputs.tag }}"
+          --directory desktop-assets
+
+      - name: Refuse to mutate an existing release
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.quality.outputs.tag }}
+        run: |
+          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}")"
+          if [[ "$status" != "404" ]]; then
+            echo "Refusing to replace immutable release ${RELEASE_TAG} (HTTP ${status})."
+            exit 1
+          fi
 
-      - name: Publish to npm (Trusted Publisher / OIDC)
-        run: npm publish --access public --tag ${{ steps.prerelease.outputs.npm_tag }}
+      # softprops/action-gh-release v2, pinned to a reviewed commit.
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+        with:
+          tag_name: ${{ needs.quality.outputs.tag }}
+          prerelease: ${{ needs.quality.outputs.is-prerelease }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: desktop-assets/*
+
+  publish-docker:
+    name: Publish immutable Docker image
+    needs: [quality, docker-artifact-quality]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # actions/checkout v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      # docker/setup-buildx-action v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      # oven-sh/setup-bun v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      # oras-project/setup-oras v1, ORAS CLI 1.3.0
+      - uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6
+        with:
+          version: 1.3.0
+
+      # docker/login-action v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # docker/metadata-action v5 normalizes the repository name for GHCR.
+      - uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051
+        id: docker-metadata
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: type=raw,value=${{ needs.quality.outputs.tag }}
+
+      # actions/download-artifact v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: docker-oci-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: docker-oci
+          merge-multiple: true
+
+      - name: Reverify downloaded OCI artifacts before registry access
+        run: >-
+          bun scripts/release/docker-oci.ts verify-set
+          --directory docker-oci
+          --version "${{ needs.quality.outputs.version }}"
+
+      - name: Refuse to replace an existing Docker version tag
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ fromJSON(steps.docker-metadata.outputs.json).tags[0] }}
+        run: |
+          for candidate in "$IMAGE_TAG" "${IMAGE_TAG}-linux-amd64" "${IMAGE_TAG}-linux-arm64"; do
+            set +e
+            inspect_output="$(docker buildx imagetools inspect "$candidate" 2>&1)"
+            inspect_status=$?
+            set -e
+            if [[ "$inspect_status" == "0" ]]; then
+              echo "Refusing to replace immutable Docker image ${candidate}."
+              exit 1
+            fi
+            if ! grep --extended-regexp --ignore-case --quiet \
+              'manifest unknown|name unknown|not found' <<<"$inspect_output"; then
+              echo "Cannot prove that the Docker version tag is absent; refusing publication."
+              echo "$inspect_output"
+              exit 1
+            fi
+          done
+
+      - name: Push only the tested OCI manifests and verify their descriptors
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ fromJSON(steps.docker-metadata.outputs.json).tags[0] }}
+        run: |
+          for arch in amd64 arm64; do
+            manifest_digest="$(bun -e "console.log((await Bun.file('docker-oci/${arch}/descriptor.json').json()).manifestDigest)")"
+            destination="${IMAGE_TAG}-linux-${arch}"
+            oras cp --from-oci-layout \
+              "docker-oci/${arch}/oci-layout@${manifest_digest}" \
+              "$destination"
+            resolved="$(oras resolve "$destination")"
+            if [[ "$resolved" != "$manifest_digest" ]]; then
+              echo "Registry manifest digest mismatch for ${arch}: ${resolved} != ${manifest_digest}"
+              exit 1
+            fi
+          done
+
+      - name: Promote tested platform manifests into the final index
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ fromJSON(steps.docker-metadata.outputs.json).tags[0] }}
+        run: |
+          image_repository="${IMAGE_TAG%:*}"
+          amd64_manifest="$(bun -e "console.log((await Bun.file('docker-oci/amd64/descriptor.json').json()).manifestDigest)")"
+          arm64_manifest="$(bun -e "console.log((await Bun.file('docker-oci/arm64/descriptor.json').json()).manifestDigest)")"
+          docker buildx imagetools create \
+            --tag "$IMAGE_TAG" \
+            --metadata-file published-docker-metadata.json \
+            "${image_repository}@${amd64_manifest}" \
+            "${image_repository}@${arm64_manifest}"
+          docker buildx imagetools inspect --raw "$IMAGE_TAG" > published-docker-index.json
+          oras resolve "$IMAGE_TAG" > published-docker-resolved.txt
+
+      - name: Verify published index uses exactly the tested manifests
+        run: >-
+          bun scripts/release/docker-oci.ts verify-published
+          --directory docker-oci
+          --version "${{ needs.quality.outputs.version }}"
+          --index published-docker-index.json
+          --metadata published-docker-metadata.json
+          --resolved-digest "$(tr -d '\r\n' < published-docker-resolved.txt)"
