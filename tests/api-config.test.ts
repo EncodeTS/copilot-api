@@ -3,6 +3,7 @@ import { afterEach, expect, test } from "bun:test"
 import {
   prepareForCompact,
   prepareMessageProxyHeaders,
+  resolveInteractionInitiator,
 } from "../src/lib/api-config"
 import { COMPACT_AUTO_CONTINUE, COMPACT_REQUEST } from "../src/lib/compact"
 
@@ -63,4 +64,39 @@ test("prepareForCompact marks compact traffic as agent initiated", () => {
   expect(compactHeaders["x-initiator"]).toBe("agent")
   expect(autoContinueHeaders["x-initiator"]).toBe("agent")
   expect(normalHeaders["x-initiator"]).toBe("user")
+})
+
+test("resolveInteractionInitiator applies subagent and compact policy once", () => {
+  expect(
+    resolveInteractionInitiator({
+      initiator: "user",
+      isSubagent: false,
+    }),
+  ).toBe("user")
+  expect(
+    resolveInteractionInitiator({
+      initiator: "agent",
+      isSubagent: false,
+    }),
+  ).toBe("agent")
+  expect(
+    resolveInteractionInitiator({
+      initiator: "user",
+      isSubagent: true,
+    }),
+  ).toBe("agent")
+  expect(
+    resolveInteractionInitiator({
+      compactType: COMPACT_REQUEST,
+      initiator: "user",
+      isSubagent: false,
+    }),
+  ).toBe("agent")
+  expect(
+    resolveInteractionInitiator({
+      compactType: 0,
+      initiator: "user",
+      isSubagent: false,
+    }),
+  ).toBe("user")
 })

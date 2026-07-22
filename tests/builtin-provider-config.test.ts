@@ -5,14 +5,51 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 
 interface ConfigFileShape {
+  auth?: {
+    adminApiKey?: string
+    apiKeys?: Array<string>
+  }
   builtinProviders?: Record<string, unknown>
+  configSchemaVersion?: number
   contextManagement?: {
+    futureMode?: string
     messages?: boolean
     responses?: boolean
   }
   extraPrompts?: Record<string, string>
+  futureSetting?: {
+    enabled?: boolean
+  }
   modelReasoningEfforts?: Record<string, string>
   modelResponsesApiCompactThresholds?: Record<string, number>
+  migrationState?: {
+    contextManagementMessages?: string
+  }
+  nativeMessagesOutboundHardEnforcement?: boolean
+  nativeMessagesOutboundMaxBodyBytes?: number
+  nativeMessagesOutboundMaxImageSourceDataBytes?: number
+  responsesImageCompression?: boolean
+  responsesImageCompressionCacheBytes?: number
+  responsesImageCompressionConcurrency?: number
+  responsesImageCompressionMaxActionsPerRequest?: number
+  responsesImageMaxInputImageBytes?: number
+  responsesImageOptimization?: boolean
+  responsesImageRetryRequiresHttp?: boolean
+  responsesPayloadBudgetBytes?: number
+  responsesPayloadRetryBudgetBytes?: number
+  responsesPayloadSendHardLimitBytes?: number
+  responsesWebSocketCapacityWaitMs?: number
+  responsesWebSocketDedicatedConnectionLimit?: number
+  responsesWebSocketGlobalConnectionLimit?: number
+  responsesWebSocketIdleConnectionLimit?: number
+  responsesWebSocketIdleTimeoutMs?: number
+  responsesWebSocketMaxFrameBytes?: number
+  responsesWebSocketMaxQueuedBytes?: number
+  responsesWebSocketMaxQueuedFrames?: number
+  responsesWebSocketPerCapacityKeyConnectionLimit?: number
+  responsesApiContextManagementModels?: Array<string>
+  useFunctionApplyPatch?: boolean
+  useResponsesApiWebSocket?: boolean
   providers?: Record<
     string,
     {
@@ -20,7 +57,11 @@ interface ConfigFileShape {
       enabled?: boolean
       baseUrl?: string
       apiKey?: string
+      allowInsecureHttp?: boolean
       authType?: string
+      capabilities?: {
+        responsesContextManagement?: boolean
+      }
     }
   >
 }
@@ -47,7 +88,10 @@ function readConfigFile(configPath: string): ConfigFileShape {
   return JSON.parse(fs.readFileSync(configPath, "utf8")) as ConfigFileShape
 }
 
-function runScript(tempDir: string, script: string): string {
+function runScriptWithOutput(
+  tempDir: string,
+  script: string,
+): { stderr: string; stdout: string } {
   const result = Bun.spawnSync({
     cmd: [process.execPath, "--eval", script],
     cwd,
@@ -65,7 +109,14 @@ function runScript(tempDir: string, script: string): string {
     )
   }
 
-  return decoder.decode(result.stdout).trim()
+  return {
+    stderr: decoder.decode(result.stderr).trim(),
+    stdout: decoder.decode(result.stdout).trim(),
+  }
+}
+
+function runScript(tempDir: string, script: string): string {
+  return runScriptWithOutput(tempDir, script).stdout
 }
 
 afterEach(() => {
@@ -76,6 +127,87 @@ afterEach(() => {
 })
 
 describe("builtin provider config", () => {
+  test("persists credentials and overrides without materializing defaults", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = path.join(tempDir, "config.json")
+
+    runScript(
+      tempDir,
+      'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
+    )
+
+    const persisted = readConfigFile(configPath)
+    expect(persisted.configSchemaVersion).toBe(2)
+    expect(persisted.auth?.adminApiKey).toMatch(/^[a-f0-9]{64}$/)
+    expect(persisted.auth?.apiKeys).toBeUndefined()
+    expect(persisted.contextManagement).toBeUndefined()
+    expect(persisted.extraPrompts).toBeUndefined()
+    expect(persisted.modelReasoningEfforts).toBeUndefined()
+    expect(persisted.responsesImageOptimization).toBeUndefined()
+    expect(persisted.responsesPayloadBudgetBytes).toBeUndefined()
+    expect(persisted.useResponsesApiWebSocket).toBeUndefined()
+  })
+
+  test("prunes materialized defaults while preserving overrides and unknown fields", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {
+      futureSetting: { enabled: true },
+      responsesImageOptimization: true,
+      responsesPayloadBudgetBytes: 31_457_280,
+      useResponsesApiWebSocket: false,
+    })
+
+    runScript(
+      tempDir,
+      'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
+    )
+
+    const persisted = readConfigFile(configPath)
+    expect(persisted.futureSetting).toEqual({ enabled: true })
+    expect(persisted.useResponsesApiWebSocket).toBe(false)
+    expect(persisted.responsesImageOptimization).toBeUndefined()
+    expect(persisted.responsesPayloadBudgetBytes).toBeUndefined()
+  })
+
+  test("preserves explicit values after sparse config migration", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {
+      configSchemaVersion: 2,
+      contextManagement: {
+        responses: false,
+      },
+    })
+
+    runScript(
+      tempDir,
+      'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
+    )
+
+    expect(readConfigFile(configPath).contextManagement).toEqual({
+      responses: false,
+    })
+  })
+
+  test("preserves unknown nested fields after sparse config migration", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {
+      configSchemaVersion: 1,
+      contextManagement: {
+        futureMode: "adaptive",
+        responses: false,
+      },
+    })
+
+    runScript(
+      tempDir,
+      'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
+    )
+
+    expect(readConfigFile(configPath).contextManagement).toEqual({
+      futureMode: "adaptive",
+    })
+  })
+
   test("does not persist builtinProviders when missing", () => {
     const tempDir = createTempConfigDir()
     const configPath = writeConfigFile(tempDir, {})
@@ -98,20 +230,231 @@ describe("builtin provider config", () => {
     )
 
     expect(JSON.parse(output)).toEqual({
-      messages: true,
+      messages: false,
       responses: false,
     })
-    expect(readConfigFile(configPath).contextManagement).toEqual({
-      messages: true,
-      responses: false,
+    expect(readConfigFile(configPath).contextManagement).toBeUndefined()
+  })
+
+  test("adds Responses image budget defaults", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = path.join(tempDir, "config.json")
+
+    const output = runScript(
+      tempDir,
+      'const config = await import("./src/lib/config"); console.log(JSON.stringify({ enabled: config.isResponsesImageOptimizationEnabled(), budget: config.getResponsesPayloadBudgetBytes(), retryBudget: config.getResponsesPayloadRetryBudgetBytes(), hardLimit: config.getResponsesPayloadSendHardLimitBytes(), maxInputImageBytes: config.getResponsesImageMaxInputImageBytes(), compression: config.isResponsesImageCompressionEnabled(), concurrency: config.getResponsesImageCompressionConcurrency(), cacheBytes: config.getResponsesImageCompressionCacheBytes(), maxActions: config.getResponsesImageCompressionMaxActionsPerRequest(), latestHardLimitReplacement: config.isResponsesImageLatestReplacementAllowedOnHardLimit(), retryRequiresHttp: config.shouldResponsesImageRetryRequireHttp() }));',
+    )
+
+    expect(JSON.parse(output)).toEqual({
+      budget: 31_457_280,
+      cacheBytes: 268_435_456,
+      compression: true,
+      concurrency: 8,
+      enabled: true,
+      hardLimit: 33_538_048,
+      latestHardLimitReplacement: true,
+      maxActions: 64,
+      maxInputImageBytes: 25_149_440,
+      retryBudget: 29_360_128,
+      retryRequiresHttp: true,
+    })
+    const persisted = readConfigFile(configPath)
+    expect(persisted.responsesImageCompression).toBeUndefined()
+    expect(persisted.responsesImageMaxInputImageBytes).toBeUndefined()
+    expect(persisted.responsesImageOptimization).toBeUndefined()
+    expect(persisted.responsesPayloadBudgetBytes).toBeUndefined()
+  })
+
+  test("keeps native Messages outbound admission observe-only without dated limits", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = path.join(tempDir, "config.json")
+
+    const output = runScript(
+      tempDir,
+      'const config = await import("./src/lib/config"); console.log(JSON.stringify(config.getNativeMessagesOutboundAdmissionProfile()));',
+    )
+
+    expect(JSON.parse(output)).toEqual({ hardEnforcement: false })
+    const persisted = readConfigFile(configPath)
+    expect(persisted.nativeMessagesOutboundHardEnforcement).toBeUndefined()
+    expect(persisted.nativeMessagesOutboundMaxBodyBytes).toBeUndefined()
+    expect(
+      persisted.nativeMessagesOutboundMaxImageSourceDataBytes,
+    ).toBeUndefined()
+  })
+
+  test("allows explicit native Messages limits to be rolled back to observe-only", () => {
+    const tempDir = createTempConfigDir()
+    writeConfigFile(tempDir, {
+      nativeMessagesOutboundHardEnforcement: false,
+      nativeMessagesOutboundMaxBodyBytes: 1_000_000,
+      nativeMessagesOutboundMaxImageSourceDataBytes: 750_000,
+    })
+
+    const output = runScript(
+      tempDir,
+      'const config = await import("./src/lib/config"); console.log(JSON.stringify(config.getNativeMessagesOutboundAdmissionProfile()));',
+    )
+
+    expect(JSON.parse(output)).toEqual({
+      hardEnforcement: false,
+      maxBodyBytes: 1_000_000,
+      maxImageSourceDataBytes: 750_000,
+    })
+  })
+
+  test("enables native Messages hard admission only with an explicit limit", () => {
+    const tempDir = createTempConfigDir()
+    writeConfigFile(tempDir, {
+      nativeMessagesOutboundHardEnforcement: true,
+      nativeMessagesOutboundMaxBodyBytes: 1_000_000,
+    })
+
+    const output = runScript(
+      tempDir,
+      'const config = await import("./src/lib/config"); console.log(JSON.stringify(config.getNativeMessagesOutboundAdmissionProfile()));',
+    )
+
+    expect(JSON.parse(output)).toEqual({
+      hardEnforcement: true,
+      maxBodyBytes: 1_000_000,
+    })
+  })
+
+  test("applies bounded Responses websocket defaults without persisting them", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = path.join(tempDir, "config.json")
+
+    const output = runScript(
+      tempDir,
+      'const config = await import("./src/lib/config"); console.log(JSON.stringify(config.getResponsesWebSocketResourceLimits()));',
+    )
+
+    expect(JSON.parse(output)).toEqual({
+      capacityWaitMs: 250,
+      dedicatedConnectionLimit: 64,
+      globalConnectionLimit: 128,
+      idleConnectionLimit: 32,
+      idleTimeoutMs: 60_000,
+      maxFrameBytes: 33_554_432,
+      maxQueuedBytes: 67_108_864,
+      maxQueuedFrames: 4096,
+      perCapacityKeyConnectionLimit: 32,
+    })
+    const persisted = readConfigFile(configPath)
+    expect(persisted.responsesWebSocketGlobalConnectionLimit).toBeUndefined()
+    expect(persisted.responsesWebSocketMaxQueuedBytes).toBeUndefined()
+  })
+
+  test("normalizes Responses websocket limits against the global budget", () => {
+    const tempDir = createTempConfigDir()
+    writeConfigFile(tempDir, {
+      responsesWebSocketCapacityWaitMs: -1,
+      responsesWebSocketDedicatedConnectionLimit: 12,
+      responsesWebSocketGlobalConnectionLimit: 4,
+      responsesWebSocketIdleConnectionLimit: 9,
+      responsesWebSocketIdleTimeoutMs: 0,
+      responsesWebSocketMaxFrameBytes: 0,
+      responsesWebSocketMaxQueuedBytes: -1,
+      responsesWebSocketMaxQueuedFrames: 0,
+      responsesWebSocketPerCapacityKeyConnectionLimit: 8,
+    })
+
+    const output = runScript(
+      tempDir,
+      'const config = await import("./src/lib/config"); console.log(JSON.stringify(config.getResponsesWebSocketResourceLimits()));',
+    )
+
+    expect(JSON.parse(output)).toEqual({
+      capacityWaitMs: 250,
+      dedicatedConnectionLimit: 4,
+      globalConnectionLimit: 4,
+      idleConnectionLimit: 4,
+      idleTimeoutMs: 60_000,
+      maxFrameBytes: 33_554_432,
+      maxQueuedBytes: 67_108_864,
+      maxQueuedFrames: 4096,
+      perCapacityKeyConnectionLimit: 4,
+    })
+  })
+
+  test("migrates the legacy Responses image budget defaults", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {
+      responsesPayloadBudgetBytes: 4_980_736,
+      responsesPayloadRetryBudgetBytes: 4_718_592,
+      responsesPayloadSendHardLimitBytes: 5_226_496,
+    })
+
+    runScript(
+      tempDir,
+      'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
+    )
+
+    const persisted = readConfigFile(configPath)
+    expect(persisted.responsesImageMaxInputImageBytes).toBeUndefined()
+    expect(persisted.responsesPayloadBudgetBytes).toBeUndefined()
+    expect(persisted.responsesPayloadRetryBudgetBytes).toBeUndefined()
+    expect(persisted.responsesPayloadSendHardLimitBytes).toBeUndefined()
+  })
+
+  test("preserves custom image budgets without materializing the default image limit", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {
+      responsesPayloadBudgetBytes: 4_900_000,
+      responsesPayloadRetryBudgetBytes: 4_600_000,
+      responsesPayloadSendHardLimitBytes: 5_100_000,
+    })
+
+    runScript(
+      tempDir,
+      'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
+    )
+
+    expect(readConfigFile(configPath)).toMatchObject({
+      responsesPayloadBudgetBytes: 4_900_000,
+      responsesPayloadRetryBudgetBytes: 4_600_000,
+      responsesPayloadSendHardLimitBytes: 5_100_000,
+    })
+    expect(
+      readConfigFile(configPath).responsesImageMaxInputImageBytes,
+    ).toBeUndefined()
+  })
+
+  test("normalizes invalid Responses image budget config values", () => {
+    const tempDir = createTempConfigDir()
+    writeConfigFile(tempDir, {
+      responsesImageCompressionCacheBytes: -1,
+      responsesImageCompressionConcurrency: 99,
+      responsesImageCompressionMaxActionsPerRequest: -1,
+      responsesImageMaxInputImageBytes: -1,
+      responsesPayloadBudgetBytes: 10,
+      responsesPayloadRetryBudgetBytes: 40_000_000,
+      responsesPayloadSendHardLimitBytes: 20,
+    })
+
+    const output = runScript(
+      tempDir,
+      'const config = await import("./src/lib/config"); console.log(JSON.stringify({ budget: config.getResponsesPayloadBudgetBytes(), retryBudget: config.getResponsesPayloadRetryBudgetBytes(), hardLimit: config.getResponsesPayloadSendHardLimitBytes(), maxInputImageBytes: config.getResponsesImageMaxInputImageBytes(), concurrency: config.getResponsesImageCompressionConcurrency(), cacheBytes: config.getResponsesImageCompressionCacheBytes(), maxActions: config.getResponsesImageCompressionMaxActionsPerRequest() }));',
+    )
+
+    expect(JSON.parse(output)).toEqual({
+      budget: 31_457_280,
+      cacheBytes: 268_435_456,
+      concurrency: 8,
+      hardLimit: 33_538_048,
+      maxActions: 64,
+      maxInputImageBytes: 25_149_440,
+      retryBudget: 29_360_128,
     })
   })
 
   test("allows overriding context management per endpoint", () => {
     const tempDir = createTempConfigDir()
     writeConfigFile(tempDir, {
+      configSchemaVersion: 2,
       contextManagement: {
-        messages: false,
+        messages: true,
         responses: true,
       },
     })
@@ -122,9 +465,106 @@ describe("builtin provider config", () => {
     )
 
     expect(JSON.parse(output)).toEqual({
-      messages: false,
+      messages: true,
       responses: true,
     })
+  })
+
+  test("marks an unversioned legacy messages=true config for an explicit ownership decision", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {
+      contextManagement: {
+        messages: true,
+        responses: false,
+      },
+    })
+
+    const output = runScriptWithOutput(
+      tempDir,
+      'const config = await import("./src/lib/config"); config.mergeConfigWithDefaults(); console.log(JSON.stringify({ enabled: config.isContextManagementEnabledForMessages() }));',
+    )
+
+    expect(readConfigFile(configPath)).toMatchObject({
+      configSchemaVersion: 2,
+      contextManagement: {
+        messages: true,
+      },
+      migrationState: {
+        contextManagementMessages: "pending_user_decision",
+      },
+    })
+    expect(output.stderr).toContain(
+      "contextManagement.messages is temporarily disabled while this decision is pending",
+    )
+    expect(JSON.parse(output.stdout)).toEqual({ enabled: false })
+  })
+
+  test("preserves a versioned explicit messages=true choice while removing inert legacy fields", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {
+      configSchemaVersion: 1,
+      contextManagement: {
+        messages: true,
+        responses: false,
+      },
+      responsesApiContextManagementModels: ["gpt-5.6-sol"],
+      useFunctionApplyPatch: true,
+    })
+
+    const output = runScript(
+      tempDir,
+      'const config = await import("./src/lib/config"); config.mergeConfigWithDefaults(); console.log(JSON.stringify({ enabled: config.isContextManagementEnabledForMessages() }));',
+    )
+
+    const migrated = readConfigFile(configPath)
+    expect(migrated.contextManagement?.messages).toBe(true)
+    expect(migrated.migrationState).toBeUndefined()
+    expect(migrated.responsesApiContextManagementModels).toBeUndefined()
+    expect(migrated.useFunctionApplyPatch).toBeUndefined()
+    expect(JSON.parse(output)).toEqual({ enabled: true })
+  })
+
+  test("does not downgrade a config written by a future schema", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {
+      configSchemaVersion: 99,
+      contextManagement: {
+        messages: true,
+        responses: false,
+      },
+    })
+
+    runScript(
+      tempDir,
+      'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
+    )
+
+    const migrated = readConfigFile(configPath)
+    expect(migrated.configSchemaVersion).toBe(99)
+    expect(migrated.contextManagement?.messages).toBe(true)
+    expect(migrated.migrationState).toBeUndefined()
+  })
+
+  test("does not persist static model Responses API compact thresholds", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = path.join(tempDir, "config.json")
+
+    const output = runScript(
+      tempDir,
+      'const { getModelResponsesApiCompactThreshold } = await import("./src/lib/config"); console.log(JSON.stringify({ gpt54: getModelResponsesApiCompactThreshold("gpt-5.4") ?? null, gpt55: getModelResponsesApiCompactThreshold("gpt-5.5") ?? null, gpt56sol: getModelResponsesApiCompactThreshold("gpt-5.6-sol") ?? null, gpt56terra: getModelResponsesApiCompactThreshold("gpt-5.6-terra") ?? null, gpt56luna: getModelResponsesApiCompactThreshold("gpt-5.6-luna") ?? null, unknown: getModelResponsesApiCompactThreshold("gpt-test") ?? null }));',
+    )
+
+    expect(JSON.parse(output)).toEqual({
+      gpt54: null,
+      gpt55: null,
+      gpt56luna: null,
+      gpt56sol: null,
+      gpt56terra: null,
+      unknown: null,
+    })
+    expect(
+      readConfigFile(configPath).modelResponsesApiCompactThresholds,
+    ).toBeUndefined()
   })
 
   test("does not add quick provider templates by default", () => {
@@ -136,7 +576,7 @@ describe("builtin provider config", () => {
       'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
     )
 
-    expect(readConfigFile(configPath).providers).toEqual({})
+    expect(readConfigFile(configPath).providers).toBeUndefined()
   })
 
   test("isGpt56OrAbove detects gpt-5.6 and above models", () => {
@@ -197,12 +637,62 @@ describe("builtin provider config", () => {
 
     const output = runScript(
       tempDir,
-      'const { getModelResponsesApiCompactThreshold } = await import("./src/lib/config"); console.log(JSON.stringify({ gpt54: getModelResponsesApiCompactThreshold("gpt-5.4"), gpt55: getModelResponsesApiCompactThreshold("gpt-5.5") }));',
+      'const { getModelResponsesApiCompactThreshold } = await import("./src/lib/config"); console.log(JSON.stringify({ gpt54: getModelResponsesApiCompactThreshold("gpt-5.4"), gpt55: getModelResponsesApiCompactThreshold("gpt-5.5") ?? null, gpt56: getModelResponsesApiCompactThreshold("gpt-5.6-sol") ?? null }));',
     )
 
     expect(JSON.parse(output)).toEqual({
       gpt54: 123456,
-      gpt55: 217600,
+      gpt55: null,
+      gpt56: null,
+    })
+  })
+
+  test("removes legacy compact thresholds while preserving other overrides", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {
+      modelResponsesApiCompactThresholds: {
+        "gpt-5.4": 217600,
+        "gpt-5.5": 217600,
+        "gpt-5.6-sol": 231200,
+        "gpt-5.6-terra": 231200,
+        "gpt-5.6-luna": 231200,
+        "gpt-6": 100000,
+      },
+    })
+
+    runScript(
+      tempDir,
+      'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults(); mergeConfigWithDefaults();',
+    )
+
+    expect(
+      readConfigFile(configPath).modelResponsesApiCompactThresholds,
+    ).toEqual({
+      "gpt-6": 100000,
+    })
+  })
+
+  test("preserves non-legacy compact threshold values", () => {
+    const tempDir = createTempConfigDir()
+    const configPath = writeConfigFile(tempDir, {
+      modelResponsesApiCompactThresholds: {
+        "gpt-5.4": 217601,
+        "gpt-5.5": 200000,
+        "gpt-5.6-sol": 231201,
+      },
+    })
+
+    runScript(
+      tempDir,
+      'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
+    )
+
+    expect(
+      readConfigFile(configPath).modelResponsesApiCompactThresholds,
+    ).toEqual({
+      "gpt-5.4": 217601,
+      "gpt-5.5": 200000,
+      "gpt-5.6-sol": 231201,
     })
   })
 
@@ -229,6 +719,34 @@ describe("builtin provider config", () => {
       authType: "oauth2",
       baseUrl: "https://chatgpt.com/backend-api",
       apiKey: "",
+    })
+  })
+
+  test("keeps Responses context management explicit for builtin and generic providers", () => {
+    const tempDir = createTempConfigDir()
+    writeConfigFile(tempDir, {
+      providers: {
+        custom: {
+          apiKey: "custom-key",
+          baseUrl: "https://custom.example",
+          capabilities: {
+            responsesContextManagement: true,
+          },
+          type: "openai-responses",
+        },
+      },
+    })
+
+    const output = runScript(
+      tempDir,
+      'const config = await import("./src/lib/config"); const custom = config.getProviderConfig("custom"); const base = { apiKey: "", authType: "oauth2", baseUrl: "https://example.test", type: "openai-responses" }; console.log(JSON.stringify({ codex: config.supportsProviderResponsesContextManagement({ ...base, name: "codex" }), copilot: config.supportsProviderResponsesContextManagement({ ...base, name: "copilot" }), custom: custom && config.supportsProviderResponsesContextManagement(custom), unknown: config.supportsProviderResponsesContextManagement({ ...base, name: "unknown" }) }));',
+    )
+
+    expect(JSON.parse(output)).toEqual({
+      codex: true,
+      copilot: true,
+      custom: true,
+      unknown: false,
     })
   })
 
@@ -270,6 +788,39 @@ describe("builtin provider config", () => {
     )
 
     expect(JSON.parse(output)).toBeNull()
+  })
+
+  test("rejects insecure remote provider URLs unless explicitly opted in", () => {
+    const tempDir = createTempConfigDir()
+    writeConfigFile(tempDir, {
+      providers: {
+        blocked: {
+          apiKey: "provider-key",
+          baseUrl: "http://api.example.com/v1",
+          type: "openai-compatible",
+        },
+        explicit: {
+          allowInsecureHttp: true,
+          apiKey: "provider-key",
+          baseUrl: "http://api.example.com/v1",
+          type: "openai-compatible",
+        },
+      },
+    })
+
+    const output = runScript(
+      tempDir,
+      'const config = await import("./src/lib/config"); let setError = ""; try { config.setProviderConfig("new-provider", { apiKey: "key", baseUrl: "http://remote.example/v1", type: "openai-compatible" }); } catch (error) { setError = error instanceof Error ? error.message : String(error); } console.log(JSON.stringify({ blocked: config.getProviderConfig("blocked"), explicit: config.getProviderConfig("explicit"), setError }));',
+    )
+
+    const result = JSON.parse(output) as {
+      blocked: unknown
+      explicit: { baseUrl?: string } | null
+      setError: string
+    }
+    expect(result.blocked).toBeNull()
+    expect(result.explicit?.baseUrl).toBe("http://api.example.com/v1")
+    expect(result.setError).toContain("must use HTTPS")
   })
 
   test("returns commentary prompt for gpt-5.3+ models by default", () => {
@@ -358,10 +909,7 @@ describe("builtin provider config", () => {
     )
 
     const writtenConfig = readConfigFile(configPath)
-    expect(writtenConfig.extraPrompts).toBeDefined()
-    expect(Object.keys(writtenConfig.extraPrompts ?? {})).toEqual([
-      "gpt-5-mini",
-    ])
+    expect(writtenConfig.extraPrompts).toBeUndefined()
   })
 
   test("does not persist gpt-5.3+ modelReasoningEfforts in config file", () => {
@@ -373,8 +921,6 @@ describe("builtin provider config", () => {
       'const { mergeConfigWithDefaults } = await import("./src/lib/config"); mergeConfigWithDefaults();',
     )
 
-    expect(readConfigFile(configPath).modelReasoningEfforts).toEqual({
-      "gpt-5-mini": "low",
-    })
+    expect(readConfigFile(configPath).modelReasoningEfforts).toBeUndefined()
   })
 })

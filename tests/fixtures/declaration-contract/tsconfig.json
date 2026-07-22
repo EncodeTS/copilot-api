@@ -1,0 +1,15 @@
+{
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": {
+    "allowJs": false,
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "skipLibCheck": false,
+    "types": ["node", "bun"]
+  },
+  "include": [
+    "consumer.ts",
+    "../../../src/lib/token-manager-types.d.ts",
+    "../../../src/lib/zstd-worker-protocol.d.ts",
+    "../../../src/services/codex/provider-catalog-types.d.ts"
+  ]
+}

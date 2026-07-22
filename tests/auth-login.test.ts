@@ -2,7 +2,10 @@ import { afterEach, describe, expect, test } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { PassThrough } from "node:stream"
 import { fileURLToPath } from "node:url"
+
+import { promptTextWithSignal } from "../src/auth"
 
 interface ConfigFileShape {
   providers?: Record<
@@ -80,6 +83,27 @@ afterEach(() => {
 })
 
 describe("auth login validation", () => {
+  test("aborting a Codex fallback prompt tears down its input interface", async () => {
+    const input = new PassThrough()
+    const output = new PassThrough()
+    const controller = new AbortController()
+    const prompt = promptTextWithSignal("Paste code:", controller.signal, {
+      input,
+      output,
+    }).catch((error: unknown) => error)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(input.listenerCount("data")).toBeGreaterThan(0)
+
+    controller.abort()
+    const error = await prompt
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(error).toMatchObject({ name: "AbortError" })
+    expect(input.listenerCount("data")).toBe(0)
+    input.destroy()
+    output.destroy()
+  })
+
   test("rejects an unknown provider name before starting a login flow", () => {
     const tempDir = createTempDir()
     writeConfigFile(tempDir, {})
@@ -621,5 +645,5 @@ describe("auth login validation", () => {
       expect(output).toBe(item.message)
       expect(readConfigFile(tempDir).providers).toBeUndefined()
     }
-  })
+  }, 20_000)
 })
