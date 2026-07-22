@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import type {
   ResponsesPayload,
   ResponsesResult,
+  Tool,
 } from "../src/services/copilot/create-responses"
 
 import {
@@ -14,12 +15,17 @@ import {
 import { COMPACT_REQUEST } from "../src/lib/compact"
 import { state } from "../src/lib/state"
 import {
-  buildResponsesWebSocketPoolKey,
+  buildResponsesWebSocketIdentity,
   buildResponsesWebSocketPayload,
   buildResponsesWebSocketUrl,
   createResponses,
+  ensureEncryptedReasoningIncluded,
   prepareResponsesWebSocketRequest,
 } from "../src/services/copilot/create-responses"
+import {
+  admitResponsesWirePayload,
+  prepareResponsesWirePayload,
+} from "../src/services/copilot/responses-wire-artifact"
 
 const originalFetch = globalThis.fetch
 const originalOauthApp = process.env.COPILOT_API_OAUTH_APP
@@ -63,6 +69,14 @@ const fetchMock = mock((_url: string | URL | Request, _init?: RequestInit) =>
   ),
 )
 
+const parseFetchBody = (init: RequestInit | undefined): ResponsesPayload => {
+  expect(typeof init?.body).toBe("string")
+  return JSON.parse(init?.body as string) as ResponsesPayload
+}
+
+const getToolParameters = (tool: Tool | undefined): unknown =>
+  tool && "parameters" in tool ? tool.parameters : undefined
+
 beforeEach(() => {
   delete process.env.COPILOT_API_OAUTH_APP
   state.accountType = "individual"
@@ -94,6 +108,90 @@ afterEach(() => {
 })
 
 describe("createResponses", () => {
+  test("aborts an in-flight HTTP request when the caller disconnects", async () => {
+    fetchMock.mockImplementationOnce(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () =>
+              reject(
+                init.signal?.reason instanceof Error ?
+                  init.signal.reason
+                : new Error("request aborted"),
+              ),
+            { once: true },
+          )
+        }),
+    )
+    const controller = new AbortController()
+
+    const request = createResponses(
+      {
+        input: "hello",
+        model: "gpt-test",
+      },
+      {
+        initiator: "user",
+        requestId: "request-1",
+        signal: controller.signal,
+        vision: false,
+      },
+    )
+    controller.abort(new Error("client disconnected"))
+
+    const outcome = await Promise.race([
+      request.then(
+        () => "resolved",
+        (error: unknown) =>
+          error instanceof Error ? error.message : String(error),
+      ),
+      new Promise<string>((resolve) =>
+        setTimeout(() => resolve("request remained pending"), 20),
+      ),
+    ])
+    expect(outcome).toBe("client disconnected")
+  })
+
+  test("applies the configured HTTP headers deadline", async () => {
+    fetchMock.mockImplementationOnce(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () =>
+              reject(
+                init.signal?.reason instanceof Error ?
+                  init.signal.reason
+                : new Error("request aborted"),
+              ),
+            { once: true },
+          )
+        }),
+    )
+
+    const request = createResponses(
+      {
+        input: "hello",
+        model: "gpt-test",
+      },
+      {
+        initiator: "user",
+        requestId: "request-1",
+        timeouts: { httpHeadersMs: 5 },
+        vision: false,
+      },
+    )
+
+    expect(
+      await request.then(
+        () => "resolved",
+        (error: unknown) =>
+          error instanceof Error ? error.message : "unknown error",
+      ),
+    ).toBe("Upstream HTTP headers timed out after 5ms")
+  })
+
   test("keeps HTTP responses requests using x-initiator header", async () => {
     const payload: ResponsesPayload = {
       input: "hello",
@@ -121,6 +219,378 @@ describe("createResponses", () => {
     >
     expect(body.initiator).toBeUndefined()
     expect(body.type).toBeUndefined()
+    expect(body.include).toEqual(["reasoning.encrypted_content"])
+  })
+
+  test("sends the admitted HTTP body even when the payload argument diverges", async () => {
+    const admitted = admitResponsesWirePayload(
+      prepareResponsesWirePayload({
+        input: "admitted input",
+        model: "gpt-test",
+      }),
+      "user",
+      "http",
+    )
+    const divergentPayload: ResponsesPayload = {
+      ...admitted.payload,
+      instructions: "late mutation",
+    }
+
+    await createResponses(divergentPayload, {
+      initiator: "user",
+      requestId: "request-admitted-http",
+      vision: false,
+      wireArtifact: admitted,
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    expect(init?.body).toBe(admitted.httpBody)
+    expect(init?.body).not.toContain("late mutation")
+  })
+
+  test("rejects a structurally forged wire artifact", async () => {
+    const admitted = admitResponsesWirePayload(
+      prepareResponsesWirePayload({ input: "real", model: "gpt-test" }),
+      "user",
+      "http",
+    )
+    const forged = {
+      ...admitted,
+      httpBody: '{"input":"forged","model":"gpt-test"}',
+      payload: { input: "forged", model: "gpt-test" },
+    } as typeof admitted
+
+    const error = await createResponses(forged.payload, {
+      initiator: "user",
+      requestId: "request-forged-artifact",
+      vision: false,
+      wireArtifact: forged,
+    }).then(
+      () => null,
+      (reason: unknown) => reason,
+    )
+    expect(error).toBeInstanceOf(TypeError)
+    expect(error).toMatchObject({
+      message: "Invalid Responses wire artifact",
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("rejects an artifact whose private symbol brand was reflected", async () => {
+    const admitted = admitResponsesWirePayload(
+      prepareResponsesWirePayload({ input: "real", model: "gpt-test" }),
+      "user",
+      "http",
+    )
+    const forged = {
+      httpBody: '{"input":"forged","model":"gpt-test"}',
+      payload: { input: "forged", model: "gpt-test" },
+      serializedPayload: '{"input":"forged","model":"gpt-test"}',
+      summary: admitted.summary,
+      transport: "http" as const,
+    } as typeof admitted
+    for (const symbol of Object.getOwnPropertySymbols(admitted)) {
+      Object.defineProperty(forged, symbol, {
+        value: Reflect.get(admitted, symbol),
+      })
+    }
+
+    const error = await createResponses(forged.payload, {
+      initiator: "user",
+      requestId: "request-reflected-artifact",
+      vision: false,
+      wireArtifact: forged,
+    }).then(
+      () => null,
+      (reason: unknown) => reason,
+    )
+    expect(error).toMatchObject({
+      message: "Invalid Responses wire artifact",
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("normalizes a None function schema before forwarding Responses", async () => {
+    const payload: ResponsesPayload = {
+      input: "update the automation",
+      model: "gpt-test",
+      tools: [
+        {
+          name: "automation_update",
+          parameters: { type: "None" },
+          strict: false,
+          type: "function",
+        },
+      ],
+    }
+
+    await createResponses(payload, {
+      initiator: "user",
+      requestId: "request-1",
+      vision: false,
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = parseFetchBody(init)
+    const tool = body.tools?.[0]
+    expect(tool).toMatchObject({
+      name: "automation_update",
+      parameters: {
+        properties: {},
+        type: "object",
+      },
+      type: "function",
+    })
+  })
+
+  test("normalizes case variants of the None schema sentinel", async () => {
+    const payload: ResponsesPayload = {
+      input: "update the automation",
+      model: "gpt-test",
+      tools: ["None", "NONE", "none"].map((type, index) => ({
+        name: `automation_update_${index}`,
+        parameters: { type },
+        strict: false,
+        type: "function" as const,
+      })),
+    }
+
+    await createResponses(payload, {
+      initiator: "user",
+      requestId: "request-1",
+      vision: false,
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = parseFetchBody(init)
+    expect(body.tools?.map((tool) => getToolParameters(tool))).toEqual([
+      { properties: {}, type: "object" },
+      { properties: {}, type: "object" },
+      { properties: {}, type: "object" },
+    ])
+  })
+
+  test("normalizes a None schema inside a Responses namespace", async () => {
+    const payload: ResponsesPayload = {
+      input: "update the automation",
+      model: "gpt-test",
+      tools: [
+        {
+          name: "automations",
+          tools: [
+            {
+              name: "automation_update",
+              parameters: { type: "None" },
+              strict: false,
+              type: "function",
+            },
+          ],
+          type: "namespace",
+        },
+      ],
+    }
+
+    await createResponses(payload, {
+      initiator: "user",
+      requestId: "request-1",
+      vision: false,
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = parseFetchBody(init)
+    const namespace = body.tools?.[0]
+    expect(namespace).toMatchObject({
+      tools: [
+        {
+          name: "automation_update",
+          parameters: {
+            properties: {},
+            type: "object",
+          },
+          type: "function",
+        },
+      ],
+      type: "namespace",
+    })
+  })
+
+  test("normalizes a None schema returned by Responses tool search", async () => {
+    const payload: ResponsesPayload = {
+      input: [
+        {
+          call_id: "search-1",
+          tools: [
+            {
+              name: "automation_update",
+              parameters: { type: "None" },
+              strict: false,
+              type: "function",
+            },
+          ],
+          type: "tool_search_output",
+        },
+      ],
+      model: "gpt-test",
+    }
+
+    await createResponses(payload, {
+      initiator: "user",
+      requestId: "request-1",
+      vision: false,
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = parseFetchBody(init)
+    const toolSearchOutput = Array.isArray(body.input) ? body.input[0] : null
+    expect(toolSearchOutput).toMatchObject({
+      tools: [
+        {
+          name: "automation_update",
+          parameters: {
+            properties: {},
+            type: "object",
+          },
+          type: "function",
+        },
+      ],
+      type: "tool_search_output",
+    })
+  })
+
+  test("normalizes nested schemas in Responses additional tools", async () => {
+    const payload: ResponsesPayload = {
+      input: [
+        {
+          role: "developer",
+          tools: [
+            {
+              name: "automations",
+              tools: [
+                {
+                  name: "automation_update",
+                  parameters: { type: "None" },
+                  strict: false,
+                  type: "function",
+                },
+              ],
+              type: "namespace",
+            },
+          ],
+          type: "additional_tools",
+        },
+      ],
+      model: "gpt-test",
+    }
+
+    await createResponses(payload, {
+      initiator: "user",
+      requestId: "request-1",
+      vision: false,
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = parseFetchBody(init)
+    const additionalTools = Array.isArray(body.input) ? body.input[0] : null
+    expect(additionalTools).toMatchObject({
+      tools: [
+        {
+          tools: [
+            {
+              name: "automation_update",
+              parameters: { properties: {}, type: "object" },
+              type: "function",
+            },
+          ],
+          type: "namespace",
+        },
+      ],
+      type: "additional_tools",
+    })
+  })
+
+  test("preserves null and valid Responses function schemas", async () => {
+    const validSchema = {
+      properties: {
+        automation_id: { type: "string" },
+      },
+      required: ["automation_id"],
+      type: "object",
+    }
+    const payload: ResponsesPayload = {
+      input: "update the automation",
+      model: "gpt-test",
+      tools: [
+        {
+          name: "no_arguments",
+          parameters: null,
+          strict: false,
+          type: "function",
+        },
+        {
+          name: "automation_update",
+          parameters: validSchema,
+          strict: false,
+          type: "function",
+        },
+      ],
+    }
+
+    await createResponses(payload, {
+      initiator: "user",
+      requestId: "request-1",
+      vision: false,
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    const body = parseFetchBody(init)
+    expect(getToolParameters(body.tools?.[0])).toBeNull()
+    expect(getToolParameters(body.tools?.[1])).toEqual(validSchema)
+  })
+
+  test("rejects an excessively deep Responses tool graph deterministically", () => {
+    let nestedTool: Record<string, unknown> = {
+      name: "automation_update",
+      parameters: { type: "None" },
+      strict: false,
+      type: "function",
+    }
+    for (let index = 0; index < 10_001; index += 1) {
+      nestedTool = {
+        name: `namespace-${index}`,
+        tools: [nestedTool],
+        type: "namespace",
+      }
+    }
+    const payload: ResponsesPayload = {
+      input: "update the automation",
+      model: "gpt-test",
+      tools: [nestedTool],
+    }
+
+    expect(
+      createResponses(payload, {
+        initiator: "user",
+        requestId: "request-1",
+        vision: false,
+      }),
+    ).rejects.toThrow("Responses tool graph exceeds 10000 entries")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("preserves existing responses include values when adding encrypted reasoning", () => {
+    const payload: ResponsesPayload = {
+      include: ["web_search_call.results"],
+      input: "hello",
+      model: "gpt-test",
+    }
+
+    ensureEncryptedReasoningIncluded(payload)
+    ensureEncryptedReasoningIncluded(payload)
+
+    expect(payload.include).toEqual([
+      "web_search_call.results",
+      "reasoning.encrypted_content",
+    ])
   })
 
   test("sets subagent interaction headers for HTTP responses requests", async () => {
@@ -193,6 +663,35 @@ describe("createResponses", () => {
     expect("service_tier" in websocketPayload).toBe(false)
   })
 
+  test("prepares the exact admitted websocket frame for transport", () => {
+    const admitted = admitResponsesWirePayload(
+      prepareResponsesWirePayload({
+        input: "admitted websocket input",
+        model: "gpt-test",
+        stream: true,
+      }),
+      "agent",
+      "websocket",
+    )
+    const preparedHeaders = {
+      ...copilotHeaders(state, "request-admitted-websocket", false),
+      "x-initiator": "agent",
+    }
+    const request = prepareResponsesWebSocketRequest(
+      admitted,
+      preparedHeaders,
+      {
+        requestId: "request-admitted-websocket",
+      },
+    )
+
+    expect("payload" in request).toBe(false)
+    expect(request.frame).toBe(admitted.websocketFrame)
+    expect(Buffer.byteLength(request.frame ?? "", "utf8")).toBe(
+      admitted.summary.websocketFrameBytes!,
+    )
+  })
+
   test("builds websocket URLs from the Copilot base URL", () => {
     expect(buildResponsesWebSocketUrl("https://api.githubcopilot.com")).toBe(
       "wss://api.githubcopilot.com/responses",
@@ -252,12 +751,17 @@ describe("createResponses", () => {
     prepareInteractionHeaders("interaction-1", true, preparedHeaders)
     prepareForCompact(preparedHeaders, COMPACT_REQUEST)
 
-    const request = prepareResponsesWebSocketRequest(
-      {
+    const admitted = admitResponsesWirePayload(
+      prepareResponsesWirePayload({
         input: "hello",
         model: "gpt-test",
         stream: true,
-      },
+      }),
+      "agent",
+      "websocket",
+    )
+    const request = prepareResponsesWebSocketRequest(
+      admitted,
       preparedHeaders,
       {
         requestId: "request-1",
@@ -269,7 +773,7 @@ describe("createResponses", () => {
       },
     )
 
-    expect(request.payload).toMatchObject({
+    expect(JSON.parse(request.frame ?? "{}")).toMatchObject({
       initiator: "agent",
       input: "hello",
       model: "gpt-test",
@@ -293,19 +797,25 @@ describe("createResponses", () => {
     prepareInteractionHeaders("interaction-1", true, preparedHeaders)
     prepareForCompact(preparedHeaders, COMPACT_REQUEST)
 
-    const request = prepareResponsesWebSocketRequest(
-      {
+    const admitted = admitResponsesWirePayload(
+      prepareResponsesWirePayload({
         input: "hello",
         model: "gpt-test",
         stream: true,
-      },
+      }),
+      "agent",
+      "websocket",
+    )
+    const request = prepareResponsesWebSocketRequest(
+      admitted,
       preparedHeaders,
       {
         requestId: "request-1",
       },
     )
 
-    expect(request.payload.initiator).toBe("agent")
+    const frame = JSON.parse(request.frame ?? "{}") as { initiator?: string }
+    expect(frame.initiator).toBe("agent")
     expect(request.headers).toMatchObject({
       Authorization: "Bearer test-token",
       "Openai-Intent": "conversation-edits",
@@ -321,18 +831,18 @@ describe("createResponses", () => {
       input: "hello",
       model: "gpt-test",
     }
-    const mainKey = buildResponsesWebSocketPoolKey(basePayload, {
+    const mainKey = buildResponsesWebSocketIdentity(basePayload, {
       requestId: "request-1",
-    })
-    const subagentKey = buildResponsesWebSocketPoolKey(basePayload, {
+    }).poolKey
+    const subagentKey = buildResponsesWebSocketIdentity(basePayload, {
       requestId: "request-1",
       subagentMarker: {
         agent_id: "agent-1",
         agent_type: "Explore",
         session_id: "sub-session",
       },
-    })
-    const otherModelKey = buildResponsesWebSocketPoolKey(
+    }).poolKey
+    const otherModelKey = buildResponsesWebSocketIdentity(
       {
         ...basePayload,
         model: "gpt-other",
@@ -340,10 +850,90 @@ describe("createResponses", () => {
       {
         requestId: "request-1",
       },
-    )
+    ).poolKey
 
     expect(new Set([mainKey, subagentKey, otherModelKey]).size).toBe(3)
     expect(mainKey).toContain("gpt-test")
     expect(mainKey).toContain("request-1")
+  })
+
+  test("websocket pool key fingerprints stable handshake headers only", () => {
+    const payload: ResponsesPayload = { input: "hello", model: "gpt-test" }
+    const baseOptions = {
+      reasoningRecoverySessionId: "stable-session",
+      requestId: "request-1",
+      websocketHeaders: {
+        Authorization: "Bearer token-1",
+        "User-Agent": "opencode/1",
+        "X-Request-Id": "request-1",
+        "X-Session-Affinity": "affinity-1",
+      },
+    }
+    const first = buildResponsesWebSocketIdentity(payload, baseOptions).poolKey
+    const volatileOnly = buildResponsesWebSocketIdentity(payload, {
+      ...baseOptions,
+      requestId: "request-2",
+      websocketHeaders: {
+        ...baseOptions.websocketHeaders,
+        Authorization: "Bearer token-2",
+        "X-Request-Id": "request-2",
+      },
+    }).poolKey
+    const otherAffinity = buildResponsesWebSocketIdentity(payload, {
+      ...baseOptions,
+      websocketHeaders: {
+        ...baseOptions.websocketHeaders,
+        "X-Session-Affinity": "affinity-2",
+      },
+    }).poolKey
+    const otherUserAgent = buildResponsesWebSocketIdentity(payload, {
+      ...baseOptions,
+      websocketHeaders: {
+        ...baseOptions.websocketHeaders,
+        "User-Agent": "opencode/2",
+      },
+    }).poolKey
+
+    expect(volatileOnly).toBe(first)
+    expect(otherAffinity).not.toBe(first)
+    expect(otherUserAgent).not.toBe(first)
+  })
+
+  test("preserves Copilot prompt limit failures after diagnostic logging", () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "model_max_prompt_tokens_exceeded",
+              message:
+                "prompt token count of 967636 exceeds the limit of 922000",
+            },
+          }),
+          {
+            headers: {
+              "content-type": "application/json",
+              "x-copilot-service-request-id": "service-request-1",
+              "x-github-request-id": "github-request-1",
+              "x-request-id": "upstream-request-1",
+            },
+            status: 400,
+          },
+        ),
+      ),
+    )
+
+    expect(
+      createResponses(
+        { input: "hello", model: "gpt-5.6-luna", stream: false },
+        {
+          initiator: "user",
+          requestId: "request-1",
+          vision: false,
+        },
+      ),
+    ).rejects.toThrow(
+      "Failed to create responses: prompt token count of 967636 exceeds the limit of 922000",
+    )
   })
 })
