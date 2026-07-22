@@ -231,6 +231,8 @@ function dockerResult(
 describe("Docker artifact runtime smoke", () => {
   test("binds the running image config digest and cleans the container", async () => {
     const commands: string[][] = []
+    let runtimeConfig = ""
+    let runtimeHomeRemoved = false
     const dockerRunner = {
       run(arguments_: string[]): DockerRunResult {
         commands.push(arguments_)
@@ -250,7 +252,27 @@ describe("Docker artifact runtime smoke", () => {
         image: "candidate:amd64",
         version: "2.0.0-rc.14",
       },
-      { dockerRunner, processId: 42 },
+      {
+        dockerRunner,
+        fileSystem: {
+          mkdtempSync(): string {
+            return "/tmp/copilot-api-docker-smoke-fixture"
+          },
+          rmSync(): void {
+            runtimeHomeRemoved = true
+          },
+          writeFileSync(
+            _path: fs.PathOrFileDescriptor,
+            data: string | NodeJS.ArrayBufferView,
+          ): void {
+            if (typeof data !== "string") {
+              throw new TypeError("expected string Docker smoke config")
+            }
+            runtimeConfig = data
+          },
+        },
+        processId: 42,
+      },
     )
 
     expect(result).toEqual({
@@ -258,16 +280,44 @@ describe("Docker artifact runtime smoke", () => {
       health: "healthy",
       version: "2.0.0-rc.14",
     })
+    const runCommand = commands.find(([command]) => command === "run")
+    expect(runCommand).toContain("--mount")
+    expect(runCommand).toContain(
+      "type=bind,source=/tmp/copilot-api-docker-smoke-fixture,target=/tmp/copilot-api-smoke",
+    )
+    expect(runCommand?.at(-1)).toBe("--desktop-auth-mode=provider")
+    expect(runCommand?.join(" ")).not.toContain("GH_TOKEN")
+    expect(JSON.parse(runtimeConfig)).toMatchObject({
+      providers: {
+        smoke: {
+          apiKey: "docker-smoke-only",
+          baseUrl: "http://127.0.0.1:9",
+          enabled: true,
+          type: "openai-compatible",
+        },
+      },
+    })
     expect(commands.at(-1)?.slice(0, 2)).toEqual(["rm", "--force"])
+    expect(runtimeHomeRemoved).toBe(true)
   })
 
   test("times out deterministically and still removes the container", async () => {
     let now = 0
     let removed = false
+    const commands: string[][] = []
+    const diagnostics: string[] = []
     const dockerRunner = {
       run(arguments_: string[]): DockerRunResult {
+        commands.push(arguments_)
         if (arguments_[0] === "image") return dockerResult("sha256:config")
         if (arguments_[0] === "run") return dockerResult("container-id")
+        if (arguments_[0] === "logs") return dockerResult("startup pending")
+        if (
+          arguments_[0] === "inspect"
+          && arguments_[2] === "{{json .State.Health}}"
+        ) {
+          return dockerResult('{"Status":"starting"}')
+        }
         if (arguments_[0] === "inspect") return dockerResult("starting")
         if (arguments_[0] === "rm") removed = true
         return dockerResult()
@@ -285,6 +335,11 @@ describe("Docker artifact runtime smoke", () => {
         {
           clock: { now: () => now },
           dockerRunner,
+          output: {
+            error(message: string): void {
+              diagnostics.push(message)
+            },
+          },
           sleep: () => {
             now += 2
             return Promise.resolve()
@@ -293,7 +348,54 @@ describe("Docker artifact runtime smoke", () => {
       ),
     )
     expect(timeoutError.message).toContain("within 2ms")
+    expect(commands.some(([command]) => command === "logs")).toBe(true)
+    expect(
+      commands.some(
+        (arguments_) =>
+          arguments_[0] === "inspect"
+          && arguments_[2] === "{{json .State.Health}}",
+      ),
+    ).toBe(true)
+    expect(diagnostics.join("\n")).toContain("dockerSmokeHealth=")
+    expect(diagnostics.join("\n")).toContain("dockerSmokeLogs=")
     expect(removed).toBe(true)
+  })
+
+  test("cleans the synthetic home when provider config setup fails", async () => {
+    let runtimeHomeRemoved = false
+    const error = await rejectionOf(
+      smokeDockerImage(
+        {
+          configDigest: "sha256:config",
+          image: "candidate:amd64",
+          version: "2.0.0-rc.14",
+        },
+        {
+          dockerRunner: {
+            run(arguments_: string[]): DockerRunResult {
+              if (arguments_[0] === "image") {
+                return dockerResult("sha256:config")
+              }
+              return dockerResult()
+            },
+          },
+          fileSystem: {
+            mkdtempSync(): string {
+              return "/tmp/copilot-api-docker-smoke-fixture"
+            },
+            rmSync(): void {
+              runtimeHomeRemoved = true
+            },
+            writeFileSync(): never {
+              throw new Error("config write refused")
+            },
+          },
+        },
+      ),
+    )
+
+    expect(error.message).toContain("config write refused")
+    expect(runtimeHomeRemoved).toBe(true)
   })
 
   test("rejects malformed runtime output and surfaces cleanup failure", async () => {

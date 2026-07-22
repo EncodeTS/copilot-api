@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process"
+import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { parseArgs } from "node:util"
@@ -56,6 +58,52 @@ function defaultSleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
 
+const CONTAINER_SMOKE_HOME = "/tmp/copilot-api-smoke"
+const DOCKER_SMOKE_CONFIG = {
+  configSchemaVersion: 2,
+  providers: {
+    smoke: {
+      apiKey: "docker-smoke-only",
+      baseUrl: "http://127.0.0.1:9",
+      enabled: true,
+      type: "openai-compatible",
+    },
+  },
+}
+const MAX_DOCKER_DIAGNOSTIC_CHARACTERS = 4_000
+
+function boundedDockerDiagnostic(value) {
+  const normalized = value
+    .replaceAll("\r", "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, "")
+    .trim()
+  return normalized.slice(-MAX_DOCKER_DIAGNOSTIC_CHARACTERS)
+}
+
+function readDockerDiagnostic(dockerRunner, arguments_) {
+  const result = dockerRunner.run(arguments_, { timeoutMs: 10_000 })
+  if (result.error || result.status !== 0) return "unavailable"
+  return boundedDockerDiagnostic(result.stdout)
+}
+
+function emitDockerFailureDiagnostics(dockerRunner, container, output) {
+  if (typeof output.error !== "function") return
+  const health = readDockerDiagnostic(dockerRunner, [
+    "inspect",
+    "--format",
+    "{{json .State.Health}}",
+    container,
+  ])
+  const logs = readDockerDiagnostic(dockerRunner, [
+    "logs",
+    "--tail",
+    "100",
+    container,
+  ])
+  output.error(`dockerSmokeHealth=${health}`)
+  output.error(`dockerSmokeLogs=${logs}`)
+}
+
 export async function smokeDockerImage(
   { configDigest, image, timeoutMs = 60_000, version },
   dependencies = {},
@@ -64,6 +112,7 @@ export async function smokeDockerImage(
   const clock = dependencies.clock ?? Date
   const sleep = dependencies.sleep ?? defaultSleep
   const output = dependencies.output ?? console
+  const fileSystem = dependencies.fileSystem ?? fs
   const processId = dependencies.processId ?? process.pid
   const container = `copilot-api-release-smoke-${processId}`
 
@@ -78,23 +127,36 @@ export async function smokeDockerImage(
     )
   }
 
-  runChecked(
-    dockerRunner,
-    [
-      "run",
-      "--detach",
-      "--name",
-      container,
-      "--env",
-      "COPILOT_API_HOME=/tmp/copilot-api-smoke",
-      image,
-    ],
-    { timeoutMs: 30_000 },
+  const runtimeHome = fileSystem.mkdtempSync(
+    path.join(os.tmpdir(), "copilot-api-docker-smoke-"),
   )
-
+  let containerStarted = false
   let primaryError
+  let cleanupError
   let health = "starting"
   try {
+    fileSystem.writeFileSync(
+      path.join(runtimeHome, "config.json"),
+      `${JSON.stringify(DOCKER_SMOKE_CONFIG, null, 2)}\n`,
+      { mode: 0o600 },
+    )
+    runChecked(
+      dockerRunner,
+      [
+        "run",
+        "--detach",
+        "--name",
+        container,
+        "--mount",
+        `type=bind,source=${runtimeHome},target=${CONTAINER_SMOKE_HOME}`,
+        "--env",
+        `COPILOT_API_HOME=${CONTAINER_SMOKE_HOME}`,
+        image,
+        "--desktop-auth-mode=provider",
+      ],
+      { timeoutMs: 30_000 },
+    )
+    containerStarted = true
     const deadline = clock.now() + timeoutMs
     while (true) {
       health = runChecked(
@@ -143,16 +205,32 @@ export async function smokeDockerImage(
     }
   } catch (error) {
     primaryError = error
-    throw error
+    if (containerStarted) {
+      emitDockerFailureDiagnostics(dockerRunner, container, output)
+    }
   } finally {
+    if (containerStarted) {
+      try {
+        runChecked(dockerRunner, ["rm", "--force", container], {
+          timeoutMs: 30_000,
+        })
+      } catch (error) {
+        cleanupError = error
+      }
+    }
     try {
-      runChecked(dockerRunner, ["rm", "--force", container], {
-        timeoutMs: 30_000,
-      })
-    } catch (cleanupError) {
-      throw combineFailure(primaryError, cleanupError)
+      fileSystem.rmSync(runtimeHome, { force: true, recursive: true })
+    } catch (error) {
+      cleanupError = combineFailure(cleanupError, error)
     }
   }
+
+  if (primaryError) {
+    throw cleanupError
+      ? combineFailure(primaryError, cleanupError)
+      : primaryError
+  }
+  if (cleanupError) throw cleanupError
 
   output.log("dockerHealth=healthy")
   output.log(`dockerRuntimeVersion=${version}`)

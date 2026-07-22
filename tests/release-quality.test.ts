@@ -511,6 +511,10 @@ describe("unified release workflow contract", () => {
         /^FROM oven\/bun:1\.3\.14-alpine@sha256:[0-9a-f]{64}/gmu,
       ),
     ).toHaveLength(2)
+    expect(dockerfile).toContain(
+      "CMD wget --spider -q http://127.0.0.1:4141/ || exit 1",
+    )
+    expect(dockerfile).not.toContain("http://localhost:4141/")
     expect(
       fs.existsSync(
         path.join(repository, ".github", "workflows", "release-docker.yml"),
