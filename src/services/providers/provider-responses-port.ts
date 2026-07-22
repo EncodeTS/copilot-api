@@ -62,7 +62,9 @@ export type ProviderResponsesDispatch =
 
 export interface ProviderResponsesDispatchRequest {
   payload: ResponsesPayload
+  rawBody?: Uint8Array
   requestHeaders: Headers
+  requestUrl?: string
   signal?: AbortSignal
   timeouts?: UpstreamLifecycleTimeouts
   transport?: ResponsesTransport
@@ -123,10 +125,14 @@ export const createProviderResponsesPort = (
 
         const response = await dependencies.forwardProviderResponses(
           providerConfig,
-          request.payload,
-          request.requestHeaders,
-          control.signal,
-          request.timeouts,
+          {
+            payload: request.payload,
+            rawBody: request.rawBody,
+            requestHeaders: request.requestHeaders,
+            requestUrl: request.requestUrl,
+            signal: control.signal,
+            timeouts: request.timeouts,
+          },
         )
         return await adaptHttpResponse(response, request.payload, {
           adapter,

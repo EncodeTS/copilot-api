@@ -65,10 +65,15 @@ const createResponsesResult = (model: string): ResponsesResult => ({
 })
 
 const parseJsonRequestBody = (body: unknown): unknown => {
-  if (typeof body !== "string") {
+  const serialized =
+    typeof body === "string" ? body
+    : body instanceof Uint8Array ? new TextDecoder().decode(body)
+    : body instanceof ArrayBuffer ? new TextDecoder().decode(body)
+    : undefined
+  if (serialized === undefined) {
     throw new TypeError("Expected a JSON string request body")
   }
-  return JSON.parse(body) as unknown
+  return JSON.parse(serialized) as unknown
 }
 
 const fetchMock = mock((_url: string | URL | Request, init?: RequestInit) => {
@@ -207,6 +212,42 @@ describe("versioned provider Responses route", () => {
         "user-agent": "provider-route-test",
       }),
     )
+  })
+
+  test("preserves direct provider query ordering and raw JSON request bytes", async () => {
+    const rawBody =
+      '{\n  "model": "gpt-test",\n  "input": "hello",\n  "duplicate": 1,\n  "duplicate": 2,\n  "unknown_large_integer": 9007199254740993\n}\n'
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        Response.json(createResponsesResult("gpt-test"), { status: 201 }),
+      ),
+    )
+
+    const response = await createApp().request(
+      "/openai/v1/responses?mode=exact%2Fwire&repeat=1&repeat=2",
+      {
+        body: rawBody,
+        headers: {
+          "content-type": "application/json; charset=utf-8",
+          "x-api-key": "gateway-key",
+        },
+        method: "POST",
+      },
+    )
+
+    expect(response.status).toBe(201)
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://responses.example/v1/responses?mode=exact%2Fwire&repeat=1&repeat=2",
+    )
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit
+    expect(init.body).toBeInstanceOf(Uint8Array)
+    expect(new TextDecoder().decode(init.body as Uint8Array)).toBe(rawBody)
+    const upstreamHeaders = new Headers(init.headers)
+    expect(upstreamHeaders.get("authorization")).toBe("Bearer provider-key")
+    expect(upstreamHeaders.get("content-type")).toBe(
+      "application/json; charset=utf-8",
+    )
+    expect(upstreamHeaders.get("x-api-key")).toBeNull()
   })
 
   test("preserves exact successful JSON bytes, large integers, and status text", async () => {

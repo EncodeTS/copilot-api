@@ -131,20 +131,61 @@ export async function forwardProviderChatCompletions(
 
 export async function forwardProviderResponses(
   providerConfig: ResolvedProviderConfig,
-  payload: ResponsesPayload,
-  requestHeaders: Headers,
-  signal?: AbortSignal,
-  timeouts?: UpstreamLifecycleTimeouts,
+  request: {
+    payload: ResponsesPayload
+    rawBody?: Uint8Array
+    requestHeaders: Headers
+    requestUrl?: string
+    signal?: AbortSignal
+    timeouts?: UpstreamLifecycleTimeouts
+  },
 ): Promise<Response> {
-  consola.log(`<-- model: ${payload.model}`)
+  consola.log(`<-- model: ${request.payload.model}`)
+  const headers = buildProviderUpstreamHeaders(
+    providerConfig,
+    request.requestHeaders,
+  )
+  const contentType = request.requestHeaders.get("content-type")
+  if (contentType) headers["content-type"] = contentType
   return await fetchWithUpstreamLifecycle(
-    `${providerConfig.baseUrl}/v1/responses`,
+    resolveProviderResponsesUrl(providerConfig.baseUrl, request.requestUrl),
     {
       method: "POST",
-      headers: buildProviderUpstreamHeaders(providerConfig, requestHeaders),
-      body: JSON.stringify(payload),
+      headers,
+      body:
+        request.rawBody ?
+          getProviderFetchBody(request.rawBody)
+        : JSON.stringify(request.payload),
     },
-    { signal, timeouts },
+    { signal: request.signal, timeouts: request.timeouts },
+  )
+}
+
+const getProviderFetchBody = (body: Uint8Array): Uint8Array<ArrayBuffer> =>
+  body.buffer instanceof ArrayBuffer ?
+    new Uint8Array(body.buffer, body.byteOffset, body.byteLength)
+  : new Uint8Array(body)
+
+export function resolveProviderResponsesUrl(
+  baseUrl: string,
+  requestUrl?: string,
+): string {
+  const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/u, "")
+  const endpoint =
+    normalizedBaseUrl.endsWith("/v1/responses") ? normalizedBaseUrl
+    : normalizedBaseUrl.endsWith("/v1") ? `${normalizedBaseUrl}/responses`
+    : `${normalizedBaseUrl}/v1/responses`
+  return `${endpoint}${getExactRequestQuery(requestUrl)}`
+}
+
+const getExactRequestQuery = (requestUrl: string | undefined): string => {
+  if (!requestUrl) return ""
+  const queryStart = requestUrl.indexOf("?")
+  if (queryStart < 0) return ""
+  const fragmentStart = requestUrl.indexOf("#", queryStart)
+  return requestUrl.slice(
+    queryStart,
+    fragmentStart < 0 ? undefined : fragmentStart,
   )
 }
 

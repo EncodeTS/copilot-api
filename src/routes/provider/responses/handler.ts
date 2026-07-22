@@ -59,6 +59,7 @@ export interface ProviderResponsesHandler {
     options: {
       payload: ResponsesPayload
       provider: string
+      rawBody?: Uint8Array
     },
   ) => Promise<Response>
 }
@@ -117,6 +118,7 @@ export async function handleProviderResponsesForProvider(
   options: {
     payload: ResponsesPayload
     provider: string
+    rawBody?: Uint8Array
   },
 ): Promise<Response> {
   return await handleProviderResponsesForProviderWithDependencies(
@@ -131,6 +133,7 @@ async function handleProviderResponsesForProviderWithDependencies(
   options: {
     payload: ResponsesPayload
     provider: string
+    rawBody?: Uint8Array
   },
   dependencies: ProviderResponsesDependencies,
 ): Promise<Response> {
@@ -198,9 +201,11 @@ async function handleProviderResponsesForProviderWithDependencies(
   }
 
   // Smaller than the client compaction threshold, use server-side compaction to maintain cache hit rate.
+  let rawBody = options.rawBody
   if (
     supportsProviderResponsesContextManagement(providerConfig, payload.model)
   ) {
+    rawBody = undefined
     const contextManagementDecision = applyResponsesApiContextManagement(
       payload,
       model?.capabilities.limits,
@@ -228,7 +233,9 @@ async function handleProviderResponsesForProviderWithDependencies(
   )
   const dispatched = await responsesPort.dispatch({
     payload,
+    rawBody,
     requestHeaders: c.req.raw.headers,
+    requestUrl: c.req.raw.url,
     signal: c.req.raw.signal,
   })
 

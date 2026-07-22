@@ -24,8 +24,13 @@ export const createProviderResponsesRoutes = (
   routes.post("/", async (c) => {
     try {
       const provider = c.req.param("provider") ?? ""
-      const payload = await c.req.json<ResponsesPayload>()
-      return await responses.handleForProvider(c, { payload, provider })
+      const rawBody = new Uint8Array(await c.req.raw.arrayBuffer())
+      const payload = (await new Response(rawBody).json()) as ResponsesPayload
+      return await responses.handleForProvider(c, {
+        payload,
+        provider,
+        rawBody,
+      })
     } catch (error) {
       return await forwardError(c, error)
     }

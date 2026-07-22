@@ -8,6 +8,7 @@ import {
   createProviderResponsesPort,
   type ProviderResponsesPort,
 } from "../src/services/providers/provider-responses-port"
+import { resolveProviderResponsesUrl } from "../src/services/providers/provider-proxy"
 
 const originalFetch = globalThis.fetch
 const originalCodexAccessToken = state.codexAccessToken
@@ -82,6 +83,63 @@ afterEach(() => {
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
   state.codexAccessToken = originalCodexAccessToken
   state.codexAccountId = originalCodexAccountId
+})
+
+describe("generic HTTP exact request forwarding", () => {
+  test("preserves query ordering and raw JSON request bytes", async () => {
+    const rawBody = new TextEncoder().encode(
+      '{\n  "model": "gpt-port",\n  "input": "hello",\n  "duplicate": 1,\n  "duplicate": 2,\n  "unknown_large_integer": 9007199254740993\n}\n',
+    )
+    responseFactory = () =>
+      Response.json({
+        id: "resp-exact-request",
+        object: "response",
+        output: [],
+        status: "completed",
+      })
+
+    await createProviderResponsesPort(genericConfig).dispatch({
+      payload: {
+        input: "hello",
+        model: "gpt-port",
+      },
+      rawBody,
+      requestHeaders: new Headers({
+        "content-type": "application/json; charset=utf-8",
+        "x-api-key": "caller-secret",
+      }),
+      requestUrl:
+        "http://localhost/generic/v1/responses?mode=exact%2Fwire&repeat=1&repeat=2",
+    })
+
+    expect(capturedUrl).toBe(
+      "https://responses.example/api/v1/responses?mode=exact%2Fwire&repeat=1&repeat=2",
+    )
+    expect(capturedInit?.body).toBeInstanceOf(Uint8Array)
+    expect(new TextDecoder().decode(capturedInit?.body as Uint8Array)).toBe(
+      new TextDecoder().decode(rawBody),
+    )
+    const headers = new Headers(capturedInit?.headers)
+    expect(headers.get("authorization")).toBe("Bearer provider-secret")
+    expect(headers.get("content-type")).toBe("application/json; charset=utf-8")
+    expect(headers.get("x-api-key")).toBeNull()
+  })
+
+  test("does not duplicate an existing Responses endpoint suffix", () => {
+    const requestUrl = "http://localhost/generic/v1/responses?mode=exact&empty="
+    expect(
+      resolveProviderResponsesUrl(
+        "https://responses.example/api/v1",
+        requestUrl,
+      ),
+    ).toBe("https://responses.example/api/v1/responses?mode=exact&empty=")
+    expect(
+      resolveProviderResponsesUrl(
+        "https://responses.example/api/v1/responses/",
+        requestUrl,
+      ),
+    ).toBe("https://responses.example/api/v1/responses?mode=exact&empty=")
+  })
 })
 
 for (const fixture of fixtures) {
