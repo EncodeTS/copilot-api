@@ -1,0 +1,613 @@
+import consola, { type ConsolaInstance } from "consola"
+
+import { copilotBaseUrl, resolveInteractionInitiator } from "~/lib/api-config"
+import { COMPACT_REQUEST } from "~/lib/compact"
+import {
+  getResponsesImageNearBudgetRatio,
+  getResponsesImageCompressionCacheBytes,
+  getResponsesImageCompressionCacheEntries,
+  getResponsesImageCompressionConcurrency,
+  getResponsesImageCompressionFormat,
+  getResponsesImageCompressionMaxActionsPerRequest,
+  getResponsesImageCompressionTimeoutMs,
+  getResponsesImageDecodeSafetyLimits,
+  getResponsesImageMaxInputImageBytes,
+  getResponsesPayloadBudgetBytes,
+  getResponsesPayloadRetryBudgetBytes,
+  getResponsesPayloadSendHardLimitBytes,
+  isResponsesImageLatestReplacementAllowedOnHardLimit,
+  isResponsesImageLatestReplacementAllowedOnRetry,
+  isResponsesImageNormalReplacementAllowed,
+  isResponsesImageOptimizationEnabled,
+  isResponsesImageCompressionEnabled,
+  shouldPreserveLatestUserImageGroup,
+  shouldResponsesImageRetryRequireHttp,
+} from "~/lib/config"
+import { HTTPError, LocalPayloadTooLargeError } from "~/lib/error"
+import { getResponsesEndpointCapabilities } from "~/lib/responses-capabilities"
+import { state } from "~/lib/state"
+import type {
+  createResponses as createCopilotResponses,
+  CreateResponsesReturn,
+  ResponsesPayload,
+  ResponsesTransport,
+} from "~/services/copilot/create-responses"
+import {
+  createResponsesWireArtifact,
+  prepareResponsesWirePayloadWithSummary,
+  serializeImmutableResponsesPayload,
+  serializeResponsesPayload,
+  serializeResponsesWirePayload,
+  type ResponsesWireArtifact,
+  type ResponsesWireSerialization,
+} from "~/services/copilot/responses-wire-artifact"
+import { createReasoningRecoveryScope } from "~/services/copilot/responses-reasoning-recovery-registry"
+
+import {
+  optimizeInputImagesForPayloadBudget,
+  type ImageCompressionAdapter,
+  type ImagePayloadBudgetResult,
+} from "./utils"
+import { createSharpImageCompressionAdapter } from "./image-compression"
+
+type CreateResponses = typeof createCopilotResponses
+type CreateResponsesOptions = Parameters<CreateResponses>[1]
+
+export interface OptimizedResponsesCreateOptions {
+  createResponses: CreateResponses
+  logger?: Pick<ConsolaInstance, "debug" | "info" | "warn">
+  maxInputImageBytesOverride?: number
+  requestOptions: CreateResponsesOptions
+  selectedModel?: {
+    supported_endpoints?: Array<string>
+  }
+}
+
+export const createOptimizedCopilotResponses = async (
+  payload: ResponsesPayload,
+  options: OptimizedResponsesCreateOptions,
+): Promise<CreateResponsesReturn> => {
+  const requestOptions: CreateResponsesOptions = {
+    ...options.requestOptions,
+    initiator: resolveInteractionInitiator({
+      compactType: options.requestOptions.compactType,
+      initiator: options.requestOptions.initiator,
+      isSubagent: Boolean(options.requestOptions.subagentMarker),
+    }),
+  }
+  const firstPrepare = await prepareCopilotResponsesPayloadForSend(payload, {
+    ...options,
+    mode: "normal",
+    requestOptions,
+  })
+
+  const firstRequestOptions = {
+    ...requestOptions,
+    allowHttpFallback:
+      firstPrepare.transport === "websocket"
+      && requestOptions.allowHttpFallback === true,
+    transport: firstPrepare.transport,
+  }
+
+  try {
+    return await options.createResponses(firstPrepare.payload, {
+      ...firstRequestOptions,
+      wireArtifact: firstPrepare.wireArtifact,
+    })
+  } catch (error) {
+    if (
+      !shouldRetryAfterPayloadTooLarge(error, firstRequestOptions.transport)
+    ) {
+      throw error
+    }
+
+    const retryPrepare = await prepareCopilotResponsesPayloadForSend(payload, {
+      ...options,
+      mode: "retry",
+      requestOptions: {
+        ...requestOptions,
+        transport: "http",
+      },
+    })
+
+    if (
+      !retryPrepare.imageBudget.changed
+      || retryPrepare.imageBudget.finalPayloadBytes
+        >= firstPrepare.imageBudget.finalPayloadBytes
+    ) {
+      throw error
+    }
+
+    options.logger?.warn?.(
+      "Retrying Copilot Responses request after payload-too-large image optimization",
+      {
+        finalPayloadBytes: retryPrepare.imageBudget.finalPayloadBytes,
+        initialPayloadBytes: firstPrepare.imageBudget.finalPayloadBytes,
+        replacedCount: retryPrepare.imageBudget.replacedCount,
+      },
+    )
+
+    return await options.createResponses(retryPrepare.payload, {
+      ...requestOptions,
+      allowHttpFallback: false,
+      transport: retryPrepare.transport,
+      wireArtifact: retryPrepare.wireArtifact,
+    })
+  }
+}
+
+interface PrepareOptions extends OptimizedResponsesCreateOptions {
+  mode: "normal" | "retry"
+}
+
+export const prepareCopilotResponsesPayloadForSend = async (
+  payload: ResponsesPayload,
+  options: PrepareOptions,
+): Promise<{
+  imageBudget: ImagePayloadBudgetResult
+  payload: ResponsesPayload
+  transport: ResponsesTransport
+  wireArtifact: ResponsesWireArtifact
+}> => {
+  const requestOptions: CreateResponsesOptions = {
+    ...options.requestOptions,
+    initiator: resolveInteractionInitiator({
+      compactType: options.requestOptions.compactType,
+      initiator: options.requestOptions.initiator,
+      isSubagent: Boolean(options.requestOptions.subagentMarker),
+    }),
+  }
+  if (payload.service_tier !== undefined) {
+    options.logger?.debug?.(
+      "Removed unsupported Copilot Responses service_tier",
+      payload.service_tier,
+    )
+  }
+  const preparation = prepareResponsesWirePayloadWithSummary(payload, {
+    reasoningRecoveryScope: createReasoningRecoveryScope({
+      agentId: requestOptions.subagentMarker?.agent_id,
+      agentType: requestOptions.subagentMarker?.agent_type,
+      model: payload.model,
+      sessionId:
+        requestOptions.reasoningRecoverySessionId
+        ?? requestOptions.subagentMarker?.session_id,
+    }),
+  })
+  const preparedPayload = preparation.payload
+  if (preparation.removedReasoningItems > 0) {
+    consola.debug("responses.reasoning_history_prefilter", {
+      model: preparedPayload.model,
+      reason: "known_incompatible_reasoning_history",
+      removedReasoningItems: preparation.removedReasoningItems,
+      subagent: Boolean(requestOptions.subagentMarker),
+    })
+  }
+  const websocketAdmissionRequired = isWebSocketAdmissionRequired(
+    preparedPayload,
+    requestOptions,
+    options.selectedModel,
+  )
+  const initialPayloadSerialization = serializeImmutableResponsesPayload(
+    preparedPayload,
+    {
+      observer: requestOptions.wireSerializationObserver,
+      stage: "budget_initial",
+    },
+  )
+  const initialWireSerialization =
+    websocketAdmissionRequired ?
+      serializeResponsesWirePayload(
+        initialPayloadSerialization,
+        requestOptions.initiator,
+        requestOptions.wireSerializationObserver,
+      )
+    : undefined
+  const configuredSendHardLimitBytes = getResponsesPayloadSendHardLimitBytes()
+  const sendHardLimitBytes =
+    websocketAdmissionRequired ?
+      Math.min(
+        requestOptions.allowHttpFallback === true ?
+          configuredSendHardLimitBytes
+        : Number.POSITIVE_INFINITY,
+        getResponsesSendHardLimitForTransport(
+          preparedPayload,
+          configuredSendHardLimitBytes,
+          requestOptions,
+          initialWireSerialization,
+        ),
+      )
+    : configuredSendHardLimitBytes
+  const imageBudget = await optimizeInputImagesForPayloadBudget(
+    preparedPayload,
+    {
+      allowNormalReplacement: isResponsesImageNormalReplacementAllowed(),
+      allowReplacingLatestImages:
+        isResponsesImageLatestReplacementAllowedOnHardLimit()
+        || (options.mode === "retry"
+          && isResponsesImageLatestReplacementAllowedOnRetry()),
+      budgetBytes:
+        options.mode === "retry" ?
+          getResponsesPayloadRetryBudgetBytes()
+        : getResponsesPayloadBudgetBytes(),
+      compressionAdapter: getConfiguredImageCompressionAdapter(preparedPayload),
+      compressionEnabled: isResponsesImageCompressionEnabled(),
+      enabled: isResponsesImageOptimizationEnabled(),
+      maxCompressionActions: getResponsesImageCompressionMaxActionsPerRequest(),
+      initialCloneCount: 1,
+      initialPayloadMutable: false,
+      initialPayloadSerialization,
+      initialSerializationCount: 1,
+      serializationObserver: requestOptions.wireSerializationObserver,
+      maxPromptImageSize:
+        options.maxInputImageBytesOverride
+        ?? getResponsesImageMaxInputImageBytes(),
+      nearBudgetRatio: getResponsesImageNearBudgetRatio(),
+      preserveLatestUserImageGroup: shouldPreserveLatestUserImageGroup(),
+      sendHardLimitBytes,
+      signal: requestOptions.signal,
+    },
+  )
+
+  logImageBudgetResult(options.logger, imageBudget, options.mode)
+
+  if (!imageBudget.sendAllowed) {
+    throw new LocalPayloadTooLargeError(
+      "Request body exceeds the configured Copilot Responses payload budget and no safe image downgrade remains.",
+      {
+        bodyBytesOverBudget: imageBudget.bodyBytesOverBudget,
+        budgetBytes: imageBudget.budgetBytes,
+        candidateCount: imageBudget.candidateCount,
+        compressionActionLimit: imageBudget.compressionActionLimit,
+        compressionActionLimitHit: imageBudget.compressionActionLimitHit,
+        compressionAttemptedCount: imageBudget.compressionAttemptedCount,
+        compressionCacheHitCount: imageBudget.compressionCacheHitCount,
+        compressionDiagnosticCounts: imageBudget.compressionDiagnosticCounts,
+        compressionDiagnosticSamples: imageBudget.compressionDiagnosticSamples,
+        compressionNegativeCacheHitCount:
+          imageBudget.compressionNegativeCacheHitCount,
+        compressionProfiles: imageBudget.compressionProfiles,
+        compressionStatusCounts: imageBudget.compressionStatusCounts,
+        compressedCount: imageBudget.compressedCount,
+        currentVisualWorkingSetReplaced:
+          imageBudget.currentVisualGroupsAffected > 0,
+        fileDataBytes: imageBudget.inputFileDataBytes,
+        hardLimitMet: imageBudget.hardLimitMet,
+        imageBytes: imageBudget.inlineImageBytes,
+        imageCount: imageBudget.imageCount,
+        largestImageBytes: imageBudget.largestImageBytes,
+        largestUnoptimizableKind: imageBudget.largestUnoptimizableKind,
+        latestImageReplaced: imageBudget.latestImageReplaced,
+        oversizedInputImageCount: imageBudget.oversizedInputImageCount,
+        oversizedResolvedCount: imageBudget.oversizedResolvedCount,
+        payloadBytes: imageBudget.finalPayloadBytes,
+        preservedLatestCount: imageBudget.preservedLatestCount,
+        replacedCount: imageBudget.replacedCount,
+        sendHardLimitBytes: imageBudget.sendHardLimitBytes,
+        targetMet: imageBudget.targetMet,
+        textAndToolBytes: imageBudget.textAndToolBytes,
+        unresolvedReason: imageBudget.unresolvedReason,
+      },
+    )
+  }
+
+  const transport = resolveEffectiveTransport(
+    imageBudget.outboundPayload,
+    requestOptions,
+    imageBudget,
+    options.selectedModel,
+  )
+  const wireSerialization =
+    transport === "websocket" ?
+      (
+        initialWireSerialization?.payloadSerialization
+        === imageBudget.payloadSerialization
+      ) ?
+        initialWireSerialization
+      : serializeResponsesWirePayload(
+          imageBudget.payloadSerialization,
+          requestOptions.initiator,
+          requestOptions.wireSerializationObserver,
+        )
+    : undefined
+  const wireArtifact = createResponsesWireArtifact(
+    imageBudget.payloadSerialization,
+    requestOptions.initiator,
+    transport,
+    wireSerialization,
+  )
+  const exactWireBytes =
+    transport === "websocket" ?
+      (wireArtifact.summary.websocketFrameBytes ?? Number.POSITIVE_INFINITY)
+    : wireArtifact.summary.httpBodyBytes
+  const fallbackBodyExceedsHardLimit =
+    transport === "websocket"
+    && requestOptions.allowHttpFallback === true
+    && wireArtifact.summary.httpBodyBytes > configuredSendHardLimitBytes
+  if (
+    exactWireBytes > configuredSendHardLimitBytes
+    || fallbackBodyExceedsHardLimit
+  ) {
+    throw createWirePayloadTooLargeError(
+      imageBudget,
+      Math.max(exactWireBytes, wireArtifact.summary.httpBodyBytes),
+      configuredSendHardLimitBytes,
+    )
+  }
+
+  return {
+    imageBudget,
+    payload: wireArtifact.payload,
+    transport,
+    wireArtifact,
+  }
+}
+
+export const getResponsesSendHardLimitForTransport = (
+  payload: ResponsesPayload,
+  configuredLimitBytes: number,
+  requestOptions: Pick<CreateResponsesOptions, "initiator" | "transport">,
+  wireSerialization?: ResponsesWireSerialization,
+): number => {
+  if (requestOptions.transport !== "websocket") {
+    return configuredLimitBytes
+  }
+
+  const transportOverheadBytes =
+    (
+      wireSerialization
+      ?? serializeResponsesWirePayload(
+        serializeResponsesPayload(payload),
+        requestOptions.initiator,
+      )
+    ).summary.websocketFrameDeltaBytes ?? 0
+  return Math.max(1, configuredLimitBytes - transportOverheadBytes)
+}
+
+const getConfiguredImageCompressionAdapter = (
+  payload: ResponsesPayload,
+): ImageCompressionAdapter | undefined => {
+  const decodeLimits = getResponsesImageDecodeSafetyLimits()
+  const adapter = createSharpImageCompressionAdapter({
+    cacheBytes: getResponsesImageCompressionCacheBytes(),
+    cacheEntries: getResponsesImageCompressionCacheEntries(),
+    concurrency: getResponsesImageCompressionConcurrency(),
+    decodeMaxBytesEstimate: decodeLimits.maxBytesEstimate,
+    decodeMaxFrames: decodeLimits.maxFrames,
+    decodeMaxLongEdge: decodeLimits.maxLongEdge,
+    decodeMaxPixels: decodeLimits.maxPixels,
+    format: getResponsesImageCompressionFormat(),
+    namespace: {
+      account:
+        state.userName
+        ?? state.githubToken
+        ?? state.copilotToken
+        ?? "missing-account",
+      model: payload.model,
+      origin: copilotBaseUrl(state),
+      tenant: state.accountType ?? "unknown-tenant",
+    },
+    timeoutMs: getResponsesImageCompressionTimeoutMs(),
+  })
+  return isResponsesImageCompressionEnabled() ? adapter : undefined
+}
+
+const resolveEffectiveTransport = (
+  payload: ResponsesPayload,
+  requestOptions: Pick<CreateResponsesOptions, "compactType" | "transport">,
+  imageBudget: ImagePayloadBudgetResult,
+  selectedModel: { supported_endpoints?: Array<string> } | undefined,
+): ResponsesTransport => {
+  if (
+    payload.stream !== true
+    || requestOptions.compactType === COMPACT_REQUEST
+    || requestOptions.transport !== "websocket"
+  ) {
+    return "http"
+  }
+
+  if (
+    !shouldResponsesImageRetryRequireHttp()
+    || !canUseHttpResponses(selectedModel)
+  ) {
+    return "websocket"
+  }
+
+  if (imageBudget.changed || imageBudget.nearLimit || !imageBudget.targetMet) {
+    return "http"
+  }
+
+  return "websocket"
+}
+
+const isWebSocketAdmissionRequired = (
+  payload: ResponsesPayload,
+  requestOptions: CreateResponsesOptions,
+  selectedModel: OptimizedResponsesCreateOptions["selectedModel"],
+): boolean =>
+  payload.stream === true
+  && requestOptions.compactType !== COMPACT_REQUEST
+  && requestOptions.transport === "websocket"
+  && (!shouldResponsesImageRetryRequireHttp()
+    || !canUseHttpResponses(selectedModel))
+
+const canUseHttpResponses = (
+  selectedModel: { supported_endpoints?: Array<string> } | undefined,
+): boolean => getResponsesEndpointCapabilities(selectedModel).http
+
+const shouldRetryAfterPayloadTooLarge = (
+  error: unknown,
+  transport: ResponsesTransport | undefined,
+): boolean =>
+  transport === "http"
+  && error instanceof HTTPError
+  && error.response.status === 413
+
+const createWirePayloadTooLargeError = (
+  result: ImagePayloadBudgetResult,
+  payloadBytes: number,
+  sendHardLimitBytes: number,
+): LocalPayloadTooLargeError =>
+  new LocalPayloadTooLargeError(
+    "Request exceeds the configured Copilot Responses transport limit.",
+    {
+      budgetBytes: result.budgetBytes,
+      currentVisualWorkingSetReplaced: result.currentVisualGroupsAffected > 0,
+      fileDataBytes: result.inputFileDataBytes,
+      imageBytes: result.inlineImageBytes,
+      imageCount: result.imageCount,
+      latestImageReplaced: result.latestImageReplaced,
+      payloadBytes,
+      replacedCount: result.replacedCount,
+      sendHardLimitBytes,
+      textAndToolBytes: result.textAndToolBytes,
+    },
+  )
+
+const logImageBudgetResult = (
+  logger: Pick<ConsolaInstance, "debug" | "info" | "warn"> | undefined,
+  result: ImagePayloadBudgetResult,
+  mode: "normal" | "retry",
+): void => {
+  const payload = {
+    bodyBytesOverBudget: result.bodyBytesOverBudget,
+    budgetBytes: result.budgetBytes,
+    changed: result.changed,
+    compressionActionLimit: result.compressionActionLimit,
+    compressionActionLimitHit: result.compressionActionLimitHit,
+    compressionAttemptedCount: result.compressionAttemptedCount,
+    compressionCacheHitCount: result.compressionCacheHitCount,
+    compressionDiagnosticCounts: result.compressionDiagnosticCounts,
+    compressionDiagnosticSamples: result.compressionDiagnosticSamples,
+    compressionNegativeCacheHitCount: result.compressionNegativeCacheHitCount,
+    compressionProfiles: result.compressionProfiles,
+    compressionStatusCounts: result.compressionStatusCounts,
+    compressedCount: result.compressedCount,
+    currentVisualGroupsAffected: result.currentVisualGroupsAffected,
+    finalPayloadBytes: result.finalPayloadBytes,
+    hardLimitMet: result.hardLimitMet,
+    imageCount: result.imageCount,
+    initialPayloadBytes: result.initialPayloadBytes,
+    inlineImageBytes: result.inlineImageBytes,
+    inputFileDataBytes: result.inputFileDataBytes,
+    largestImageBytes: result.largestImageBytes,
+    largestUnoptimizableKind: result.largestUnoptimizableKind,
+    latestImageReplaced: result.latestImageReplaced,
+    mode,
+    nearLimit: result.nearLimit,
+    oversizedInputImageCount: result.oversizedInputImageCount,
+    oversizedResolvedCount: result.oversizedResolvedCount,
+    preservedLatestCount: result.preservedLatestCount,
+    replacedCount: result.replacedCount,
+    sendHardLimitBytes: result.sendHardLimitBytes,
+    targetMet: result.targetMet,
+    textAndToolBytes: result.textAndToolBytes,
+    unresolvedReason: result.unresolvedReason,
+  }
+
+  if (!result.sendAllowed || result.replacedCount > 0) {
+    logger?.warn("responses.image_budget", payload)
+  } else if (result.changed) {
+    logger?.info("responses.image_budget", payload)
+  } else {
+    logger?.debug("responses.image_budget", payload)
+  }
+
+  if (!result.sendAllowed || result.changed || mode === "retry") {
+    const summary = createImageBudgetConsoleSummary(result, mode)
+    if (!result.sendAllowed || result.replacedCount > 0) {
+      consola.warn(summary)
+    } else {
+      consola.info(summary)
+    }
+  }
+}
+
+const createImageBudgetConsoleSummary = (
+  result: ImagePayloadBudgetResult,
+  mode: "normal" | "retry",
+): string => {
+  const status =
+    !result.sendAllowed ? "blocked"
+    : result.targetMet ? "target-met"
+    : "hard-limit-met"
+  const parts = [
+    `responses.image_budget ${status}`,
+    `mode=${mode}`,
+    `payload=${formatBytes(result.initialPayloadBytes)}->${formatBytes(
+      result.finalPayloadBytes,
+    )}`,
+    `budget=${formatBytes(result.budgetBytes)}`,
+    `hard=${formatBytes(result.sendHardLimitBytes)}`,
+    `images=${result.imageCount}`,
+    `attempted=${result.compressionAttemptedCount}`,
+    `compressed=${result.compressedCount}`,
+    `replaced=${result.replacedCount}`,
+    `latestReplaced=${result.latestImageReplaced}`,
+  ]
+
+  if (result.unresolvedReason) {
+    parts.push(`reason=${result.unresolvedReason}`)
+  }
+  if (result.bodyBytesOverBudget > 0) {
+    parts.push(`overBudget=${formatBytes(result.bodyBytesOverBudget)}`)
+  }
+  if (result.largestImageBytes !== undefined) {
+    parts.push(`largestImage=${formatBytes(result.largestImageBytes)}`)
+  }
+  if (result.compressionActionLimitHit) {
+    parts.push(`compressionLimitHit=${result.compressionActionLimit}`)
+  }
+  if (result.compressionCacheHitCount > 0) {
+    parts.push(`cacheHit=${result.compressionCacheHitCount}`)
+  }
+  if (result.compressionNegativeCacheHitCount > 0) {
+    parts.push(`negativeCacheHit=${result.compressionNegativeCacheHitCount}`)
+  }
+  const compressionDiagnostics = formatCompressionStatusCounts(
+    result.compressionDiagnosticCounts,
+  )
+  if (compressionDiagnostics) {
+    parts.push(`diagnostics=${compressionDiagnostics}`)
+  }
+  const compressionStatuses = formatCompressionStatusCounts(
+    result.compressionStatusCounts,
+  )
+  if (compressionStatuses) {
+    parts.push(`compression=${compressionStatuses}`)
+  }
+  if (result.compressionProfiles.length > 0) {
+    parts.push(
+      `profiles=${result.compressionProfiles
+        .map(
+          (profile) =>
+            `${profile.profile}:${profile.attemptedCount}/${profile.compressedCount}`,
+        )
+        .join(",")}`,
+    )
+  }
+
+  return parts.join(" ")
+}
+
+const formatCompressionStatusCounts = (
+  counts: Partial<Record<string, number>>,
+): string =>
+  Object.entries(counts)
+    .filter((entry): entry is [string, number] => (entry[1] ?? 0) > 0)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([status, count]) => `${status}:${count}`)
+    .join(",")
+
+const formatBytes = (bytes: number): string => {
+  if (!Number.isFinite(bytes) || bytes < 0) {
+    return "unknown"
+  }
+  if (bytes < 1024) {
+    return `${Math.round(bytes)}B`
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)}KiB`
+  }
+  const mib = bytes / 1024 / 1024
+  return `${mib.toFixed(mib >= 10 ? 1 : 2)}MiB`
+}

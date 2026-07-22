@@ -6,25 +6,25 @@ import type {
   ToolCall,
 } from "~/services/copilot/create-chat-completions"
 import type { Model } from "~/services/copilot/get-models"
-
-// Encoder type mapping
-const ENCODING_MAP = {
-  o200k_base: () => import("gpt-tokenizer/encoding/o200k_base"),
-  cl100k_base: () => import("gpt-tokenizer/encoding/cl100k_base"),
-  p50k_base: () => import("gpt-tokenizer/encoding/p50k_base"),
-  p50k_edit: () => import("gpt-tokenizer/encoding/p50k_edit"),
-  r50k_base: () => import("gpt-tokenizer/encoding/r50k_base"),
-} as const
-
-type SupportedEncoding = keyof typeof ENCODING_MAP
+import { ENCODING_MAP, isSupportedEncoding } from "~/lib/tokenizer-encodings"
+import { estimateChatMediaTokens } from "~/lib/media-token-estimation"
+import { countTextsInTokenizerWorker } from "~/lib/tokenizer-worker-client"
 
 // Define encoder interface
 interface Encoder {
   encode: (text: string) => Array<number>
 }
 
+export type TokenizerYieldControl = () => Promise<void>
+// An injected yield is a cancellation checkpoint and therefore requires the
+// AbortSignal whose reason must be preserved.
+export type TokenizerSchedulingOptions =
+  | { signal?: AbortSignal; yieldControl?: never }
+  | { signal: AbortSignal; yieldControl: TokenizerYieldControl }
+
 // Cache loaded encoders to avoid repeated imports
 const encodingCache = new Map<string, Encoder>()
+const RESPONSIVE_ENCODING_THRESHOLD = 16_384
 
 /**
  * Calculate tokens for tool calls
@@ -54,14 +54,13 @@ const calculateContentPartsTokens = (
 ): number => {
   let tokens = 0
   for (const part of contentParts) {
-    if (part.type === "image_url") {
-      tokens += encoder.encode(part.image_url.url).length + 85
-    } else if (part.type === "file") {
-      tokens += encoder.encode(part.file.file_data).length
+    if (part.type === "file") {
+      // file_data and file_id are opaque media carriers. Only bounded semantic
+      // metadata is eligible for text tokenization.
       if (part.file.filename) {
         tokens += encoder.encode(part.file.filename).length
       }
-    } else if (part.text) {
+    } else if (part.type === "text" && part.text) {
       tokens += encoder.encode(part.text).length
     }
   }
@@ -80,7 +79,7 @@ const calculateMessageTokens = (
   const tokensPerName = 1
   let tokens = tokensPerMessage
   for (const [key, value] of Object.entries(message)) {
-    if (key === "reasoning_opaque") {
+    if (key === "audio" || key === "reasoning_opaque") {
       continue
     }
     if (typeof value === "string") {
@@ -137,14 +136,13 @@ const getEncodeChatFunction = async (encoding: string): Promise<Encoder> => {
     }
   }
 
-  const supportedEncoding = encoding as SupportedEncoding
-  if (!(supportedEncoding in ENCODING_MAP)) {
+  if (!isSupportedEncoding(encoding)) {
     const fallbackModule = (await ENCODING_MAP.o200k_base()) as Encoder
     encodingCache.set(encoding, fallbackModule)
     return fallbackModule
   }
 
-  const encodingModule = (await ENCODING_MAP[supportedEncoding]()) as Encoder
+  const encodingModule = (await ENCODING_MAP[encoding]()) as Encoder
   encodingCache.set(encoding, encodingModule)
   return encodingModule
 }
@@ -154,6 +152,14 @@ const getEncodeChatFunction = async (encoding: string): Promise<Encoder> => {
  */
 export const getTokenizerFromModel = (model: Model): string => {
   return model.capabilities.tokenizer || "o200k_base"
+}
+
+export const getTextTokenCount = async (
+  text: string,
+  model: Model,
+): Promise<number> => {
+  const encoder = await getEncodeChatFunction(getTokenizerFromModel(model))
+  return encoder.encode(text).length
 }
 
 /**
@@ -355,18 +361,73 @@ export const numTokensForTools = (
   return funcTokenCount
 }
 
+const createResponsiveEncoder = async (
+  payload: ChatCompletionsPayload,
+  encoder: Encoder,
+  constants: ReturnType<typeof getModelConstants>,
+  tokenizer: string,
+  signal: AbortSignal,
+  yieldControl?: TokenizerYieldControl,
+): Promise<Encoder> => {
+  const texts = new Set<string>()
+  let totalCodeUnits = 0
+  const collectingEncoder: Encoder = {
+    encode: (text) => {
+      texts.add(text)
+      totalCodeUnits += text.length
+      return []
+    },
+  }
+  calculateTokens(payload.messages, collectingEncoder, constants)
+  if (payload.tools && payload.tools.length > 0) {
+    numTokensForTools(payload.tools, collectingEncoder, constants)
+  }
+
+  const textList = [...texts]
+  if (totalCodeUnits < RESPONSIVE_ENCODING_THRESHOLD) {
+    signal.throwIfAborted()
+    return encoder
+  }
+
+  const supportedEncoding =
+    isSupportedEncoding(tokenizer) ? tokenizer : "o200k_base"
+  const countsPromise = countTextsInTokenizerWorker(
+    textList,
+    supportedEncoding,
+    signal,
+  )
+  if (yieldControl) {
+    // Observe cancellation while the injected yield owns control so a rejected
+    // worker promise cannot surface as unhandled before this function resumes.
+    void countsPromise.catch(() => undefined)
+    await yieldControl()
+    signal.throwIfAborted()
+  }
+  const counts = await countsPromise
+  const countByText = new Map(
+    textList.map((text, index) => [text, counts[index]]),
+  )
+  return {
+    encode: (text) =>
+      new Array<number>(countByText.get(text) ?? encoder.encode(text).length),
+  }
+}
+
 /**
  * Calculate the token count of messages, supporting multiple GPT encoders
  */
 export const getTokenCount = async (
   payload: ChatCompletionsPayload,
   model: Model,
+  options: TokenizerSchedulingOptions = {},
 ): Promise<{ input: number; output: number }> => {
+  options.signal?.throwIfAborted()
   // Get tokenizer string
   const tokenizer = getTokenizerFromModel(model)
 
   // Get corresponding encoder module
   const encoder = await getEncodeChatFunction(tokenizer)
+  options.signal?.throwIfAborted()
 
   const simplifiedMessages = payload.messages
   const inputMessages = simplifiedMessages.filter(
@@ -377,15 +438,40 @@ export const getTokenCount = async (
   )
 
   const constants = getModelConstants(model)
+  const calculationEncoder =
+    options.signal ?
+      await createResponsiveEncoder(
+        payload,
+        encoder,
+        constants,
+        tokenizer,
+        options.signal,
+        options.yieldControl,
+      )
+    : encoder
   // gpt count token https://github.com/openai/openai-cookbook/blob/main/examples/How_to_count_tokens_with_tiktoken.ipynb
-  let inputTokens = calculateTokens(inputMessages, encoder, constants)
+  let inputTokens = calculateTokens(
+    inputMessages,
+    calculationEncoder,
+    constants,
+  )
   if (payload.tools && payload.tools.length > 0) {
-    inputTokens += numTokensForTools(payload.tools, encoder, constants)
+    inputTokens += numTokensForTools(
+      payload.tools,
+      calculationEncoder,
+      constants,
+    )
   }
-  const outputTokens = calculateTokens(outputMessages, encoder, constants)
+  const outputTokens = calculateTokens(
+    outputMessages,
+    calculationEncoder,
+    constants,
+  )
+  const mediaTokens = estimateChatMediaTokens(payload)
+  options.signal?.throwIfAborted()
 
   return {
-    input: inputTokens,
-    output: outputTokens,
+    input: inputTokens + mediaTokens.input,
+    output: outputTokens + mediaTokens.output,
   }
 }
