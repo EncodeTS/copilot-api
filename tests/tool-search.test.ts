@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test"
 import {
   createMcpToolSearchSentinel,
   hasDeferredMcpNamespaceTool,
+  isDeferredToolName,
   parseMcpToolSearchSentinel,
   resolveBridgeToolSearchName,
   selectDeferredToolsByNames,
@@ -11,6 +12,34 @@ import {
 import { runMcpServer } from "~/mcp"
 
 describe("tool search helpers", () => {
+  test("keeps workflow control tools eagerly loaded", () => {
+    expect(isDeferredToolName("Workflow")).toBe(false)
+    expect(isDeferredToolName("ReportFindings")).toBe(false)
+
+    expect(
+      shouldEnableResponsesToolSearch({
+        model: "gpt-5.4",
+        tools: [
+          { name: "mcp__tool_search__search" },
+          { name: "Workflow" },
+          { name: "ReportFindings" },
+        ],
+      }),
+    ).toBe(false)
+
+    expect(
+      shouldEnableResponsesToolSearch({
+        model: "gpt-5.4",
+        tools: [
+          { name: "mcp__tool_search__search" },
+          { name: "Workflow" },
+          { name: "ReportFindings" },
+          { name: "mcp__fetch__fetch" },
+        ],
+      }),
+    ).toBe(true)
+  })
+
   test("detects eligible Responses tool search requests", () => {
     expect(
       shouldEnableResponsesToolSearch({

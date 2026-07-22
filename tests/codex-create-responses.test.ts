@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 
 import { requestContext } from "~/lib/request-context"
 import { state } from "~/lib/state"
-import { getModels } from "~/services/codex/get-models"
+import { getStaticCodexModels } from "~/services/codex/get-models"
 import {
   buildCodexResponsesWebSocketPayload,
   buildCodexResponsesWebSocketUrl,
@@ -50,6 +50,7 @@ describe("codex api helpers", () => {
     const payload = buildCodexResponsesWebSocketPayload({
       input: "hello",
       model: "gpt-5.4",
+      reasoning: { effort: "ultra", summary: "auto" },
       store: false,
       stream: true,
     })
@@ -57,6 +58,7 @@ describe("codex api helpers", () => {
     expect(payload).toEqual({
       input: "hello",
       model: "gpt-5.4",
+      reasoning: { effort: "ultra", summary: "auto" },
       store: false,
       type: "response.create",
     })
@@ -207,7 +209,7 @@ describe("codex api helpers", () => {
   })
 
   test("returns the static codex model catalog", () => {
-    const models = getModels()
+    const models = getStaticCodexModels()
 
     expect(models.object).toBe("list")
     expect(models.data.map((model) => model.id)).toEqual([
@@ -224,5 +226,18 @@ describe("codex api helpers", () => {
         (model) => !model.supported_endpoints?.includes("/v1/embeddings"),
       ),
     ).toBe(true)
+    expect(
+      models.data.find((model) => model.id === "gpt-5.4")?.capabilities.limits,
+    ).toMatchObject({
+      max_context_window_tokens: 1_000_000,
+      max_prompt_tokens: 272_000,
+    })
+    expect(
+      models.data.find((model) => model.id === "gpt-5.4-mini")?.capabilities
+        .limits,
+    ).toMatchObject({
+      max_context_window_tokens: 272_000,
+      max_prompt_tokens: 272_000,
+    })
   })
 })

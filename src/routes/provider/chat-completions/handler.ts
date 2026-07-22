@@ -3,11 +3,7 @@ import type { Context } from "hono"
 
 import { streamSSE } from "hono/streaming"
 
-import {
-  type ModelConfig,
-  type ResolvedProviderConfig,
-  resolveEffectiveProviderType,
-} from "~/lib/config"
+import { type ModelConfig, type ResolvedProviderConfig } from "~/lib/config"
 import {
   applyDashScopePreserveThinkingDefault,
   applyOpenAICompatibleContextCache,
@@ -15,10 +11,11 @@ import {
 } from "~/lib/dashscope"
 import { HTTPError } from "~/lib/error"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
-import { resolveProviderConfig } from "~/lib/provider-resolver"
+import { resolveProviderModel } from "~/lib/provider-resolver"
 import {
   createProviderTokenUsageRecorder,
   normalizeOpenAIUsage,
+  type TokenUsageRecorder,
   type UsageTokens,
 } from "~/lib/token-usage"
 import type {
@@ -41,11 +38,14 @@ export async function handleProviderChatCompletionsForProvider(
   },
 ): Promise<Response> {
   const { payload, provider } = options
-  const providerConfig = await resolveProviderConfig(provider)
+  const resolvedProviderModel = await resolveProviderModel(
+    provider,
+    payload.model,
+    { signal: c.req.raw.signal },
+  )
   if (
-    !providerConfig
-    || resolveEffectiveProviderType(providerConfig, payload.model)
-      !== "openai-compatible"
+    !resolvedProviderModel
+    || resolvedProviderModel.type !== "openai-compatible"
   ) {
     return c.json(
       {
@@ -58,7 +58,11 @@ export async function handleProviderChatCompletionsForProvider(
     )
   }
 
-  const modelConfig = providerConfig.models?.[payload.model]
+  const {
+    config: providerConfig,
+    forwardingConfig,
+    modelConfig,
+  } = resolvedProviderModel
   applyProviderModelDefaults(payload, modelConfig)
   applyMissingExtraBody(payload, {
     extraBody: modelConfig?.extraBody,
@@ -76,9 +80,10 @@ export async function handleProviderChatCompletionsForProvider(
   })
 
   const upstreamResponse = await forwardProviderChatCompletions(
-    providerConfig,
+    forwardingConfig,
     payload,
     c.req.raw.headers,
+    c.req.raw.signal,
   )
 
   if (!upstreamResponse.ok) {
@@ -166,10 +171,11 @@ const createProviderChatCompletionsUsageRecorder = (
   provider: string,
   modelConfig: ModelConfig | undefined,
   pricingCurrency: string | undefined,
-) =>
+): TokenUsageRecorder =>
   createProviderTokenUsageRecorder({
     endpoint: "chat_completions",
     model: payload.model,
+    outcome: "completed",
     pricing: modelConfig?.pricing,
     pricingCurrency,
     providerName: provider,
@@ -180,7 +186,7 @@ const streamProviderChatCompletions = (
   upstreamResponse: Response,
   options: {
     provider: string
-    recordUsage: (usage: UsageTokens) => void
+    recordUsage: TokenUsageRecorder
   },
 ): Response => {
   logger.debug("provider.chat_completions.streaming", {
@@ -188,6 +194,7 @@ const streamProviderChatCompletions = (
   })
   return streamSSE(c, async (stream) => {
     let usage: UsageTokens = {}
+    let terminalSeen = false
 
     try {
       for await (const chunk of events(upstreamResponse)) {
@@ -197,6 +204,22 @@ const streamProviderChatCompletions = (
           if (parsedChunk?.usage) {
             usage = normalizeOpenAIUsage(parsedChunk.usage)
           }
+          if (
+            parsedChunk?.choices.some(
+              (choice) => choice.finish_reason === "error",
+            )
+          ) {
+            terminalSeen = true
+            await stream.writeSSE(
+              createProviderChatStreamError(
+                "Provider upstream ended with finish_reason=error",
+              ),
+            )
+            break
+          }
+          terminalSeen ||= Boolean(
+            parsedChunk?.choices.some((choice) => choice.finish_reason),
+          )
         }
 
         await stream.writeSSE({
@@ -204,11 +227,40 @@ const streamProviderChatCompletions = (
           data: chunk.data ?? "",
         })
       }
+
+      if (!terminalSeen) {
+        await stream.writeSSE(
+          createProviderChatStreamError(
+            "Provider chat stream ended without finish_reason",
+          ),
+        )
+      }
+    } catch (error) {
+      if (!terminalSeen) {
+        await stream.writeSSE(
+          createProviderChatStreamError(
+            `Provider chat stream failed: ${getErrorMessage(error)}`,
+          ),
+        )
+      }
     } finally {
       options.recordUsage(usage)
     }
   })
 }
+
+const createProviderChatStreamError = (message: string) => ({
+  event: "error",
+  data: JSON.stringify({
+    error: {
+      message,
+      type: "api_error",
+    },
+  }),
+})
+
+const getErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error)
 
 const parseChatCompletionChunkData = (
   data: string,

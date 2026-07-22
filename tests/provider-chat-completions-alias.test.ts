@@ -1,18 +1,23 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Hono } from "hono"
 
-import type { ResolvedProviderConfig } from "../src/lib/config"
+import type {
+  ProviderAuthType,
+  ResolvedProviderConfig,
+} from "../src/lib/config"
 
 const actualConfigModule = await import("../src/lib/config")
 const actualTokenUsageModule = await import("../src/lib/token-usage")
 
 let providerConfig: ResolvedProviderConfig | null = null
+let configuredAuthType: ProviderAuthType | undefined
 let modelMappings: Record<string, string> = {}
 
 const noopTokenUsageRecorder = () => {}
 
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
+  getRawProviderConfig: () => ({ authType: configuredAuthType }),
   getProviderConfig: () => providerConfig,
   resolveMappedModel: (model: string) => modelMappings[model] ?? model,
 }))
@@ -69,6 +74,7 @@ const createApp = () => {
 }
 
 beforeEach(() => {
+  configuredAuthType = "authorization"
   providerConfig = {
     apiKey: "provider-key",
     authType: "authorization",
@@ -100,6 +106,30 @@ afterEach(() => {
 })
 
 describe("provider/model aliases on top-level chat completions route", () => {
+  test("keeps provider HTTP fetch cancellable after response headers", async () => {
+    const controller = new AbortController()
+    const response = await createApp().request(
+      new Request("http://localhost/v1/chat/completions", {
+        body: JSON.stringify({
+          messages: [{ content: "hello", role: "user" }],
+          model: "dash/qwen-plus",
+        }),
+        headers: {
+          "content-type": "application/json",
+        },
+        method: "POST",
+        signal: controller.signal,
+      }),
+    )
+
+    expect(response.status).toBe(200)
+    const upstreamSignal = (fetchMock.mock.calls[0][1] as RequestInit).signal
+    expect(upstreamSignal?.aborted).toBe(false)
+
+    controller.abort(new Error("client disconnected"))
+    expect(upstreamSignal?.aborted).toBe(true)
+  })
+
   test("routes mapped models to provider chat completions before rate limiting", async () => {
     modelMappings = {
       "gpt-provider": "dash/qwen-plus",
@@ -226,6 +256,194 @@ describe("provider/model aliases on top-level chat completions route", () => {
         type: "invalid_request_error",
       },
     })
+  })
+
+  test("routes a model-level chat protocol override through the chat adapter", async () => {
+    configuredAuthType = "x-api-key"
+    providerConfig = {
+      ...(providerConfig as ResolvedProviderConfig),
+      authType: "x-api-key",
+      models: {
+        "qwen-plus": {
+          type: "openai-compatible",
+        },
+      },
+      type: "anthropic",
+    }
+
+    const response = await createApp().request("/v1/chat/completions", {
+      body: JSON.stringify({
+        messages: [{ content: "hello", role: "user" }],
+        model: "dash/qwen-plus",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "https://dashscope.example/compatible-mode/v1/chat/completions",
+    )
+    expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toEqual({
+      "content-type": "application/json",
+      accept: "application/json",
+      "x-api-key": "provider-key",
+    })
+  })
+
+  test("defaults auth from the model-level protocol when auth is omitted", async () => {
+    configuredAuthType = undefined
+    providerConfig = {
+      ...(providerConfig as ResolvedProviderConfig),
+      authType: "x-api-key",
+      models: {
+        "qwen-plus": {
+          type: "openai-compatible",
+        },
+      },
+      type: "anthropic",
+    }
+
+    const response = await createApp().request("/v1/chat/completions", {
+      body: JSON.stringify({
+        messages: [{ content: "hello", role: "user" }],
+        model: "dash/qwen-plus",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toEqual({
+      "content-type": "application/json",
+      accept: "application/json",
+      authorization: "Bearer provider-key",
+    })
+  })
+
+  test("emits an error when a provider stream ends without finish_reason", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          [
+            'data: {"id":"chatcmpl-partial","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[{"index":0,"delta":{"role":"assistant","content":"partial"},"finish_reason":null}]}',
+            "",
+            "data: [DONE]",
+            "",
+          ].join("\n"),
+          {
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/v1/chat/completions", {
+      body: JSON.stringify({
+        messages: [{ content: "hello", role: "user" }],
+        model: "dash/qwen-plus",
+        stream: true,
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain('"content":"partial"')
+    expect(body).toContain("event: error")
+    expect(body).toContain("Provider chat stream ended without finish_reason")
+  })
+
+  test("translates streaming finish_reason error into an SSE error", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          [
+            'data: {"id":"chatcmpl-error","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[{"index":0,"delta":{},"finish_reason":"error"}]}',
+            "",
+            "data: [DONE]",
+            "",
+          ].join("\n"),
+          {
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/v1/chat/completions", {
+      body: JSON.stringify({
+        messages: [{ content: "hello", role: "user" }],
+        model: "dash/qwen-plus",
+        stream: true,
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("event: error")
+    expect(body).toContain("Provider upstream ended with finish_reason=error")
+  })
+
+  test("emits an SSE error when a provider chat stream throws", async () => {
+    const encoder = new TextEncoder()
+    let pullCount = 0
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pullCount === 0) {
+          pullCount += 1
+          controller.enqueue(
+            encoder.encode(
+              'data: {"id":"chatcmpl-partial","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}\n\n',
+            ),
+          )
+          return
+        }
+        controller.error(new Error("provider chat socket reset"))
+      },
+    })
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(upstreamBody, {
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        }),
+      ),
+    )
+
+    const response = await createApp().request("/v1/chat/completions", {
+      body: JSON.stringify({
+        messages: [{ content: "hello", role: "user" }],
+        model: "dash/qwen-plus",
+        stream: true,
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("event: error")
+    expect(body).toContain("provider chat socket reset")
   })
 })
 

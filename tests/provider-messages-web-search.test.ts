@@ -1,117 +1,147 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import { events } from "fetch-event-stream"
 import { Hono } from "hono"
 
 import type { ResolvedProviderConfig } from "../src/lib/config"
+import { createProviderResolver } from "../src/lib/provider-resolver"
+import { fetchWithUpstreamLifecycle } from "../src/lib/upstream-lifecycle"
 import type {
   AnthropicMessagesPayload,
   AnthropicResponse,
 } from "../src/routes/messages/anthropic-types"
-import type { ResponsesResult } from "../src/services/copilot/create-responses"
-
-const actualConfigModule = await import("../src/lib/config")
-const actualModelsModule = await import("../src/lib/models")
-const actualStateModule = await import("../src/lib/state")
-const actualTokenModule = await import("../src/lib/token")
-const actualTokenUsageModule = await import("../src/lib/token-usage")
+import { createMessagesHandler } from "../src/routes/messages/handler"
+import { createMessageRoutes } from "../src/routes/messages/route"
+import { createWebSearchFlow } from "../src/routes/messages/web-search/fulfill"
+import { projectWebSearchSyntheticHistory } from "../src/routes/messages/web-search/reconstruction"
+import { getResponsesTransportForModel } from "../src/routes/responses/utils"
+import { createProviderMessagesHandler } from "../src/routes/provider/messages/handler"
+import { createProviderCountTokensHandler } from "../src/routes/provider/messages/count-tokens-handler"
+import { createProviderMessageRoutes } from "../src/routes/provider/messages/route"
+import type {
+  CreateResponsesReturn,
+  ResponsesPayload,
+  ResponsesResult,
+  ResponsesStream,
+  ResponsesTransport,
+} from "../src/services/copilot/create-responses"
+import type { Model } from "../src/services/copilot/get-models"
+import type { CodexProviderCatalogSnapshot } from "../src/services/codex/get-models"
+import type { TokenUsageRecorder } from "../src/lib/token-usage"
+import { createProviderResponsesPort } from "../src/services/providers/provider-responses-port"
+import {
+  encodeWebSearchHistoryCarrier,
+  WEB_SEARCH_HISTORY_CARRIER_FIELD,
+} from "../src/routes/messages/web-search/history-carrier"
 
 let providerConfigs: Record<string, ResolvedProviderConfig> = {}
 let messageApiWebSearchModel: string | undefined
 
-const noopTokenUsageRecorder = () => {}
-const findEndpointModel = mock((model: string) => ({
-  id: model,
-  supported_endpoints: ["/v1/messages"],
-}))
+const recordProviderUsage: TokenUsageRecorder = () => "accepted"
+const providerUsageRecorder = mock(recordProviderUsage)
+const createProviderUsageRecorder = () => providerUsageRecorder
+const providerGetTokenCount = mock(() =>
+  Promise.resolve({ input: 1, output: 0 }),
+)
+const findEndpointModel = mock(
+  (model: string): Model => ({
+    capabilities: {
+      family: model,
+      limits: {},
+      object: "model_capabilities",
+      supports: {},
+      type: "chat",
+    },
+    id: model,
+    model_picker_enabled: true,
+    name: model,
+    object: "model",
+    supported_endpoints: ["/v1/messages"],
+    vendor: "test",
+    version: "test",
+  }),
+)
 
-await mock.module("~/lib/config", () => ({
-  ...actualConfigModule,
-  getMessageApiWebSearchModel: () => messageApiWebSearchModel,
-  getProviderConfig: (name: string) => providerConfigs[name] ?? null,
-  isResponsesApiWebSearchEnabled: () => true,
-  isResponsesApiWebSocketEnabled: () => false,
-  resolveMappedModel: (model: string) => model,
-}))
-
-await mock.module("~/lib/models", () => ({
-  ...actualModelsModule,
-  findEndpointModel,
-}))
-
-await mock.module("~/lib/state", () => ({
-  ...actualStateModule,
-  state: {
-    ...actualStateModule.state,
-    tokenBasedBilling: true,
-    verbose: false,
+const codexCatalogSnapshot: CodexProviderCatalogSnapshot = {
+  catalog: {
+    data: [
+      {
+        capabilities: {
+          family: "gpt-search",
+          limits: { max_prompt_tokens: 372_000 },
+          object: "model_capabilities",
+          supports: {
+            reasoning_effort: ["low", "max", "ultra"],
+            streaming: true,
+            tool_calls: true,
+          },
+          type: "chat",
+        },
+        id: "gpt-search",
+        model_picker_enabled: true,
+        name: "GPT Search",
+        object: "model",
+        vendor: "openai",
+        version: "codex-official",
+      },
+    ],
+    object: "list",
   },
-}))
-
-await mock.module("~/lib/token", () => ({
-  ...actualTokenModule,
-  setupCodexToken: async () => {},
-}))
-
-await mock.module("~/lib/token-usage", () => ({
-  ...actualTokenUsageModule,
-  createProviderTokenUsageRecorder: () => noopTokenUsageRecorder,
-}))
-
-const { providerMessageRoutes } = await import(
-  "../src/routes/provider/messages/route"
+  diagnostics: [],
+  fetchedAt: 1,
+  freshness: "fresh",
+  source: "official",
+}
+const loadCodexProviderModels = mock((_signal?: AbortSignal) =>
+  Promise.resolve(codexCatalogSnapshot),
 )
-const { messageRoutes } = await import("../src/routes/messages/route")
-const { state } = await import("../src/lib/state")
-const { responsesUtilsDependencies } = await import(
-  "../src/routes/responses/utils"
-)
-
-const originalCodexAccessToken = state.codexAccessToken
-const originalCodexAccountId = state.codexAccountId
-const defaultResponsesUtilsDependencies = { ...responsesUtilsDependencies }
 
 const makeResponsesResult = (
   overrides: Partial<ResponsesResult> = {},
-): ResponsesResult =>
-  ({
-    id: "resp_provider_search",
-    object: "response",
-    created_at: 0,
-    model: "gpt-search",
-    output: [
-      { type: "web_search_call", action: { query: "node lts version" } },
-      {
-        type: "message",
-        role: "assistant",
-        status: "completed",
-        content: [
-          {
-            type: "output_text",
-            text: "Node.js 24 is the latest LTS.",
-            annotations: [
-              {
-                type: "url_citation",
-                url: "https://nodejs.org",
-                title: "Node.js",
-              },
-            ],
-          },
-        ],
-      },
-    ],
-    output_text: "",
-    status: "completed",
-    usage: { input_tokens: 12, output_tokens: 7, total_tokens: 19 },
-    error: null,
-    incomplete_details: null,
-    instructions: null,
-    metadata: null,
-    parallel_tool_calls: true,
-    temperature: 1,
-    tool_choice: null,
-    tools: [],
-    top_p: null,
-    ...overrides,
-  }) as unknown as ResponsesResult
+): ResponsesResult => ({
+  id: "resp_provider_search",
+  object: "response",
+  created_at: 0,
+  model: "gpt-search",
+  output: [
+    {
+      type: "web_search_call",
+      status: "completed",
+      action: { type: "search", query: "node lts version" },
+    },
+    {
+      id: "message-provider-default",
+      type: "message",
+      role: "assistant",
+      status: "completed",
+      content: [
+        {
+          type: "output_text",
+          text: "Node.js 24 is the latest LTS.",
+          annotations: [
+            {
+              type: "url_citation",
+              url: "https://nodejs.org",
+              title: "Node.js",
+            },
+          ],
+        },
+      ],
+    },
+  ],
+  output_text: "",
+  status: "completed",
+  usage: { input_tokens: 12, output_tokens: 7, total_tokens: 19 },
+  error: null,
+  incomplete_details: null,
+  instructions: null,
+  metadata: null,
+  parallel_tool_calls: true,
+  temperature: 1,
+  tool_choice: null,
+  tools: [],
+  top_p: null,
+  ...overrides,
+})
 
 const makePlainResponsesResult = (): ResponsesResult =>
   makeResponsesResult({
@@ -246,9 +276,42 @@ const makeResponsesStreamResponse = (body: ResponsesResult) => {
   })
 }
 
+const makeOpenResponsesStreamResponse = (
+  responseEvents: Array<Record<string, unknown>>,
+): { cancelCount: () => number; response: Response } => {
+  const encoder = new TextEncoder()
+  let cancelCount = 0
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(
+        encoder.encode(
+          `${responseEvents
+            .map(
+              (event) =>
+                `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}`,
+            )
+            .join("\n\n")}\n\n`,
+        ),
+      )
+    },
+    cancel() {
+      cancelCount += 1
+    },
+  })
+
+  return {
+    cancelCount: () => cancelCount,
+    response: new Response(body, {
+      headers: { "content-type": "text/event-stream; charset=utf-8" },
+    }),
+  }
+}
+
 const originalFetch = globalThis.fetch
 let responsesResultOverride: ResponsesResult | undefined
-let responsesStreamFactory: ((body: ResponsesResult) => Response) | undefined
+let responsesStreamFactory:
+  | ((body: ResponsesResult, init?: RequestInit) => Response)
+  | undefined
 
 const fetchMock = mock((url: string | URL | Request, init?: RequestInit) => {
   const urlString =
@@ -284,7 +347,7 @@ const fetchMock = mock((url: string | URL | Request, init?: RequestInit) => {
     && requestPayload.stream === true
   ) {
     return Promise.resolve(
-      responsesStreamFactory?.(body) ?? makeResponsesStreamResponse(body),
+      responsesStreamFactory?.(body, init) ?? makeResponsesStreamResponse(body),
     )
   }
 
@@ -295,10 +358,126 @@ const fetchMock = mock((url: string | URL | Request, init?: RequestInit) => {
   )
 })
 
+const forwardCodexResponses = async (
+  payload: ResponsesPayload,
+  _requestHeaders: Headers,
+  baseUrl = "https://codex.example/backend-api",
+  options: {
+    signal?: AbortSignal
+    transport?: ResponsesTransport
+  } = {},
+): Promise<CreateResponsesReturn> => {
+  const normalizedPayload = { ...payload, store: false }
+  delete normalizedPayload.temperature
+  delete normalizedPayload.top_p
+  delete normalizedPayload.max_output_tokens
+  delete normalizedPayload.metadata
+
+  const response = await fetchWithUpstreamLifecycle(
+    `${baseUrl}/codex/responses`,
+    {
+      body: JSON.stringify(normalizedPayload),
+      headers: {
+        accept:
+          normalizedPayload.stream ? "text/event-stream" : "application/json",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    },
+    { signal: options.signal },
+  )
+  if (normalizedPayload.stream) {
+    return events(response)
+  }
+  return (await response.json()) as ResponsesResult
+}
+
+const createTestProviderResponsesPort: typeof createProviderResponsesPort = (
+  providerConfig,
+) =>
+  createProviderResponsesPort(providerConfig, {
+    dispatchCodexResponses: async (
+      payload,
+      requestHeaders,
+      baseUrl,
+      options,
+    ) => {
+      const result = await forwardCodexResponses(
+        payload,
+        requestHeaders,
+        baseUrl,
+        options,
+      )
+      if (
+        result
+        && typeof (result as ResponsesStream)[Symbol.asyncIterator]
+          === "function"
+      ) {
+        return {
+          kind: "stream",
+          source: result as ResponsesStream,
+          transport: "http",
+        }
+      }
+      return {
+        kind: "http",
+        payload,
+        response: Response.json(result),
+        transport: "http",
+      }
+    },
+  })
+
 const createApp = () => {
+  const providerConfigSnapshot = structuredClone(providerConfigs)
+  const providerResolver = createProviderResolver({
+    getCodexAccessToken: () => "codex-token",
+    getProviderConfig: (name) => providerConfigSnapshot[name] ?? null,
+    getRawProviderConfig: (name) => providerConfigSnapshot[name] ?? null,
+    setupCodexToken: async () => {},
+  })
+  const providerMessages = createProviderMessagesHandler({
+    createProviderTokenUsageRecorder: createProviderUsageRecorder,
+    createProviderResponsesPort: createTestProviderResponsesPort,
+    getModelResponsesApiCompactThreshold: () => undefined,
+    isContextManagementEnabledForMessages: () => true,
+    loadCodexProviderModels,
+    providerResolver,
+  })
+  const providerCountTokens = createProviderCountTokensHandler({
+    getTokenCount: providerGetTokenCount,
+    providerResolver,
+  })
+  const searchFlow = createWebSearchFlow({
+    createResponses: (payload, options) =>
+      forwardCodexResponses(
+        payload,
+        new Headers(),
+        "https://provider.example",
+        options,
+      ),
+    findEndpointModel,
+    getMessageApiWebSearchModel: () => messageApiWebSearchModel,
+    getResponsesTransportForModel: (selectedModel, options) =>
+      getResponsesTransportForModel(selectedModel, {
+        ...options,
+        useWebSocket: false,
+      }),
+    isResponsesApiWebSearchEnabled: () => true,
+  })
+  const messages = createMessagesHandler({
+    providerMessages,
+    webSearchFlow: searchFlow,
+  })
   const app = new Hono()
-  app.route("/v1/messages", messageRoutes)
-  app.route("/:provider/v1/messages", providerMessageRoutes)
+  app.route("/v1/messages", createMessageRoutes({ messages }))
+  app.route(
+    "/:provider/v1/messages",
+    createProviderMessageRoutes({
+      countTokens: providerCountTokens.handle,
+      messages: providerMessages,
+    }),
+  )
   return app
 }
 
@@ -337,6 +516,25 @@ const createCodexMessagesPayload = (
   ...overrides,
 })
 
+const requestStreamingCodexProviderMessages = (
+  signal?: AbortSignal,
+): Promise<Response> =>
+  Promise.resolve(
+    createApp().request("/codex/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(createCodexMessagesPayload({ stream: true })),
+      signal,
+    }),
+  )
+
+const normalizedCodexResponsesUsage = {
+  cache_read_input_tokens: 0,
+  input_tokens: 12,
+  output_tokens: 7,
+  total_tokens: 19,
+}
+
 beforeEach(() => {
   providerConfigs = {
     search: {
@@ -352,27 +550,20 @@ beforeEach(() => {
       },
     },
   }
-  state.codexAccessToken = "codex-token"
-  state.codexAccountId = "codex-account"
   messageApiWebSearchModel = undefined
   responsesResultOverride = undefined
   responsesStreamFactory = undefined
   findEndpointModel.mockClear()
-  responsesUtilsDependencies.getModelResponsesApiCompactThreshold = () =>
-    undefined
-  responsesUtilsDependencies.isContextManagementEnabledForMessages = () => true
-  responsesUtilsDependencies.isContextManagementEnabledForResponses = () =>
-    false
+  loadCodexProviderModels.mockClear()
   fetchMock.mockClear()
+  providerUsageRecorder.mockClear()
+  providerGetTokenCount.mockClear()
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
     fetchMock as unknown as typeof fetch
 })
 
 afterEach(() => {
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
-  state.codexAccessToken = originalCodexAccessToken
-  state.codexAccountId = originalCodexAccountId
-  Object.assign(responsesUtilsDependencies, defaultResponsesUtilsDependencies)
   providerConfigs = {}
   messageApiWebSearchModel = undefined
   responsesResultOverride = undefined
@@ -380,7 +571,7 @@ afterEach(() => {
 })
 
 describe("provider messages web_search", () => {
-  test("adds context management when provider Messages uses Responses API", async () => {
+  test("does not add context management when an unknown provider uses Responses API", async () => {
     const app = createApp()
     const response = await app.request("/search/v1/messages", {
       method: "POST",
@@ -405,9 +596,38 @@ describe("provider messages web_search", () => {
       model: string
     }
     expect(upstreamBody.model).toBe("gpt-search")
+    expect(upstreamBody.context_management).toBeUndefined()
+  })
+
+  test("adds context management when a Responses provider explicitly opts in", async () => {
+    providerConfigs.search = {
+      ...providerConfigs.search,
+      capabilities: {
+        responsesContextManagement: true,
+      },
+    }
+
+    const app = createApp()
+    const response = await app.request("/search/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-search",
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const [, init] = fetchMock.mock.calls[0]
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      context_management?: unknown
+    }
     expect(upstreamBody.context_management).toEqual([
       {
-        compact_threshold: 170000,
+        compact_threshold: 168000,
         type: "compaction",
       },
     ])
@@ -463,9 +683,81 @@ describe("provider messages web_search", () => {
       "web_search_tool_result",
       "text",
     ])
+    expect(JSON.stringify(json)).not.toContain("encrypted_content")
+    expect(response.headers.get("x-copilot-api-web-search-carrier")).toBe(
+      "synthetic-without-encrypted-content",
+    )
+  })
+
+  test("forwards mixed top-level fallback tools through Responses", async () => {
+    messageApiWebSearchModel = "gpt-search"
+
+    const response = await createApp().request("/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "search and call" }],
+        model: "claude-sonnet-4.5",
+        tools: [
+          webSearchTool,
+          { name: "get_weather", input_schema: { type: "object" } },
+        ],
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [, init] = fetchMock.mock.calls[0]
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      tools?: Array<Record<string, unknown>>
+    }
+    expect(upstreamBody.tools).toEqual([
+      {
+        type: "function",
+        name: "get_weather",
+        parameters: { type: "object", properties: {} },
+        strict: false,
+      },
+      {
+        type: "web_search",
+        filters: { allowed_domains: ["nodejs.org"] },
+        user_location: {
+          type: "approximate",
+          country: "US",
+        },
+      },
+    ])
   })
 
   test("runs pure Anthropic web_search through an openai-responses provider", async () => {
+    responsesResultOverride = makeResponsesResult({
+      output: [
+        {
+          type: "web_search_call",
+          status: "completed",
+          action: {
+            type: "search",
+            queries: ["node current", "node lts"],
+          },
+        },
+        {
+          type: "web_search_call",
+          status: "completed",
+          action: { type: "open", url: "https://nodejs.org" },
+        },
+        makeResponsesResult().output[1],
+      ] satisfies ResponsesResult["output"],
+      usage: {
+        input_tokens: 12,
+        input_tokens_details: {
+          cached_tokens: 3,
+          cache_write_tokens: 2,
+        },
+        output_tokens: 7,
+        total_tokens: 19,
+      },
+    })
     const app = createApp()
     const response = await app.request("/search/v1/messages", {
       method: "POST",
@@ -513,15 +805,462 @@ describe("provider messages web_search", () => {
     expect(json.content.map((block) => block.type)).toEqual([
       "server_tool_use",
       "web_search_tool_result",
+      "server_tool_use",
+      "web_search_tool_result",
       "text",
     ])
+    expect(
+      (json.content[0] as { input: Record<string, unknown> }).input.queries,
+    ).toEqual(["node current", "node lts"])
     expect(json.usage).toMatchObject({
-      input_tokens: 12,
+      input_tokens: 7,
+      cache_creation_input_tokens: 2,
+      cache_read_input_tokens: 3,
       output_tokens: 7,
       server_tool_use: {
-        web_search_requests: 1,
+        web_search_requests: 2,
       },
     })
+  })
+
+  test("round-trips exact Web Search history only to the same provider model", async () => {
+    const exactOutput = [
+      {
+        id: "search-provider-history",
+        type: "web_search_call",
+        status: "completed",
+        action: {
+          type: "search",
+          queries: ["first provider query", "second provider query"],
+          sources: [
+            { type: "url", url: "https://example.test/provider-history" },
+          ],
+          provider_extension: { kept: true },
+        },
+      },
+      {
+        id: "message-provider-history",
+        type: "message",
+        role: "assistant",
+        status: "completed",
+        content: [
+          {
+            type: "output_text",
+            text: "Provider history answer",
+            annotations: [
+              {
+                type: "url_citation",
+                start_index: 0,
+                end_index: 8,
+                title: "Provider history",
+                url: "https://example.test/provider-history",
+              },
+            ],
+          },
+        ],
+      },
+    ] as ResponsesResult["output"]
+    responsesResultOverride = makeResponsesResult({ output: exactOutput })
+    const app = createApp()
+
+    const first = await app.request("/search/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "Search first" }],
+        model: "gpt-search",
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(first.status).toBe(200)
+    expect(first.headers.get("x-copilot-api-web-search-carrier")).toBe(
+      "gateway-v1-exact-responses-scope",
+    )
+    const firstBody = (await first.json()) as AnthropicResponse
+    expect(JSON.stringify(firstBody)).toContain(
+      WEB_SEARCH_HISTORY_CARRIER_FIELD,
+    )
+
+    const second = await app.request("/search/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [
+          { role: "user", content: "Search first" },
+          { role: "assistant", content: firstBody.content },
+          { role: "user", content: "Continue" },
+        ],
+        model: "gpt-search",
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(second.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const [, secondInit] = fetchMock.mock.calls[1]
+    const secondUpstream = JSON.parse(
+      (secondInit as RequestInit).body as string,
+    ) as { input: Array<unknown> }
+    expect(secondUpstream.input.slice(1, 3)).toEqual(
+      exactOutput as Array<unknown>,
+    )
+    expect(
+      secondUpstream.input.filter(
+        (item) =>
+          typeof item === "object"
+          && item !== null
+          && (item as { id?: unknown }).id === "search-provider-history",
+      ),
+    ).toHaveLength(1)
+    expect(JSON.stringify(secondUpstream)).not.toContain(
+      WEB_SEARCH_HISTORY_CARRIER_FIELD,
+    )
+
+    fetchMock.mockClear()
+    const mismatch = await app.request("/search/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [
+          { role: "user", content: "Search first" },
+          { role: "assistant", content: firstBody.content },
+          { role: "user", content: "Continue elsewhere" },
+        ],
+        model: "gpt-other",
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(mismatch.status).toBe(400)
+    expect(await mismatch.text()).toContain("model-mismatch")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("returns max_tokens for provider Web Search max_tokens incomplete", async () => {
+    responsesResultOverride = makeResponsesResult({
+      status: "incomplete",
+      incomplete_details: { reason: "max_tokens" } as never,
+    })
+
+    const response = await createApp().request("/search/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "Search" }],
+        model: "gpt-search",
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(((await response.json()) as AnthropicResponse).stop_reason).toBe(
+      "max_tokens",
+    )
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder.mock.calls[0]?.[1]).toEqual({
+      errorCode: "max_output_tokens",
+      outcome: "incomplete",
+      terminal: "response.incomplete",
+    })
+  })
+
+  test("fails closed and records once for unknown provider incomplete reasons", async () => {
+    responsesResultOverride = makeResponsesResult({
+      status: "incomplete",
+      incomplete_details: { reason: "tool_limit" } as never,
+      copilot_usage: { total_nano_aiu: 800 },
+    })
+
+    const response = await createApp().request("/search/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "Search" }],
+        model: "gpt-search",
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(response.status).toBe(502)
+    expect(await response.text()).toContain(
+      "no Anthropic stop-reason equivalent",
+    )
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder.mock.calls[0]?.[0]).toMatchObject({
+      total_nano_aiu: 800,
+    })
+    expect(providerUsageRecorder.mock.calls[0]?.[1]).toEqual({
+      errorCode: "invalid_response",
+      outcome: "failed",
+      terminal: "response.incomplete",
+    })
+  })
+
+  test("rejects explicit search effort when no model descriptor is available", async () => {
+    const response = await createApp().request("/search/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "Search" }],
+        model: "gpt-search",
+        output_config: { effort: "high" },
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.text()).toContain(
+      "Cannot validate explicit reasoning effort",
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("marks dynamic web_search provider requests as direct fallback", async () => {
+    const app = createApp()
+    const response = await app.request("/search/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "What is the Node.js LTS?" }],
+        model: "gpt-search",
+        tools: [
+          {
+            type: "web_search_20260318",
+            name: "web_search",
+            max_uses: 2,
+            response_inclusion: "excluded",
+          },
+        ],
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get("x-copilot-api-web-search-mode")).toBe(
+      "direct-fallback",
+    )
+    expect(response.headers.get("x-copilot-api-web-search-downgrade")).toBe(
+      "dynamic-filtering,response-inclusion",
+    )
+
+    const [, init] = fetchMock.mock.calls[0]
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      max_tool_calls?: number
+    }
+    expect(upstreamBody.max_tool_calls).toBe(2)
+  })
+
+  test("rejects invalid max_uses on the top-level Copilot fallback", async () => {
+    messageApiWebSearchModel = "gpt-5-mini"
+    const app = createApp()
+    const response = await app.request("/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "Search now" }],
+        model: "claude-opus-4-8",
+        tools: [
+          {
+            type: "web_search_20260318",
+            name: "web_search",
+            max_uses: 0,
+            allowed_callers: ["direct"],
+          },
+        ],
+      }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        message: "web_search max_uses must be a positive integer",
+      },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("rejects invalid max_uses on openai-responses providers", async () => {
+    const app = createApp()
+    const response = await app.request("/search/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "Search now" }],
+        model: "gpt-search",
+        tools: [
+          {
+            type: "web_search_20260318",
+            name: "web_search",
+            max_uses: -1,
+            allowed_callers: ["direct"],
+          },
+        ],
+      }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        message: "web_search max_uses must be a positive integer",
+      },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("loads the official Codex catalog and preserves omitted effort", async () => {
+    configureCodexProvider()
+
+    const response = await createApp().request("/codex/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(createCodexMessagesPayload()),
+    })
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get("x-copilot-api-codex-catalog-source")).toBe(
+      "official",
+    )
+    expect(loadCodexProviderModels).toHaveBeenCalledTimes(1)
+    expect(loadCodexProviderModels.mock.calls[0]?.[0]).toBeInstanceOf(
+      AbortSignal,
+    )
+    const [, init] = fetchMock.mock.calls[0]
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      reasoning?: { effort?: string }
+    }
+    expect(upstreamBody.reasoning).toBeDefined()
+    expect(upstreamBody.reasoning).not.toHaveProperty("effort")
+  })
+
+  test("rejects explicit Codex effort outside the selected descriptor", async () => {
+    configureCodexProvider()
+
+    const response = await createApp().request("/codex/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(
+        createCodexMessagesPayload({
+          output_config: { effort: "xhigh" },
+        }),
+      ),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      error: {
+        message:
+          "Reasoning effort 'xhigh' is not supported by Codex model 'gpt-search'",
+        type: "invalid_request_error",
+      },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("rejects disabled thinking when descriptor does not allow none", async () => {
+    configureCodexProvider()
+
+    const response = await createApp().request("/codex/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(
+        createCodexMessagesPayload({ thinking: { type: "disabled" } }),
+      ),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      error: {
+        message:
+          "Reasoning effort 'none' is not supported by Codex model 'gpt-search'",
+        type: "invalid_request_error",
+      },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("forwards none only when the selected descriptor allows it", async () => {
+    configureCodexProvider()
+    const supportsNone = structuredClone(codexCatalogSnapshot)
+    supportsNone.catalog.data[0].capabilities.supports.reasoning_effort = [
+      "none",
+      "low",
+    ]
+    loadCodexProviderModels.mockResolvedValueOnce(supportsNone)
+
+    const response = await createApp().request("/codex/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(
+        createCodexMessagesPayload({ thinking: { type: "disabled" } }),
+      ),
+    })
+
+    expect(response.status).toBe(200)
+    const [, init] = fetchMock.mock.calls[0]
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      reasoning?: { effort?: string }
+    }
+    expect(upstreamBody.reasoning?.effort).toBe("none")
+  })
+
+  test("rejects unknown runtime Codex effort values", async () => {
+    configureCodexProvider()
+
+    const response = await createApp().request("/codex/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-search",
+        output_config: { effort: "future-hyper" },
+      }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      error: {
+        message: "Invalid Codex reasoning effort",
+        type: "invalid_request_error",
+      },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("forwards explicit Codex ultra effort allowed by the descriptor", async () => {
+    configureCodexProvider()
+
+    const response = await createApp().request("/codex/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(
+        createCodexMessagesPayload({
+          output_config: { effort: "ultra" },
+        }),
+      ),
+    })
+
+    expect(response.status).toBe(200)
+    const [, init] = fetchMock.mock.calls[0]
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      reasoning?: { effort?: string }
+    }
+    expect(upstreamBody.reasoning?.effort).toBe("ultra")
   })
 
   test("runs codex web_search through streaming Responses", async () => {
@@ -548,9 +1287,11 @@ describe("provider messages web_search", () => {
     expect(url).toBe("https://codex.example/backend-api/codex/responses")
 
     const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      reasoning?: { effort?: string }
       stream?: boolean
     }
     expect(upstreamBody.stream).toBe(true)
+    expect(upstreamBody.reasoning).not.toHaveProperty("effort")
 
     const upstreamHeaders = new Headers((init as RequestInit).headers)
     expect(upstreamHeaders.get("accept")).toBe("text/event-stream")
@@ -563,7 +1304,167 @@ describe("provider messages web_search", () => {
     ])
   })
 
+  test("forwards descriptor-approved explicit effort for Codex web_search", async () => {
+    configureCodexProvider()
+
+    const response = await createApp().request("/codex/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "Search deeply" }],
+        model: "gpt-search",
+        output_config: { effort: "ultra" },
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const [, init] = fetchMock.mock.calls[0]
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      reasoning?: { effort?: string }
+    }
+    expect(upstreamBody.reasoning?.effort).toBe("ultra")
+  })
+
+  test("records buffered Codex web_search failure usage before the protocol error", async () => {
+    configureCodexProvider()
+    const failed = makeResponsesResult({
+      error: {
+        code: "server_error",
+        message: "private provider web search failure",
+      },
+      id: "resp-private-search-failure",
+      output: [],
+      output_text: "",
+      status: "failed",
+    })
+    responsesStreamFactory = () =>
+      new Response(
+        `data: ${JSON.stringify({
+          copilot_usage: { total_nano_aiu: 1_200 },
+          response: failed,
+          sequence_number: 1,
+          type: "response.failed",
+        })}\n\n`,
+        { headers: { "content-type": "text/event-stream" } },
+      )
+
+    const response = await createApp().request("/codex/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "Search privately" }],
+        model: "gpt-search",
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(response.status).toBe(502)
+    const body = await response.text()
+    expect(body).toContain("Responses upstream reported an error")
+    expect(body).not.toContain("private provider")
+    expect(body).not.toContain("resp-private")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      {
+        ...normalizedCodexResponsesUsage,
+        total_nano_aiu: 1_200,
+      },
+      {
+        errorCode: "upstream_error",
+        outcome: "failed",
+        terminal: "response.failed",
+      },
+    )
+  })
+
+  test("marks direct provider web_search JSON failures in the usage ledger", async () => {
+    const failed = makeResponsesResult({
+      error: { code: "server_error", message: "direct provider failure" },
+      output: [],
+      output_text: "",
+      status: "failed",
+    })
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(failed), {
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    )
+
+    const response = await createApp().request("/search/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "Search" }],
+        model: "gpt-search",
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(response.status).toBe(502)
+    expect(await response.text()).toContain("direct provider failure")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      normalizedCodexResponsesUsage,
+      {
+        errorCode: "response_failed",
+        outcome: "failed",
+        terminal: "response.failed",
+      },
+    )
+  })
+
   test("streams synthetic Anthropic events after parsing upstream Responses stream", async () => {
+    responsesResultOverride = makeResponsesResult({
+      copilot_usage: { total_nano_aiu: 77 },
+      output: [
+        {
+          id: "search-stream-first",
+          type: "web_search_call",
+          status: "completed",
+          action: { type: "search", queries: ["first", "second"] },
+        },
+        {
+          id: "search-stream-second",
+          type: "web_search_call",
+          status: "completed",
+          action: { type: "open", url: "https://example.test/stream" },
+        },
+        {
+          id: "message-stream-search",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [
+            {
+              type: "output_text",
+              text: "First claim. Second claim.",
+              annotations: [
+                {
+                  type: "url_citation",
+                  start_index: 0,
+                  end_index: 11,
+                  title: "Repeated",
+                  url: "https://example.test/repeated",
+                },
+                {
+                  type: "url_citation",
+                  start_index: 13,
+                  end_index: 25,
+                  title: "Repeated",
+                  url: "https://example.test/repeated",
+                },
+              ],
+            },
+          ],
+        },
+      ] satisfies ResponsesResult["output"],
+    })
     const app = createApp()
     const response = await app.request("/search/v1/messages", {
       method: "POST",
@@ -592,11 +1493,15 @@ describe("provider messages web_search", () => {
     expect(text).toContain("event: content_block_start")
     expect(text).toContain("server_tool_use")
     expect(text).toContain("web_search_tool_result")
-    expect(text).toContain("Node.js 24 is the latest LTS.")
+    expect(text).toContain("search-stream-first")
+    expect(text).toContain("search-stream-second")
+    expect(text.match(/citations_delta/gu)).toHaveLength(2)
+    expect(text).toContain('"total_nano_aiu":77')
+    expect(text).toContain("First claim. Second claim.")
     expect(text).toContain("event: message_stop")
   })
 
-  test("strips Anthropic web_search when mixed with normal tools", async () => {
+  test("forwards mixed web_search and normal tools through Responses", async () => {
     const app = createApp()
     const response = await app.request("/search/v1/messages", {
       method: "POST",
@@ -618,21 +1523,377 @@ describe("provider messages web_search", () => {
     })
 
     expect(response.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
     const [, init] = fetchMock.mock.calls[0]
     const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
       tools?: Array<Record<string, unknown>>
     }
-    expect(upstreamBody.tools).toEqual([
-      {
-        type: "function",
-        name: "get_weather",
-        parameters: { type: "object", properties: {} },
-        strict: false,
-      },
+    expect(upstreamBody.tools?.map((tool) => tool.type)).toEqual([
+      "function",
+      "web_search",
     ])
   })
 
-  test("strips Anthropic web_search before OpenAI-compatible translation", async () => {
+  test("passes mixed web_search and client tools unchanged to native Anthropic", async () => {
+    providerConfigs.native = {
+      name: "native",
+      type: "anthropic",
+      baseUrl: "https://native.example",
+      apiKey: "native-key",
+      authType: "x-api-key",
+    }
+    const nativeHistory = [
+      {
+        type: "server_tool_use",
+        id: "srvtoolu-native-history",
+        name: "web_search",
+        input: { query: "native history" },
+        caller: { type: "direct" },
+      },
+      {
+        type: "web_search_tool_result",
+        tool_use_id: "srvtoolu-native-history",
+        content: [
+          {
+            type: "web_search_result",
+            url: "https://example.test/native-history",
+            title: "Native history",
+            encrypted_content: "opaque-native-content",
+          },
+        ],
+      },
+      {
+        type: "text",
+        text: "Native history answer",
+        citations: [
+          {
+            type: "web_search_result_location",
+            url: "https://example.test/native-history",
+            title: "Native history",
+            cited_text: "Native history answer",
+            encrypted_index: "opaque-native-index",
+          },
+        ],
+      },
+    ] satisfies AnthropicResponse["content"]
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            id: "msg-native",
+            type: "message",
+            role: "assistant",
+            content: nativeHistory,
+            model: "claude-native",
+            stop_reason: "end_turn",
+            stop_sequence: null,
+            usage: { input_tokens: 1, output_tokens: 1 },
+          }),
+          { headers: { "content-type": "application/json" } },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/native/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [
+          { role: "user", content: "search and call" },
+          { role: "assistant", content: nativeHistory },
+          { role: "user", content: "continue native" },
+        ],
+        model: "claude-native",
+        tools: [
+          webSearchTool,
+          { name: "get_weather", input_schema: { type: "object" } },
+        ],
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const [, init] = fetchMock.mock.calls[0]
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      messages?: Array<{ content: unknown }>
+      tools?: Array<Record<string, unknown>>
+    }
+    expect(upstreamBody.tools).toEqual([
+      webSearchTool,
+      { name: "get_weather", input_schema: { type: "object" } },
+    ])
+    expect(upstreamBody.messages?.[1]?.content).toEqual(nativeHistory)
+    expect(((await response.json()) as AnthropicResponse).content).toEqual(
+      nativeHistory,
+    )
+  })
+
+  test("streams native Web Search opaque fields without synthetic translation", async () => {
+    providerConfigs.native = {
+      name: "native",
+      type: "anthropic",
+      baseUrl: "https://native.example",
+      apiKey: "native-key",
+      authType: "x-api-key",
+    }
+    const events = [
+      {
+        type: "message_start",
+        message: {
+          id: "msg-native-stream",
+          type: "message",
+          role: "assistant",
+          content: [],
+          model: "claude-native",
+          stop_reason: null,
+          stop_sequence: null,
+          usage: { input_tokens: 3, output_tokens: 0 },
+        },
+      },
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: {
+          type: "web_search_tool_result",
+          tool_use_id: "srvtoolu-native-stream",
+          content: [
+            {
+              type: "web_search_result",
+              url: "https://example.test/native-stream",
+              title: "Native stream",
+              encrypted_content: "opaque-native-stream-content",
+            },
+          ],
+        },
+      },
+      {
+        type: "content_block_delta",
+        index: 1,
+        delta: {
+          type: "citations_delta",
+          citation: {
+            type: "web_search_result_location",
+            url: "https://example.test/native-stream",
+            title: "Native stream",
+            cited_text: "Native stream answer",
+            encrypted_index: "opaque-native-stream-index",
+          },
+        },
+      },
+      {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn", stop_sequence: null },
+        usage: { output_tokens: 4 },
+      },
+      { type: "message_stop" },
+    ]
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          events
+            .map(
+              (event) =>
+                `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+            )
+            .join(""),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/native/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "native stream" }],
+        model: "claude-native",
+        stream: true,
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("opaque-native-stream-content")
+    expect(body).toContain("opaque-native-stream-index")
+    expect(body).toContain('"type":"citations_delta"')
+    expect(body).not.toContain(WEB_SEARCH_HISTORY_CARRIER_FIELD)
+  })
+
+  test("rejects a gateway Responses carrier before native Anthropic dispatch", async () => {
+    providerConfigs.native = {
+      name: "native",
+      type: "anthropic",
+      baseUrl: "https://native.example",
+      apiKey: "native-key",
+      authType: "x-api-key",
+    }
+    const historyCarrier = encodeWebSearchHistoryCarrier({
+      source: {
+        destination: "responses",
+        adapter: "provider-responses",
+        provider: "search",
+        model: "gpt-search",
+      },
+      output_items: [
+        {
+          id: "search-cross-adapter",
+          type: "web_search_call",
+          status: "completed",
+          action: { type: "search", query: "private cross adapter query" },
+        },
+      ],
+      continuation: { kind: "complete" },
+    })
+
+    const response = await createApp().request("/native/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        model: "claude-native",
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "server_tool_use",
+                id: "search-cross-adapter",
+                name: "web_search",
+                input: {
+                  query: "private cross adapter query",
+                  [WEB_SEARCH_HISTORY_CARRIER_FIELD]: historyCarrier,
+                },
+              },
+              {
+                type: "web_search_tool_result",
+                tool_use_id: "search-cross-adapter",
+                content: [],
+              },
+            ],
+          },
+          { role: "user", content: "continue" },
+        ],
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(response.status).toBe(400)
+    const body = await response.text()
+    expect(body).toContain("destination-mismatch")
+    expect(body).not.toContain(historyCarrier)
+    expect(body).not.toContain("private cross adapter query")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("rejects resumable Web Search history before provider token counting", async () => {
+    const historySource = {
+      destination: "responses",
+      adapter: "provider-responses",
+      provider: "search",
+      model: "gpt-search",
+    } as const
+    const historyOutput = [
+      {
+        id: "search-count-history",
+        type: "web_search_call",
+        status: "completed",
+        action: { type: "search", query: "count history" },
+      },
+    ] as const
+    const historyCarrier = encodeWebSearchHistoryCarrier({
+      source: historySource,
+      output_items: historyOutput,
+      continuation: { kind: "complete" },
+    })
+
+    const response = await createApp().request(
+      "/search/v1/messages/count_tokens",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          max_tokens: 128,
+          model: "gpt-search",
+          messages: [
+            {
+              role: "assistant",
+              content: projectWebSearchSyntheticHistory(
+                historyOutput,
+                historyCarrier,
+              ),
+            },
+            { role: "user", content: "continue" },
+          ],
+        }),
+      },
+    )
+
+    expect(response.status).toBe(400)
+    expect(await response.text()).toContain(
+      "Resumable Web Search history is not supported by provider token counting",
+    )
+    expect(providerGetTokenCount).not.toHaveBeenCalled()
+  })
+
+  test("prioritizes an explicit native provider alias over the global Web Search fallback", async () => {
+    messageApiWebSearchModel = "gpt-search"
+    providerConfigs.native = {
+      name: "native",
+      type: "anthropic",
+      baseUrl: "https://native.example",
+      apiKey: "native-key",
+      authType: "x-api-key",
+    }
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            id: "msg-native-top-level",
+            type: "message",
+            role: "assistant",
+            content: [{ type: "text", text: "native" }],
+            model: "claude-native",
+            stop_reason: "end_turn",
+            stop_sequence: null,
+            usage: { input_tokens: 1, output_tokens: 1 },
+          }),
+          { headers: { "content-type": "application/json" } },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "search and call" }],
+        model: "native/claude-native",
+        tools: [
+          webSearchTool,
+          { name: "get_weather", input_schema: { type: "object" } },
+        ],
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe("https://native.example/v1/messages")
+    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
+      model?: string
+      tools?: Array<Record<string, unknown>>
+    }
+    expect(upstreamBody.model).toBe("claude-native")
+    expect(upstreamBody.tools).toEqual([
+      webSearchTool,
+      { name: "get_weather", input_schema: { type: "object" } },
+    ])
+  })
+
+  test("rejects Anthropic web_search before OpenAI-compatible dispatch", async () => {
     providerConfigs.search = {
       ...providerConfigs.search,
       type: "openai-compatible",
@@ -658,16 +1919,15 @@ describe("provider messages web_search", () => {
       }),
     })
 
-    expect(response.status).toBe(200)
-    const [url, init] = fetchMock.mock.calls[0]
-    expect(url).toBe(
-      "https://provider.example/compatible-mode/v1/chat/completions",
-    )
-
-    const upstreamBody = JSON.parse((init as RequestInit).body as string) as {
-      tools?: Array<Record<string, unknown>>
-    }
-    expect(upstreamBody.tools).toEqual([])
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      type: "error",
+      error: {
+        type: "invalid_request_error",
+        message: "Web Search is not supported by the selected provider adapter",
+      },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   test("collects a Codex stream into JSON when stream is omitted", async () => {
@@ -834,11 +2094,7 @@ describe("provider messages web_search", () => {
   test("keeps requested Codex streaming as Anthropic SSE", async () => {
     configureCodexProvider()
 
-    const response = await createApp().request("/codex/v1/messages", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(createCodexMessagesPayload({ stream: true })),
-    })
+    const response = await requestStreamingCodexProviderMessages()
 
     expect(response.status).toBe(200)
     expect(response.headers.get("content-type")).toContain("text/event-stream")
@@ -848,6 +2104,184 @@ describe("provider messages web_search", () => {
     expect(text).toContain("event: message_stop")
   })
 
+  test("releases Codex HTTP after a completed provider Messages terminal", async () => {
+    configureCodexProvider()
+    const completedResponse = makePlainResponsesResult()
+    const transport = makeOpenResponsesStreamResponse([
+      {
+        response: completedResponse,
+        sequence_number: 1,
+        type: "response.completed",
+      },
+    ])
+    let upstreamSignal: AbortSignal | null = null
+    responsesStreamFactory = (_body, init) => {
+      upstreamSignal = init?.signal ?? null
+      return transport.response
+    }
+
+    const response = await requestStreamingCodexProviderMessages()
+
+    const body = await response.text()
+    expect(body.match(/event: message_stop/gu)).toHaveLength(1)
+    expect(body).not.toContain("event: error")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      normalizedCodexResponsesUsage,
+    )
+    expect(upstreamSignal).not.toBeNull()
+    expect((upstreamSignal as unknown as AbortSignal).aborted).toBe(true)
+    expect(transport.cancelCount()).toBe(1)
+  })
+
+  test("releases Codex HTTP after an incomplete provider Messages terminal", async () => {
+    configureCodexProvider()
+    const incompleteResponse = {
+      ...makePlainResponsesResult(),
+      incomplete_details: { reason: "max_output_tokens" },
+      status: "incomplete",
+    }
+    const transport = makeOpenResponsesStreamResponse([
+      {
+        response: incompleteResponse,
+        sequence_number: 1,
+        type: "response.incomplete",
+      },
+    ])
+    responsesStreamFactory = () => transport.response
+
+    const response = await requestStreamingCodexProviderMessages()
+
+    const body = await response.text()
+    expect(body.match(/event: message_stop/gu)).toHaveLength(1)
+    expect(body).toContain('"stop_reason":"max_tokens"')
+    expect(body).not.toContain("event: error")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      normalizedCodexResponsesUsage,
+    )
+    expect(transport.cancelCount()).toBe(1)
+  })
+
+  test("releases Codex HTTP after a failed provider Messages terminal", async () => {
+    configureCodexProvider()
+    const failedResponse = {
+      ...makePlainResponsesResult(),
+      error: {
+        code: "server_error",
+        message: "Codex provider failed after usage",
+      },
+      status: "failed",
+    }
+    const transport = makeOpenResponsesStreamResponse([
+      {
+        response: failedResponse,
+        sequence_number: 1,
+        type: "response.failed",
+      },
+    ])
+    responsesStreamFactory = () => transport.response
+
+    const response = await requestStreamingCodexProviderMessages()
+
+    const body = await response.text()
+    expect(body.match(/event: error/gu)).toHaveLength(1)
+    expect(body).toContain("Codex provider failed after usage")
+    expect(body).not.toContain("event: message_stop")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      normalizedCodexResponsesUsage,
+    )
+    expect(transport.cancelCount()).toBe(1)
+  })
+
+  test("releases Codex HTTP after a provider Messages error event", async () => {
+    configureCodexProvider()
+    const transport = makeOpenResponsesStreamResponse([
+      {
+        code: "upstream_error",
+        message: "Codex provider stream error",
+        param: null,
+        sequence_number: 1,
+        type: "error",
+      },
+    ])
+    responsesStreamFactory = () => transport.response
+
+    const response = await requestStreamingCodexProviderMessages()
+
+    const body = await response.text()
+    expect(body.match(/event: error/gu)).toHaveLength(1)
+    expect(body).toContain("Codex provider stream error")
+    expect(body).not.toContain("event: message_stop")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith({})
+    expect(transport.cancelCount()).toBe(1)
+  })
+
+  test("forwards caller abort reason through Codex provider HTTP", async () => {
+    configureCodexProvider()
+    const transport = makeOpenResponsesStreamResponse([
+      {
+        response: {
+          ...makePlainResponsesResult(),
+          output: [],
+          output_text: "",
+          usage: null,
+        },
+        sequence_number: 0,
+        type: "response.created",
+      },
+      {
+        content_index: 0,
+        delta: "partial",
+        item_id: "msg-provider-message",
+        output_index: 0,
+        sequence_number: 1,
+        type: "response.output_text.delta",
+      },
+    ])
+    let upstreamSignal: AbortSignal | null = null
+    responsesStreamFactory = (_body, init) => {
+      upstreamSignal = init?.signal ?? null
+      return transport.response
+    }
+    const controller = new AbortController()
+    const abortReason = new Error("caller stopped Codex HTTP after partial")
+
+    const response = await requestStreamingCodexProviderMessages(
+      controller.signal,
+    )
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let body = ""
+    while (!body.includes('"text":"partial"')) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      body += decoder.decode(chunk.value as Uint8Array, { stream: true })
+    }
+    controller.abort(abortReason)
+    try {
+      while (true) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        body += decoder.decode(chunk.value as Uint8Array, { stream: true })
+      }
+    } catch {
+      // The caller intentionally closed the downstream response.
+    }
+
+    expect(body).toContain('"text":"partial"')
+    expect(body).not.toContain("event: error")
+    expect(body).not.toContain("event: message_stop")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith({})
+    expect(upstreamSignal).not.toBeNull()
+    expect((upstreamSignal as unknown as AbortSignal).aborted).toBe(true)
+    expect((upstreamSignal as unknown as AbortSignal).reason).toBe(abortReason)
+    expect(transport.cancelCount()).toBe(1)
+  })
+
   test("fails non-stream Codex requests when the upstream stream errors", async () => {
     configureCodexProvider()
     responsesStreamFactory = () =>
@@ -855,10 +2289,16 @@ describe("provider messages web_search", () => {
         [
           `data: ${JSON.stringify({
             code: "upstream_error",
-            message: "Codex stream failed",
+            copilot_usage: { total_nano_aiu: 800 },
+            message: "private Codex stream failure detail",
             param: null,
             sequence_number: 1,
             type: "error",
+            usage: {
+              input_tokens: 12,
+              output_tokens: 7,
+              total_tokens: 19,
+            },
           })}`,
           "",
           "",
@@ -872,8 +2312,23 @@ describe("provider messages web_search", () => {
       body: JSON.stringify(createCodexMessagesPayload()),
     })
 
-    expect(response.status).toBe(500)
-    expect(await response.text()).not.toContain('"type":"message"')
+    expect(response.status).toBe(502)
+    const body = await response.text()
+    expect(body).toContain("Responses upstream reported an error")
+    expect(body).not.toContain("private Codex")
+    expect(body).not.toContain('"type":"message"')
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      {
+        ...normalizedCodexResponsesUsage,
+        total_nano_aiu: 800,
+      },
+      {
+        errorCode: "upstream_error",
+        outcome: "failed",
+        terminal: "error",
+      },
+    )
   })
 
   test("fails non-stream Codex requests when a terminal response reports failure", async () => {
@@ -908,10 +2363,20 @@ describe("provider messages web_search", () => {
       body: JSON.stringify(createCodexMessagesPayload()),
     })
 
-    expect(response.status).toBe(500)
+    expect(response.status).toBe(502)
     const body = await response.text()
-    expect(body).toContain("Codex response failed")
+    expect(body).toContain("Responses upstream reported an error")
+    expect(body).not.toContain("Codex response failed")
     expect(body).not.toContain('"type":"message"')
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      normalizedCodexResponsesUsage,
+      {
+        errorCode: "upstream_error",
+        outcome: "failed",
+        terminal: "response.failed",
+      },
+    )
   })
 
   test("fails non-stream Codex requests without a terminal event", async () => {

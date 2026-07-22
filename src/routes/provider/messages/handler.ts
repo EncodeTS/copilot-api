@@ -15,26 +15,36 @@ import type {
   ChatCompletionsPayload,
 } from "~/services/copilot/create-chat-completions"
 import type {
+  ResponsesPayload,
   ResponsesResult,
-  ResponseStreamEvent,
-  ResponsesStream,
 } from "~/services/copilot/create-responses"
+import type { Model } from "~/services/copilot/get-models"
 
 import {
+  getModelResponsesApiCompactThreshold,
+  isContextManagementEnabledForMessages,
   type ModelConfig,
   type ResolvedProviderConfig,
-  resolveEffectiveProviderType,
-  resolveProviderAuthType,
+  supportsProviderResponsesContextManagement,
 } from "~/lib/config"
-import { logCodexRateLimitsEvent } from "~/lib/codex-rate-limit"
 import {
   applyDashScopePreserveThinkingDefault,
   applyOpenAICompatibleContextCache,
   isDashScopeAliyunProvider,
 } from "~/lib/dashscope"
 import { HTTPError } from "~/lib/error"
-import { createHandlerLogger, debugJson, debugLazy } from "~/lib/logger"
-import { resolveProviderConfig } from "~/lib/provider-resolver"
+import {
+  createHandlerLogger,
+  debugJson,
+  debugJsonTail,
+  debugLazy,
+} from "~/lib/logger"
+import {
+  resolveProviderConfig,
+  resolveProviderModel,
+  type ProviderResolverPort,
+} from "~/lib/provider-resolver"
+import { normalizeMessageReasoningEffort } from "~/lib/reasoning-effort"
 import { resolveBridgeToolSearchName } from "~/lib/tool-search"
 import {
   createProviderTokenUsageRecorder,
@@ -42,6 +52,7 @@ import {
   normalizeAnthropicUsage,
   normalizeOpenAIUsage,
   normalizeResponsesUsage,
+  type TokenUsageRecorder,
   type UsageTokens,
 } from "~/lib/token-usage"
 import { parseUserIdMetadata } from "~/lib/utils"
@@ -54,44 +65,200 @@ import {
   translateChunkToAnthropicEvents,
 } from "~/routes/messages/stream-translation"
 import {
-  buildErrorEvent,
-  createResponsesStreamState,
-  translateResponsesStreamEvent,
-} from "~/routes/messages/responses-stream-translation"
-import { collectResponsesStreamResult } from "~/routes/messages/responses-stream-collection"
+  collectProviderResponsesStreamResult,
+  consumeResponsesStream,
+} from "~/routes/messages/responses-stream-consumer"
+import { getResponsesResultFailureMessage } from "~/routes/messages/responses-result"
 import {
+  hasTrailingAssistantPrefill,
   translateAnthropicMessagesToResponsesPayload,
   translateResponsesResultToAnthropic,
 } from "~/routes/messages/responses-translation"
 import {
+  applyWebSearchFallbackHeaders,
+  applyWebSearchReasoningEffort,
   buildSyntheticStreamEvents,
+  createWebSearchUnsupportedResponse,
+  getWebSearchUsageMetadata,
   hasWebSearchServerTool,
   isWebSearchOnlyRequest,
+  normalizeWebSearchResponsesUsage,
   prepareWebSearchResponsesPayload,
   reconstructWebSearchResponse,
-  stripWebSearchServerTool,
+  type WebSearchTurnPhase,
+  WEB_SEARCH_PROVIDER_ADAPTER_UNSUPPORTED_MESSAGE,
 } from "~/routes/messages/web-search/fulfill"
+import {
+  createProviderWebSearchCarrierContext,
+  webSearchCarrierSanitizer,
+  type RestoredWebSearchTurn,
+} from "~/routes/messages/web-search/carrier-sanitizer"
 import { normalizeSystemMessages } from "~/routes/messages/preprocess"
 import {
   applyResponsesApiContextManagement,
   compactInputByLatestCompaction,
 } from "~/routes/responses/utils"
-import { getModels as getCodexModels } from "~/services/codex/get-models"
-import { forwardCodexResponses } from "~/services/codex/create-responses"
+import {
+  getCodexProviderCatalogHeaders,
+  loadCodexProviderModels,
+} from "~/services/codex/get-models"
 import {
   forwardProviderChatCompletions,
   forwardProviderMessages,
-  forwardProviderResponses,
 } from "~/services/providers/provider-proxy"
+import {
+  createProviderResponsesPort,
+  type ProviderResponsesErrorDispatch,
+  type ProviderResponsesPort,
+  type ProviderResponsesStreamDispatch,
+} from "~/services/providers/provider-responses-port"
 
 const logger = createHandlerLogger("provider-messages-handler")
+
+export interface ProviderMessagesHandler {
+  handle: (c: Context<Env, "/:provider">) => Promise<Response>
+  handleForProvider: (
+    c: Context,
+    options: {
+      payload: AnthropicMessagesPayload
+      provider: string
+    },
+  ) => Promise<Response>
+}
+
+export interface ProviderMessagesComposition {
+  createProviderTokenUsageRecorder?: typeof createProviderTokenUsageRecorder
+  createProviderResponsesPort?: typeof createProviderResponsesPort
+  getModelResponsesApiCompactThreshold?: typeof getModelResponsesApiCompactThreshold
+  isContextManagementEnabledForMessages?: typeof isContextManagementEnabledForMessages
+  loadCodexProviderModels?: typeof loadCodexProviderModels
+  providerResolver?: ProviderResolverPort
+}
+
+interface ProviderMessagesDependencies {
+  createProviderTokenUsageRecorder: typeof createProviderTokenUsageRecorder
+  createProviderResponsesPort: typeof createProviderResponsesPort
+  getModelResponsesApiCompactThreshold: typeof getModelResponsesApiCompactThreshold
+  isContextManagementEnabledForMessages: typeof isContextManagementEnabledForMessages
+  loadCodexProviderModels: typeof loadCodexProviderModels
+  providerResolver: ProviderResolverPort
+}
+
+const createDefaultProviderMessagesDependencies =
+  (): ProviderMessagesDependencies => ({
+    createProviderTokenUsageRecorder,
+    createProviderResponsesPort,
+    getModelResponsesApiCompactThreshold,
+    isContextManagementEnabledForMessages,
+    loadCodexProviderModels,
+    providerResolver: {
+      resolveConfig: resolveProviderConfig,
+      resolveModel: resolveProviderModel,
+    },
+  })
+
+export const createProviderMessagesHandler = (
+  composition: ProviderMessagesComposition = {},
+): ProviderMessagesHandler => {
+  const dependencies = Object.freeze<ProviderMessagesDependencies>({
+    createProviderTokenUsageRecorder:
+      composition.createProviderTokenUsageRecorder
+      ?? createProviderTokenUsageRecorder,
+    createProviderResponsesPort:
+      composition.createProviderResponsesPort ?? createProviderResponsesPort,
+    getModelResponsesApiCompactThreshold:
+      composition.getModelResponsesApiCompactThreshold
+      ?? getModelResponsesApiCompactThreshold,
+    isContextManagementEnabledForMessages:
+      composition.isContextManagementEnabledForMessages
+      ?? isContextManagementEnabledForMessages,
+    loadCodexProviderModels:
+      composition.loadCodexProviderModels ?? loadCodexProviderModels,
+    providerResolver: Object.freeze({
+      ...(composition.providerResolver
+        ?? createDefaultProviderMessagesDependencies().providerResolver),
+    }),
+  })
+
+  const handler: ProviderMessagesHandler = {
+    handle: (c) => handleProviderMessagesWithDependencies(c, dependencies),
+    handleForProvider: (c, options) =>
+      handleProviderMessagesForProviderWithDependencies(
+        c,
+        options,
+        dependencies,
+      ),
+  }
+  return Object.freeze(handler)
+}
+
+const applyCodexProviderReasoningEffort = (
+  source: AnthropicMessagesPayload,
+  target: ResponsesPayload,
+  selectedModel: Model | undefined,
+): string | null => {
+  const outputConfig: unknown = source.output_config
+  const disabled = source.thinking?.type === "disabled"
+  if (
+    !disabled
+    && (!isRecord(outputConfig) || !Object.hasOwn(outputConfig, "effort"))
+  ) {
+    if (target.reasoning) {
+      delete target.reasoning.effort
+    }
+    return null
+  }
+
+  const effort =
+    disabled ? "none"
+    : isRecord(outputConfig) ?
+      normalizeMessageReasoningEffort(outputConfig.effort)
+    : null
+  if (!effort) {
+    return "Invalid Codex reasoning effort"
+  }
+  if (!selectedModel) {
+    return `Cannot validate reasoning effort for unavailable Codex model '${source.model}'`
+  }
+  if (!selectedModel.capabilities.supports.reasoning_effort?.includes(effort)) {
+    return `Reasoning effort '${effort}' is not supported by Codex model '${source.model}'`
+  }
+
+  target.reasoning = { ...target.reasoning, effort }
+  return null
+}
+
+const codexReasoningError = (c: Context, message: string): Response =>
+  c.json(
+    {
+      error: {
+        message,
+        type: "invalid_request_error",
+      },
+    },
+    400,
+  )
 
 export async function handleProviderMessages(
   c: Context<Env, "/:provider">,
 ): Promise<Response> {
+  return await handleProviderMessagesWithDependencies(
+    c,
+    createDefaultProviderMessagesDependencies(),
+  )
+}
+
+async function handleProviderMessagesWithDependencies(
+  c: Context<Env, "/:provider">,
+  dependencies: ProviderMessagesDependencies,
+): Promise<Response> {
   const provider = c.req.param("provider")
   const payload = await c.req.json<AnthropicMessagesPayload>()
-  return await handleProviderMessagesForProvider(c, { payload, provider })
+  return await handleProviderMessagesForProviderWithDependencies(
+    c,
+    { payload, provider },
+    dependencies,
+  )
 }
 
 export async function handleProviderMessagesForProvider(
@@ -101,9 +268,27 @@ export async function handleProviderMessagesForProvider(
     provider: string
   },
 ): Promise<Response> {
+  return await handleProviderMessagesForProviderWithDependencies(
+    c,
+    options,
+    createDefaultProviderMessagesDependencies(),
+  )
+}
+
+async function handleProviderMessagesForProviderWithDependencies(
+  c: Context,
+  options: {
+    payload: AnthropicMessagesPayload
+    provider: string
+  },
+  dependencies: ProviderMessagesDependencies,
+): Promise<Response> {
   const { payload, provider } = options
-  const providerConfig = await resolveProviderConfig(provider)
-  if (!providerConfig) {
+  const resolvedProviderModel =
+    await dependencies.providerResolver.resolveModel(provider, payload.model, {
+      signal: c.req.raw.signal,
+    })
+  if (!resolvedProviderModel) {
     return c.json(
       {
         error: {
@@ -116,47 +301,101 @@ export async function handleProviderMessagesForProvider(
   }
 
   try {
-    const modelConfig = providerConfig.models?.[payload.model]
-    const effectiveType = resolveEffectiveProviderType(
-      providerConfig,
-      payload.model,
-    )
-    debugJson(logger, "provider.messages.request", { payload, provider })
-
+    const {
+      config: providerConfig,
+      forwardingConfig,
+      modelConfig,
+      type: effectiveType,
+    } = resolvedProviderModel
     normalizeSystemMessages(payload)
 
     applyModelDefaults(payload, modelConfig)
+    const carrierSanitization = webSearchCarrierSanitizer.sanitize(
+      payload,
+      createProviderWebSearchCarrierContext(
+        effectiveType,
+        forwardingConfig.name,
+        payload.model,
+      ),
+    )
+    debugJson(logger, "provider.messages.request", { payload, provider })
 
     if (effectiveType === "openai-responses") {
-      if (hasWebSearchServerTool(payload)) {
-        if (isWebSearchOnlyRequest(payload)) {
-          return await handleOpenAIResponsesProviderWebSearchMessages(c, {
-            modelConfig,
-            payload,
-            provider,
-            providerConfig,
-          })
-        }
+      if (hasTrailingAssistantPrefill(payload)) {
+        return c.json(
+          {
+            type: "error",
+            error: {
+              type: "invalid_request_error",
+              message:
+                "Assistant prefill is not supported by the Responses API bridge.",
+            },
+          },
+          400,
+        )
+      }
 
-        stripWebSearchServerTool(payload)
+      const responsesPort =
+        dependencies.createProviderResponsesPort(forwardingConfig)
+      const codexCatalog =
+        responsesPort.adapter === "codex" ?
+          await dependencies.loadCodexProviderModels(c.req.raw.signal)
+        : undefined
+      if (codexCatalog) {
+        for (const [name, value] of Object.entries(
+          getCodexProviderCatalogHeaders(codexCatalog),
+        )) {
+          c.header(name, value)
+        }
+      }
+      const selectedCodexModel = codexCatalog?.catalog.data.find(
+        (model) => model.id === payload.model,
+      )
+
+      if (hasWebSearchServerTool(payload)) {
+        return await handleOpenAIResponsesProviderWebSearchMessages(c, {
+          dependencies,
+          modelConfig,
+          payload,
+          provider,
+          providerConfig: forwardingConfig,
+          responsesPort,
+          restoredWebSearchTurns: carrierSanitization.restoredTurns,
+          resumedPendingServerToolUseIds:
+            carrierSanitization.resumedPendingServerToolUseIds,
+          turnPhase: carrierSanitization.turnPhase,
+          selectedCodexModel,
+        })
       }
 
       return await handleOpenAIResponsesProviderMessages(c, {
+        dependencies,
         modelConfig,
         payload,
         provider,
-        providerConfig,
+        providerConfig: forwardingConfig,
+        responsesPort,
+        restoredWebSearchTurns: carrierSanitization.restoredTurns,
+        selectedCodexModel,
       })
     }
 
     if (effectiveType === "openai-compatible") {
-      stripWebSearchServerTool(payload)
+      if (hasWebSearchServerTool(payload)) {
+        return createWebSearchUnsupportedResponse(
+          c,
+          isWebSearchOnlyRequest(payload) ?
+            WEB_SEARCH_PROVIDER_ADAPTER_UNSUPPORTED_MESSAGE
+          : undefined,
+        )
+      }
 
       return await handleOpenAICompatibleProviderMessages(c, {
+        dependencies,
         modelConfig,
         payload,
         provider,
-        providerConfig,
+        providerConfig: forwardingConfig,
       })
     }
 
@@ -169,19 +408,10 @@ export async function handleProviderMessagesForProvider(
       provider,
     })
     const upstreamResponse = await forwardProviderMessages(
-      effectiveType === providerConfig.type ?
-        providerConfig
-      : {
-          ...providerConfig,
-          type: effectiveType,
-          authType: resolveProviderAuthType(
-            providerConfig.name,
-            undefined,
-            effectiveType,
-          ),
-        },
+      forwardingConfig,
       payload,
       c.req.raw.headers,
+      c.req.raw.signal,
     )
 
     if (!upstreamResponse.ok) {
@@ -196,6 +426,7 @@ export async function handleProviderMessagesForProvider(
     if (isStreamingResponse) {
       return streamProviderMessages({
         c,
+        dependencies,
         modelConfig,
         payload,
         pricingCurrency: providerConfig.pricingCurrency,
@@ -207,6 +438,7 @@ export async function handleProviderMessagesForProvider(
     const jsonBody = (await upstreamResponse.json()) as AnthropicResponse
     return respondProviderMessagesJson(c, {
       body: jsonBody,
+      dependencies,
       modelConfig,
       payload,
       pricingCurrency: providerConfig.pricingCurrency,
@@ -224,128 +456,186 @@ export async function handleProviderMessagesForProvider(
 const handleOpenAIResponsesProviderWebSearchMessages = async (
   c: Context,
   options: {
+    dependencies: ProviderMessagesDependencies
     modelConfig: ModelConfig | undefined
     payload: AnthropicMessagesPayload
     provider: string
     providerConfig: ResolvedProviderConfig
+    responsesPort: ProviderResponsesPort
+    restoredWebSearchTurns: ReadonlyArray<RestoredWebSearchTurn>
+    resumedPendingServerToolUseIds: ReadonlyArray<string>
+    selectedCodexModel?: Model
+    turnPhase: WebSearchTurnPhase
   },
 ): Promise<Response> => {
-  const { modelConfig, payload, provider, providerConfig } = options
-  const responsesPayload = prepareWebSearchResponsesPayload(payload)
+  const {
+    dependencies,
+    modelConfig,
+    payload,
+    provider,
+    providerConfig,
+    responsesPort,
+    restoredWebSearchTurns,
+    resumedPendingServerToolUseIds,
+    selectedCodexModel,
+    turnPhase,
+  } = options
+  const recordUsage = createProviderMessagesUsageRecorder(
+    payload,
+    provider,
+    modelConfig,
+    providerConfig.pricingCurrency,
+    dependencies,
+  )
+  applyWebSearchFallbackHeaders(c, payload, logger)
+  const responsesPayload = prepareWebSearchResponsesPayload(payload, {
+    restoredWebSearchTurns,
+  })
+  const reasoningError =
+    responsesPort.adapter === "codex" ?
+      applyCodexProviderReasoningEffort(
+        payload,
+        responsesPayload,
+        selectedCodexModel,
+      )
+    : applyWebSearchReasoningEffort(payload, responsesPayload, undefined)
+  if (reasoningError) {
+    return codexReasoningError(c, reasoningError)
+  }
 
   debugJson(logger, "provider.messages.responses.web_search.request", {
     payload: responsesPayload,
     provider,
   })
 
-  if (providerConfig.name === "codex") {
-    const upstreamResponse = await forwardCodexResponses(
-      responsesPayload,
-      c.req.raw.headers,
-      providerConfig.baseUrl,
-    )
-
-    if (isResponsesStream(upstreamResponse)) {
-      const body = await collectResponsesStreamResult({
-        errorMessagePrefix: `${provider} web search responses stream`,
-        parseEvent: (data) =>
-          parseResponsesProviderStreamChunk(data, providerConfig),
-        upstreamResponse,
-        logger,
-      })
-      return respondWebSearchProviderMessagesJson(c, {
-        body,
-        modelConfig,
-        payload,
-        pricingCurrency: providerConfig.pricingCurrency,
-        provider,
-      })
-    }
-
-    return respondWebSearchProviderMessagesJson(c, {
-      body: upstreamResponse,
-      modelConfig,
-      payload,
-      pricingCurrency: providerConfig.pricingCurrency,
-      provider,
-    })
-  }
-
-  const upstreamResponse = await forwardProviderResponses(
-    providerConfig,
-    responsesPayload,
-    c.req.raw.headers,
-  )
-
-  if (!upstreamResponse.ok) {
+  const dispatched = await responsesPort.dispatch({
+    payload: responsesPayload,
+    requestHeaders: c.req.raw.headers,
+    signal: c.req.raw.signal,
+  })
+  if (dispatched.kind === "error") {
     logger.error("Failed to create provider web search responses", {
       provider,
-      upstreamResponse,
+      status: dispatched.status,
     })
     throw new HTTPError(
       "Failed to create provider web search responses",
-      upstreamResponse,
+      await consumeProviderResponsesError(
+        dispatched,
+        "Provider Web Search Responses error consumed",
+      ),
     )
   }
 
-  const contentType = upstreamResponse.headers.get("content-type") ?? ""
-  if (contentType.includes("text/event-stream")) {
-    const body = await collectResponsesStreamResult({
-      errorMessagePrefix: `${provider} web search responses stream`,
-      parseEvent: (data) =>
-        parseResponsesProviderStreamChunk(data, providerConfig),
-      upstreamResponse: events(upstreamResponse),
-      logger,
-    })
-    return respondWebSearchProviderMessagesJson(c, {
-      body,
-      modelConfig,
-      payload,
-      pricingCurrency: providerConfig.pricingCurrency,
-      provider,
-    })
+  let body: ResponsesResult
+  if (dispatched.kind === "stream") {
+    try {
+      body = await collectProviderResponsesStreamResult({
+        errorMessagePrefix: `${provider} web search responses stream`,
+        logger,
+        observeParsed: dispatched.observer,
+        recordUsage,
+        signal: dispatched.signal,
+        upstreamResponse: dispatched.source,
+      })
+    } finally {
+      await dispatched.cancel(
+        new Error("Provider Web Search Responses collection finished"),
+      )
+    }
+  } else {
+    body = dispatched.result
+    await dispatched.cancel(
+      new Error("Provider Web Search Responses result consumed"),
+    )
   }
 
-  const jsonBody = (await upstreamResponse.json()) as ResponsesResult
   return respondWebSearchProviderMessagesJson(c, {
-    body: jsonBody,
-    modelConfig,
+    body,
+    canonicalProvider: providerConfig.name,
     payload,
-    pricingCurrency: providerConfig.pricingCurrency,
     provider,
+    recordUsage,
+    resumedPendingServerToolUseIds,
+    turnPhase,
   })
 }
 
 const handleOpenAIResponsesProviderMessages = async (
   c: Context,
   options: {
+    dependencies: ProviderMessagesDependencies
     modelConfig: ModelConfig | undefined
     payload: AnthropicMessagesPayload
     provider: string
     providerConfig: ResolvedProviderConfig
+    responsesPort: ProviderResponsesPort
+    restoredWebSearchTurns: ReadonlyArray<RestoredWebSearchTurn>
+    selectedCodexModel?: Model
   },
 ): Promise<Response> => {
-  const { modelConfig, payload, provider, providerConfig } = options
-  const selectedModel =
-    providerConfig.name === "codex" ?
-      getCodexModels().data.find((model) => model.id === payload.model)
-    : undefined
+  const {
+    dependencies,
+    modelConfig,
+    payload,
+    provider,
+    providerConfig,
+    responsesPort,
+    restoredWebSearchTurns,
+    selectedCodexModel,
+  } = options
+  const recordUsage = createProviderMessagesUsageRecorder(
+    payload,
+    provider,
+    modelConfig,
+    providerConfig.pricingCurrency,
+    dependencies,
+  )
   const wantsStream = payload.stream === true
-  const responsesPayload = translateAnthropicMessagesToResponsesPayload(payload)
+  const responsesPayload = translateAnthropicMessagesToResponsesPayload(
+    payload,
+    undefined,
+    { model: payload.model, provider },
+    { restoredWebSearchTurns },
+  )
+  const reasoningError =
+    responsesPort.adapter === "codex" ?
+      applyCodexProviderReasoningEffort(
+        payload,
+        responsesPayload,
+        selectedCodexModel,
+      )
+    : null
+  if (reasoningError) {
+    return codexReasoningError(c, reasoningError)
+  }
 
-  if (providerConfig.name === "codex" && !wantsStream) {
+  if (responsesPort.prefersStreamingForBufferedResults && !wantsStream) {
     responsesPayload.stream = true
   }
 
-  const shouldCompactInput = applyResponsesApiContextManagement(
-    responsesPayload,
-    selectedModel?.capabilities.limits.max_prompt_tokens,
-    {
-      source: "messages",
-    },
-  )
-  if (shouldCompactInput) {
-    compactInputByLatestCompaction(responsesPayload)
+  if (
+    supportsProviderResponsesContextManagement(
+      providerConfig,
+      responsesPayload.model,
+    )
+  ) {
+    const contextManagementDecision = applyResponsesApiContextManagement(
+      responsesPayload,
+      selectedCodexModel?.capabilities.limits,
+      {
+        contextManagementEnabled:
+          dependencies.isContextManagementEnabledForMessages(),
+        modelCompactThreshold:
+          dependencies.getModelResponsesApiCompactThreshold(
+            responsesPayload.model,
+          ) ?? null,
+        source: "messages",
+      },
+    )
+    if (contextManagementDecision.shouldPruneInput) {
+      compactInputByLatestCompaction(responsesPayload)
+    }
   }
 
   debugJson(logger, "provider.messages.responses.request", {
@@ -353,85 +643,69 @@ const handleOpenAIResponsesProviderMessages = async (
     provider,
   })
 
-  if (providerConfig.name === "codex") {
-    const upstreamResponse = await forwardCodexResponses(
-      responsesPayload,
-      c.req.raw.headers,
-      providerConfig.baseUrl,
-    )
-
-    if (isResponsesStream(upstreamResponse)) {
-      if (wantsStream) {
-        return streamResponsesProviderMessages({
-          c,
-          modelConfig,
-          payload,
-          pricingCurrency: providerConfig.pricingCurrency,
-          provider,
-          providerConfig,
-          upstreamResponse,
-        })
-      }
-
-      const body = await collectResponsesStreamResult({
-        errorMessagePrefix: `${provider} messages responses stream`,
-        parseEvent: (data) =>
-          parseResponsesProviderStreamChunk(data, providerConfig),
-        upstreamResponse,
-        logger,
-      })
-      return respondResponsesProviderMessagesJson(c, {
-        body,
-        modelConfig,
-        payload,
-        pricingCurrency: providerConfig.pricingCurrency,
-        provider,
-        providerConfig,
-      })
-    }
-
-    return respondResponsesProviderMessagesJson(c, {
-      body: upstreamResponse,
-      modelConfig,
-      payload,
-      pricingCurrency: providerConfig.pricingCurrency,
+  const dispatched = await responsesPort.dispatch({
+    payload: responsesPayload,
+    requestHeaders: c.req.raw.headers,
+    signal: c.req.raw.signal,
+  })
+  if (dispatched.kind === "error") {
+    logger.error("Failed to create provider responses", {
       provider,
-      providerConfig,
+      status: dispatched.status,
     })
+    throw new HTTPError(
+      "Failed to create provider responses",
+      await consumeProviderResponsesError(
+        dispatched,
+        "Provider Messages Responses error consumed",
+      ),
+    )
   }
 
-  const upstreamResponse = await forwardProviderResponses(
-    providerConfig,
-    responsesPayload,
-    c.req.raw.headers,
-  )
-
-  if (!upstreamResponse.ok) {
-    logger.error("Failed to create provider responses", upstreamResponse)
-    throw new HTTPError("Failed to create provider responses", upstreamResponse)
-  }
-
-  if (responsesPayload.stream) {
+  if (dispatched.kind === "stream" && wantsStream) {
     return streamResponsesProviderMessages({
       c,
+      dependencies,
       modelConfig,
       payload,
       pricingCurrency: providerConfig.pricingCurrency,
       provider,
-      providerConfig,
-      upstreamResponse: events(upstreamResponse),
+      dispatched,
     })
   }
 
-  const jsonBody = (await upstreamResponse.json()) as ResponsesResult
-  return respondResponsesProviderMessagesJson(c, {
-    body: jsonBody,
-    modelConfig,
+  let body: ResponsesResult
+  if (dispatched.kind === "stream") {
+    try {
+      body = await collectProviderResponsesStreamResult({
+        errorMessagePrefix: `${provider} messages responses stream`,
+        logger,
+        observeParsed: dispatched.observer,
+        recordUsage,
+        signal: dispatched.signal,
+        upstreamResponse: dispatched.source,
+      })
+    } finally {
+      await dispatched.cancel(
+        new Error("Provider Messages Responses collection finished"),
+      )
+    }
+  } else {
+    body = dispatched.result
+    await dispatched.cancel(
+      new Error("Provider Messages Responses result consumed"),
+    )
+  }
+
+  const responseOptions = {
+    body,
     payload,
-    pricingCurrency: providerConfig.pricingCurrency,
     provider,
-    providerConfig,
-  })
+    recordUsage,
+  }
+  return wantsStream ?
+      respondResponsesProviderMessagesStream(c, responseOptions)
+    : respondResponsesProviderMessagesJson(c, responseOptions)
 }
 
 const applyModelDefaults = (
@@ -495,13 +769,15 @@ const applyOpenAICompatibleExtraBodyThinkingBudget = (
 const handleOpenAICompatibleProviderMessages = async (
   c: Context,
   options: {
+    dependencies: ProviderMessagesDependencies
     modelConfig: ModelConfig | undefined
     payload: AnthropicMessagesPayload
     provider: string
     providerConfig: ResolvedProviderConfig
   },
 ): Promise<Response> => {
-  const { modelConfig, payload, provider, providerConfig } = options
+  const { dependencies, modelConfig, payload, provider, providerConfig } =
+    options
   const openAIPayload = createOpenAICompatiblePayload(
     payload,
     modelConfig,
@@ -516,6 +792,7 @@ const handleOpenAICompatibleProviderMessages = async (
     providerConfig,
     openAIPayload,
     c.req.raw.headers,
+    c.req.raw.signal,
   )
 
   if (!upstreamResponse.ok) {
@@ -536,6 +813,7 @@ const handleOpenAICompatibleProviderMessages = async (
   if (isStreamingResponse) {
     return streamOpenAICompatibleProviderMessages({
       c,
+      dependencies,
       modelConfig,
       payload,
       pricingCurrency: providerConfig.pricingCurrency,
@@ -547,6 +825,7 @@ const handleOpenAICompatibleProviderMessages = async (
   const jsonBody = (await upstreamResponse.json()) as ChatCompletionResponse
   return respondOpenAICompatibleProviderMessagesJson(c, {
     body: jsonBody,
+    dependencies,
     modelConfig,
     payload,
     pricingCurrency: providerConfig.pricingCurrency,
@@ -651,6 +930,7 @@ const applyOpenAICompatibleRequestOverrides = (
 
 const streamProviderMessages = ({
   c,
+  dependencies,
   modelConfig,
   payload,
   pricingCurrency,
@@ -658,6 +938,7 @@ const streamProviderMessages = ({
   upstreamResponse,
 }: {
   c: Context
+  dependencies: ProviderMessagesDependencies
   modelConfig: ModelConfig | undefined
   payload: AnthropicMessagesPayload
   pricingCurrency: string | undefined
@@ -670,45 +951,83 @@ const streamProviderMessages = ({
     provider,
     modelConfig,
     pricingCurrency,
+    dependencies,
   )
   return streamSSE(c, async (stream) => {
     let usage: UsageTokens = {}
+    let terminalSeen = false
 
-    for await (const chunk of events(upstreamResponse)) {
-      logger.debug("provider.messages.raw_stream_event:", chunk.data)
-      const eventName = chunk.event
-      if (eventName === "ping") {
-        await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
-        continue
+    try {
+      for await (const chunk of events(upstreamResponse)) {
+        debugJsonTail(logger, "provider.messages.raw_stream_event:", {
+          value: chunk.data,
+          tailLength: 1_000,
+        })
+        const eventName = chunk.event
+        if (eventName === "ping") {
+          await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
+          continue
+        }
+
+        let data = chunk.data
+        if (!data) {
+          continue
+        }
+
+        terminalSeen ||= eventName === "error"
+
+        if (chunk.data === "[DONE]") {
+          break
+        }
+
+        const parsed = parseProviderStreamEvent(data)
+        if (parsed) {
+          usage = mergeAnthropicUsage(usage, parsed.usage)
+          data = parsed.data
+          terminalSeen ||=
+            parsed.type === "message_stop" || parsed.type === "error"
+        }
+
+        await stream.writeSSE({
+          event: eventName,
+          data,
+        })
+
+        if (terminalSeen) {
+          break
+        }
       }
 
-      let data = chunk.data
-      if (!data) {
-        continue
+      if (!terminalSeen) {
+        const errorEvent = createAnthropicStreamErrorEvent({
+          message: "Provider Anthropic stream ended without message_stop",
+          type: "api_error",
+        })
+        await stream.writeSSE({
+          event: errorEvent.type,
+          data: JSON.stringify(errorEvent),
+        })
       }
-
-      if (chunk.data === "[DONE]") {
-        break
+    } catch (error) {
+      if (!terminalSeen) {
+        const errorEvent = createAnthropicStreamErrorEvent({
+          message: `Provider Anthropic stream failed: ${getProviderStreamErrorMessage(error)}`,
+          type: "api_error",
+        })
+        await stream.writeSSE({
+          event: errorEvent.type,
+          data: JSON.stringify(errorEvent),
+        })
       }
-
-      const parsed = parseProviderStreamEvent(data)
-      if (parsed) {
-        usage = mergeAnthropicUsage(usage, parsed.usage)
-        data = parsed.data
-      }
-
-      await stream.writeSSE({
-        event: eventName,
-        data,
-      })
+    } finally {
+      recordUsage(usage)
     }
-
-    recordUsage(usage)
   })
 }
 
 const streamOpenAICompatibleProviderMessages = ({
   c,
+  dependencies,
   modelConfig,
   payload,
   pricingCurrency,
@@ -716,6 +1035,7 @@ const streamOpenAICompatibleProviderMessages = ({
   upstreamResponse,
 }: {
   c: Context
+  dependencies: ProviderMessagesDependencies
   modelConfig: ModelConfig | undefined
   payload: AnthropicMessagesPayload
   pricingCurrency: string | undefined
@@ -728,6 +1048,7 @@ const streamOpenAICompatibleProviderMessages = ({
     provider,
     modelConfig,
     pricingCurrency,
+    dependencies,
   )
   return streamSSE(c, async (stream) => {
     let usage: UsageTokens = {}
@@ -737,81 +1058,159 @@ const streamOpenAICompatibleProviderMessages = ({
       contentBlockOpen: false,
       toolCalls: {},
       thinkingBlockOpen: false,
+      emitThinking: payload.thinking?.type !== "disabled",
     }
+    let terminatedWithError = false
+    let terminalSeen = false
 
-    for await (const chunk of events(upstreamResponse)) {
-      logger.debug(
-        "provider.messages.openai_compatible.raw_stream_event:",
-        chunk.data,
-      )
-      const eventName = chunk.event
-      if (eventName === "ping") {
-        await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
-        continue
-      }
+    try {
+      for await (const chunk of events(upstreamResponse)) {
+        debugJsonTail(
+          logger,
+          "provider.messages.openai_compatible.raw_stream_event:",
+          {
+            value: chunk.data,
+            tailLength: 1_000,
+          },
+        )
+        const eventName = chunk.event
+        if (eventName === "ping") {
+          await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
+          continue
+        }
 
-      if (!chunk.data || chunk.data === "[DONE]") {
         if (chunk.data === "[DONE]") {
           break
         }
-        continue
+
+        if (!chunk.data && eventName !== "error") {
+          continue
+        }
+
+        const parsed = parseOpenAICompatibleStreamFrame(
+          chunk.data ?? "",
+          eventName,
+        )
+        if (parsed.kind === "skip") {
+          continue
+        }
+
+        if (parsed.kind === "error") {
+          const eventData = JSON.stringify(parsed.event)
+          debugLazy(logger, () => [
+            "provider.messages.openai_compatible.translated_event:",
+            eventData,
+          ])
+          await stream.writeSSE({
+            event: parsed.event.type,
+            data: eventData,
+          })
+          terminatedWithError = true
+          break
+        }
+
+        if (parsed.chunk.usage) {
+          usage = normalizeOpenAIUsage(parsed.chunk.usage)
+        }
+
+        if (
+          parsed.chunk.choices.some(
+            (choice) => choice.finish_reason === "error",
+          )
+        ) {
+          const errorEvent = createAnthropicStreamErrorEvent({
+            message: "Provider upstream ended with finish_reason=error",
+            type: "api_error",
+          })
+          await stream.writeSSE({
+            event: errorEvent.type,
+            data: JSON.stringify(errorEvent),
+          })
+          terminalSeen = true
+          terminatedWithError = true
+          break
+        }
+
+        terminalSeen ||= parsed.chunk.choices.some((choice) =>
+          Boolean(choice.finish_reason),
+        )
+
+        const events = translateChunkToAnthropicEvents(
+          parsed.chunk,
+          streamState,
+        )
+        for (const event of events) {
+          const eventData = JSON.stringify(event)
+          debugLazy(logger, () => [
+            "provider.messages.openai_compatible.translated_event:",
+            eventData,
+          ])
+          await stream.writeSSE({
+            event: event.type,
+            data: eventData,
+          })
+        }
       }
 
-      const parsed = parseOpenAICompatibleStreamChunk(chunk.data)
-      if (!parsed) {
-        continue
-      }
-
-      if (parsed.usage) {
-        usage = normalizeOpenAIUsage(parsed.usage)
-      }
-
-      const events = translateChunkToAnthropicEvents(parsed, streamState)
-      for (const event of events) {
-        const eventData = JSON.stringify(event)
-        debugLazy(logger, () => [
-          "provider.messages.openai_compatible.translated_event:",
-          eventData,
-        ])
+      if (!terminatedWithError && !terminalSeen) {
+        const errorEvent = createAnthropicStreamErrorEvent({
+          message:
+            "Provider OpenAI-compatible stream ended without finish_reason",
+          type: "api_error",
+        })
         await stream.writeSSE({
-          event: event.type,
-          data: eventData,
+          event: errorEvent.type,
+          data: JSON.stringify(errorEvent),
+        })
+        terminatedWithError = true
+      }
+
+      if (!terminatedWithError && terminalSeen) {
+        for (const event of flushPendingAnthropicStreamEvents(streamState)) {
+          const eventData = JSON.stringify(event)
+          debugLazy(logger, () => [
+            "provider.messages.openai_compatible.translated_event:",
+            eventData,
+          ])
+          await stream.writeSSE({
+            event: event.type,
+            data: eventData,
+          })
+        }
+      }
+    } catch (error) {
+      if (!terminatedWithError) {
+        const errorEvent = createAnthropicStreamErrorEvent({
+          message: `Provider OpenAI-compatible stream failed: ${getProviderStreamErrorMessage(error)}`,
+          type: "api_error",
+        })
+        await stream.writeSSE({
+          event: errorEvent.type,
+          data: JSON.stringify(errorEvent),
         })
       }
+    } finally {
+      recordUsage(usage)
     }
-
-    for (const event of flushPendingAnthropicStreamEvents(streamState)) {
-      const eventData = JSON.stringify(event)
-      debugLazy(logger, () => [
-        "provider.messages.openai_compatible.translated_event:",
-        eventData,
-      ])
-      await stream.writeSSE({
-        event: event.type,
-        data: eventData,
-      })
-    }
-
-    recordUsage(usage)
   })
 }
 
 const streamResponsesProviderMessages = ({
   c,
+  dependencies,
   modelConfig,
   payload,
   pricingCurrency,
   provider,
-  providerConfig,
-  upstreamResponse,
+  dispatched,
 }: {
   c: Context
+  dependencies: ProviderMessagesDependencies
   modelConfig: ModelConfig | undefined
   payload: AnthropicMessagesPayload
   pricingCurrency: string | undefined
   provider: string
-  providerConfig: ResolvedProviderConfig
-  upstreamResponse: ResponsesStream
+  dispatched: ProviderResponsesStreamDispatch
 }): Response => {
   logger.debug("provider.messages.responses.streaming", {
     provider,
@@ -821,133 +1220,217 @@ const streamResponsesProviderMessages = ({
     provider,
     modelConfig,
     pricingCurrency,
+    dependencies,
   )
-  return streamSSE(c, async (stream) => {
-    let usage: UsageTokens = {}
-    const streamState = createResponsesStreamState({
-      toolSearchName: resolveBridgeToolSearchName(payload.tools),
-    })
-
-    for await (const chunk of upstreamResponse) {
-      logger.debug("provider.messages.responses.raw_stream_event:", chunk.data)
-      const eventName = chunk.event
-      if (eventName === "ping") {
-        await stream.writeSSE({ event: "ping", data: '{"type":"ping"}' })
-        continue
-      }
-
-      if (!chunk.data || chunk.data === "[DONE]") {
-        if (chunk.data === "[DONE]") {
-          break
-        }
-        continue
-      }
-
-      const parsed = parseResponsesProviderStreamChunk(
-        chunk.data,
-        providerConfig,
-      )
-      if (!parsed) {
-        continue
-      }
-
-      if (
-        parsed.type === "response.completed"
-        || parsed.type === "response.failed"
-        || parsed.type === "response.incomplete"
-      ) {
-        usage = normalizeResponsesUsage(parsed.response.usage)
-      }
-
-      const events = translateResponsesStreamEvent(parsed, streamState)
-      for (const event of events) {
-        const eventData = JSON.stringify(event)
-        debugLazy(logger, () => [
-          "provider.messages.responses.translated_event:",
-          eventData,
-        ])
-        await stream.writeSSE({
-          event: event.type,
-          data: eventData,
-        })
-      }
-    }
-
-    if (!streamState.messageCompleted) {
-      const errorEvent = buildErrorEvent(
-        `${provider} stream ended without a completion event`,
-      )
-      await stream.writeSSE({
-        event: errorEvent.type,
-        data: JSON.stringify(errorEvent),
-      })
-    }
-
-    recordUsage(usage)
-  })
-}
-
-const isResponsesStream = (value: unknown): value is ResponsesStream => {
-  return (
-    Boolean(value)
-    && typeof (value as ResponsesStream)[Symbol.asyncIterator] === "function"
+  return streamSSE(c, (stream) =>
+    consumeResponsesStream({
+      kind: "provider",
+      logger,
+      output: stream,
+      payload,
+      provider,
+      observeParsed: dispatched.observer,
+      recordUsage,
+      releaseUpstream: dispatched.cancel,
+      signal: dispatched.signal,
+      transport: dispatched.transport,
+      upstreamResponse: dispatched.source,
+    }),
   )
 }
 
-const parseOpenAICompatibleStreamChunk = (
-  data: string,
-): ChatCompletionChunk | null => {
+const consumeProviderResponsesError = async (
+  dispatched: ProviderResponsesErrorDispatch,
+  cancellationMessage: string,
+): Promise<Response> => {
   try {
-    return JSON.parse(data) as ChatCompletionChunk
+    const body = await dispatched.response.arrayBuffer()
+    return new Response(body, {
+      headers: dispatched.headers,
+      status: dispatched.status,
+      statusText: dispatched.statusText,
+    })
+  } finally {
+    await dispatched.cancel(new Error(cancellationMessage))
+  }
+}
+
+type OpenAICompatibleStreamFrame =
+  | { kind: "chunk"; chunk: ChatCompletionChunk }
+  | { kind: "error"; event: AnthropicStreamEventData }
+  | { kind: "skip" }
+
+const parseOpenAICompatibleStreamFrame = (
+  data: string,
+  eventName: string | undefined,
+): OpenAICompatibleStreamFrame => {
+  if (eventName === "error") {
+    return {
+      kind: "error",
+      event: createOpenAICompatibleStreamErrorEventFromData(data),
+    }
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(data)
+    if (isOpenAICompatibleStreamChunk(parsed)) {
+      return { kind: "chunk", chunk: parsed }
+    }
+
+    const errorEvent = createOpenAICompatibleStreamErrorEvent(parsed, eventName)
+    if (errorEvent) {
+      return { kind: "error", event: errorEvent }
+    }
+
+    logger.error("provider.messages.openai_compatible.invalid_chunk", {
+      data: parsed,
+      eventName,
+    })
+    return { kind: "skip" }
   } catch (error) {
     logger.error("provider.messages.openai_compatible.parse_chunk_error", {
       data,
       error,
     })
-    return null
+    return { kind: "skip" }
   }
 }
 
-const parseResponsesProviderStreamChunk = (
+const createOpenAICompatibleStreamErrorEventFromData = (
   data: string,
-  providerConfig: ResolvedProviderConfig,
-): ResponseStreamEvent | null => {
+): AnthropicStreamEventData => {
   try {
-    const parsed = JSON.parse(data) as ResponseStreamEvent
-    if (providerConfig.name === "codex") {
-      logCodexRateLimitsEvent(parsed)
-    }
-
-    return parsed
-  } catch (error) {
-    logger.error("provider.messages.responses.parse_chunk_error", {
-      provider: providerConfig.name,
-      data,
-      error,
+    const parsed: unknown = JSON.parse(data)
+    return (
+      createOpenAICompatibleStreamErrorEvent(parsed, "error")
+      ?? createAnthropicStreamErrorEvent({
+        message: "Upstream provider stream returned an error event.",
+        type: "api_error",
+      })
+    )
+  } catch {
+    return createAnthropicStreamErrorEvent({
+      message: data || "Upstream provider stream returned an error event.",
+      type: "api_error",
     })
-    return null
   }
 }
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null
+
+const isOpenAICompatibleStreamChunk = (
+  value: unknown,
+): value is ChatCompletionChunk =>
+  isRecord(value) && Array.isArray(value.choices)
+
+const createOpenAICompatibleStreamErrorEvent = (
+  value: unknown,
+  eventName: string | undefined,
+): AnthropicStreamEventData | null => {
+  if (!isRecord(value) && eventName !== "error") {
+    return null
+  }
+
+  const errorPayload = isRecord(value) ? value.error : undefined
+  if (isRecord(errorPayload)) {
+    return createAnthropicStreamErrorEvent({
+      message:
+        typeof errorPayload.message === "string" ?
+          errorPayload.message
+        : "Upstream provider stream failed.",
+      type:
+        typeof errorPayload.type === "string" ? errorPayload.type : "api_error",
+    })
+  }
+
+  if (typeof errorPayload === "string") {
+    return createAnthropicStreamErrorEvent({
+      message: errorPayload,
+      type: "api_error",
+    })
+  }
+
+  if (isRecord(value) && typeof value.message === "string") {
+    return createAnthropicStreamErrorEvent({
+      message: value.message,
+      type:
+        typeof value.type === "string" && value.type !== "error" ?
+          value.type
+        : "api_error",
+    })
+  }
+
+  if (isRecord(value) && value.type === "error") {
+    return createAnthropicStreamErrorEvent({
+      message:
+        typeof value.message === "string" ?
+          value.message
+        : "Upstream provider stream failed.",
+      type: "api_error",
+    })
+  }
+
+  if (typeof value === "string" && eventName === "error") {
+    return createAnthropicStreamErrorEvent({
+      message: value,
+      type: "api_error",
+    })
+  }
+
+  if (eventName === "error") {
+    return createAnthropicStreamErrorEvent({
+      message: "Upstream provider stream returned an error event.",
+      type: "api_error",
+    })
+  }
+
+  return null
+}
+
+const createAnthropicStreamErrorEvent = ({
+  message,
+  type,
+}: {
+  message: string
+  type: string
+}): AnthropicStreamEventData => ({
+  type: "error",
+  error: {
+    type,
+    message,
+  },
+})
+
+const getProviderStreamErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error)
 
 const parseProviderStreamEvent = (
   data: string,
-): { data: string; model?: string; usage: UsageTokens } | null => {
+): {
+  data: string
+  model?: string
+  type: string
+  usage: UsageTokens
+} | null => {
   try {
     const parsed = JSON.parse(data) as AnthropicStreamEventData
     if (parsed.type === "message_start") {
       return {
         data: JSON.stringify(parsed),
         model: parsed.message.model,
+        type: parsed.type,
         usage: normalizeAnthropicUsage(parsed.message.usage),
       }
     }
     if (parsed.type === "message_delta") {
       return {
         data: JSON.stringify(parsed),
+        type: parsed.type,
         usage: normalizeAnthropicUsage(parsed.usage),
       }
     }
-    return { data: JSON.stringify(parsed), usage: {} }
+    return { data: JSON.stringify(parsed), type: parsed.type, usage: {} }
   } catch (error) {
     logger.error("provider.messages.streaming.adjust_tokens_error", {
       error,
@@ -961,18 +1444,27 @@ const respondProviderMessagesJson = (
   c: Context,
   options: {
     body: AnthropicResponse
+    dependencies: ProviderMessagesDependencies
     modelConfig: ModelConfig | undefined
     payload: AnthropicMessagesPayload
     pricingCurrency: string | undefined
     provider: string
   },
 ): Response => {
-  const { body, modelConfig, payload, pricingCurrency, provider } = options
+  const {
+    body,
+    dependencies,
+    modelConfig,
+    payload,
+    pricingCurrency,
+    provider,
+  } = options
   const recordUsage = createProviderMessagesUsageRecorder(
     payload,
     provider,
     modelConfig,
     pricingCurrency,
+    dependencies,
   )
   recordUsage(normalizeAnthropicUsage(body.usage))
 
@@ -984,22 +1476,46 @@ const respondOpenAICompatibleProviderMessagesJson = (
   c: Context,
   options: {
     body: ChatCompletionResponse
+    dependencies: ProviderMessagesDependencies
     modelConfig: ModelConfig | undefined
     payload: AnthropicMessagesPayload
     pricingCurrency: string | undefined
     provider: string
   },
 ): Response => {
-  const { body, modelConfig, payload, pricingCurrency, provider } = options
+  const {
+    body,
+    dependencies,
+    modelConfig,
+    payload,
+    pricingCurrency,
+    provider,
+  } = options
   const recordUsage = createProviderMessagesUsageRecorder(
     payload,
     provider,
     modelConfig,
     pricingCurrency,
+    dependencies,
   )
   recordUsage(normalizeOpenAIUsage(body.usage))
 
-  const anthropicResponse = translateToAnthropic(body)
+  if (body.choices.some((choice) => choice.finish_reason === "error")) {
+    return c.json(
+      {
+        type: "error",
+        error: {
+          type: "api_error",
+          message: "Provider upstream ended with finish_reason=error",
+        },
+      },
+      502,
+    )
+  }
+
+  const anthropicResponse = translateToAnthropic(body, {
+    includeThinking: payload.thinking?.type !== "disabled",
+  })
   debugJson(
     logger,
     "provider.messages.openai_compatible.no_stream result:",
@@ -1012,66 +1528,131 @@ const respondResponsesProviderMessagesJson = (
   c: Context,
   options: {
     body: ResponsesResult
-    modelConfig: ModelConfig | undefined
     payload: AnthropicMessagesPayload
-    pricingCurrency: string | undefined
     provider: string
-    providerConfig: ResolvedProviderConfig
+    recordUsage: TokenUsageRecorder
   },
 ): Response => {
-  const {
-    body,
-    modelConfig,
-    payload,
-    pricingCurrency,
-    provider,
-    providerConfig,
-  } = options
-  const recordUsage = createProviderMessagesUsageRecorder(
-    payload,
-    provider,
-    modelConfig,
-    pricingCurrency,
-  )
-  recordUsage(normalizeResponsesUsage(body.usage))
+  const projected = projectResponsesProviderMessagesResult(options)
+  if (projected.kind === "failure") {
+    return c.json(
+      {
+        type: "error",
+        error: {
+          type: "api_error",
+          message: projected.message,
+        },
+      },
+      502,
+    )
+  }
+
+  return c.json(projected.response)
+}
+
+const respondResponsesProviderMessagesStream = (
+  c: Context,
+  options: {
+    body: ResponsesResult
+    payload: AnthropicMessagesPayload
+    provider: string
+    recordUsage: TokenUsageRecorder
+  },
+): Response => {
+  const projected = projectResponsesProviderMessagesResult(options)
+  return streamSSE(c, async (stream) => {
+    if (projected.kind === "failure") {
+      const event = createAnthropicStreamErrorEvent({
+        message: projected.message,
+        type: "api_error",
+      })
+      await stream.writeSSE({
+        event: event.type,
+        data: JSON.stringify(event),
+      })
+      return
+    }
+
+    for (const event of buildSyntheticStreamEvents(projected.response)) {
+      await stream.writeSSE({
+        event: event.type,
+        data: JSON.stringify(event),
+      })
+    }
+  })
+}
+
+type ResponsesProviderMessagesProjection =
+  | { kind: "failure"; message: string }
+  | { kind: "success"; response: AnthropicResponse }
+
+const projectResponsesProviderMessagesResult = (options: {
+  body: ResponsesResult
+  payload: AnthropicMessagesPayload
+  provider: string
+  recordUsage: TokenUsageRecorder
+}): ResponsesProviderMessagesProjection => {
+  const { body, payload, provider, recordUsage } = options
+  const failureMessage = recordProviderResponsesResultUsage(recordUsage, body)
+  if (failureMessage) {
+    return { kind: "failure", message: failureMessage }
+  }
 
   const anthropicResponse = translateResponsesResultToAnthropic(body, {
+    carrierSource: { model: payload.model, provider },
+    includeThinking: payload.thinking?.type !== "disabled",
     toolSearchName: resolveBridgeToolSearchName(payload.tools),
   })
   debugJson(
     logger,
-    "provider.messages.responses.no_stream result:",
+    "provider.messages.responses.translated_result:",
     anthropicResponse,
   )
-
-  if (providerConfig.name === "codex") {
-    logger.debug("provider.messages.codex.no_stream.result")
-  }
-  return c.json(anthropicResponse)
+  return { kind: "success", response: anthropicResponse }
 }
 
 const respondWebSearchProviderMessagesJson = (
   c: Context,
   options: {
     body: ResponsesResult
-    modelConfig: ModelConfig | undefined
+    canonicalProvider: string
     payload: AnthropicMessagesPayload
-    pricingCurrency: string | undefined
     provider: string
+    recordUsage: TokenUsageRecorder
+    resumedPendingServerToolUseIds: ReadonlyArray<string>
+    turnPhase: WebSearchTurnPhase
   },
 ): Response => {
-  const { body, modelConfig, payload, pricingCurrency, provider } = options
-  const recordUsage = createProviderMessagesUsageRecorder(
+  const {
+    body,
+    canonicalProvider,
     payload,
     provider,
-    modelConfig,
-    pricingCurrency,
-  )
-  recordUsage(normalizeResponsesUsage(body.usage))
-
-  const { extract, response } = reconstructWebSearchResponse(payload, body, {
-    requestId: body.id || `${provider}:${payload.model}`,
-  })
+    recordUsage,
+    resumedPendingServerToolUseIds,
+    turnPhase,
+  } = options
+  const usage = normalizeWebSearchResponsesUsage(body)
+  let reconstructed: ReturnType<typeof reconstructWebSearchResponse>
+  try {
+    reconstructed = reconstructWebSearchResponse(payload, body, {
+      carrierSource: {
+        destination: "responses",
+        adapter: "provider-responses",
+        provider: canonicalProvider,
+        model: payload.model.trim(),
+      },
+      requestId: body.id || `${provider}:${payload.model}`,
+      resumedPendingServerToolUseIds,
+      turnPhase,
+    })
+  } catch (error) {
+    recordUsage(usage, getWebSearchUsageMetadata(body, "rejected"))
+    throw error
+  }
+  recordUsage(usage, getWebSearchUsageMetadata(body, "mapped"))
+  const { extract, response } = reconstructed
+  c.header("x-copilot-api-web-search-carrier", reconstructed.carrierMode)
 
   debugJson(
     logger,
@@ -1086,7 +1667,7 @@ const respondWebSearchProviderMessagesJson = (
   return streamSSE(c, async (stream) => {
     for (const event of buildSyntheticStreamEvents(response)) {
       const data = JSON.stringify(event)
-      logger.debug(`Web search stream event`, data)
+      logger.debug("Web search stream event", event.type)
       await stream.writeSSE({
         event: event.type,
         data: data,
@@ -1095,15 +1676,35 @@ const respondWebSearchProviderMessagesJson = (
   })
 }
 
+const recordProviderResponsesResultUsage = (
+  recordUsage: TokenUsageRecorder,
+  body: ResponsesResult,
+): string | undefined => {
+  const failureMessage = getResponsesResultFailureMessage(body)
+  recordUsage(
+    normalizeResponsesUsage(body.usage),
+    failureMessage ?
+      {
+        errorCode: "response_failed",
+        outcome: "failed",
+        terminal: "response.failed",
+      }
+    : undefined,
+  )
+  return failureMessage
+}
+
 const createProviderMessagesUsageRecorder = (
   payload: AnthropicMessagesPayload,
   provider: string,
   modelConfig: ModelConfig | undefined,
   pricingCurrency: string | undefined,
-) =>
-  createProviderTokenUsageRecorder({
+  dependencies: ProviderMessagesDependencies,
+): TokenUsageRecorder =>
+  dependencies.createProviderTokenUsageRecorder({
     endpoint: "provider_messages",
     model: payload.model,
+    outcome: "completed",
     pricing: modelConfig?.pricing,
     pricingCurrency,
     providerName: provider,

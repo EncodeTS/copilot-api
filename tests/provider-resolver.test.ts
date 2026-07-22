@@ -191,4 +191,37 @@ describe("provider resolver", () => {
       baseUrl: "https://chatgpt.com/backend-api",
     })
   })
+  test("advances the Codex credential revision only when credentials change", () => {
+    const tempDir = createTempDir()
+    const output = runScript(
+      tempDir,
+      'const { state } = await import("./src/lib/state"); const { persistCodexCredentials } = await import("./src/lib/token"); const first = { accessToken: "token-a", accountId: "account-a", expiresAt: 123456789, refreshToken: "refresh-a" }; await persistCodexCredentials(first); const firstRevision = state.codexCredentialRevision; await persistCodexCredentials(first); const unchangedRevision = state.codexCredentialRevision; await persistCodexCredentials({ ...first, accessToken: "token-b" }); console.log(JSON.stringify([firstRevision, unchangedRevision, state.codexCredentialRevision]));',
+    )
+
+    expect(JSON.parse(output)).toEqual([1, 1, 2])
+  })
+
+  test("forwards request cancellation into the Codex setup waiter", () => {
+    const tempDir = createTempDir()
+    writeConfigFile(tempDir, {
+      providers: {
+        codex: {
+          type: "openai-responses",
+          enabled: true,
+          authType: "oauth2",
+          baseUrl: "https://chatgpt.com/backend-api",
+        },
+      },
+    })
+
+    const output = runScript(
+      tempDir,
+      'const { resolveProviderConfig } = await import("./src/lib/provider-resolver"); const controller = new AbortController(); controller.abort(); try { await resolveProviderConfig("codex", { signal: controller.signal }); console.log("unexpected-success"); } catch (error) { console.log(JSON.stringify({ kind: error.kind, message: error.message })); }',
+    )
+
+    expect(JSON.parse(output)).toEqual({
+      kind: "aborted",
+      message: "Codex token waiter was aborted",
+    })
+  })
 })

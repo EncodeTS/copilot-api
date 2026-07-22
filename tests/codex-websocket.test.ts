@@ -71,6 +71,10 @@ class MockWebSocket {
     this.emit("close", {})
   }
 
+  emitMessage(data: string): void {
+    this.emit("message", { data })
+  }
+
   completeLatestResponse(): void {
     const latestSent = this.sent.at(-1)
     if (!latestSent) {
@@ -86,6 +90,19 @@ class MockWebSocket {
         ),
         sequence_number: 1,
         type: "response.completed",
+      }),
+    })
+  }
+
+  failLatestResponse(message: string): void {
+    if (!this.sent.at(-1)) {
+      throw new Error("No websocket request to fail")
+    }
+
+    this.emit("message", {
+      data: JSON.stringify({
+        error: { message },
+        type: "error",
       }),
     })
   }
@@ -129,8 +146,12 @@ await mock.module("undici", () => ({
 }))
 
 const { state } = await import("../src/lib/state")
-const { forwardCodexResponses } = await import(
+const codexResponsesModule = await import(
   "../src/services/codex/create-responses"
+)
+const { forwardCodexResponses } = codexResponsesModule
+const responsesWebSocketModule = await import(
+  "../src/services/responses-websocket"
 )
 
 const originalState = {
@@ -175,6 +196,7 @@ const mockFetchJsonResponse = (body: unknown): void => {
 }
 
 beforeEach(() => {
+  responsesWebSocketModule.clearPooledWebSocketConnections("network_change")
   MockWebSocket.autoComplete = true
   MockWebSocket.instances = []
   state.codexAccessToken = "codex-token"
@@ -188,6 +210,7 @@ afterEach(() => {
   for (const websocket of MockWebSocket.instances) {
     websocket.close()
   }
+  responsesWebSocketModule.clearPooledWebSocketConnections("network_change")
 
   state.codexAccessToken = originalState.codexAccessToken
   state.codexAccountId = originalState.codexAccountId
@@ -249,6 +272,28 @@ test("forwardCodexResponses falls back to HTTP for non-streaming responses", asy
     model: "gpt-5.4",
     status: "completed",
   })
+})
+
+test("forwardCodexResponses keeps HTTP body cancellation connected", async () => {
+  mockFetchJsonResponse(createResponsesResult("gpt-5.4", "resp-abort"))
+  const controller = new AbortController()
+
+  const response = await forwardCodexResponses(
+    {
+      input: "hello",
+      model: "gpt-5.4",
+    },
+    new Headers({ "content-type": "application/json" }),
+    undefined,
+    { signal: controller.signal },
+  )
+
+  expect(response).toMatchObject({ id: "resp-abort" })
+  const upstreamSignal = fetchMock.mock.calls[0]?.[1]?.signal
+  expect(upstreamSignal?.aborted).toBe(false)
+
+  controller.abort(new Error("client disconnected"))
+  expect(upstreamSignal?.aborted).toBe(true)
 })
 
 test("forwardCodexResponses moves system input messages into instructions for HTTP requests", async () => {
@@ -334,27 +379,86 @@ test("forwardCodexResponses returns HTTP event streams when stream=true", async 
   expect(chunks[0]?.data).toContain('"type":"response.completed"')
 })
 
-test("forwardCodexResponses preserves response.completed while using websocket", async () => {
-  const response = await forwardCodexResponses(
-    {
-      input: "hello",
-      model: "gpt-5.4",
-      stream: true,
-    },
+test("forwardCodexResponses reuses the websocket after response.completed", async () => {
+  const payload = {
+    input: "hello",
+    model: "gpt-5.4",
+    stream: true,
+  } as const
+  const options = { transport: "websocket" } as const
+
+  const firstResponse = await forwardCodexResponses(
+    payload,
     new Headers(),
     undefined,
-    {
-      transport: "websocket",
-    },
+    options,
+  )
+  const firstChunks = await collectStreamChunks(
+    firstResponse as AsyncIterable<unknown>,
+  )
+
+  const secondResponse = await forwardCodexResponses(
+    payload,
+    new Headers(),
+    undefined,
+    options,
+  )
+  const secondChunks = await collectStreamChunks(
+    secondResponse as AsyncIterable<unknown>,
   )
 
   expect(fetchMock).not.toHaveBeenCalled()
-  const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
-
   expect(MockWebSocket.instances).toHaveLength(1)
-  expect(chunks).toHaveLength(1)
-  expect(chunks[0]?.event).toBe("response.completed")
-  expect(chunks[0]?.data).toContain('"type":"response.completed"')
+  expect(MockWebSocket.instances[0]?.sent).toHaveLength(2)
+  expect(firstChunks).toHaveLength(1)
+  expect(firstChunks[0]?.event).toBe("response.completed")
+  expect(firstChunks[0]?.data).toContain('"type":"response.completed"')
+  expect(secondChunks).toHaveLength(1)
+  expect(secondChunks[0]?.event).toBe("response.completed")
+})
+
+test("forwardCodexResponses opens a new websocket after an error terminal", async () => {
+  MockWebSocket.autoComplete = false
+  const payload = {
+    input: "hello",
+    model: "gpt-5.4",
+    stream: true,
+  } as const
+  const options = { transport: "websocket" } as const
+
+  const firstResponse = await forwardCodexResponses(
+    payload,
+    new Headers(),
+    undefined,
+    options,
+  )
+  const firstChunksPromise = collectStreamChunks(
+    firstResponse as AsyncIterable<unknown>,
+  )
+
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  MockWebSocket.instances[0]?.failLatestResponse("first request failed")
+
+  const firstChunks = await firstChunksPromise
+  expect(firstChunks).toHaveLength(1)
+  expect(firstChunks[0]?.event).toBe("error")
+
+  MockWebSocket.autoComplete = true
+  const secondResponse = await forwardCodexResponses(
+    payload,
+    new Headers(),
+    undefined,
+    options,
+  )
+  const secondChunks = await collectStreamChunks(
+    secondResponse as AsyncIterable<unknown>,
+  )
+
+  expect(MockWebSocket.instances).toHaveLength(2)
+  expect(MockWebSocket.instances[0]?.sent).toHaveLength(1)
+  expect(MockWebSocket.instances[1]?.sent).toHaveLength(1)
+  expect(secondChunks).toHaveLength(1)
+  expect(secondChunks[0]?.event).toBe("response.completed")
 })
 
 test("forwardCodexResponses emits an error event when the websocket closes without a terminal response", async () => {
@@ -388,6 +492,42 @@ test("forwardCodexResponses emits an error event when the websocket closes witho
   expect(chunks[0]?.data).toContain(
     '"message":"Codex responses websocket ended without a terminal response"',
   )
+})
+
+test("forwardCodexResponses emits exactly one content-safe terminal error on queue overflow", async () => {
+  MockWebSocket.autoComplete = false
+  const response = await forwardCodexResponses(
+    { input: "hello", model: "gpt-5.4", stream: true },
+    new Headers(),
+    undefined,
+    { transport: "websocket" },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+
+  for (let index = 0; index <= 4096; index += 1) {
+    MockWebSocket.instances[0]?.emitMessage(`codex-secret-frame-${index}`)
+  }
+  const chunks = await chunksPromise
+
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("error")
+  expect(JSON.parse(chunks[0]?.data ?? "null")).toMatchObject({
+    message: "Responses websocket receive queue exceeded its configured limit",
+    type: "error",
+  })
+  expect(chunks[0]?.data).not.toContain("codex-secret-frame")
+  expect(
+    responsesWebSocketModule.getPooledWebSocketDiagnostics(),
+  ).toMatchObject({
+    activeRequests: 0,
+    connections: 0,
+    dedicatedConnections: 0,
+    idleConnections: 0,
+    pooledConnections: 0,
+    queuedBytes: 0,
+    queuedFrames: 0,
+  })
 })
 
 const collectStreamChunks = async (

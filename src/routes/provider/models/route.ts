@@ -3,7 +3,10 @@ import { Hono } from "hono"
 import { forwardError } from "~/lib/error"
 import { createHandlerLogger } from "~/lib/logger"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
-import { getModels as getCodexModels } from "~/services/codex/get-models"
+import {
+  getCodexProviderCatalogHeaders,
+  loadCodexProviderModels,
+} from "~/services/codex/get-models"
 import {
   createProviderProxyResponse,
   forwardProviderModels,
@@ -17,7 +20,9 @@ providerModelRoutes.get("/", async (c) => {
   const provider = c.req.param("provider") ?? ""
 
   try {
-    const providerConfig = await resolveProviderConfig(provider)
+    const providerConfig = await resolveProviderConfig(provider, {
+      signal: c.req.raw.signal,
+    })
     if (!providerConfig) {
       return c.json(
         {
@@ -31,10 +36,15 @@ providerModelRoutes.get("/", async (c) => {
     }
 
     if (providerConfig.name === "codex") {
-      const models = getCodexModels()
+      const snapshot = await loadCodexProviderModels(c.req.raw.signal)
+      for (const [name, value] of Object.entries(
+        getCodexProviderCatalogHeaders(snapshot),
+      )) {
+        c.header(name, value)
+      }
       return c.json({
         object: "list",
-        data: models.data,
+        data: snapshot.catalog.data,
         has_more: false,
       })
     }
@@ -42,6 +52,7 @@ providerModelRoutes.get("/", async (c) => {
     const upstreamResponse = await forwardProviderModels(
       providerConfig,
       c.req.raw.headers,
+      c.req.raw.signal,
     )
 
     logger.debug("provider.models.response", {

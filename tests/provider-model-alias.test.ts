@@ -1,12 +1,17 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Hono } from "hono"
 
-import type { ResolvedProviderConfig } from "../src/lib/config"
+import type {
+  ProviderAuthType,
+  ResolvedProviderConfig,
+} from "../src/lib/config"
 
 const actualConfigModule = await import("../src/lib/config")
 const actualTokenUsageModule = await import("../src/lib/token-usage")
+const actualTokenizerModule = await import("../src/lib/tokenizer")
 
 let providerConfig: ResolvedProviderConfig | null = null
+let configuredAuthType: ProviderAuthType | undefined
 let modelMappings: Record<string, string> = {}
 
 interface TokenCountPayload {
@@ -21,18 +26,24 @@ interface TokenCountModel {
 }
 
 const getTokenCount = mock(
-  (_payload: TokenCountPayload, _model: TokenCountModel) =>
-    Promise.resolve({ input: 40, output: 2 }),
+  (
+    _payload: TokenCountPayload,
+    _model: TokenCountModel,
+    _options?: { signal?: AbortSignal },
+  ) => Promise.resolve({ input: 40, output: 2 }),
 )
 const noopTokenUsageRecorder = () => {}
 
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
+  getRawProviderConfig: () => ({ authType: configuredAuthType }),
+  getModelMappings: () => ({ ...modelMappings }),
   getProviderConfig: () => providerConfig,
   resolveMappedModel: (model: string) => modelMappings[model] ?? model,
 }))
 
 await mock.module("~/lib/tokenizer", () => ({
+  ...actualTokenizerModule,
   getTokenCount,
 }))
 
@@ -42,9 +53,10 @@ await mock.module("~/lib/token-usage", () => ({
 }))
 
 const { messageRoutes } = await import("../src/routes/messages/route")
-const { resolveCountTokensModel } = await import(
-  "../src/routes/messages/count-tokens-handler"
+const { nativeMessagesOutboundDependencies } = await import(
+  "../src/services/copilot/native-messages-outbound"
 )
+const originalOutboundDependencies = { ...nativeMessagesOutboundDependencies }
 
 const originalFetch = globalThis.fetch
 
@@ -89,6 +101,7 @@ const createApp = () => {
 }
 
 beforeEach(() => {
+  configuredAuthType = "authorization"
   providerConfig = {
     apiKey: "provider-key",
     authType: "authorization",
@@ -113,9 +126,42 @@ beforeEach(() => {
 afterEach(() => {
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
   providerConfig = null
+  Object.assign(
+    nativeMessagesOutboundDependencies,
+    originalOutboundDependencies,
+  )
 })
 
 describe("provider/model aliases on top-level messages routes", () => {
+  test("keeps provider generation and count routes opted out of builtin admission", async () => {
+    nativeMessagesOutboundDependencies.getAdmissionProfile = () => {
+      throw new Error("builtin admission must not run for providers")
+    }
+
+    const generation = await createApp().request("/v1/messages", {
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ content: "hello", role: "user" }],
+        model: "dash/qwen-plus",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+    const count = await createApp().request("/v1/messages/count_tokens", {
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ content: "hello", role: "user" }],
+        model: "dash/qwen-plus",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+
+    expect(generation.status).toBe(200)
+    expect(count.status).toBe(200)
+    expect(await count.json()).toEqual({ input_tokens: 42 })
+  })
+
   test("routes mapped /v1/messages models to the provider before rate limiting", async () => {
     modelMappings = {
       "claude-opus-4-7": "dash/qwen-plus",
@@ -179,6 +225,43 @@ describe("provider/model aliases on top-level messages routes", () => {
     expect(json.model).toBe("qwen-plus")
   })
 
+  test("uses the effective model protocol and explicit auth for a provider override", async () => {
+    configuredAuthType = "x-api-key"
+    providerConfig = {
+      ...(providerConfig as ResolvedProviderConfig),
+      authType: "x-api-key",
+      models: {
+        "qwen-plus": {
+          type: "openai-compatible",
+        },
+      },
+      type: "anthropic",
+    }
+
+    const response = await createApp().request("/v1/messages", {
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ content: "hello", role: "user" }],
+        model: "dash/qwen-plus",
+      }),
+      headers: {
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "https://dashscope.example/compatible-mode/v1/chat/completions",
+    )
+    expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toEqual({
+      "content-type": "application/json",
+      accept: "application/json",
+      "x-api-key": "provider-key",
+    })
+  })
+
   test("routes /v1/messages/count_tokens to provider token counting with the stripped model", async () => {
     const app = createApp()
     const response = await app.request("/v1/messages/count_tokens", {
@@ -197,6 +280,9 @@ describe("provider/model aliases on top-level messages routes", () => {
     expect(await response.json()).toEqual({
       input_tokens: 42,
     })
+    expect(response.headers.get("x-copilot-api-token-count-mode")).toBe(
+      "estimate",
+    )
     expect(getTokenCount).toHaveBeenCalledTimes(1)
 
     const [openAIPayload, selectedModel] = getTokenCount.mock.calls[0] as [
@@ -241,14 +327,6 @@ describe("provider/model aliases on top-level messages routes", () => {
     expect(selectedModel.capabilities.tokenizer).toBe("o200k_base")
   })
 
-  test("resolves missing top-level count_tokens models to the o200k_base fallback model", () => {
-    const resolved = resolveCountTokensModel("missing-model", () => undefined)
-
-    expect(resolved.fallback).toBe(true)
-    expect(resolved.model.id).toBe("missing-model")
-    expect(resolved.model.capabilities.tokenizer).toBe("o200k_base")
-  })
-
   test("does not return a fake count when provider token counting fails", async () => {
     getTokenCount.mockImplementationOnce(
       (_payload: TokenCountPayload, _model: TokenCountModel) =>
@@ -275,5 +353,54 @@ describe("provider/model aliases on top-level messages routes", () => {
         type: "error",
       },
     })
+  })
+
+  test("provider token counting propagates caller cancellation and its exact reason", async () => {
+    const controller = new AbortController()
+    const reason = new Error("provider count cancelled")
+    let observedSignal: AbortSignal | undefined
+    let signalReadyResolve: (() => void) | undefined
+    const signalReady = new Promise<void>((resolve) => {
+      signalReadyResolve = resolve
+    })
+    getTokenCount.mockImplementationOnce(
+      (
+        _payload: TokenCountPayload,
+        _model: TokenCountModel,
+        options?: { signal?: AbortSignal },
+      ) => {
+        observedSignal = options?.signal
+        signalReadyResolve?.()
+        return new Promise((_resolve, reject) => {
+          const signal = options?.signal
+          if (!signal) return reject(new Error("missing signal"))
+          // Exact AbortSignal.reason identity is the contract under test.
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          })
+        })
+      },
+    )
+
+    const responsePromise = createApp().fetch(
+      new Request("http://localhost/v1/messages/count_tokens", {
+        body: JSON.stringify({
+          max_tokens: 128,
+          messages: [{ content: "hello", role: "user" }],
+          model: "dash/qwen-plus",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+        signal: controller.signal,
+      }),
+    )
+    await signalReady
+    controller.abort(reason)
+    const response = await responsePromise
+
+    expect(response.status).toBe(500)
+    expect(observedSignal?.aborted).toBeTrue()
+    expect(observedSignal?.reason).toBe(reason)
   })
 })

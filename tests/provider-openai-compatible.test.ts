@@ -8,9 +8,9 @@ const actualTokenUsageModule = await import("../src/lib/token-usage")
 
 let providerConfig: ResolvedProviderConfig | null = null
 
-const noopTokenUsageRecorder = () => {}
+const providerUsageRecorder = mock((_usage: Record<string, unknown>) => {})
 
-const createNoopProviderTokenUsageRecorder = () => noopTokenUsageRecorder
+const createNoopProviderTokenUsageRecorder = () => providerUsageRecorder
 
 await mock.module("~/lib/config", () => ({
   ...actualConfigModule,
@@ -73,6 +73,105 @@ const createApp = () => {
   return app
 }
 
+const createResponsesResult = () => ({
+  created_at: 0,
+  error: null,
+  id: "resp-test",
+  incomplete_details: null,
+  instructions: null,
+  metadata: null,
+  model: "gpt-resp",
+  object: "response",
+  output: [],
+  output_text: "",
+  parallel_tool_calls: false,
+  status: "completed",
+  temperature: null,
+  tool_choice: "auto",
+  tools: [],
+  top_p: null,
+  usage: {
+    input_tokens: 12,
+    input_tokens_details: {
+      cached_tokens: 2,
+    },
+    output_tokens: 4,
+    total_tokens: 16,
+  },
+})
+
+const createOpenResponsesSseTransport = (
+  responseEvents: Array<Record<string, unknown>>,
+): { cancelCount: () => number; response: Response } => {
+  const encoder = new TextEncoder()
+  let cancelCount = 0
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(
+        encoder.encode(
+          `${responseEvents
+            .map(
+              (event) =>
+                `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}`,
+            )
+            .join("\n\n")}\n\n`,
+        ),
+      )
+    },
+    cancel() {
+      cancelCount += 1
+    },
+  })
+
+  return {
+    cancelCount: () => cancelCount,
+    response: new Response(body, {
+      headers: {
+        "content-type": "text/event-stream",
+      },
+    }),
+  }
+}
+
+const configureOpenAIResponsesProvider = (): void => {
+  providerConfig = {
+    apiKey: "provider-key",
+    authType: "authorization",
+    baseUrl: "https://responses.example",
+    models: {
+      "gpt-resp": {},
+    },
+    name: "dash",
+    type: "openai-responses",
+  }
+}
+
+const requestStreamingResponsesProviderMessages = (
+  signal?: AbortSignal,
+): Promise<Response> =>
+  Promise.resolve(
+    createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-resp",
+        stream: true,
+      }),
+      signal,
+    }),
+  )
+
+const normalizedResponsesUsage = {
+  cache_read_input_tokens: 2,
+  input_tokens: 10,
+  output_tokens: 4,
+  total_tokens: 16,
+}
+
 beforeEach(() => {
   providerConfig = {
     name: "dashscope",
@@ -95,6 +194,7 @@ beforeEach(() => {
     },
   }
   fetchMock.mockClear()
+  providerUsageRecorder.mockClear()
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
     fetchMock as unknown as typeof fetch
 })
@@ -236,6 +336,74 @@ describe("openai-compatible provider messages", () => {
     ])
   })
 
+  test("suppresses provider reasoning when thinking is disabled", async () => {
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        thinking: {
+          type: "disabled",
+        },
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const json = (await response.json()) as {
+      content: Array<Record<string, unknown>>
+    }
+    expect(json.content).toEqual([{ type: "text", text: "answer text" }])
+  })
+
+  test("returns an error when provider finish_reason is error", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        Response.json({
+          id: "chatcmpl-error",
+          object: "chat.completion",
+          created: 0,
+          model: "qwen-plus",
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: "",
+              },
+              finish_reason: "error",
+              logprobs: null,
+            },
+          ],
+        }),
+      ),
+    )
+
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+      }),
+    })
+
+    expect(response.status).toBe(502)
+    expect(await response.json()).toEqual({
+      type: "error",
+      error: {
+        type: "api_error",
+        message: "Provider upstream ended with finish_reason=error",
+      },
+    })
+  })
+
   test("adds stream_options include_usage for OpenAI-compatible streams", async () => {
     providerConfig = {
       ...providerConfig,
@@ -266,6 +434,426 @@ describe("openai-compatible provider messages", () => {
     expect(body.stream).toBe(true)
     expect(body.stream_options).toEqual({
       include_usage: true,
+    })
+  })
+
+  test("preserves final usage after provider metadata-only chunks", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          [
+            'data: {"id":"chatcmpl-metadata","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[{"index":0,"delta":{},"finish_reason":"stop","logprobs":null}]}',
+            'data: {"id":"chatcmpl-metadata","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[]}',
+            'data: {"id":"chatcmpl-metadata","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[],"usage":{"prompt_tokens":8544,"completion_tokens":174,"total_tokens":8718}}',
+            "data: [DONE]",
+            "",
+          ].join("\n\n"),
+          {
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain('"input_tokens":8544,"output_tokens":174')
+    expect(body.match(/event: message_delta/gu)).toHaveLength(1)
+    expect(body.match(/event: message_stop/gu)).toHaveLength(1)
+  })
+
+  test("flushes provider metadata-delayed completion at EOF", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          [
+            'data: {"id":"chatcmpl-metadata-eof","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[{"index":0,"delta":{},"finish_reason":"stop","logprobs":null}]}',
+            'data: {"id":"chatcmpl-metadata-eof","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[]}',
+            "",
+          ].join("\n\n"),
+          {
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain(
+      'data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":0,"output_tokens":0}}',
+    )
+    expect(body.match(/event: message_delta/gu)).toHaveLength(1)
+    expect(body.match(/event: message_stop/gu)).toHaveLength(1)
+    expect(body).not.toContain("event: error")
+  })
+
+  test("does not stop before a provider error after metadata", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          [
+            'data: {"id":"chatcmpl-metadata-error","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[{"index":0,"delta":{},"finish_reason":"stop","logprobs":null}]}',
+            'data: {"id":"chatcmpl-metadata-error","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[]}',
+            'event: error\ndata: {"message":"metadata stream failed","type":"api_error"}',
+            "",
+          ].join("\n\n"),
+          {
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("event: error")
+    expect(body).toContain('"message":"metadata stream failed"')
+    expect(body).not.toContain("event: message_stop")
+  })
+
+  test("translates OpenAI-compatible stream errors to Anthropic error events", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          'event: error\ndata: {"error":{"message":"upstream failed","type":"invalid_request_error"}}\n\n',
+          {
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      ),
+    )
+
+    const app = createApp()
+    const response = await app.request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("event: error")
+    expect(body).toContain('"message":"upstream failed"')
+    expect(body).toContain('"type":"invalid_request_error"')
+  })
+
+  test("translates streaming finish_reason error to Anthropic error", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          [
+            'data: {"id":"chatcmpl-error","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[{"index":0,"delta":{},"finish_reason":"error"}]}',
+            "data: [DONE]",
+            "",
+          ].join("\n\n"),
+          {
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("event: error")
+    expect(body).toContain(
+      '"message":"Provider upstream ended with finish_reason=error"',
+    )
+    expect(body).not.toContain("event: message_stop")
+  })
+
+  test("emits an Anthropic error when an OpenAI stream ends without finish_reason", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          'data: {"id":"chatcmpl-partial","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[{"index":0,"delta":{"role":"assistant","content":"partial"},"finish_reason":null}]}\n\n',
+          {
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain('"text":"partial"')
+    expect(body).toContain("event: error")
+    expect(body).toContain(
+      "Provider OpenAI-compatible stream ended without finish_reason",
+    )
+    expect(body).not.toContain("event: message_stop")
+  })
+
+  test("emits an Anthropic error when an OpenAI-compatible stream throws", async () => {
+    const encoder = new TextEncoder()
+    let pullCount = 0
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pullCount === 0) {
+          pullCount += 1
+          controller.enqueue(
+            encoder.encode(
+              'data: {"id":"chatcmpl-partial","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}\n\n',
+            ),
+          )
+          return
+        }
+        controller.error(new Error("provider compatible socket reset"))
+      },
+    })
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(upstreamBody, {
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        }),
+      ),
+    )
+
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("event: error")
+    expect(body).toContain("provider compatible socket reset")
+  })
+
+  test("translates plain-text OpenAI-compatible stream error events", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response("event: error\ndata: upstream failed\n\n", {
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        }),
+      ),
+    )
+
+    const app = createApp()
+    const response = await app.request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("event: error")
+    expect(body).toContain('"message":"upstream failed"')
+    expect(body).toContain('"type":"api_error"')
+  })
+
+  test("translates empty OpenAI-compatible stream error events", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response("event: error\n\n", {
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        }),
+      ),
+    )
+
+    const app = createApp()
+    const response = await app.request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("event: error")
+    expect(body).toContain(
+      '"message":"Upstream provider stream returned an error event."',
+    )
+  })
+
+  test("translates string-valued OpenAI-compatible stream errors", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response('data: {"error":"quota hit"}\n\n', {
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        }),
+      ),
+    )
+
+    const app = createApp()
+    const response = await app.request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("event: error")
+    expect(body).toContain('"message":"quota hit"')
+    expect(body).toContain('"type":"api_error"')
+  })
+
+  test("records usage collected before OpenAI-compatible stream errors", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          [
+            'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":0,"model":"qwen-plus","choices":[],"usage":{"prompt_tokens":8,"completion_tokens":3,"total_tokens":11,"prompt_tokens_details":{"cache_creation_input_tokens":2,"cached_tokens":1}}}',
+            'event: error\ndata: {"message":"quota hit","type":"rate_limit_error"}',
+            "",
+          ].join("\n\n"),
+          {
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      ),
+    )
+
+    const app = createApp()
+    const response = await app.request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "qwen-plus",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain('"message":"quota hit"')
+    expect(body).toContain('"type":"rate_limit_error"')
+    expect(providerUsageRecorder).toHaveBeenCalledWith({
+      cache_creation_input_tokens: 2,
+      cache_read_input_tokens: 1,
+      input_tokens: 5,
+      output_tokens: 3,
+      total_tokens: 11,
     })
   })
 
@@ -360,6 +948,555 @@ describe("openai-compatible provider messages", () => {
     const init = fetchMock.mock.calls[0][1] as RequestInit
     const body = JSON.parse(init.body as string) as Record<string, unknown>
     expect(body.thinking_budget).toBe(8192)
+  })
+})
+
+describe("openai-responses provider messages", () => {
+  test("keeps Anthropic SSE when a streaming provider returns buffered JSON", async () => {
+    configureOpenAIResponsesProvider()
+    let upstreamSignal: AbortSignal | null = null
+    fetchMock.mockImplementationOnce((_url, init) => {
+      upstreamSignal = init?.signal ?? null
+      return Promise.resolve(
+        Response.json({
+          ...createResponsesResult(),
+          output: [
+            {
+              id: "msg-buffered-fallback",
+              type: "message",
+              role: "assistant",
+              status: "completed",
+              content: [
+                {
+                  type: "output_text",
+                  text: "buffered fallback",
+                  annotations: [],
+                },
+              ],
+            },
+          ],
+          output_text: "buffered fallback",
+        }),
+      )
+    })
+
+    const response = await requestStreamingResponsesProviderMessages()
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get("content-type")).toStartWith(
+      "text/event-stream",
+    )
+    const body = await response.text()
+    expect(body).toContain("event: message_start")
+    expect(body).toContain("event: content_block_start")
+    expect(body).toContain('"text":"buffered fallback"')
+    expect(body).toContain("event: message_delta")
+    expect(body).toContain("event: message_stop")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      normalizedResponsesUsage,
+      undefined,
+    )
+    expect(upstreamSignal).not.toBeNull()
+    expect((upstreamSignal as unknown as AbortSignal).aborted).toBe(true)
+  })
+
+  test("releases the provider HTTP transport after a non-stream error body", async () => {
+    configureOpenAIResponsesProvider()
+    let upstreamSignal: AbortSignal | null = null
+    fetchMock.mockImplementationOnce((_url, init) => {
+      upstreamSignal = init?.signal ?? null
+      return Promise.resolve(
+        Response.json(
+          {
+            error: {
+              code: "rate_limit_exceeded",
+              message: "slow down",
+              type: "requests",
+            },
+          },
+          {
+            headers: { "retry-after": "3" },
+            status: 429,
+          },
+        ),
+      )
+    })
+
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-resp",
+      }),
+    })
+
+    expect(response.status).toBe(429)
+    expect(response.headers.get("retry-after")).toBe("3")
+    expect(await response.json()).toEqual({
+      error: {
+        code: "rate_limit_exceeded",
+        message: "slow down",
+        type: "requests",
+      },
+    })
+    expect(upstreamSignal).not.toBeNull()
+    expect((upstreamSignal as unknown as AbortSignal).aborted).toBe(true)
+  })
+
+  test("releases the real provider HTTP transport after a typed terminal", async () => {
+    configureOpenAIResponsesProvider()
+
+    let upstreamSignal: AbortSignal | null = null
+    const transport = createOpenResponsesSseTransport([
+      {
+        response: createResponsesResult(),
+        sequence_number: 0,
+        type: "response.created",
+      },
+      {
+        response: createResponsesResult(),
+        sequence_number: 1,
+        type: "response.completed",
+      },
+    ])
+    fetchMock.mockImplementationOnce((_url, init) => {
+      upstreamSignal = init?.signal ?? null
+      return Promise.resolve(transport.response)
+    })
+
+    const response = await requestStreamingResponsesProviderMessages()
+
+    const body = await response.text()
+    expect(body.match(/event: message_stop/gu)).toHaveLength(1)
+    expect(body).not.toContain("event: error")
+    expect(upstreamSignal).not.toBeNull()
+    expect((upstreamSignal as unknown as AbortSignal).aborted).toBe(true)
+    expect(transport.cancelCount()).toBe(1)
+  })
+
+  test("forwards caller abort to the provider HTTP transport after partial output", async () => {
+    configureOpenAIResponsesProvider()
+
+    const decoder = new TextDecoder()
+    let upstreamSignal: AbortSignal | null = null
+    const transport = createOpenResponsesSseTransport([
+      {
+        response: createResponsesResult(),
+        sequence_number: 0,
+        type: "response.created",
+      },
+      {
+        content_index: 0,
+        delta: "partial",
+        item_id: "msg-test",
+        output_index: 0,
+        sequence_number: 1,
+        type: "response.output_text.delta",
+      },
+    ])
+    fetchMock.mockImplementationOnce((_url, init) => {
+      upstreamSignal = init?.signal ?? null
+      return Promise.resolve(transport.response)
+    })
+
+    const controller = new AbortController()
+    const abortReason = new Error("client disconnected after partial output")
+    const response = await requestStreamingResponsesProviderMessages(
+      controller.signal,
+    )
+
+    const reader = response.body!.getReader()
+    let body = ""
+    while (!body.includes('"text":"partial"')) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      body += decoder.decode(chunk.value as Uint8Array, { stream: true })
+    }
+    controller.abort(abortReason)
+    try {
+      while (true) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        body += decoder.decode(chunk.value as Uint8Array, { stream: true })
+      }
+    } catch {
+      // The caller intentionally closed the downstream response.
+    }
+
+    expect(body).toContain('"text":"partial"')
+    expect(body).not.toContain("event: error")
+    expect(body).not.toContain("event: message_stop")
+    expect(upstreamSignal).not.toBeNull()
+    expect((upstreamSignal as unknown as AbortSignal).aborted).toBe(true)
+    expect((upstreamSignal as unknown as AbortSignal).reason).toBe(abortReason)
+    expect(transport.cancelCount()).toBe(1)
+  })
+
+  test("records usage from Responses provider streams", async () => {
+    configureOpenAIResponsesProvider()
+
+    const encoder = new TextEncoder()
+    let emittedUsage = false
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (emittedUsage) {
+          controller.close()
+          return
+        }
+        emittedUsage = true
+        controller.enqueue(
+          encoder.encode(
+            `event: response.completed\ndata: ${JSON.stringify({
+              response: createResponsesResult(),
+              sequence_number: 1,
+              type: "response.completed",
+            })}\n\n`,
+          ),
+        )
+      },
+    })
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(stream, {
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        }),
+      ),
+    )
+
+    const response = await requestStreamingResponsesProviderMessages()
+
+    expect(response.status).toBe(200)
+    await response.text()
+    expect(providerUsageRecorder).toHaveBeenCalledWith(normalizedResponsesUsage)
+  })
+
+  test("turns a partial Responses provider failure into one Anthropic stream error", async () => {
+    configureOpenAIResponsesProvider()
+
+    const encoder = new TextEncoder()
+    let pullCount = 0
+    let upstreamSignal: AbortSignal | null = null
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pullCount === 0) {
+          pullCount += 1
+          controller.enqueue(
+            encoder.encode(
+              `event: response.output_text.delta\ndata: ${JSON.stringify({
+                content_index: 0,
+                delta: "partial",
+                item_id: "msg-test",
+                output_index: 0,
+                sequence_number: 1,
+                type: "response.output_text.delta",
+              })}\n\n`,
+            ),
+          )
+          return
+        }
+        controller.error(new Error("provider socket reset"))
+      },
+    })
+    fetchMock.mockImplementationOnce((_url, init) => {
+      upstreamSignal = init?.signal ?? null
+      return Promise.resolve(
+        new Response(stream, {
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        }),
+      )
+    })
+
+    const response = await requestStreamingResponsesProviderMessages()
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain('"text":"partial"')
+    expect(body.match(/event: error/gu)).toHaveLength(1)
+    expect(body).toContain("provider socket reset")
+    expect(body).not.toContain("event: message_stop")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith({})
+    expect(upstreamSignal).not.toBeNull()
+    expect((upstreamSignal as unknown as AbortSignal).aborted).toBe(true)
+  })
+
+  test("maps a failed provider terminal to one error and records its usage", async () => {
+    configureOpenAIResponsesProvider()
+    const failedResponse = {
+      ...createResponsesResult(),
+      error: {
+        code: "server_error",
+        message: "provider failed after usage",
+      },
+      status: "failed",
+    }
+    const transport = createOpenResponsesSseTransport([
+      {
+        response: failedResponse,
+        sequence_number: 1,
+        type: "response.failed",
+      },
+    ])
+    fetchMock.mockImplementationOnce(() => Promise.resolve(transport.response))
+
+    const response = await requestStreamingResponsesProviderMessages()
+
+    const body = await response.text()
+    expect(body.match(/event: error/gu)).toHaveLength(1)
+    expect(body).toContain("provider failed after usage")
+    expect(body).not.toContain("event: message_stop")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(normalizedResponsesUsage)
+    expect(transport.cancelCount()).toBe(1)
+  })
+
+  test("maps an incomplete provider terminal to max_tokens and records its usage", async () => {
+    configureOpenAIResponsesProvider()
+    const incompleteResponse = {
+      ...createResponsesResult(),
+      incomplete_details: {
+        reason: "max_output_tokens",
+      },
+      status: "incomplete",
+    }
+    const transport = createOpenResponsesSseTransport([
+      {
+        response: incompleteResponse,
+        sequence_number: 1,
+        type: "response.incomplete",
+      },
+    ])
+    fetchMock.mockImplementationOnce(() => Promise.resolve(transport.response))
+
+    const response = await requestStreamingResponsesProviderMessages()
+
+    const body = await response.text()
+    expect(body.match(/event: message_stop/gu)).toHaveLength(1)
+    expect(body).toContain('"stop_reason":"max_tokens"')
+    expect(body).not.toContain("event: error")
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(normalizedResponsesUsage)
+    expect(transport.cancelCount()).toBe(1)
+  })
+
+  test("rejects assistant prefill before calling a Responses provider", async () => {
+    configureOpenAIResponsesProvider()
+
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [
+          { role: "user", content: "Return JSON" },
+          { role: "assistant", content: '{"value":' },
+        ],
+        model: "gpt-resp",
+      }),
+    })
+
+    expect(response.status).toBe(400)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("maps disabled thinking and failed Responses provider results", async () => {
+    configureOpenAIResponsesProvider()
+    fetchMock.mockImplementationOnce((_url, init) => {
+      const requestBody = JSON.parse(init?.body as string) as {
+        reasoning?: { effort?: string }
+      }
+      expect(requestBody.reasoning?.effort).toBe("none")
+      return Promise.resolve(
+        Response.json({
+          ...createResponsesResult(),
+          status: "failed",
+          error: {
+            code: "server_error",
+            message: "provider failed",
+          },
+        }),
+      )
+    })
+
+    const response = await createApp().request("/dash/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-resp",
+        thinking: {
+          type: "disabled",
+        },
+      }),
+    })
+
+    expect(response.status).toBe(502)
+    expect(await response.json()).toEqual({
+      type: "error",
+      error: {
+        type: "api_error",
+        message: "provider failed",
+      },
+    })
+  })
+})
+
+describe("anthropic provider messages", () => {
+  test("treats a native Anthropic error event as the terminal", async () => {
+    providerConfig = {
+      apiKey: "provider-key",
+      authType: "x-api-key",
+      baseUrl: "https://anthropic.example",
+      models: {
+        "claude-test": {},
+      },
+      name: "anthropic",
+      type: "anthropic",
+    }
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response("event: error\ndata: upstream failed\n\n", {
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        }),
+      ),
+    )
+
+    const response = await createApp().request("/anthropic/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "claude-test",
+        stream: true,
+      }),
+    })
+
+    const body = await response.text()
+    expect(body.match(/event: error/gu)).toHaveLength(1)
+    expect(body).toContain("upstream failed")
+  })
+
+  test("emits an error when a native Anthropic stream ends without message_stop", async () => {
+    providerConfig = {
+      apiKey: "provider-key",
+      authType: "x-api-key",
+      baseUrl: "https://anthropic.example",
+      models: {
+        "claude-test": {},
+      },
+      name: "anthropic",
+      type: "anthropic",
+    }
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          [
+            'event: message_start\ndata: {"type":"message_start","message":{"id":"msg-partial","type":"message","role":"assistant","content":[],"model":"claude-test","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":4,"output_tokens":0}}}',
+            'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}',
+            "",
+          ].join("\n\n"),
+          {
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      ),
+    )
+
+    const response = await createApp().request("/anthropic/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "claude-test",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain('"text":"partial"')
+    expect(body).toContain("event: error")
+    expect(body).toContain(
+      "Provider Anthropic stream ended without message_stop",
+    )
+  })
+
+  test("emits an error when a native Anthropic stream throws", async () => {
+    providerConfig = {
+      apiKey: "provider-key",
+      authType: "x-api-key",
+      baseUrl: "https://anthropic.example",
+      models: {
+        "claude-test": {},
+      },
+      name: "anthropic",
+      type: "anthropic",
+    }
+    const encoder = new TextEncoder()
+    let pullCount = 0
+    const upstreamBody = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pullCount === 0) {
+          pullCount += 1
+          controller.enqueue(
+            encoder.encode(
+              'event: message_start\ndata: {"type":"message_start","message":{"id":"msg-partial","type":"message","role":"assistant","content":[],"model":"claude-test","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":4,"output_tokens":0}}}\n\n',
+            ),
+          )
+          return
+        }
+        controller.error(new Error("provider messages socket reset"))
+      },
+    })
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(upstreamBody, {
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        }),
+      ),
+    )
+
+    const response = await createApp().request("/anthropic/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "claude-test",
+        stream: true,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.text()
+    expect(body).toContain("event: error")
+    expect(body).toContain("provider messages socket reset")
   })
 })
 

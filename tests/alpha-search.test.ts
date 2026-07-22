@@ -2,35 +2,26 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Hono } from "hono"
 
 import type { ResolvedProviderConfig } from "../src/lib/config"
-
-const actualConfigModule = await import("../src/lib/config")
-const actualTokenModule = await import("../src/lib/token")
+import { state } from "../src/lib/state"
+import { createAlphaSearchRoutes } from "../src/routes/alpha-search/route"
+import {
+  forwardCodexAlphaSearch,
+  resolveCodexAlphaSearchUrl,
+} from "../src/services/codex/alpha-search"
+import {
+  captureCodexCredentialSnapshot,
+  clearCodexProviderCatalogCache,
+  fetchCodexProviderCatalog,
+  forwardCodexModels,
+  getStaticCodexModels,
+  loadCodexProviderModels,
+  resolveCodexModelsUrl,
+} from "../src/services/codex/get-models"
 
 let codexProviderConfig: ResolvedProviderConfig | null = null
 
-await mock.module("~/lib/config", () => ({
-  ...actualConfigModule,
-  getProviderConfig: (provider: string) =>
-    provider === "codex" ? codexProviderConfig : null,
-  getRawProviderConfig: (provider: string) =>
-    provider === "codex" ? codexProviderConfig : null,
-}))
-
-await mock.module("~/lib/token", () => ({
-  ...actualTokenModule,
-  setupCodexToken: async () => {},
-}))
-
-const { state } = await import("../src/lib/state")
-const { forwardCodexAlphaSearch, resolveCodexAlphaSearchUrl } = await import(
-  "../src/services/codex/alpha-search"
-)
-const { forwardCodexModels, getModels, resolveCodexModelsUrl } = await import(
-  "../src/services/codex/get-models"
-)
-const { alphaSearchRoutes } = await import("../src/routes/alpha-search/route")
-
 const originalFetch = globalThis.fetch
+const originalCodexCredentialRevision = state.codexCredentialRevision
 const alphaSearchPayload = {
   id: "search-request-id",
   model: "gpt-5.6-sol",
@@ -85,11 +76,17 @@ const fetchMock = mock(
       }),
     ),
 )
+const diagnosticMock = mock(() => {})
 
 function createApp() {
   const app = new Hono()
-  app.route("/alpha/search", alphaSearchRoutes)
-  app.route("/v1/alpha/search", alphaSearchRoutes)
+  const routes = createAlphaSearchRoutes({
+    logDiagnosticEvent: diagnosticMock,
+    resolveProviderConfig: (provider) =>
+      Promise.resolve(provider === "codex" ? codexProviderConfig : null),
+  })
+  app.route("/alpha/search", routes)
+  app.route("/v1/alpha/search", routes)
   return app
 }
 
@@ -103,8 +100,11 @@ beforeEach(() => {
   }
   state.codexAccessToken = "codex-access-token"
   state.codexAccountId = "account-123"
+  state.codexCredentialRevision = 1
   state.verbose = false
   fetchMock.mockClear()
+  diagnosticMock.mockClear()
+  clearCodexProviderCatalogCache()
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
     fetchMock as unknown as typeof fetch
 })
@@ -113,7 +113,9 @@ afterEach(() => {
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch = originalFetch
   state.codexAccessToken = undefined
   state.codexAccountId = undefined
+  state.codexCredentialRevision = originalCodexCredentialRevision
   state.verbose = false
+  clearCodexProviderCatalogCache()
 })
 
 describe("Codex alpha search URL", () => {
@@ -154,8 +156,77 @@ describe("Codex models forwarding", () => {
     expect(headers.get("chatgpt-account-id")).toBe("account-123")
   })
 
+  test("uses canonical headers for cached provider discovery", async () => {
+    await fetchCodexProviderCatalog({
+      accessToken: "codex-access-token",
+      accountId: "account-123",
+      credentialRevision: 1,
+    })
+
+    const [url, init] = fetchMock.mock.calls[0] ?? []
+    expect(url).toBe("https://chatgpt.com/backend-api/codex/models")
+    const headers = new Headers(init?.headers)
+    expect([...headers.keys()].sort()).toEqual([
+      "accept",
+      "authorization",
+      "chatgpt-account-id",
+      "originator",
+      "user-agent",
+    ])
+    expect(headers.get("accept")).toBe("application/json")
+    expect(headers.get("originator")).toBe("copilot-api")
+    expect(headers.get("user-agent")).toBe("copilot-api")
+    expect(headers.get("if-none-match")).toBeNull()
+    expect(headers.get("cookie")).toBeNull()
+    expect(headers.get("openai-beta")).toBeNull()
+    expect(headers.get("range")).toBeNull()
+  })
+
+  test("keeps scope and auth bound when login changes before refresh starts", async () => {
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        Response.json({
+          models: [
+            {
+              slug: "gpt-test",
+              display_name: "GPT Test",
+              visibility: "list",
+              supported_in_api: true,
+              input_modalities: ["text"],
+              context_window: 100_000,
+              supported_reasoning_levels: [{ effort: "low" }],
+              supports_parallel_tool_calls: false,
+            },
+          ],
+        }),
+      ),
+    )
+    state.codexAccessToken = "account-a-token"
+    state.codexAccountId = "account-a"
+    state.codexCredentialRevision = 11
+
+    const accountALoad = loadCodexProviderModels()
+    state.codexAccessToken = "account-b-token"
+    state.codexAccountId = "account-b"
+    state.codexCredentialRevision = 12
+    await accountALoad
+
+    const headers = new Headers(fetchMock.mock.calls[0]?.[1]?.headers)
+    expect(headers.get("authorization")).toBe("Bearer account-a-token")
+    expect(headers.get("chatgpt-account-id")).toBe("account-a")
+  })
+
+  test("rejects an unknown account before discovery", () => {
+    state.codexAccountId = "   "
+
+    expect(() => captureCodexCredentialSnapshot()).toThrow(
+      "Codex account id is not loaded",
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   test("keeps the built-in Codex model catalog available", () => {
-    const models = getModels()
+    const models = getStaticCodexModels()
     expect(models.object).toBe("list")
     expect(models.data.map((model) => model.id)).toContain("gpt-5.6-sol")
   })
@@ -222,32 +293,45 @@ describe("Codex alpha search forwarding", () => {
     expect(url).toBe("https://chatgpt.com/backend-api/codex/alpha/search?q=bun")
   })
 
-  test("reads request and response bodies when debug logging is enabled", async () => {
+  test("keeps debug diagnostics free of request and response content", async () => {
     state.verbose = true
 
     const response = await createApp().request("/alpha/search", {
       method: "POST",
-      body: JSON.stringify(alphaSearchPayload),
+      body: JSON.stringify({
+        ...alphaSearchPayload,
+        private: "request-secret",
+      }),
     })
 
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({
       results: [{ title: "result" }],
     })
+    const diagnostics = JSON.stringify(diagnosticMock.mock.calls)
+    expect(diagnostics).not.toContain("request-secret")
+    expect(diagnostics).not.toContain("search query")
+    expect(diagnostics).not.toContain('title\\":\\"result')
   })
 
-  test("adds JSON content type when a request body has none", async () => {
+  test("keeps the direct Codex compatibility helper on the shared lifecycle", async () => {
     await forwardCodexAlphaSearch(
-      new Request("http://localhost/alpha/search", {
+      new Request("http://localhost/alpha/search?q=compat", {
+        body: new Uint8Array([123, 32, 125]),
         method: "POST",
-        body: new Uint8Array([123, 125]),
       }),
+      { timeouts: { httpHeadersMs: 50 } },
     )
 
-    const [, init] = fetchMock.mock.calls[0] ?? []
+    const [url, init] = fetchMock.mock.calls[0] ?? []
+    expect(url).toBe(
+      "https://chatgpt.com/backend-api/codex/alpha/search?q=compat",
+    )
     expect(new Headers(init?.headers).get("content-type")).toBe(
       "application/json",
     )
+    expect(new TextDecoder().decode(init?.body as Uint8Array)).toBe("{ }")
+    expect(init?.signal).toBeInstanceOf(AbortSignal)
   })
 
   test("returns 404 when the Codex provider is unavailable", async () => {
