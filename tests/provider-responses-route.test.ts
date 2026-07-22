@@ -215,6 +215,10 @@ describe("versioned provider Responses route", () => {
   })
 
   test("preserves direct provider query ordering and raw JSON request bytes", async () => {
+    providerConfigs.openai = {
+      ...providerConfigs.openai,
+      capabilities: { responsesContextManagement: true },
+    } as ResolvedProviderConfig
     const rawBody =
       '{\n  "model": "gpt-test",\n  "input": "hello",\n  "duplicate": 1,\n  "duplicate": 2,\n  "unknown_large_integer": 9007199254740993\n}\n'
     fetchMock.mockImplementationOnce(() =>

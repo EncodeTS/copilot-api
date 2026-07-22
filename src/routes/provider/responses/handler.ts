@@ -205,7 +205,6 @@ async function handleProviderResponsesForProviderWithDependencies(
   if (
     supportsProviderResponsesContextManagement(providerConfig, payload.model)
   ) {
-    rawBody = undefined
     const contextManagementDecision = applyResponsesApiContextManagement(
       payload,
       model?.capabilities.limits,
@@ -214,6 +213,12 @@ async function handleProviderResponsesForProviderWithDependencies(
         source: "responses",
       },
     )
+    if (
+      contextManagementDecision.injected
+      || contextManagementDecision.shouldPruneInput
+    ) {
+      rawBody = undefined
+    }
     if (contextManagementDecision.shouldPruneInput) {
       compactInputByLatestCompaction(payload)
     }

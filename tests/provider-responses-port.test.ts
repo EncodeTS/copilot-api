@@ -140,6 +140,28 @@ describe("generic HTTP exact request forwarding", () => {
       ),
     ).toBe("https://responses.example/api/v1/responses?mode=exact&empty=")
   })
+
+  test("uses JSON content type when the gateway synthesizes the request body", async () => {
+    responseFactory = () =>
+      Response.json({
+        id: "resp-synthesized-request",
+        object: "response",
+        output: [],
+        status: "completed",
+      })
+
+    await createProviderResponsesPort(genericConfig).dispatch({
+      payload: { input: "hello", model: "gpt-port" },
+      requestHeaders: new Headers({
+        "content-type": "application/anthropic+json",
+      }),
+    })
+
+    expect(typeof capturedInit?.body).toBe("string")
+    expect(new Headers(capturedInit?.headers).get("content-type")).toBe(
+      "application/json",
+    )
+  })
 })
 
 for (const fixture of fixtures) {

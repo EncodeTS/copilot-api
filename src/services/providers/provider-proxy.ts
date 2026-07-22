@@ -146,7 +146,7 @@ export async function forwardProviderResponses(
     request.requestHeaders,
   )
   const contentType = request.requestHeaders.get("content-type")
-  if (contentType) headers["content-type"] = contentType
+  if (request.rawBody && contentType) headers["content-type"] = contentType
   return await fetchWithUpstreamLifecycle(
     resolveProviderResponsesUrl(providerConfig.baseUrl, request.requestUrl),
     {
