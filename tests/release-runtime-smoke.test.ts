@@ -237,7 +237,7 @@ describe("Docker artifact runtime smoke", () => {
       run(arguments_: string[]): DockerRunResult {
         commands.push(arguments_)
         if (arguments_[0] === "image") return dockerResult("sha256:config\n")
-        if (arguments_[0] === "run") return dockerResult("container-id\n")
+        if (arguments_[0] === "create") return dockerResult("container-id\n")
         if (arguments_[0] === "inspect") return dockerResult("healthy\n")
         if (arguments_[0] === "exec") {
           return dockerResult(`${JSON.stringify({ version: "2.0.0-rc.14" })}\n`)
@@ -280,13 +280,13 @@ describe("Docker artifact runtime smoke", () => {
       health: "healthy",
       version: "2.0.0-rc.14",
     })
-    const runCommand = commands.find(([command]) => command === "run")
-    expect(runCommand).toContain("--mount")
-    expect(runCommand).toContain(
+    const createCommand = commands.find(([command]) => command === "create")
+    expect(createCommand).toContain("--mount")
+    expect(createCommand).toContain(
       "type=bind,source=/tmp/copilot-api-docker-smoke-fixture,target=/tmp/copilot-api-smoke",
     )
-    expect(runCommand?.at(-1)).toBe("--desktop-auth-mode=provider")
-    expect(runCommand?.join(" ")).not.toContain("GH_TOKEN")
+    expect(createCommand?.at(-1)).toBe("--desktop-auth-mode=provider")
+    expect(createCommand?.join(" ")).not.toContain("GH_TOKEN")
     expect(JSON.parse(runtimeConfig)).toMatchObject({
       providers: {
         smoke: {
@@ -310,8 +310,12 @@ describe("Docker artifact runtime smoke", () => {
       run(arguments_: string[]): DockerRunResult {
         commands.push(arguments_)
         if (arguments_[0] === "image") return dockerResult("sha256:config")
-        if (arguments_[0] === "run") return dockerResult("container-id")
-        if (arguments_[0] === "logs") return dockerResult("startup pending")
+        if (arguments_[0] === "create") return dockerResult("container-id")
+        if (arguments_[0] === "logs") {
+          return dockerResult("startup pending", {
+            stderr: "fatal\u0001startup error",
+          })
+        }
         if (
           arguments_[0] === "inspect"
           && arguments_[2] === "{{json .State.Health}}"
@@ -358,6 +362,13 @@ describe("Docker artifact runtime smoke", () => {
     ).toBe(true)
     expect(diagnostics.join("\n")).toContain("dockerSmokeHealth=")
     expect(diagnostics.join("\n")).toContain("dockerSmokeLogs=")
+    expect(diagnostics.join("\n")).toContain("stdout=startup pending")
+    expect(diagnostics.join("\n")).toContain("stderr=fatalstartup error")
+    expect(diagnostics.join("\n")).not.toContain("\u0001")
+    expect(
+      diagnostics.find((message) => message.startsWith("dockerSmokeLogs="))
+        ?.length,
+    ).toBeLessThanOrEqual(4_100)
     expect(removed).toBe(true)
   })
 
@@ -398,11 +409,55 @@ describe("Docker artifact runtime smoke", () => {
     expect(runtimeHomeRemoved).toBe(true)
   })
 
+  test("removes a named container when docker create times out", async () => {
+    let containerRemoved = false
+    let runtimeHomeRemoved = false
+    const timeout = Object.assign(new Error("create timeout"), {
+      code: "ETIMEDOUT",
+    })
+    const error = await rejectionOf(
+      smokeDockerImage(
+        {
+          configDigest: "sha256:config",
+          image: "candidate:amd64",
+          version: "2.0.0-rc.14",
+        },
+        {
+          dockerRunner: {
+            run(arguments_: string[]): DockerRunResult {
+              if (arguments_[0] === "image") {
+                return dockerResult("sha256:config")
+              }
+              if (arguments_[0] === "create") {
+                return dockerResult("", { error: timeout, status: null })
+              }
+              if (arguments_[0] === "rm") containerRemoved = true
+              return dockerResult()
+            },
+          },
+          fileSystem: {
+            mkdtempSync(): string {
+              return "/tmp/copilot-api-docker-smoke-fixture"
+            },
+            rmSync(): void {
+              runtimeHomeRemoved = true
+            },
+            writeFileSync(): void {},
+          },
+        },
+      ),
+    )
+
+    expect(error.message).toContain("docker create timed out")
+    expect(containerRemoved).toBe(true)
+    expect(runtimeHomeRemoved).toBe(true)
+  })
+
   test("rejects malformed runtime output and surfaces cleanup failure", async () => {
     const responses = (cleanupFails: boolean) => ({
       run(arguments_: string[]): DockerRunResult {
         if (arguments_[0] === "image") return dockerResult("sha256:config")
-        if (arguments_[0] === "run") return dockerResult("container-id")
+        if (arguments_[0] === "create") return dockerResult("container-id")
         if (arguments_[0] === "inspect") return dockerResult("healthy")
         if (arguments_[0] === "exec") return dockerResult("not-json")
         if (arguments_[0] === "rm" && cleanupFails) {
@@ -441,7 +496,7 @@ describe("Docker artifact runtime smoke", () => {
     const dockerRunner = {
       run(arguments_: string[]): DockerRunResult {
         if (arguments_[0] === "image") return dockerResult("sha256:config")
-        if (arguments_[0] === "run") return dockerResult("container-id")
+        if (arguments_[0] === "create") return dockerResult("container-id")
         if (arguments_[0] === "inspect") return dockerResult("healthy")
         if (arguments_[0] === "exec") {
           return dockerResult(JSON.stringify({ version: "2.0.0-rc.14" }))
@@ -490,7 +545,7 @@ describe("Docker artifact runtime smoke", () => {
     const runnerFor = (health: string, version: string) => ({
       run(arguments_: string[]): DockerRunResult {
         if (arguments_[0] === "image") return dockerResult("sha256:config")
-        if (arguments_[0] === "run") return dockerResult("container-id")
+        if (arguments_[0] === "create") return dockerResult("container-id")
         if (arguments_[0] === "inspect") return dockerResult(health)
         if (arguments_[0] === "exec") {
           return dockerResult(JSON.stringify({ version }))

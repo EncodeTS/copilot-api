@@ -72,18 +72,26 @@ const DOCKER_SMOKE_CONFIG = {
 }
 const MAX_DOCKER_DIAGNOSTIC_CHARACTERS = 4_000
 
-function boundedDockerDiagnostic(value) {
+function boundedDockerDiagnostic(
+  value,
+  maxCharacters = MAX_DOCKER_DIAGNOSTIC_CHARACTERS,
+) {
   const normalized = value
     .replaceAll("\r", "")
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, "")
     .trim()
-  return normalized.slice(-MAX_DOCKER_DIAGNOSTIC_CHARACTERS)
+  return normalized.slice(-maxCharacters)
 }
 
 function readDockerDiagnostic(dockerRunner, arguments_) {
   const result = dockerRunner.run(arguments_, { timeoutMs: 10_000 })
   if (result.error || result.status !== 0) return "unavailable"
-  return boundedDockerDiagnostic(result.stdout)
+  const streamLimit = Math.floor(
+    (MAX_DOCKER_DIAGNOSTIC_CHARACTERS - 32) / 2,
+  )
+  const stdout = boundedDockerDiagnostic(result.stdout, streamLimit) || "empty"
+  const stderr = boundedDockerDiagnostic(result.stderr, streamLimit) || "empty"
+  return `stdout=${stdout}\nstderr=${stderr}`
 }
 
 function emitDockerFailureDiagnostics(dockerRunner, container, output) {
@@ -102,6 +110,20 @@ function emitDockerFailureDiagnostics(dockerRunner, container, output) {
   ])
   output.error(`dockerSmokeHealth=${health}`)
   output.error(`dockerSmokeLogs=${logs}`)
+}
+
+function removeDockerContainerIfPresent(dockerRunner, container) {
+  const arguments_ = ["rm", "--force", container]
+  const result = dockerRunner.run(arguments_, { timeoutMs: 30_000 })
+  if (result.error?.code === "ETIMEDOUT") {
+    throw new Error("docker rm timed out")
+  }
+  if (result.error) throw result.error
+  if (result.status === 0) return
+  if (/No such container/iu.test(`${result.stdout}\n${result.stderr}`)) return
+  throw new Error(
+    `docker ${arguments_.join(" ")} exited with ${result.status}${result.stderr ? `: ${result.stderr.trim()}` : ""}`,
+  )
 }
 
 export async function smokeDockerImage(
@@ -130,7 +152,8 @@ export async function smokeDockerImage(
   const runtimeHome = fileSystem.mkdtempSync(
     path.join(os.tmpdir(), "copilot-api-docker-smoke-"),
   )
-  let containerStarted = false
+  let containerCleanupRequired = false
+  let containerCreated = false
   let primaryError
   let cleanupError
   let health = "starting"
@@ -140,11 +163,11 @@ export async function smokeDockerImage(
       `${JSON.stringify(DOCKER_SMOKE_CONFIG, null, 2)}\n`,
       { mode: 0o600 },
     )
+    containerCleanupRequired = true
     runChecked(
       dockerRunner,
       [
-        "run",
-        "--detach",
+        "create",
         "--name",
         container,
         "--mount",
@@ -156,7 +179,8 @@ export async function smokeDockerImage(
       ],
       { timeoutMs: 30_000 },
     )
-    containerStarted = true
+    containerCreated = true
+    runChecked(dockerRunner, ["start", container], { timeoutMs: 30_000 })
     const deadline = clock.now() + timeoutMs
     while (true) {
       health = runChecked(
@@ -205,15 +229,13 @@ export async function smokeDockerImage(
     }
   } catch (error) {
     primaryError = error
-    if (containerStarted) {
+    if (containerCreated) {
       emitDockerFailureDiagnostics(dockerRunner, container, output)
     }
   } finally {
-    if (containerStarted) {
+    if (containerCleanupRequired) {
       try {
-        runChecked(dockerRunner, ["rm", "--force", container], {
-          timeoutMs: 30_000,
-        })
+        removeDockerContainerIfPresent(dockerRunner, container)
       } catch (error) {
         cleanupError = error
       }
