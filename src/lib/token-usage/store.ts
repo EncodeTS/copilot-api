@@ -1,5 +1,27 @@
 import consola from "consola"
-import path from "node:path"
+
+import {
+  TOKEN_USAGE_ERROR_CODE_VALUES,
+  TOKEN_USAGE_OUTCOME_VALUES,
+  TOKEN_USAGE_TERMINAL_VALUES,
+} from "../../../shared-types"
+import type {
+  TokenUsageCost,
+  TokenUsageDailyBucket,
+  TokenUsageDailySummary,
+  TokenUsageEndpoint,
+  TokenUsageErrorCode,
+  TokenUsageEventCost,
+  TokenUsageEventRecord,
+  TokenUsageEventsPage,
+  TokenUsageModelSummary,
+  TokenUsageOutcome,
+  TokenUsagePeriod,
+  TokenUsageSource,
+  TokenUsageSummary,
+  TokenUsageTerminal,
+  TokenUsageTotals,
+} from "../../../shared-types"
 
 import { PATHS } from "~/lib/paths"
 import { registerProcessCleanup } from "~/lib/process-cleanup"
@@ -9,16 +31,34 @@ import {
   type SqliteDatabase,
 } from "~/lib/sqlite"
 
-export type TokenUsageSource = "copilot" | "provider"
+import { normalizeOptionalToken, normalizeToken } from "./normalize-number"
 
-export type TokenUsageEndpoint =
-  | "chat_completions"
-  | "embeddings"
-  | "messages"
-  | "provider_messages"
-  | "responses"
+export { normalizeOptionalToken, normalizeToken } from "./normalize-number"
 
-export type TokenUsagePeriod = "day" | "week" | "month"
+export {
+  TOKEN_USAGE_ERROR_CODE_VALUES,
+  TOKEN_USAGE_OUTCOME_VALUES,
+  TOKEN_USAGE_TERMINAL_VALUES,
+} from "../../../shared-types"
+export type {
+  TokenUsageCost,
+  TokenUsageDailyBucket,
+  TokenUsageDailySummary,
+  TokenUsageEndpoint,
+  TokenUsageErrorCode,
+  TokenUsageEventCost,
+  TokenUsageEventRecord,
+  TokenUsageEventsPage,
+  TokenUsageModelSummary,
+  TokenUsageOutcome,
+  TokenUsagePeriod,
+  TokenUsageSource,
+  TokenUsageSummary,
+  TokenUsageTerminal,
+  TokenUsageTotals,
+} from "../../../shared-types"
+
+export type TokenUsageEnqueueResult = "accepted" | "disabled" | "queue_full"
 
 export interface UsageTokens {
   cache_creation_input_tokens?: number | null
@@ -29,16 +69,6 @@ export interface UsageTokens {
   total_tokens?: number | null
 }
 
-export interface TokenUsageCost {
-  amount: number
-  currency: string
-  total_cost_nanos: number
-}
-
-export interface TokenUsageEventCost extends TokenUsageCost {
-  source: string
-}
-
 export interface PersistedTokenUsageEvent {
   cache_creation_input_tokens: number
   cache_read_input_tokens: number
@@ -47,12 +77,15 @@ export interface PersistedTokenUsageEvent {
   created_at_ms: number
   created_at_utc: string
   endpoint: TokenUsageEndpoint
+  error_code: TokenUsageErrorCode | null
   input_tokens: number
   model: string
+  outcome: TokenUsageOutcome
   output_tokens: number
   provider_name: string | null
   session_id: string
   source: TokenUsageSource
+  terminal: TokenUsageTerminal | null
   total_cost_nanos: number | null
   total_nano_aiu: number | null
   total_tokens: number
@@ -60,99 +93,63 @@ export interface PersistedTokenUsageEvent {
   user_id: string
 }
 
-export interface TokenUsageTotals {
-  cache_creation_input_tokens: number
-  cache_read_input_tokens: number
-  costs: Array<TokenUsageCost>
-  input_tokens: number
-  output_tokens: number
-  request_count: number
-  total_nano_aiu: number | null
-  total_tokens: number
-}
-
-export interface TokenUsageModelSummary extends TokenUsageTotals {
-  model: string
-}
-
-export interface TokenUsageEventRecord {
-  cache_creation_input_tokens: number
-  cache_read_input_tokens: number
-  cost: TokenUsageEventCost | null
-  created_at_ms: number
-  created_at_utc: string
-  endpoint: TokenUsageEndpoint
-  id: number
-  input_tokens: number
-  model: string
-  output_tokens: number
-  provider_name: string | null
-  session_id: string
-  source: TokenUsageSource
-  total_nano_aiu: number | null
-  total_tokens: number
-  trace_id: string
-  user_id: string
-}
-
-export interface TokenUsageSummary {
-  byModel: Array<TokenUsageModelSummary>
-  period: TokenUsagePeriod
-  range: {
-    end_ms: number
-    end_utc: string
-    start_ms: number
-    start_utc: string
-  }
-  totals: TokenUsageTotals
-}
-
-export interface TokenUsageDailyBucket {
-  byModel: Array<TokenUsageModelSummary>
-  date: string
-  end_ms: number
-  start_ms: number
-  totals: TokenUsageTotals
-}
-
-export interface TokenUsageDailySummary {
-  byModel: Array<TokenUsageModelSummary>
-  days: Array<TokenUsageDailyBucket>
-  period: TokenUsagePeriod
-  range: {
-    end_ms: number
-    end_utc: string
-    start_ms: number
-    start_utc: string
-  }
-  totals: TokenUsageTotals
-}
-
-export interface TokenUsageEventsPage {
-  items: Array<TokenUsageEventRecord>
-  page: number
-  page_size: number
-  period: TokenUsagePeriod
-  range: {
-    end_ms: number
-    end_utc: string
-    start_ms: number
-    start_utc: string
-  }
-  total: number
-  total_pages: number
-}
-
-const DB_PATH_ENV = "COPILOT_API_SQLITE_DB_PATH"
-const DEFAULT_DB_FILENAME = "copilot-api.sqlite"
+const WRITE_QUEUE_CAPACITY_ENV = "COPILOT_API_TOKEN_USAGE_WRITE_QUEUE_CAPACITY"
+const DEFAULT_WRITE_QUEUE_CAPACITY = 1_024
+const MAX_WRITE_QUEUE_CAPACITY = 100_000
 const COST_NANOS_PER_UNIT = 1_000_000_000
 
-let writeQueue: Promise<void> = Promise.resolve()
+const pendingWrites: Array<PersistedTokenUsageEvent | undefined> = []
+let pendingWriteHead = 0
+let drainPromise: Promise<void> | null = null
+let drainScheduled = false
+let inFlightWriteCount = 0
+let droppedWriteCount = 0
+let enqueuedWriteCount = 0
+let writtenWriteCount = 0
+let writeErrorCount = 0
+
+export interface TokenUsageWriteQueueStatus {
+  capacity: number
+  draining: boolean
+  dropped: number
+  enqueued: number
+  in_flight: number
+  pending: number
+  write_errors: number
+  written: number
+}
+
+function isStringValueOf<const Values extends readonly string[]>(
+  values: Values,
+  value: unknown,
+): value is Values[number] {
+  return typeof value === "string" && values.includes(value)
+}
+
+export function normalizeTokenUsageOutcome(value: unknown): TokenUsageOutcome {
+  return isStringValueOf(TOKEN_USAGE_OUTCOME_VALUES, value) ? value : "failed"
+}
+
+export function normalizeTokenUsageErrorCode(
+  value: unknown,
+): TokenUsageErrorCode | null {
+  if (value === null || value === undefined || value === "") return null
+  return isStringValueOf(TOKEN_USAGE_ERROR_CODE_VALUES, value) ? value : (
+      "unknown_error"
+    )
+}
+
+export function normalizeTokenUsageTerminal(
+  value: unknown,
+): TokenUsageTerminal | null {
+  if (value === null || value === undefined || value === "") return null
+  return isStringValueOf(TOKEN_USAGE_TERMINAL_VALUES, value) ? value : (
+      "unknown_terminal"
+    )
+}
 
 function getDbPath(): string {
-  return (
-    process.env[DB_PATH_ENV] ?? path.join(PATHS.APP_DIR, DEFAULT_DB_FILENAME)
-  )
+  return PATHS.getTokenUsageDbPath()
 }
 
 const tokenUsageDbStore = new SqliteDbStore({
@@ -183,6 +180,9 @@ function initializeTokenUsageDb(db: SqliteDatabase): void {
       endpoint TEXT NOT NULL,
       provider_name TEXT,
       model TEXT NOT NULL,
+      outcome TEXT NOT NULL DEFAULT 'completed',
+      terminal TEXT,
+      error_code TEXT,
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
@@ -195,6 +195,9 @@ function initializeTokenUsageDb(db: SqliteDatabase): void {
     )
   `)
   ensureColumn(db, "user_id", "TEXT NOT NULL DEFAULT ''")
+  ensureColumn(db, "outcome", "TEXT NOT NULL DEFAULT 'completed'")
+  ensureColumn(db, "terminal", "TEXT")
+  ensureColumn(db, "error_code", "TEXT")
   ensureColumn(db, "total_tokens", "INTEGER NOT NULL DEFAULT 0")
   ensureColumn(db, "total_nano_aiu", "INTEGER")
   ensureColumn(db, "cost_currency", "TEXT")
@@ -234,21 +237,6 @@ function ensureColumn(
   if (!hasColumn) {
     db.exec(`ALTER TABLE token_usage_events ADD COLUMN ${name} ${definition}`)
   }
-}
-
-export function normalizeToken(value: number | null | undefined): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return 0
-  }
-  return Math.max(0, Math.floor(value))
-}
-
-export function normalizeOptionalToken(
-  value: number | null | undefined,
-): number | undefined {
-  return value === null || value === undefined ?
-      undefined
-    : normalizeToken(value)
 }
 
 export function hasAnyToken(tokens: UsageTokens): boolean {
@@ -291,6 +279,9 @@ async function writeTokenUsageEvent(
         endpoint,
         provider_name,
         model,
+        outcome,
+        terminal,
+        error_code,
         input_tokens,
         output_tokens,
         cache_read_input_tokens,
@@ -300,7 +291,7 @@ async function writeTokenUsageEvent(
         cost_currency,
         total_cost_nanos,
         cost_source
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
   ).run(
     event.created_at_ms,
@@ -312,6 +303,9 @@ async function writeTokenUsageEvent(
     event.endpoint,
     event.provider_name,
     event.model,
+    event.outcome,
+    event.terminal,
+    event.error_code,
     event.input_tokens,
     event.output_tokens,
     event.cache_read_input_tokens,
@@ -324,26 +318,133 @@ async function writeTokenUsageEvent(
   )
 }
 
-export function enqueueTokenUsageWrite(event: PersistedTokenUsageEvent): void {
+function getWriteQueueCapacity(): number {
+  const parsed = Number.parseInt(
+    process.env[WRITE_QUEUE_CAPACITY_ENV] ?? "",
+    10,
+  )
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return DEFAULT_WRITE_QUEUE_CAPACITY
+  }
+  return Math.min(MAX_WRITE_QUEUE_CAPACITY, parsed)
+}
+
+export function getTokenUsageWriteQueueStatus(): TokenUsageWriteQueueStatus {
+  return {
+    capacity: getWriteQueueCapacity(),
+    draining: drainPromise !== null,
+    dropped: droppedWriteCount,
+    enqueued: enqueuedWriteCount,
+    in_flight: inFlightWriteCount,
+    pending: getPendingWriteCount(),
+    write_errors: writeErrorCount,
+    written: writtenWriteCount,
+  }
+}
+
+export function enqueueTokenUsageWrite(
+  event: PersistedTokenUsageEvent,
+): TokenUsageEnqueueResult {
   if (!isTokenUsageStorageEnabled()) {
+    return "disabled"
+  }
+
+  if (getPendingWriteCount() >= getWriteQueueCapacity()) {
+    droppedWriteCount += 1
+    if (droppedWriteCount === 1 || isPowerOfTwo(droppedWriteCount)) {
+      consola.warn("Token usage write queue full; dropping newest event", {
+        dropped: droppedWriteCount,
+      })
+    }
+    return "queue_full"
+  }
+
+  pendingWrites.push(event)
+  enqueuedWriteCount += 1
+  scheduleDrain()
+  return "accepted"
+}
+
+function getPendingWriteCount(): number {
+  return pendingWrites.length - pendingWriteHead
+}
+
+function takePendingWrite(): PersistedTokenUsageEvent | undefined {
+  const event = pendingWrites[pendingWriteHead]
+  if (!event) return undefined
+
+  pendingWrites[pendingWriteHead] = undefined
+  pendingWriteHead += 1
+  if (pendingWriteHead === pendingWrites.length) {
+    pendingWrites.length = 0
+    pendingWriteHead = 0
+  } else if (
+    pendingWriteHead >= 1_024
+    && pendingWriteHead * 2 >= pendingWrites.length
+  ) {
+    pendingWrites.splice(0, pendingWriteHead)
+    pendingWriteHead = 0
+  }
+  return event
+}
+
+function isPowerOfTwo(value: number): boolean {
+  return value > 0 && (value & (value - 1)) === 0
+}
+
+function scheduleDrain(): void {
+  if (drainScheduled || drainPromise) {
+    return
+  }
+  drainScheduled = true
+  queueMicrotask(() => {
+    drainScheduled = false
+    startDrain()
+  })
+}
+
+function startDrain(): void {
+  if (drainPromise || getPendingWriteCount() === 0) {
     return
   }
 
-  writeQueue = writeQueue
-    .then(() => writeTokenUsageEvent(event))
-    .catch((error: unknown) => {
-      consola.warn("Failed to record token usage", error)
-    })
+  drainPromise = drainTokenUsageWrites().finally(() => {
+    drainPromise = null
+    if (getPendingWriteCount() > 0) {
+      scheduleDrain()
+    }
+  })
+}
+
+async function drainTokenUsageWrites(): Promise<void> {
+  let event = takePendingWrite()
+  while (event) {
+    inFlightWriteCount = 1
+    try {
+      await writeTokenUsageEvent(event)
+      writtenWriteCount += 1
+    } catch {
+      writeErrorCount += 1
+      consola.warn("Failed to record token usage", {
+        writeErrors: writeErrorCount,
+      })
+    }
+    inFlightWriteCount = 0
+    event = takePendingWrite()
+  }
 }
 
 async function flushTokenUsageEvents(): Promise<void> {
-  let currentQueue = writeQueue
-  while (true) {
-    await currentQueue
-    if (currentQueue === writeQueue) {
-      return
+  while (drainScheduled || drainPromise || getPendingWriteCount() > 0) {
+    if (drainScheduled && !drainPromise) {
+      await Promise.resolve()
+      continue
     }
-    currentQueue = writeQueue
+    if (!drainPromise) {
+      startDrain()
+      continue
+    }
+    await drainPromise
   }
 }
 
@@ -661,13 +762,16 @@ function usageEventFromRow(
     created_at_ms: numberFromRow(row, "created_at_ms"),
     created_at_utc: stringFromRow(row, "created_at_utc"),
     endpoint: stringFromRow(row, "endpoint") as TokenUsageEndpoint,
+    error_code: normalizeTokenUsageErrorCode(row.error_code),
     id: numberFromRow(row, "id"),
     input_tokens: numberFromRow(row, "input_tokens"),
     model: stringFromRow(row, "model") || "unknown",
+    outcome: normalizeTokenUsageOutcome(row.outcome || "completed"),
     output_tokens: numberFromRow(row, "output_tokens"),
     provider_name: nullableStringFromRow(row, "provider_name"),
     session_id: stringFromRow(row, "session_id"),
     source: stringFromRow(row, "source") as TokenUsageSource,
+    terminal: normalizeTokenUsageTerminal(row.terminal),
     total_nano_aiu: nullableNumberFromRow(row, "total_nano_aiu"),
     total_tokens: numberFromRow(row, "total_tokens"),
     trace_id: stringFromRow(row, "trace_id"),
@@ -900,6 +1004,9 @@ export async function getTokenUsageEventsPage(input: {
       endpoint,
       provider_name,
       model,
+      outcome,
+      terminal,
+      error_code,
       input_tokens,
       output_tokens,
       cache_read_input_tokens,
@@ -948,7 +1055,15 @@ export async function closeUsageStore(): Promise<void> {
       }
     },
   })
-  writeQueue = Promise.resolve()
+  pendingWrites.length = 0
+  pendingWriteHead = 0
+  drainPromise = null
+  drainScheduled = false
+  inFlightWriteCount = 0
+  droppedWriteCount = 0
+  enqueuedWriteCount = 0
+  writtenWriteCount = 0
+  writeErrorCount = 0
 }
 
 registerProcessCleanup(closeUsageStore)

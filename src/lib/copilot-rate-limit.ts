@@ -133,6 +133,17 @@ export const logCopilotQuotaSnapshots = (
   }
 }
 
+export const observeCopilotResponsesMetadata = (event: unknown): void => {
+  if (!event || typeof event !== "object") return
+  const record = event as Record<string, unknown>
+  if (record.type !== "response.completed") return
+  const snapshots = record.copilot_quota_snapshots
+  if (!snapshots || typeof snapshots !== "object" || Array.isArray(snapshots)) {
+    return
+  }
+  logCopilotQuotaSnapshots(snapshots as QuotaSnapshotMap)
+}
+
 const logCopilotRateLimitUsage = (usage: CopilotRateLimitUsage): void => {
   const d = new Date(usage.resetAt)
   const dateStr = Number.isNaN(d.getTime()) ? usage.resetAt : d.toLocaleString()

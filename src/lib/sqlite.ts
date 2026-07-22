@@ -1,5 +1,9 @@
-import fs from "node:fs/promises"
 import path from "node:path"
+
+import {
+  ensurePrivateDirectory,
+  repairSqliteFilePermissions,
+} from "./file-protection"
 
 type SqliteValue = string | number | null
 
@@ -17,9 +21,14 @@ export interface SqliteDatabase {
   prepare: (sql: string) => SqliteStatement
 }
 
-interface SqliteDbStoreOptions {
+export interface OpenSqliteDatabaseOptions {
+  openDatabase?: (dbPath: string) => Promise<SqliteDatabase>
+}
+
+export interface SqliteDbStoreOptions {
   getPath: () => string
   initialize?: (db: SqliteDatabase) => void
+  openDatabase?: (dbPath: string) => Promise<SqliteDatabase>
 }
 
 const isBunRuntime = (): boolean =>
@@ -66,7 +75,7 @@ function getUnsupportedNodeSqliteMessage(nodeVersion: string): string {
   return (
     `SQLite-backed token usage requires Bun or Node.js >= ${MINIMUM_NODE_SQLITE_VERSION}. `
     + `Detected Node.js ${nodeVersion}. Upgrade Node.js or run the CLI with Bun, for example `
-    + "`bunx --bun @jeffreycao/copilot-api@latest start` or `bun run start start`."
+    + "`bunx --bun @encodets/copilot-api@rc start` or `bun run start start`."
   )
 }
 
@@ -125,12 +134,30 @@ async function openNodeDatabase(dbPath: string): Promise<SqliteDatabase> {
 
 export async function openSqliteDatabase(
   dbPath: string,
+  options: OpenSqliteDatabaseOptions = {},
 ): Promise<SqliteDatabase> {
   const dir = path.dirname(dbPath)
   if (dbPath !== ":memory:" && dir !== ".") {
-    await fs.mkdir(dir, { recursive: true })
+    await ensurePrivateDirectory(dir)
   }
-  return isBunRuntime() ? openBunDatabase(dbPath) : openNodeDatabase(dbPath)
+  await repairSqliteFilePermissions(dbPath)
+
+  let database: SqliteDatabase | undefined
+  try {
+    database =
+      options.openDatabase ? await options.openDatabase(dbPath)
+      : isBunRuntime() ? await openBunDatabase(dbPath)
+      : await openNodeDatabase(dbPath)
+    await repairSqliteFilePermissions(dbPath)
+    return database
+  } catch (error) {
+    try {
+      database?.close?.()
+    } catch {
+      // Preserve the validation/open error that made the handle unsafe.
+    }
+    throw error
+  }
 }
 
 export class SqliteDbStore {
@@ -162,8 +189,20 @@ export class SqliteDbStore {
   }
 
   private async open(): Promise<SqliteDatabase> {
-    const db = await openSqliteDatabase(this.options.getPath())
-    this.options.initialize?.(db)
-    return db
+    const dbPath = this.options.getPath()
+    await repairSqliteFilePermissions(dbPath)
+    const db = await (this.options.openDatabase ?? openSqliteDatabase)(dbPath)
+    try {
+      this.options.initialize?.(db)
+      await repairSqliteFilePermissions(dbPath)
+      return db
+    } catch (error) {
+      try {
+        db.close?.()
+      } catch {
+        // Preserve the initialization/validation error.
+      }
+      throw error
+    }
   }
 }
