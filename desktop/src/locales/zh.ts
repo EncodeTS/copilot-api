@@ -73,6 +73,7 @@ const zh: Locale = {
     tokenUsageOutput: '输出',
     tokenUsageOutcome: '结果',
     tokenUsagePage: '第 {{page}} / {{total}} 页',
+    tokenUsagePeriodAll: '全部历史',
     tokenUsagePeriodDay: '日',
     tokenUsagePeriodMonth: '近 30 天',
     tokenUsagePeriodWeek: '近 7 天',

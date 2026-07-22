@@ -614,7 +614,7 @@ describe('Desktop shared boundaries', () => {
 
     await ipcHandlers.get('server:fetch-usage')?.({})
     await ipcHandlers.get('server:fetch-models')?.({})
-    await ipcHandlers.get('server:fetch-token-usage')?.({}, 'day')
+    await ipcHandlers.get('server:fetch-token-usage')?.({}, 'all')
     await ipcHandlers.get('server:fetch-token-usage-daily')?.({}, 'week')
     await ipcHandlers.get('server:fetch-token-usage-events')?.(
       {},
@@ -624,6 +624,9 @@ describe('Desktop shared boundaries', () => {
     )
     expect(
       requestedUrls.every((url) => url.startsWith('http://127.0.0.1:4510/')),
+    ).toBeTrue()
+    expect(
+      requestedUrls.some((url) => url.endsWith('/token-usage?period=all')),
     ).toBeTrue()
 
     serverRunning = false

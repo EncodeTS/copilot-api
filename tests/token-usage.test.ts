@@ -596,6 +596,106 @@ describe("token usage storage", () => {
     expect(page.items[1]?.session_id).toBe("interaction-session")
   })
 
+  test("returns all persisted history beyond the rolling month window", async () => {
+    setSystemTime(localDate(2026, 4, 2, 9))
+    recordTokenUsageEvent({
+      endpoint: "messages",
+      input_tokens: 10,
+      model: "historical-model",
+      outcome: "completed",
+      output_tokens: 2,
+      source: "copilot",
+    })
+
+    setSystemTime(localDate(2026, 6, 22, 10))
+    recordTokenUsageEvent({
+      endpoint: "responses",
+      input_tokens: 20,
+      model: "current-model",
+      outcome: "completed",
+      output_tokens: 5,
+      source: "copilot",
+    })
+
+    const app = createTokenUsageApp()
+    const [summaryResponse, dailyResponse, eventsResponse] = await Promise.all([
+      app.request("/token-usage?period=all"),
+      app.request("/token-usage/daily?period=all"),
+      app.request("/token-usage/events?period=all&page=1&page_size=10"),
+    ])
+    expect(summaryResponse.status).toBe(200)
+    expect(dailyResponse.status).toBe(200)
+    expect(eventsResponse.status).toBe(200)
+
+    const summary = (await summaryResponse.json()) as TokenUsageSummary
+    const daily = (await dailyResponse.json()) as TokenUsageDailySummary
+    const events = (await eventsResponse.json()) as TokenUsageEventsPage
+    expect(summary.period).toBe("all")
+    expect(summary.totals.request_count).toBe(2)
+    expect(summary.totals.total_tokens).toBe(37)
+    expect(summary.range.start_ms).toBe(localDate(2026, 4, 2, 0).getTime())
+    expect(summary.range.end_ms).toBe(localDate(2026, 6, 23, 0).getTime())
+    expect(daily.period).toBe("all")
+    expect(daily.days[0]?.date).toBe(localDateLabel(localDate(2026, 4, 2)))
+    expect(daily.days.at(-1)?.date).toBe(localDateLabel(localDate(2026, 6, 22)))
+    expect(events.period).toBe("all")
+    expect(events.total).toBe(2)
+    expect(events.items.map((event) => event.model)).toEqual([
+      "current-model",
+      "historical-model",
+    ])
+  })
+
+  test("keeps an all-history range valid when the only event is future dated", async () => {
+    setSystemTime(localDate(2026, 4, 16, 12))
+    recordTokenUsageEvent({
+      endpoint: "responses",
+      input_tokens: 10,
+      model: "future-model",
+      outcome: "completed",
+      source: "copilot",
+    })
+
+    setSystemTime(localDate(2026, 4, 15, 12))
+    const response = await createTokenUsageApp().request(
+      "/token-usage?period=all",
+    )
+    const summary = (await response.json()) as TokenUsageSummary
+    expect(summary.totals.request_count).toBe(0)
+    expect(summary.range.start_ms).toBe(localDate(2026, 4, 15, 0).getTime())
+    expect(summary.range.end_ms).toBe(localDate(2026, 4, 16, 0).getTime())
+    expect(summary.range.start_ms).toBeLessThan(summary.range.end_ms)
+  })
+
+  test("builds sparse multi-year all-history days without per-day database work", async () => {
+    setSystemTime(localDate(2021, 0, 1, 12))
+    recordTokenUsageEvent({
+      endpoint: "messages",
+      input_tokens: 1,
+      model: "historical-model",
+      outcome: "completed",
+      source: "copilot",
+    })
+
+    setSystemTime(localDate(2026, 0, 1, 12))
+    recordTokenUsageEvent({
+      endpoint: "responses",
+      input_tokens: 2,
+      model: "current-model",
+      outcome: "completed",
+      source: "copilot",
+    })
+
+    const response = await createTokenUsageApp().request(
+      "/token-usage/daily?period=all",
+    )
+    const daily = (await response.json()) as TokenUsageDailySummary
+    expect(daily.days.length).toBeGreaterThan(1_800)
+    expect(daily.days[0]?.date).toBe(localDateLabel(localDate(2021, 0, 1)))
+    expect(daily.days.at(-1)?.date).toBe(localDateLabel(localDate(2026, 0, 1)))
+    expect(daily.totals.request_count).toBe(2)
+  })
+
   test("returns daily token usage buckets by model with total tokens", async () => {
     setSystemTime(localDate(2026, 4, 8))
     recordTokenUsageEvent({

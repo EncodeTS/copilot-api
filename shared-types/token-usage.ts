@@ -7,8 +7,20 @@ export type TokenUsageEndpoint =
   | "provider_messages"
   | "responses"
 
-export const TOKEN_USAGE_PERIOD_VALUES = ["day", "week", "month"] as const
+export const TOKEN_USAGE_PERIOD_VALUES = [
+  "all",
+  "day",
+  "week",
+  "month",
+] as const
 export type TokenUsagePeriod = (typeof TOKEN_USAGE_PERIOD_VALUES)[number]
+
+export function isTokenUsagePeriod(value: unknown): value is TokenUsagePeriod {
+  return (
+    typeof value === "string"
+    && TOKEN_USAGE_PERIOD_VALUES.includes(value as TokenUsagePeriod)
+  )
+}
 
 export const TOKEN_USAGE_OUTCOME_VALUES = [
   "aborted",

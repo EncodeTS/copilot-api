@@ -27,6 +27,7 @@ import { PATHS } from "~/lib/paths"
 import { registerProcessCleanup } from "~/lib/process-cleanup"
 import {
   isSqliteRuntimeSupported,
+  iterateSqliteStatement,
   SqliteDbStore,
   type SqliteDatabase,
 } from "~/lib/sqlite"
@@ -448,9 +449,27 @@ async function flushTokenUsageEvents(): Promise<void> {
   }
 }
 
-function getPeriodRange(period: TokenUsagePeriod, now = new Date()) {
+function getPeriodRange(
+  period: TokenUsagePeriod,
+  now = new Date(),
+  earliestUsageMs?: number,
+) {
   const start = new Date(now)
   start.setHours(0, 0, 0, 0)
+
+  if (period === "all") {
+    if (earliestUsageMs !== undefined) {
+      start.setTime(Math.min(earliestUsageMs, now.getTime()))
+      start.setHours(0, 0, 0, 0)
+    }
+    const end = new Date(now)
+    end.setHours(0, 0, 0, 0)
+    end.setDate(end.getDate() + 1)
+    return {
+      endMs: end.getTime(),
+      startMs: start.getTime(),
+    }
+  }
 
   switch (period) {
     case "day": {
@@ -669,6 +688,20 @@ function nullableNumberFromRow(
   return typeof value === "number" && Number.isFinite(value) ? value : null
 }
 
+function getPeriodRangeForDatabase(
+  db: SqliteDatabase,
+  period: TokenUsagePeriod,
+) {
+  if (period !== "all") return getPeriodRange(period)
+  const row = db
+    .prepare(
+      "SELECT MIN(created_at_ms) AS earliest_usage_ms FROM token_usage_events",
+    )
+    .get() as Record<string, unknown> | undefined
+  const earliestUsageMs = nullableNumberFromRow(row, "earliest_usage_ms")
+  return getPeriodRange(period, new Date(), earliestUsageMs ?? undefined)
+}
+
 function createCost(currency: string, totalCostNanos: number): TokenUsageCost {
   return {
     amount: totalCostNanos / COST_NANOS_PER_UNIT,
@@ -779,28 +812,6 @@ function usageEventFromRow(
   }
 }
 
-function getTotalsRow(
-  db: SqliteDatabase,
-  range: { endMs: number; startMs: number },
-): Record<string, unknown> | undefined {
-  return db
-    .prepare(
-      `
-    SELECT
-      COUNT(*) AS request_count,
-      COALESCE(SUM(input_tokens), 0) AS input_tokens,
-      COALESCE(SUM(output_tokens), 0) AS output_tokens,
-      COALESCE(SUM(cache_read_input_tokens), 0) AS cache_read_input_tokens,
-      COALESCE(SUM(cache_creation_input_tokens), 0) AS cache_creation_input_tokens,
-      SUM(total_nano_aiu) AS total_nano_aiu,
-      COALESCE(SUM(total_tokens), 0) AS total_tokens
-    FROM token_usage_events
-    WHERE created_at_ms >= ? AND created_at_ms < ?
-  `,
-    )
-    .get(range.startMs, range.endMs) as Record<string, unknown> | undefined
-}
-
 function getModelRows(
   db: SqliteDatabase,
   range: { endMs: number; startMs: number },
@@ -826,34 +837,6 @@ function getModelRows(
   `,
     )
     .all(range.startMs, range.endMs) as Array<Record<string, unknown>>
-}
-
-function getCostRows(
-  db: SqliteDatabase,
-  range: { endMs: number; startMs: number },
-): Array<TokenUsageCost> {
-  const rows = db
-    .prepare(
-      `
-    SELECT
-      cost_currency,
-      COALESCE(SUM(total_cost_nanos), 0) AS total_cost_nanos
-    FROM token_usage_events
-    WHERE
-      created_at_ms >= ?
-      AND created_at_ms < ?
-      AND cost_currency IS NOT NULL
-      AND total_cost_nanos IS NOT NULL
-    GROUP BY cost_currency
-    ORDER BY cost_currency ASC
-  `,
-    )
-    .all(range.startMs, range.endMs) as Array<Record<string, unknown>>
-
-  return rows.flatMap((row) => {
-    const cost = costFromRow(row)
-    return cost ? [cost] : []
-  })
 }
 
 function getModelCostMap(
@@ -903,6 +886,101 @@ function getModelSummaries(
   })
 }
 
+function mergeModelSummaryGroups(
+  groups: Iterable<Array<TokenUsageModelSummary>>,
+): Array<TokenUsageModelSummary> {
+  const summariesByModel = new Map<string, TokenUsageModelSummary>()
+  for (const group of groups) {
+    for (const model of group) {
+      const summary = summariesByModel.get(model.model) ?? {
+        ...createEmptyTotals(),
+        model: model.model,
+      }
+      addTotals(summary, model)
+      summariesByModel.set(model.model, summary)
+    }
+  }
+  return [...summariesByModel.values()].sort(
+    (left, right) =>
+      right.total_tokens - left.total_tokens
+      || left.model.localeCompare(right.model),
+  )
+}
+
+function totalsFromModelSummaries(
+  byModel: Array<TokenUsageModelSummary>,
+): TokenUsageTotals {
+  const totals = createEmptyTotals()
+  for (const model of byModel) addTotals(totals, model)
+  return totals
+}
+
+function getAllTimeDailyModelSummaries(
+  db: SqliteDatabase,
+  range: { endMs: number; startMs: number },
+): Map<string, Array<TokenUsageModelSummary>> {
+  const statement = db.prepare(
+    `
+    SELECT
+      created_at_ms,
+      model,
+      input_tokens,
+      output_tokens,
+      cache_read_input_tokens,
+      cache_creation_input_tokens,
+      total_nano_aiu,
+      total_tokens,
+      cost_currency,
+      total_cost_nanos
+    FROM token_usage_events
+    WHERE created_at_ms >= ? AND created_at_ms < ?
+  `,
+  )
+  const rows = iterateSqliteStatement(statement, range.startMs, range.endMs)
+  const summariesByDateAndModel = new Map<
+    string,
+    Map<string, TokenUsageModelSummary>
+  >()
+  for (const value of rows) {
+    const row = value as Record<string, unknown>
+    const date = formatLocalDate(new Date(numberFromRow(row, "created_at_ms")))
+    const model = stringFromRow(row, "model") || "unknown"
+    const summariesByModel =
+      summariesByDateAndModel.get(date)
+      ?? new Map<string, TokenUsageModelSummary>()
+    const summary = summariesByModel.get(model) ?? {
+      ...createEmptyTotals(),
+      model,
+    }
+    const cost = costFromRow(row)
+    addTotals(summary, {
+      cache_creation_input_tokens: numberFromRow(
+        row,
+        "cache_creation_input_tokens",
+      ),
+      cache_read_input_tokens: numberFromRow(row, "cache_read_input_tokens"),
+      costs: cost ? [cost] : [],
+      input_tokens: numberFromRow(row, "input_tokens"),
+      output_tokens: numberFromRow(row, "output_tokens"),
+      request_count: 1,
+      total_nano_aiu: nullableNumberFromRow(row, "total_nano_aiu"),
+      total_tokens: numberFromRow(row, "total_tokens"),
+    })
+    summariesByModel.set(model, summary)
+    summariesByDateAndModel.set(date, summariesByModel)
+  }
+  return new Map(
+    [...summariesByDateAndModel].map(([date, summariesByModel]) => [
+      date,
+      [...summariesByModel.values()].sort(
+        (left, right) =>
+          right.total_tokens - left.total_tokens
+          || left.model.localeCompare(right.model),
+      ),
+    ]),
+  )
+}
+
 function createDailyBucket(
   interval: { date: string; endMs: number; startMs: number },
   byModel: Array<TokenUsageModelSummary>,
@@ -929,15 +1007,15 @@ export async function getTokenUsageSummary(
   }
 
   await flushTokenUsageEvents()
-  const range = getPeriodRange(period)
   const db = await getDb()
-  const totalsRow = getTotalsRow(db, range)
+  const range = getPeriodRangeForDatabase(db, period)
+  const byModel = getModelSummaries(db, range)
 
   return {
-    byModel: getModelSummaries(db, range),
+    byModel,
     period,
     range: rangePayload(range),
-    totals: totalsFromRow(totalsRow, getCostRows(db, range)),
+    totals: totalsFromModelSummaries(byModel),
   }
 }
 
@@ -949,18 +1027,29 @@ export async function getTokenUsageDailySummary(
   }
 
   await flushTokenUsageEvents()
-  const range = getPeriodRange(period)
   const db = await getDb()
+  const range = getPeriodRangeForDatabase(db, period)
   const intervals = createDailyIntervals(range)
+  const allTimeSummaries =
+    period === "all" ? getAllTimeDailyModelSummaries(db, range) : undefined
+  const byModel =
+    allTimeSummaries ?
+      mergeModelSummaryGroups(allTimeSummaries.values())
+    : getModelSummaries(db, range)
 
   return {
-    byModel: getModelSummaries(db, range),
+    byModel,
     days: intervals.map((interval) =>
-      createDailyBucket(interval, getModelSummaries(db, interval)),
+      createDailyBucket(
+        interval,
+        period === "all" ?
+          (allTimeSummaries?.get(interval.date) ?? [])
+        : getModelSummaries(db, interval),
+      ),
     ),
     period,
     range: rangePayload(range),
-    totals: totalsFromRow(getTotalsRow(db, range), getCostRows(db, range)),
+    totals: totalsFromModelSummaries(byModel),
   }
 }
 
@@ -974,11 +1063,11 @@ export async function getTokenUsageEventsPage(input: {
   }
 
   await flushTokenUsageEvents()
-  const range = getPeriodRange(input.period)
   const page = Math.max(1, Math.floor(input.page))
   const pageSize = Math.min(100, Math.max(1, Math.floor(input.pageSize)))
   const offset = (page - 1) * pageSize
   const db = await getDb()
+  const range = getPeriodRangeForDatabase(db, input.period)
 
   const totalRow = db
     .prepare(

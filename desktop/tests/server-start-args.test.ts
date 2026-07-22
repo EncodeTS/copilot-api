@@ -14,6 +14,7 @@ describe('Desktop server start policy', () => {
     const env = buildServerEnvironment({
       ANTHROPIC_API_KEY: 'provider-key-remains-available',
       COPILOT_API_HOME: '/tmp/copilot-home',
+      COPILOT_API_SQLITE_DB_PATH: '/tmp/copilot-home/copilot-api.sqlite',
       GH_TOKEN: secret,
       GITHUB_TOKEN: secret,
       NODE_ENV: 'development',
@@ -31,6 +32,7 @@ describe('Desktop server start policy', () => {
     expect(env).toMatchObject({
       ANTHROPIC_API_KEY: 'provider-key-remains-available',
       COPILOT_API_HOME: '/tmp/copilot-home',
+      COPILOT_API_SQLITE_DB_PATH: '/tmp/copilot-home/copilot-api.sqlite',
       NODE_ENV: 'production',
     })
     expect(env.GH_TOKEN).toBeUndefined()

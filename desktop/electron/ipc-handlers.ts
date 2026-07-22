@@ -54,10 +54,11 @@ import type {
   ServerAuthInfo,
   SettingsSaveResult,
 } from '../src/types/ipc'
-import type {
-  ModelMappingsConfigOutcome,
-  ModelMappingsRequestError,
-  ModelMappingsSaveOutcome,
+import {
+  isTokenUsagePeriod,
+  type ModelMappingsConfigOutcome,
+  type ModelMappingsRequestError,
+  type ModelMappingsSaveOutcome,
 } from '../../shared-types'
 import {
   readModelMappingsRequest,
@@ -66,6 +67,7 @@ import {
 import { buildServerLoopbackUrl } from './server-loopback'
 
 type ServerAuthScope = 'default' | 'admin'
+const TOKEN_USAGE_REQUEST_TIMEOUT_MS = 15_000
 
 interface IpcHandlersOptions {
   getEffectiveProxySettings?: (
@@ -431,15 +433,14 @@ export function registerIpcHandlers(
 
   ipcMain.handle('server:fetch-token-usage', async (_event, period: string) => {
     const port = serverRuntime.getPort()
-    const normalizedPeriod =
-      period === 'week' || period === 'month' ? period : 'day'
+    const normalizedPeriod = isTokenUsagePeriod(period) ? period : 'day'
     try {
       const headers = await getServerRequestHeaders()
       const res = await fetch(
         buildServerLoopbackUrl(port, `/token-usage?period=${normalizedPeriod}`),
         {
           headers,
-          signal: AbortSignal.timeout(5000),
+          signal: AbortSignal.timeout(TOKEN_USAGE_REQUEST_TIMEOUT_MS),
         },
       )
       if (!res.ok) return null
@@ -453,8 +454,7 @@ export function registerIpcHandlers(
     'server:fetch-token-usage-daily',
     async (_event, period: string) => {
       const port = serverRuntime.getPort()
-      const normalizedPeriod =
-        period === 'week' || period === 'month' ? period : 'day'
+      const normalizedPeriod = isTokenUsagePeriod(period) ? period : 'day'
       try {
         const headers = await getServerRequestHeaders()
         const res = await fetch(
@@ -464,7 +464,7 @@ export function registerIpcHandlers(
           ),
           {
             headers,
-            signal: AbortSignal.timeout(5000),
+            signal: AbortSignal.timeout(TOKEN_USAGE_REQUEST_TIMEOUT_MS),
           },
         )
         if (!res.ok) return null
@@ -479,8 +479,7 @@ export function registerIpcHandlers(
     'server:fetch-token-usage-events',
     async (_event, period: string, page: number, pageSize: number) => {
       const port = serverRuntime.getPort()
-      const normalizedPeriod =
-        period === 'week' || period === 'month' ? period : 'day'
+      const normalizedPeriod = isTokenUsagePeriod(period) ? period : 'day'
       const normalizedPage =
         Number.isFinite(page) && page > 0 ? Math.floor(page) : 1
       const normalizedPageSize =
@@ -499,7 +498,7 @@ export function registerIpcHandlers(
           ),
           {
             headers,
-            signal: AbortSignal.timeout(5000),
+            signal: AbortSignal.timeout(TOKEN_USAGE_REQUEST_TIMEOUT_MS),
           },
         )
         if (!res.ok) return null

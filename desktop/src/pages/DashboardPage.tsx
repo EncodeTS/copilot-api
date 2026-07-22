@@ -26,6 +26,10 @@ import { createDashboardRefreshOrchestrator } from '../lib/dashboard-refresh-con
 import { useDashboardLogFeed } from '../lib/dashboard-log-feed'
 import { createEffectLifecycleGuard } from '../lib/effect-lifecycle-guard'
 import { formatTokenCost, formatTokenCosts } from '../lib/token-usage-format'
+import {
+  readTokenUsagePeriodPreference,
+  writeTokenUsagePeriodPreference,
+} from '../lib/token-usage-period-preference'
 import ModelMappingsPage from './ModelMappingsPage'
 import type {
   DesktopAuthMode,
@@ -325,8 +329,9 @@ export default function DashboardPage({
   const [tokenUsageEvents, setTokenUsageEvents] =
     useState<TokenUsageEventsPage | null>(null)
   const [tokenUsageEventsPage, setTokenUsageEventsPage] = useState(1)
-  const [tokenUsagePeriod, setTokenUsagePeriod] =
-    useState<TokenUsagePeriod>('day')
+  const [tokenUsagePeriod, setTokenUsagePeriod] = useState<TokenUsagePeriod>(
+    readTokenUsagePeriodPreference,
+  )
   const [models, setModels] = useState<Model[]>([])
   const [serverAuthInfo, setServerAuthInfo] = useState<ServerAuthInfo>({
     enabled: false,
@@ -781,14 +786,18 @@ export default function DashboardPage({
           if (tokenUsageData) {
             setTokenUsage(tokenUsageData as TokenUsageSummary)
           }
-          if (tokenUsageDailyData) {
-            setTokenUsageDaily(tokenUsageDailyData as TokenUsageDailySummary)
-          }
+          setTokenUsageDaily(
+            tokenUsageDailyData ?
+              (tokenUsageDailyData as TokenUsageDailySummary)
+            : null,
+          )
         },
         load: () =>
           Promise.all([
             window.electronAPI.fetchTokenUsage(period),
-            window.electronAPI.fetchTokenUsageDaily(period),
+            period === 'all' ?
+              Promise.resolve(null)
+            : window.electronAPI.fetchTokenUsageDaily(period),
           ]),
         setLoading: setTokenUsageLoading,
       }),
@@ -811,6 +820,10 @@ export default function DashboardPage({
 
   const handleTokenUsagePeriodChange = (nextPeriod: TokenUsagePeriod) => {
     setTokenUsagePeriod(nextPeriod)
+    writeTokenUsagePeriodPreference(nextPeriod)
+    setTokenUsage(null)
+    setTokenUsageDaily(null)
+    setTokenUsageEvents(null)
     setTokenUsageEventsPage(1)
     if (started) void fetchTokenUsageData(nextPeriod, 1)
   }
@@ -1401,6 +1414,7 @@ function TokenUsagePanel({
   const [trendModel, setTrendModel] = useState(ALL_MODELS_VALUE)
   const totals = tokenUsage?.totals ?? EMPTY_TOKEN_USAGE_TOTALS
   const periods: Array<{ key: TokenUsagePeriod; label: string }> = [
+    { key: 'all', label: t('dashboard.tokenUsagePeriodAll') },
     { key: 'day', label: t('dashboard.tokenUsagePeriodDay') },
     { key: 'week', label: t('dashboard.tokenUsagePeriodWeek') },
     { key: 'month', label: t('dashboard.tokenUsagePeriodMonth') },
@@ -1420,7 +1434,7 @@ function TokenUsagePanel({
           {t('dashboard.tokenUsage')}
         </h3>
         <div className="flex flex-wrap items-center gap-2">
-          <div className="grid grid-cols-3 rounded-lg border border-line bg-sunken p-0.5">
+          <div className="grid grid-cols-4 rounded-lg border border-line bg-sunken p-0.5">
             {periods.map((item) => (
               <button
                 key={item.key}
@@ -1482,7 +1496,7 @@ function TokenUsagePanel({
         />
       </div>
 
-      {period !== 'day' && (
+      {period !== 'all' && period !== 'day' && (
         <TokenUsageTrendChart
           dailyUsage={dailyUsage}
           loading={loading}

@@ -163,6 +163,24 @@ function createDeferred<T>(): {
   }
 }
 
+function createMemoryStorage(): Storage {
+  const values = new Map<string, string>()
+  return {
+    get length() {
+      return values.size
+    },
+    clear: () => values.clear(),
+    getItem: (key) => values.get(key) ?? null,
+    key: (index) => [...values.keys()][index] ?? null,
+    removeItem: (key) => {
+      values.delete(key)
+    },
+    setItem: (key, value) => {
+      values.set(key, value)
+    },
+  }
+}
+
 async function clickDashboardButton(
   renderer: ReactTestRenderer,
   label: string,
@@ -620,7 +638,7 @@ describe('Dashboard log feed hook', () => {
         renderer.root
           .findAllByType('table')
           .map(renderedText)
-          .some((text) => text.includes('summary-day-model')),
+          .some((text) => text.includes('summary-all-model')),
       ).toBeTrue()
       expect(
         renderer.root
@@ -628,17 +646,17 @@ describe('Dashboard log feed hook', () => {
           .map(renderedText)
           .some(
             (text) =>
-              text.includes('event-day-page-1-model')
-              && text.includes('trace-day-1'),
+              text.includes('event-all-page-1-model')
+              && text.includes('trace-all-1'),
           ),
       ).toBeTrue()
-      expect(summaryPeriods).toEqual(['day'])
-      expect(dailyPeriods).toEqual(['day'])
-      expect(eventRequests).toEqual([{ page: 1, pageSize: 10, period: 'day' }])
+      expect(summaryPeriods).toEqual(['all'])
+      expect(dailyPeriods).toEqual([])
+      expect(eventRequests).toEqual([{ page: 1, pageSize: 10, period: 'all' }])
 
       await clickDashboardButton(renderer, '7 days')
-      expect(summaryPeriods).toEqual(['day', 'week'])
-      expect(dailyPeriods).toEqual(['day', 'week'])
+      expect(summaryPeriods).toEqual(['all', 'week'])
+      expect(dailyPeriods).toEqual(['week'])
       expect(eventRequests.at(-1)).toEqual({
         page: 1,
         pageSize: 10,
@@ -653,7 +671,7 @@ describe('Dashboard log feed hook', () => {
       expect(renderer.root.findAllByType('option').map(renderedText)).toContain(
         'daily-week-model',
       )
-      expect(renderedText(renderer.root)).not.toContain('summary-day-model')
+      expect(renderedText(renderer.root)).not.toContain('summary-all-model')
       expect(renderedText(renderer.root)).toContain('07/21')
 
       await clickDashboardButton(renderer, 'Next')
@@ -673,6 +691,89 @@ describe('Dashboard log feed hook', () => {
           ),
       ).toBeTrue()
       expect(renderedText(renderer.root)).not.toContain('trace-week-1')
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('Dashboard preserves the token usage period across a desktop remount', async () => {
+    const previousStorage = Object.getOwnPropertyDescriptor(
+      globalThis,
+      'localStorage',
+    )
+    const storage = createMemoryStorage()
+    const summaryPeriods: TokenUsageSummary['period'][] = []
+    const api = createRunningDashboardApi({
+      fetchTokenUsage: (period) => {
+        summaryPeriods.push(period)
+        return Promise.resolve(createTokenUsageSummary(period))
+      },
+    })
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: storage,
+      writable: true,
+    })
+
+    let firstMount: Awaited<ReturnType<typeof mountDashboard>> | undefined
+    let secondMount: Awaited<ReturnType<typeof mountDashboard>> | undefined
+    try {
+      firstMount = await mountDashboard(api)
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      await clickDashboardButton(firstMount.renderer, 'Token usage')
+      await clickDashboardButton(firstMount.renderer, '7 days')
+      firstMount.cleanup()
+      firstMount = undefined
+
+      summaryPeriods.length = 0
+      secondMount = await mountDashboard(api)
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      expect(summaryPeriods[0]).toBe('week')
+    } finally {
+      firstMount?.cleanup()
+      secondMount?.cleanup()
+      if (previousStorage) {
+        Object.defineProperty(globalThis, 'localStorage', previousStorage)
+      } else {
+        Reflect.deleteProperty(globalThis, 'localStorage')
+      }
+    }
+  })
+
+  test('Dashboard clears stale token usage when a new period cannot load', async () => {
+    const api = createRunningDashboardApi({
+      fetchTokenUsage: (period) =>
+        Promise.resolve(
+          period === 'all' ? createTokenUsageSummary(period) : null,
+        ),
+      fetchTokenUsageDaily: () => Promise.resolve(null),
+      fetchTokenUsageEvents: (period, page) =>
+        Promise.resolve(
+          period === 'all' ? createTokenUsageEvents(period, page) : null,
+        ),
+    })
+    const { cleanup, renderer } = await mountDashboard(api)
+
+    try {
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      await clickDashboardButton(renderer, 'Token usage')
+      expect(renderedText(renderer.root)).toContain('summary-all-model')
+
+      await clickDashboardButton(renderer, '7 days')
+      expect(renderedText(renderer.root)).not.toContain('summary-all-model')
+      expect(renderedText(renderer.root)).not.toContain(
+        'event-all-page-1-model',
+      )
     } finally {
       cleanup()
     }

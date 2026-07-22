@@ -39,6 +39,7 @@ export type {
   ModelMappingsValidationOutcome,
 } from "./model-mappings"
 export {
+  isTokenUsagePeriod,
   TOKEN_USAGE_ERROR_CODE_VALUES,
   TOKEN_USAGE_OUTCOME_VALUES,
   TOKEN_USAGE_PERIOD_VALUES,

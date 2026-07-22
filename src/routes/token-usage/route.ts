@@ -1,5 +1,7 @@
 import { Hono } from "hono"
 
+import { isTokenUsagePeriod } from "../../../shared-types"
+
 import {
   getTokenUsageDailySummary,
   getTokenUsageEventsPage,
@@ -9,13 +11,10 @@ import {
 
 export const tokenUsageRoute = new Hono()
 
-const periods = new Set<TokenUsagePeriod>(["day", "week", "month"])
 const DEFAULT_EVENTS_PAGE_SIZE = 20
 
 function parsePeriod(value: string | undefined): TokenUsagePeriod {
-  return periods.has(value as TokenUsagePeriod) ?
-      (value as TokenUsagePeriod)
-    : "day"
+  return isTokenUsagePeriod(value) ? value : "day"
 }
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {

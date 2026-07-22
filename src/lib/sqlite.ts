@@ -5,13 +5,14 @@ import {
   repairSqliteFilePermissions,
 } from "./file-protection"
 
-type SqliteValue = string | number | null
+export type SqliteValue = string | number | null
 
 export const MINIMUM_NODE_SQLITE_VERSION = "22.13.0"
 
 export interface SqliteStatement {
   all: (...values: Array<SqliteValue>) => Array<unknown>
   get: (...values: Array<SqliteValue>) => unknown
+  iterate?: (...values: Array<SqliteValue>) => IterableIterator<unknown>
   run: (...values: Array<SqliteValue>) => unknown
 }
 
@@ -19,6 +20,13 @@ export interface SqliteDatabase {
   close?: () => void
   exec: (sql: string) => unknown
   prepare: (sql: string) => SqliteStatement
+}
+
+export function iterateSqliteStatement(
+  statement: SqliteStatement,
+  ...values: Array<SqliteValue>
+): Iterable<unknown> {
+  return statement.iterate?.(...values) ?? statement.all(...values)
 }
 
 export interface OpenSqliteDatabaseOptions {
