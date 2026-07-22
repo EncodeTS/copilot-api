@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This is a Bun/TypeScript API gateway project. Core server and route code lives in `src/`, with shared utilities under `src/lib/`, provider integrations under `src/services/`, and HTTP routes under `src/routes/`. Tests are in `tests/` and follow the same feature names as the source modules they cover. Static web assets are in `pages/`; documentation and screenshots are in `docs/`. The Electron desktop app is isolated under `desktop/` with its own source, assets, and package files. Plugin scripts live in `plugin/` and are excluded from the root ESLint config.
+This is a Bun/TypeScript API gateway project. Core server and route code lives in `src/`, with shared utilities under `src/lib/`, provider integrations under `src/services/`, and HTTP routes under `src/routes/`. Tests are in `tests/` and follow the same feature names as the source modules they cover. Static web assets are in `pages/`. The Electron desktop app is isolated under `desktop/` with its own source, assets, and package files. Plugin scripts live in `plugin/` and are excluded from the root ESLint config.
 
 ## Build, Test, and Development Commands
 
