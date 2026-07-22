@@ -11,7 +11,7 @@ import tseslint from "typescript-eslint"
 const configDir = dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig(
-  { ignores: ["plugin/**", "desktop/**"] },
+  { ignores: ["plugin/**", "desktop/**", "scripts/**/*.mjs"] },
   { linterOptions: { reportUnusedDisableDirectives: "off" } },
   gitignore(),
   eslint.configs.recommended,
@@ -46,6 +46,7 @@ export default defineConfig(
       "prettier/prettier": [
         "error",
         {
+          endOfLine: "auto",
           experimentalOperatorPosition: "start",
           experimentalTernaries: true,
           plugins: ["prettier-plugin-packagejson"],

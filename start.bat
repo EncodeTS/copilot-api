@@ -14,7 +14,7 @@ echo Starting server...
 echo The usage viewer page will open automatically after the server starts
 echo.
 
-start "" "http://localhost:4141/usage-viewer?endpoint=http://localhost:4141/usage"
+start "" "http://127.0.0.1:4141/usage-viewer"
 bun run dev
 
 pause
