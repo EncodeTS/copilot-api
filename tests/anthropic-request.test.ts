@@ -3,6 +3,7 @@ import { z } from "zod"
 
 import type { AnthropicMessagesPayload } from "~/routes/messages/anthropic-types"
 import type { Model } from "~/services/copilot/get-models"
+import { HTTPError } from "~/lib/error"
 
 import { COMPACT_REQUEST } from "../src/lib/compact"
 import { state } from "../src/lib/state"
@@ -178,7 +179,7 @@ describe("Anthropic to OpenAI translation logic", () => {
     expect(isValidChatCompletionRequest(openAIPayload)).toBe(true)
   })
 
-  test("maps thinking budget within selected model limits", () => {
+  test("omits thinking budget when enabled thinking has no explicit budget", () => {
     const originalModels = state.models
     state.models = {
       object: "list",
@@ -198,6 +199,58 @@ describe("Anthropic to OpenAI translation logic", () => {
       const openAIPayload = translateToOpenAI(anthropicPayload)
 
       expect(openAIPayload.thinking_budget).toBeUndefined()
+    } finally {
+      state.models = originalModels
+    }
+  })
+
+  test("maps only enabled thinking with explicit budget to OpenAI thinking_budget", () => {
+    const originalModels = state.models
+    state.models = {
+      object: "list",
+      data: [createThinkingModel()],
+    }
+
+    try {
+      const enabledPayload = translateToOpenAI({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-thinking",
+        thinking: {
+          type: "enabled",
+          budget_tokens: 2048,
+        },
+      })
+      const overLimitPayload = translateToOpenAI({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-thinking",
+        thinking: {
+          type: "enabled",
+          budget_tokens: 4096,
+        },
+      })
+      const adaptivePayload = translateToOpenAI({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-thinking",
+        thinking: {
+          type: "adaptive",
+        },
+      })
+      const disabledPayload = translateToOpenAI({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "hello" }],
+        model: "gpt-thinking",
+        thinking: {
+          type: "disabled",
+        },
+      })
+
+      expect(enabledPayload.thinking_budget).toBe(2048)
+      expect(overLimitPayload.thinking_budget).toBe(3000)
+      expect(adaptivePayload.thinking_budget).toBeUndefined()
+      expect(disabledPayload.thinking_budget).toBeUndefined()
     } finally {
       state.models = originalModels
     }
@@ -649,6 +702,271 @@ describe("provider tool content support translation", () => {
         },
       ],
     })
+  })
+})
+
+describe("canonical non-stream media sources", () => {
+  test("maps file-backed documents to the official Chat file part", () => {
+    const payload = {
+      max_tokens: 128,
+      messages: [
+        {
+          content: [
+            {
+              source: { file_id: "file_document", type: "file" },
+              type: "document",
+            },
+          ],
+          role: "user",
+        },
+      ],
+      model: "gpt-test",
+    } satisfies AnthropicMessagesPayload
+
+    expect(translateToOpenAI(payload).messages).toEqual([
+      {
+        content: [{ file: { file_id: "file_document" }, type: "file" }],
+        role: "user",
+      },
+    ])
+  })
+
+  test("fails closed when Chat cannot express a canonical media source", async () => {
+    const cases: Array<{
+      expectedMessage: string
+      payload: AnthropicMessagesPayload
+    }> = [
+      {
+        expectedMessage:
+          "Chat Completions cannot express file-backed image inputs",
+        payload: {
+          max_tokens: 128,
+          messages: [
+            {
+              content: [
+                {
+                  source: { file_id: "file_image", type: "file" },
+                  type: "image",
+                },
+              ],
+              role: "user",
+            },
+          ],
+          model: "gpt-test",
+        },
+      },
+      {
+        expectedMessage:
+          "Chat Completions cannot express text or content document sources",
+        payload: {
+          max_tokens: 128,
+          messages: [
+            {
+              content: [
+                {
+                  source: {
+                    data: "document text",
+                    media_type: "text/plain",
+                    type: "text",
+                  },
+                  type: "document",
+                },
+              ],
+              role: "user",
+            },
+          ],
+          model: "gpt-test",
+        },
+      },
+      {
+        expectedMessage:
+          "Chat Completions cannot express text or content document sources",
+        payload: {
+          max_tokens: 128,
+          messages: [
+            {
+              content: [
+                {
+                  source: {
+                    content: [{ text: "document text", type: "text" }],
+                    type: "content",
+                  },
+                  type: "document",
+                },
+              ],
+              role: "user",
+            },
+          ],
+          model: "gpt-test",
+        },
+      },
+      {
+        expectedMessage: "Invalid Anthropic image source",
+        payload: {
+          max_tokens: 128,
+          messages: [
+            {
+              content: [{ source: {}, type: "image" }],
+              role: "user",
+            },
+          ],
+          model: "gpt-test",
+        } as unknown as AnthropicMessagesPayload,
+      },
+      {
+        expectedMessage: "Invalid Anthropic document source",
+        payload: {
+          max_tokens: 128,
+          messages: [
+            {
+              content: [{ source: {}, type: "document" }],
+              role: "user",
+            },
+          ],
+          model: "gpt-test",
+        } as unknown as AnthropicMessagesPayload,
+      },
+      {
+        expectedMessage: "Invalid Anthropic document source",
+        payload: {
+          max_tokens: 128,
+          messages: [
+            {
+              content: [
+                {
+                  source: { content: [null], type: "content" },
+                  type: "document",
+                },
+              ],
+              role: "user",
+            },
+          ],
+          model: "gpt-test",
+        } as unknown as AnthropicMessagesPayload,
+      },
+    ]
+
+    for (const { expectedMessage, payload } of cases) {
+      let thrown: unknown
+      try {
+        translateToOpenAI(payload)
+      } catch (error) {
+        thrown = error
+      }
+      expect(thrown).toBeInstanceOf(HTTPError)
+      const response = (thrown as HTTPError).response
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual({
+        error: {
+          message: expectedMessage,
+          type: "invalid_request_error",
+        },
+      })
+    }
+  })
+})
+
+describe("canonical non-stream tool-result content", () => {
+  test("rejects malformed content with a structured 400", async () => {
+    const malformedContents: Array<unknown> = [
+      null,
+      [null],
+      { text: "not an array", type: "text" },
+      [{ type: "text" }],
+      [{ type: "tool_reference" }],
+      [
+        {
+          source: { media_type: "image/png", type: "base64" },
+          type: "image",
+        },
+      ],
+      [
+        {
+          source: {
+            data: "AQID",
+            media_type: "application/pdf",
+            type: "base64",
+          },
+          type: "image",
+        },
+      ],
+      [{ source: { type: "file" }, type: "document" }],
+    ]
+
+    for (const content of malformedContents) {
+      const payload = {
+        max_tokens: 128,
+        messages: [
+          {
+            content: [
+              {
+                content,
+                tool_use_id: "tool_malformed",
+                type: "tool_result",
+              },
+            ],
+            role: "user",
+          },
+        ],
+        model: "gpt-test",
+      } as unknown as AnthropicMessagesPayload
+
+      let thrown: unknown
+      try {
+        translateToOpenAI(payload)
+      } catch (error) {
+        thrown = error
+      }
+
+      expect(thrown).toBeInstanceOf(HTTPError)
+      const response = (thrown as HTTPError).response
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual({
+        error: {
+          message:
+            "Anthropic tool_result content must be a string or an array of typed content blocks.",
+          type: "invalid_request_error",
+        },
+      })
+    }
+  })
+
+  test("preserves unknown typed blocks as JSON text", () => {
+    const payload = {
+      max_tokens: 128,
+      messages: [
+        {
+          content: [
+            {
+              content: [
+                {
+                  payload: { ok: true },
+                  score: 0.75,
+                  type: "future_result",
+                },
+              ],
+              tool_use_id: "tool_future",
+              type: "tool_result",
+            },
+          ],
+          role: "user",
+        },
+      ],
+      model: "gpt-test",
+    } satisfies AnthropicMessagesPayload
+
+    expect(translateToOpenAI(payload).messages).toEqual([
+      {
+        content: [
+          {
+            text: '{"payload":{"ok":true},"score":0.75,"type":"future_result"}',
+            type: "text",
+          },
+        ],
+        role: "tool",
+        tool_call_id: "tool_future",
+      },
+    ])
   })
 })
 

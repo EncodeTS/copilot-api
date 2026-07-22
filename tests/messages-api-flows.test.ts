@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test"
+import type { ConsolaInstance } from "consola"
 import { Hono } from "hono"
 
 import type {
@@ -6,6 +7,7 @@ import type {
   AnthropicResponse,
 } from "../src/routes/messages/anthropic-types"
 import type { Model } from "../src/services/copilot/get-models"
+import type { GatewayReasoningEffort } from "../src/lib/reasoning-effort"
 import type {
   ChatCompletionResponse,
   ChatCompletionsPayload,
@@ -17,8 +19,26 @@ import type {
   ResponsesResult,
   ResponsesTransport,
 } from "../src/services/copilot/create-responses"
+import type { ResponsesWireArtifact } from "../src/services/copilot/responses-wire-artifact"
+import type { SubagentMarker } from "../src/lib/subagent"
 
 import { COMPACT_REQUEST } from "../src/lib/compact"
+import { createMessagesResponseContext } from "../src/routes/messages/request-context"
+import { translateToOpenAI } from "../src/routes/messages/non-stream-translation"
+import {
+  normalizeSystemMessages,
+  prepareMessagesApiPayload,
+  sanitizeIdeTools,
+} from "../src/routes/messages/preprocess"
+import {
+  hasTrailingAssistantPrefill,
+  translateAnthropicMessagesToResponsesPayload,
+} from "../src/routes/messages/responses-translation"
+import {
+  applyResponsesApiContextManagement,
+  compactInputByLatestCompaction,
+  getResponsesTransportForModel,
+} from "../src/routes/responses/utils"
 import {
   closeUsageStore,
   getTokenUsageEventsPage,
@@ -27,16 +47,28 @@ import {
 const DB_PATH_ENV = "COPILOT_API_SQLITE_DB_PATH"
 
 let capturedPayload: ChatCompletionsPayload | null = null
+let capturedChatSignal: AbortSignal | undefined
 let capturedMessagesPayload: AnthropicMessagesPayload | null = null
+let capturedMessagesSignal: AbortSignal | undefined
 let capturedResponsesPayload: ResponsesPayload | null = null
 let capturedResponsesOptions: {
+  allowHttpFallback?: boolean
+  initiator?: "agent" | "user"
+  reasoningRecoverySessionId?: string
+  signal?: AbortSignal
+  subagentMarker?: SubagentMarker | null
   transport?: ResponsesTransport
+  wireArtifact?: ResponsesWireArtifact
 } | null = null
 let responsesApiWebSocketEnabled = true
 
 const createChatCompletions = mock(
-  (payload: ChatCompletionsPayload): Promise<ChatCompletionResponse> => {
+  (
+    payload: ChatCompletionsPayload,
+    options: { signal?: AbortSignal },
+  ): Promise<ChatCompletionResponse> => {
     capturedPayload = payload
+    capturedChatSignal = options.signal
     return Promise.resolve({
       id: "chatcmpl-test",
       object: "chat.completion",
@@ -57,8 +89,13 @@ const createChatCompletions = mock(
   },
 )
 const createMessages = mock(
-  (payload: AnthropicMessagesPayload): Promise<CreateMessagesReturn> => {
+  (
+    payload: AnthropicMessagesPayload,
+    _anthropicBeta: string | undefined,
+    options: { signal?: AbortSignal },
+  ): Promise<CreateMessagesReturn> => {
     capturedMessagesPayload = payload
+    capturedMessagesSignal = options.signal
     return Promise.resolve(createMessagesResult(payload.model))
   },
 )
@@ -66,7 +103,13 @@ const createResponses = mock(
   (
     payload: ResponsesPayload,
     options: {
+      allowHttpFallback?: boolean
+      initiator?: "agent" | "user"
+      reasoningRecoverySessionId?: string
+      signal?: AbortSignal
+      subagentMarker?: SubagentMarker | null
       transport?: ResponsesTransport
+      wireArtifact?: ResponsesWireArtifact
     },
   ): Promise<CreateResponsesReturn> => {
     capturedResponsesPayload = payload
@@ -76,9 +119,9 @@ const createResponses = mock(
 )
 
 const {
-  handleWithChatCompletions,
-  handleWithMessagesApi,
-  handleWithResponsesApi,
+  handlePreparedChatCompletions,
+  handlePreparedMessagesApi,
+  handlePreparedResponsesApi,
   messagesApiFlowDependencies,
   prepareCopilotChatCompletionsPayload,
 } = await import("../src/routes/messages/api-flows")
@@ -93,18 +136,139 @@ const logger = {
   debug: () => {},
   warn: () => {},
   error: () => {},
-} as unknown as Parameters<typeof handleWithChatCompletions>[2]["logger"]
+} as unknown as ConsolaInstance
 
 const createContext = () =>
   ({
-    json: (body: unknown) => Response.json(body),
-  }) as Parameters<typeof handleWithChatCompletions>[0]
+    json: (body: unknown, status?: number) =>
+      Response.json(body, { status: status ?? 200 }),
+  }) as Parameters<typeof handlePreparedChatCompletions>[0]
+
+const handleWithChatCompletions = (
+  c: Parameters<typeof handlePreparedChatCompletions>[0],
+  payload: AnthropicMessagesPayload,
+  options: Parameters<typeof handlePreparedChatCompletions>[2] & {
+    selectedModel?: Model
+  },
+) => {
+  const selectedModel = options.selectedModel ?? createModel([])
+  const sourcePayload = structuredClone(payload)
+  normalizeSystemMessages(sourcePayload)
+  sanitizeIdeTools(sourcePayload, { preserveExecuteCode: false })
+  const openAIPayload = translateToOpenAI(sourcePayload, {
+    validateReasoningEffort: true,
+    reasoningEffortSupport:
+      selectedModel.capabilities.supports.reasoning_effort,
+  })
+  prepareCopilotChatCompletionsPayload(openAIPayload)
+  return handlePreparedChatCompletions(c, sourcePayload, options, openAIPayload)
+}
+
+const handleWithMessagesApi = (
+  c: Parameters<typeof handlePreparedMessagesApi>[0],
+  payload: AnthropicMessagesPayload,
+  options: Parameters<typeof handlePreparedMessagesApi>[2] & {
+    selectedModel?: Model
+  },
+) => {
+  const selectedModel = options.selectedModel ?? createModel(["/v1/messages"])
+  const sourcePayload = structuredClone(payload)
+  normalizeSystemMessages(sourcePayload)
+  sanitizeIdeTools(sourcePayload, { preserveExecuteCode: true })
+  prepareMessagesApiPayload(sourcePayload, selectedModel)
+  return handlePreparedMessagesApi(c, sourcePayload, options)
+}
+
+const handleWithResponsesApi = (
+  c: Parameters<typeof handlePreparedResponsesApi>[0],
+  payload: AnthropicMessagesPayload,
+  options: Parameters<typeof handlePreparedResponsesApi>[2],
+) => {
+  const selectedModel = options.selectedModel ?? createModel(["/responses"])
+  if (hasTrailingAssistantPrefill(payload)) {
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          type: "error",
+          error: {
+            type: "invalid_request_error",
+            message:
+              "Assistant prefill is not supported by the Responses API bridge.",
+          },
+        }),
+        { status: 400 },
+      ),
+    )
+  }
+  const sourcePayload = structuredClone(payload)
+  normalizeSystemMessages(sourcePayload)
+  sanitizeIdeTools(sourcePayload, { preserveExecuteCode: true })
+  const responsesPayload =
+    translateAnthropicMessagesToResponsesPayload(sourcePayload)
+  const contextDecision = applyResponsesApiContextManagement(
+    responsesPayload,
+    selectedModel.capabilities.limits,
+    { source: "messages" },
+  )
+  if (contextDecision.shouldPruneInput) {
+    compactInputByLatestCompaction(responsesPayload)
+  }
+  const transport =
+    getResponsesTransportForModel(selectedModel, {
+      compactType: options.compactType,
+    }) ?? "http"
+  return handlePreparedResponsesApi(
+    c,
+    sourcePayload,
+    options,
+    responsesPayload,
+    transport,
+  )
+}
+
+test("messages Chat flow forwards the caller abort signal", async () => {
+  const controller = new AbortController()
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+  }
+
+  const response = await handleWithChatCompletions(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+    signal: controller.signal,
+  })
+
+  expect(response.status).toBe(200)
+  expect(capturedChatSignal).toBe(controller.signal)
+})
+
+test("messages native flow forwards the caller abort signal", async () => {
+  const controller = new AbortController()
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "claude-test",
+  }
+
+  const response = await handleWithMessagesApi(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+    signal: controller.signal,
+  })
+
+  expect(response.status).toBe(200)
+  expect(capturedMessagesSignal).toBe(controller.signal)
+})
 
 beforeEach(async () => {
   process.env[DB_PATH_ENV] = ":memory:"
   await closeUsageStore()
   capturedPayload = null
+  capturedChatSignal = undefined
   capturedMessagesPayload = null
+  capturedMessagesSignal = undefined
   capturedResponsesPayload = null
   capturedResponsesOptions = null
   responsesApiWebSocketEnabled = true
@@ -285,6 +449,28 @@ test("messages Chat Completions flow omits reasoning effort without model suppor
   expect(capturedPayload).not.toHaveProperty("reasoning_effort")
 })
 
+test("messages Chat Completions flow uses the lowest supported effort when thinking is disabled", async () => {
+  const payload: AnthropicMessagesPayload = {
+    model: "gemini-test",
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    thinking: {
+      type: "disabled",
+    },
+  }
+
+  const response = await handleWithChatCompletions(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+    selectedModel: createModel([], {
+      reasoningEffort: ["minimal", "low", "medium", "high"],
+    }),
+  })
+
+  expect(response.status).toBe(200)
+  expect(capturedPayload?.reasoning_effort).toBe("minimal")
+})
+
 test("Copilot Chat Completions payload preparation marks two system and latest non-system message", () => {
   const payload: ChatCompletionsPayload = {
     model: "gpt-test",
@@ -403,7 +589,7 @@ test("messages Messages flow records Copilot AIU from streaming message delta", 
   }
   const app = new Hono()
   app.post("/", (c) =>
-    handleWithMessagesApi(c, payload, {
+    handleWithMessagesApi(createMessagesResponseContext(c), payload, {
       logger,
       requestId: "request-1",
     }),
@@ -435,6 +621,521 @@ test("messages Messages flow records Copilot AIU from streaming message delta", 
     output_tokens: 93,
     total_nano_aiu: 4_119_900_000,
   })
+})
+
+test("messages Chat Completions flow preserves usage after metadata-only chunks", async () => {
+  createChatCompletions.mockResolvedValueOnce(
+    createMessagesStream([
+      {
+        data: JSON.stringify({
+          choices: [
+            {
+              delta: {},
+              finish_reason: "stop",
+              index: 0,
+              logprobs: null,
+            },
+          ],
+          created: 0,
+          id: "chatcmpl-metadata",
+          model: "gpt-test",
+          object: "chat.completion.chunk",
+        }),
+        event: "message",
+      },
+      {
+        data: JSON.stringify({
+          choices: [],
+          created: 0,
+          id: "chatcmpl-metadata",
+          model: "gpt-test",
+          object: "chat.completion.chunk",
+        }),
+        event: "message",
+      },
+      {
+        data: JSON.stringify({
+          choices: [],
+          created: 0,
+          id: "chatcmpl-metadata",
+          model: "gpt-test",
+          object: "chat.completion.chunk",
+          usage: {
+            completion_tokens: 174,
+            prompt_tokens: 8_544,
+            total_tokens: 8_718,
+          },
+        }),
+        event: "message",
+      },
+    ]) as unknown as ChatCompletionResponse,
+  )
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithChatCompletions(createMessagesResponseContext(c), payload, {
+      logger,
+      requestId: "request-metadata-usage",
+    }),
+  )
+
+  const body = await (await app.request("/", { method: "POST" })).text()
+
+  expect(body).toContain('"input_tokens":8544,"output_tokens":174')
+  expect(body.match(/event: message_delta/gu)).toHaveLength(1)
+  expect(body.match(/event: message_stop/gu)).toHaveLength(1)
+})
+
+test("messages Chat Completions flow flushes metadata-delayed completion at EOF", async () => {
+  createChatCompletions.mockResolvedValueOnce(
+    createMessagesStream([
+      {
+        data: JSON.stringify({
+          choices: [
+            {
+              delta: {},
+              finish_reason: "stop",
+              index: 0,
+              logprobs: null,
+            },
+          ],
+          created: 0,
+          id: "chatcmpl-metadata-eof",
+          model: "gpt-test",
+          object: "chat.completion.chunk",
+        }),
+        event: "message",
+      },
+      {
+        data: JSON.stringify({
+          choices: [],
+          created: 0,
+          id: "chatcmpl-metadata-eof",
+          model: "gpt-test",
+          object: "chat.completion.chunk",
+        }),
+        event: "message",
+      },
+    ]) as unknown as ChatCompletionResponse,
+  )
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithChatCompletions(createMessagesResponseContext(c), payload, {
+      logger,
+      requestId: "request-metadata-eof",
+    }),
+  )
+
+  const response = await app.request("/", { method: "POST" })
+  expect(response.status).toBe(200)
+  const body = await response.text()
+
+  expect(body).toContain(
+    'data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":0,"output_tokens":0}}',
+  )
+  expect(body.match(/event: message_delta/gu)).toHaveLength(1)
+  expect(body.match(/event: message_stop/gu)).toHaveLength(1)
+  expect(body).not.toContain("event: error")
+})
+
+test("messages Chat Completions flow does not stop before an error after metadata", async () => {
+  createChatCompletions.mockResolvedValueOnce(
+    createThrowingStream(
+      [
+        {
+          data: JSON.stringify({
+            choices: [
+              {
+                delta: {},
+                finish_reason: "stop",
+                index: 0,
+                logprobs: null,
+              },
+            ],
+            created: 0,
+            id: "chatcmpl-metadata-error",
+            model: "gpt-test",
+            object: "chat.completion.chunk",
+          }),
+          event: "message",
+        },
+        {
+          data: JSON.stringify({
+            choices: [],
+            created: 0,
+            id: "chatcmpl-metadata-error",
+            model: "gpt-test",
+            object: "chat.completion.chunk",
+          }),
+          event: "message",
+        },
+      ],
+      "metadata stream reset",
+    ) as unknown as ChatCompletionResponse,
+  )
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithChatCompletions(createMessagesResponseContext(c), payload, {
+      logger,
+      requestId: "request-metadata-error",
+    }),
+  )
+
+  const body = await (await app.request("/", { method: "POST" })).text()
+
+  expect(body).toContain("event: error")
+  expect(body).toContain("metadata stream reset")
+  expect(body).not.toContain("event: message_stop")
+})
+
+test("messages Chat Completions flow emits error event when upstream stream throws", async () => {
+  createChatCompletions.mockImplementationOnce(
+    (payload: ChatCompletionsPayload): Promise<ChatCompletionResponse> => {
+      capturedPayload = payload
+      return Promise.resolve(
+        createThrowingStream(
+          [],
+          "chat stream reset",
+        ) as unknown as ChatCompletionResponse,
+      )
+    },
+  )
+
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithChatCompletions(createMessagesResponseContext(c), payload, {
+      logger,
+      requestId: "request-1",
+    }),
+  )
+
+  const response = await app.request("/", { method: "POST" })
+  expect(response.status).toBe(200)
+  const body = await response.text()
+
+  expect(body).toContain("event: error")
+  expect(body).toContain(
+    "Upstream stream ended unexpectedly: chat stream reset",
+  )
+})
+
+test("messages Chat Completions flow emits one error event for streaming finish_reason error", async () => {
+  createChatCompletions.mockResolvedValueOnce(
+    createMessagesStream([
+      {
+        data: JSON.stringify({
+          choices: [
+            {
+              delta: {},
+              finish_reason: "error",
+              index: 0,
+              logprobs: null,
+            },
+          ],
+          created: 0,
+          id: "chatcmpl-stream-error",
+          model: "gpt-test",
+          object: "chat.completion.chunk",
+        }),
+        event: "message",
+      },
+    ]) as unknown as ChatCompletionResponse,
+  )
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithChatCompletions(createMessagesResponseContext(c), payload, {
+      logger,
+      requestId: "request-stream-error",
+    }),
+  )
+
+  const body = await (await app.request("/", { method: "POST" })).text()
+
+  expect(body).toContain("event: error")
+  expect(body).toContain(
+    "Chat Completions upstream ended with finish_reason=error",
+  )
+  expect(body.match(/event: error/gu)).toHaveLength(1)
+})
+
+test("messages Responses flow emits error event when upstream stream throws", async () => {
+  createResponses.mockImplementationOnce(
+    (
+      payload: ResponsesPayload,
+      options: { transport?: ResponsesTransport },
+    ): Promise<CreateResponsesReturn> => {
+      capturedResponsesPayload = payload
+      capturedResponsesOptions = options
+      return Promise.resolve(
+        createThrowingStream(
+          [],
+          "responses stream reset",
+        ) as unknown as CreateResponsesReturn,
+      )
+    },
+  )
+
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithResponsesApi(createMessagesResponseContext(c), payload, {
+      logger,
+      requestId: "request-1",
+      selectedModel: createModel(["/responses"]),
+    }),
+  )
+
+  const response = await app.request("/", { method: "POST" })
+  expect(response.status).toBe(200)
+  const body = await response.text()
+
+  expect(body).toContain("event: error")
+  expect(body).toContain(
+    "Upstream stream ended unexpectedly: responses stream reset",
+  )
+})
+
+test("messages Messages flow emits error event when upstream stream throws", async () => {
+  createMessages.mockImplementationOnce(
+    (payload: AnthropicMessagesPayload): Promise<CreateMessagesReturn> => {
+      capturedMessagesPayload = payload
+      return Promise.resolve(
+        createThrowingStream(
+          [],
+          "messages stream reset",
+        ) as unknown as CreateMessagesReturn,
+      )
+    },
+  )
+
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "claude-sonnet-4.6",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithMessagesApi(createMessagesResponseContext(c), payload, {
+      logger,
+      requestId: "request-1",
+    }),
+  )
+
+  const response = await app.request("/", { method: "POST" })
+  expect(response.status).toBe(200)
+  const body = await response.text()
+
+  expect(body).toContain("event: error")
+  expect(body).toContain(
+    "Upstream stream ended unexpectedly: messages stream reset",
+  )
+})
+
+test("messages Chat Completions flow emits error on clean EOF without terminal", async () => {
+  createChatCompletions.mockResolvedValueOnce(
+    createMessagesStream([]) as unknown as ChatCompletionResponse,
+  )
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithChatCompletions(createMessagesResponseContext(c), payload, {
+      logger,
+      requestId: "request-1",
+    }),
+  )
+
+  const body = await (await app.request("/", { method: "POST" })).text()
+  expect(body).toContain("event: error")
+  expect(body).toContain(
+    "Chat Completions stream ended without a terminal event",
+  )
+})
+
+test("messages Responses flow emits error on clean EOF without terminal", async () => {
+  createResponses.mockResolvedValueOnce(
+    createMessagesStream([]) as unknown as CreateResponsesReturn,
+  )
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithResponsesApi(createMessagesResponseContext(c), payload, {
+      logger,
+      requestId: "request-1",
+      selectedModel: createModel(["/responses"]),
+    }),
+  )
+
+  const body = await (await app.request("/", { method: "POST" })).text()
+  expect(body).toContain("event: error")
+  expect(body).toContain("Responses stream ended without completion")
+})
+
+test("messages Messages flow emits error on clean EOF without terminal", async () => {
+  createMessages.mockResolvedValueOnce(
+    createMessagesStream([]) as unknown as CreateMessagesReturn,
+  )
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "claude-sonnet-4.6",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithMessagesApi(createMessagesResponseContext(c), payload, {
+      logger,
+      requestId: "request-1",
+    }),
+  )
+
+  const body = await (await app.request("/", { method: "POST" })).text()
+  expect(body).toContain("event: error")
+  expect(body).toContain("Messages stream ended without a terminal event")
+})
+
+test("messages Responses flow ignores DONE before a typed terminal event", async () => {
+  const responseResult = createResponsesResult("gpt-test")
+  createResponses.mockResolvedValueOnce(
+    createMessagesStream([
+      { event: "", data: "[DONE]" },
+      {
+        event: "response.created",
+        data: JSON.stringify({
+          type: "response.created",
+          sequence_number: 0,
+          response: responseResult,
+        }),
+      },
+      {
+        event: "response.completed",
+        data: JSON.stringify({
+          type: "response.completed",
+          sequence_number: 1,
+          response: responseResult,
+        }),
+      },
+    ]) as unknown as CreateResponsesReturn,
+  )
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const app = new Hono()
+  app.post("/", (c) =>
+    handleWithResponsesApi(createMessagesResponseContext(c), payload, {
+      logger,
+      requestId: "request-1",
+      selectedModel: createModel(["/responses"]),
+    }),
+  )
+
+  const body = await (await app.request("/", { method: "POST" })).text()
+  expect(body).not.toContain("event: error")
+  expect(body).toContain("event: message_stop")
+})
+
+test("messages Responses flow emits one in-band error for failed terminals", async () => {
+  const failedResponse = {
+    ...createResponsesResult("gpt-test"),
+    status: "failed",
+    error: { code: "server_error", message: "model failed" },
+  }
+  const terminalEvents = [
+    {
+      event: "response.failed",
+      data: JSON.stringify({
+        type: "response.failed",
+        sequence_number: 1,
+        response: failedResponse,
+      }),
+    },
+    {
+      event: "error",
+      data: JSON.stringify({
+        type: "error",
+        sequence_number: 1,
+        code: "server_error",
+        message: "typed stream error",
+        param: null,
+      }),
+    },
+  ]
+
+  for (const terminalEvent of terminalEvents) {
+    createResponses.mockResolvedValueOnce(
+      createThrowingStream(
+        [terminalEvent],
+        "read past terminal",
+      ) as unknown as CreateResponsesReturn,
+    )
+    const payload: AnthropicMessagesPayload = {
+      max_tokens: 128,
+      messages: [{ role: "user", content: "hello" }],
+      model: "gpt-test",
+      stream: true,
+    }
+    const app = new Hono()
+    app.post("/", (c) =>
+      handleWithResponsesApi(createMessagesResponseContext(c), payload, {
+        logger,
+        requestId: "request-1",
+        selectedModel: createModel(["/responses"]),
+      }),
+    )
+
+    const body = await (await app.request("/", { method: "POST" })).text()
+    expect(body.match(/event: error/gu)).toHaveLength(1)
+    expect(body).not.toContain("Responses stream ended without completion")
+    expect(body).not.toContain("read past terminal")
+    expect(body).not.toContain("event: message_stop")
+  }
 })
 
 test("messages Messages flow records Copilot AIU from non-streaming response", async () => {
@@ -493,7 +1194,86 @@ test("messages Messages flow records Copilot AIU from non-streaming response", a
   })
 })
 
-test("messages Responses flow uses websocket transport by default for dual-endpoint models", async () => {
+test("messages Responses flow uses the actual HTTP transport when not streaming", async () => {
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+  }
+
+  const response = await handleWithResponsesApi(createContext(), payload, {
+    logger,
+    reasoningRecoverySessionId: "stable-session",
+    requestId: "request-1",
+    selectedModel: createModel(["/responses", "ws:/responses"]),
+  })
+
+  expect(response.status).toBe(200)
+  expect(createResponses).toHaveBeenCalledTimes(1)
+  expect(capturedResponsesOptions?.transport).toBe("http")
+  expect(capturedResponsesOptions?.reasoningRecoverySessionId).toBe(
+    "stable-session",
+  )
+  expect(capturedResponsesOptions?.allowHttpFallback).toBe(false)
+})
+
+test("messages Responses flow maps disabled thinking to effort none", async () => {
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    thinking: {
+      type: "disabled",
+    },
+  }
+
+  const response = await handleWithResponsesApi(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+    selectedModel: createModel(["/responses"]),
+  })
+
+  expect(response.status).toBe(200)
+  expect(capturedResponsesPayload?.reasoning?.effort).toBe("none")
+})
+
+test("messages Responses flow rejects assistant prefill before dispatch", async () => {
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [
+      { role: "user", content: "Return JSON" },
+      { role: "assistant", content: '{"value":' },
+    ],
+    model: "gpt-test",
+  }
+
+  const response = await handleWithResponsesApi(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+    selectedModel: createModel(["/responses"]),
+  })
+
+  expect(response.status).toBe(400)
+  expect(createResponses).not.toHaveBeenCalled()
+  expect(await response.json()).toEqual({
+    type: "error",
+    error: {
+      type: "invalid_request_error",
+      message:
+        "Assistant prefill is not supported by the Responses API bridge.",
+    },
+  })
+})
+
+test("messages Responses flow returns an error for a failed result", async () => {
+  createResponses.mockResolvedValueOnce({
+    ...createResponsesResult("gpt-test"),
+    status: "failed",
+    error: {
+      code: "server_error",
+      message: "model failed",
+    },
+  })
   const payload: AnthropicMessagesPayload = {
     max_tokens: 128,
     messages: [{ role: "user", content: "hello" }],
@@ -503,12 +1283,56 @@ test("messages Responses flow uses websocket transport by default for dual-endpo
   const response = await handleWithResponsesApi(createContext(), payload, {
     logger,
     requestId: "request-1",
-    selectedModel: createModel(["/responses", "ws:/responses"]),
+    selectedModel: createModel(["/responses"]),
   })
 
-  expect(response.status).toBe(200)
-  expect(createResponses).toHaveBeenCalledTimes(1)
-  expect(capturedResponsesOptions?.transport).toBe("websocket")
+  expect(response.status).toBe(502)
+  expect(await response.json()).toEqual({
+    type: "error",
+    error: {
+      type: "api_error",
+      message: "model failed",
+    },
+  })
+})
+
+test("messages Chat Completions flow returns an error for finish_reason error", async () => {
+  createChatCompletions.mockResolvedValueOnce({
+    id: "chatcmpl-error",
+    object: "chat.completion",
+    created: 0,
+    model: "gemini-test",
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: "",
+        },
+        finish_reason: "error",
+        logprobs: null,
+      },
+    ],
+  })
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gemini-test",
+  }
+
+  const response = await handleWithChatCompletions(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+  })
+
+  expect(response.status).toBe(502)
+  expect(await response.json()).toEqual({
+    type: "error",
+    error: {
+      type: "api_error",
+      message: "Chat Completions upstream ended with finish_reason=error",
+    },
+  })
 })
 
 test("messages Responses flow adds context management by default", async () => {
@@ -529,12 +1353,12 @@ test("messages Responses flow adds context management by default", async () => {
   expect(capturedResponsesPayload?.context_management).toEqual([
     {
       type: "compaction",
-      compact_threshold: 108800,
+      compact_threshold: 96000,
     },
   ])
 })
 
-test("messages Responses flow disables context management for gpt-5.6 models", async () => {
+test("messages Responses flow applies configured context management to gpt-5.6 models", async () => {
   const payload: AnthropicMessagesPayload = {
     max_tokens: 128,
     messages: [{ role: "user", content: "hello" }],
@@ -549,7 +1373,12 @@ test("messages Responses flow disables context management for gpt-5.6 models", a
 
   expect(response.status).toBe(200)
   expect(createResponses).toHaveBeenCalledTimes(1)
-  expect(capturedResponsesPayload?.context_management).toBeUndefined()
+  expect(capturedResponsesPayload?.context_management).toEqual([
+    {
+      type: "compaction",
+      compact_threshold: 96000,
+    },
+  ])
 })
 
 test("messages Responses flow keeps HTTP transport for dual-endpoint models when websocket is disabled", async () => {
@@ -608,6 +1437,55 @@ test("messages Responses flow keeps HTTP transport for /responses-only models", 
   expect(capturedResponsesOptions?.transport).toBe("http")
 })
 
+test("messages Responses non-stream flow suppresses reasoning when thinking is disabled", async () => {
+  createResponses.mockImplementationOnce((payload, options) => {
+    capturedResponsesPayload = payload
+    capturedResponsesOptions = options
+    return Promise.resolve({
+      ...createResponsesResult(payload.model),
+      output: [
+        {
+          id: "reasoning-1",
+          type: "reasoning",
+          summary: [{ type: "summary_text", text: "hidden reasoning" }],
+          encrypted_content: "opaque-carrier",
+          status: "completed",
+        },
+        {
+          id: "message-1",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [
+            {
+              type: "output_text",
+              text: "visible answer",
+              annotations: [],
+            },
+          ],
+        },
+      ],
+      output_text: "visible answer",
+    })
+  })
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    thinking: { type: "disabled" },
+  }
+
+  const response = await handleWithResponsesApi(createContext(), payload, {
+    logger,
+    requestId: "request-1",
+    selectedModel: createModel(["/responses"]),
+  })
+
+  expect(response.status).toBe(200)
+  const body = (await response.json()) as AnthropicResponse
+  expect(body.content).toEqual([{ type: "text", text: "visible answer" }])
+})
+
 test("messages Responses flow keeps streaming transport for deferred tool search", async () => {
   const payload: AnthropicMessagesPayload = {
     max_tokens: 128,
@@ -637,6 +1515,35 @@ test("messages Responses flow keeps streaming transport for deferred tool search
   expect(createResponses).toHaveBeenCalledTimes(1)
   expect(capturedResponsesPayload?.stream).toBe(true)
   expect(capturedResponsesOptions?.transport).toBe("websocket")
+})
+
+test("messages Responses flow admits subagent websocket initiator once", async () => {
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+    stream: true,
+  }
+  const subagentMarker: SubagentMarker = {
+    agent_id: "synthetic-agent",
+    agent_type: "review",
+    session_id: "synthetic-session",
+  }
+
+  const response = await handleWithResponsesApi(createContext(), payload, {
+    logger,
+    requestId: "request-subagent-initiator",
+    selectedModel: createModel(["/responses", "ws:/responses"]),
+    subagentMarker,
+  })
+
+  expect(response.status).toBe(200)
+  expect(capturedResponsesOptions?.initiator).toBe("agent")
+  expect(capturedResponsesOptions?.subagentMarker).toEqual(subagentMarker)
+  const frame = JSON.parse(
+    capturedResponsesOptions?.wireArtifact?.websocketFrame ?? "{}",
+  ) as { initiator?: string }
+  expect(frame.initiator).toBe("agent")
 })
 
 test("messages Responses flow preserves the configured tool_search alias in non-streaming responses", async () => {
@@ -712,7 +1619,7 @@ test("messages Responses flow preserves the configured tool_search alias in non-
 
 const createModel = (
   supportedEndpoints: Array<string>,
-  options: { reasoningEffort?: Array<string> } = {},
+  options: { reasoningEffort?: Array<GatewayReasoningEffort> } = {},
 ): Model => ({
   capabilities: {
     family: "gpt",
@@ -758,6 +1665,17 @@ async function* createMessagesStream(
     await Promise.resolve()
     yield event
   }
+}
+
+async function* createThrowingStream<T>(
+  events: Array<T>,
+  message: string,
+): AsyncGenerator<T> {
+  for (const event of events) {
+    await Promise.resolve()
+    yield event
+  }
+  throw new Error(message)
 }
 
 const createResponsesResult = (model: string): ResponsesResult => ({

@@ -12,39 +12,32 @@ import {
 } from "~/lib/compact"
 import { getReasoningEffortForModel } from "~/lib/config"
 import { normalizeSdkModelId } from "~/lib/models"
+import {
+  normalizeGatewayReasoningEffort,
+  normalizeMessageReasoningEffort,
+  type GatewayReasoningEffort,
+} from "~/lib/reasoning-effort"
 
 import type {
-  AnthropicAssistantContentBlock,
   AnthropicCacheControl,
-  AnthropicDocumentBlock,
-  AnthropicImageBlock,
   AnthropicInputMessage,
   AnthropicMessage,
   AnthropicMessagesPayload,
   AnthropicTextBlock,
-  AnthropicToolResultBlock,
-  AnthropicToolResultContentBlock,
-  AnthropicUserContentBlock,
   AnthropicUserMessage,
 } from "./anthropic-types"
+import { isOpenAIReasoningCarrierSignature } from "./reasoning-carrier"
 
-export const TOOL_REFERENCE_TURN_BOUNDARY = "Tool loaded."
 const SYSTEM_REMINDER_START = "<system-reminder>"
 const SYSTEM_REMINDER_END = "</system-reminder>"
 const SUBAGENT_START_HOOK_ADDITIONAL_PREFIX = "SubagentStart hook additional"
 
-const IDE_EXECUTE_CODE_TOOL = "mcp__ide__executeCode"
+export const IDE_EXECUTE_CODE_TOOL = "mcp__ide__executeCode"
 const IDE_GET_DIAGNOSTICS_TOOL = "mcp__ide__getDiagnostics"
 const IDE_GET_DIAGNOSTICS_DESCRIPTION =
   "Get language diagnostics from VS Code. Returns errors, warnings, information, and hints for files in the workspace."
-const PDF_FILE_READ_PREFIX = "PDF file read:"
 const CLAUDE_CODE_BILLING_HEADER_PREFIX = "x-anthropic-billing-header:"
 const CLAUDE_CODE_CCH_SEGMENT_PATTERN = /(^|;\s*)cch=[^;]+;/u
-
-type AnthropicAttachmentBlock = AnthropicImageBlock | AnthropicDocumentBlock
-type AnthropicMessageContentBlock =
-  | AnthropicUserContentBlock
-  | AnthropicAssistantContentBlock
 
 const createTextBlock = (text: string): AnthropicTextBlock => ({
   type: "text",
@@ -246,58 +239,13 @@ const shouldSummarizeThinkingDisplayForModel = (model: string): boolean => {
   return Boolean(normalized && isVersionAtLeast(normalized.version, 4, 7))
 }
 
-type IndexedAttachment = {
-  attachment: AnthropicAttachmentBlock
-  order: number
-}
-
-const getBlockCacheControl = (
-  block: AnthropicMessageContentBlock | undefined,
-): AnthropicCacheControl | undefined => {
-  if (!block || block.type === "thinking") {
-    return undefined
-  }
-
-  const cacheControl = block.cache_control
-  if (!cacheControl || typeof cacheControl !== "object") {
-    return
-  }
-
-  return cacheControl
-}
-
-export const getLastMessageContentCacheControl = (
-  lastMessage: AnthropicInputMessage | undefined,
-): AnthropicCacheControl | undefined => {
-  if (!lastMessage || !Array.isArray(lastMessage.content)) {
-    return undefined
-  }
-
-  const cacheControl = getBlockCacheControl(lastMessage.content.at(-1))
-  return cacheControl ? { ...cacheControl } : undefined
-}
-
-// Apply the original last message tail's cache_control to the rewritten tail. If
-// the original tail was not marked, fall back to a default ephemeral marker.
-export const applyLastMessageCacheControl = (
-  anthropicPayload: AnthropicMessagesPayload,
-  lastMessageCacheControl: AnthropicCacheControl | undefined,
-): void => {
-  const cacheControl = lastMessageCacheControl ?? {
-    type: "ephemeral",
-  }
-
-  const lastMessage = anthropicPayload.messages.at(-1)
-  if (!lastMessage || !Array.isArray(lastMessage.content)) {
-    return
-  }
-
-  const lastBlock = lastMessage.content.at(-1)
-  if (!lastBlock || lastBlock.type === "thinking" || lastBlock.cache_control) {
-    return
-  }
-
-  lastBlock.cache_control = { ...cacheControl }
+const shouldUseAdaptiveThinkingForModel = (model: string): boolean => {
+  const normalized = normalizeSdkModelId(model)
+  return Boolean(
+    normalized
+      && normalized.family === "opus"
+      && isVersionAtLeast(normalized.version, 4, 7),
+  )
 }
 
 const getCompactCandidateText = (message: AnthropicInputMessage): string => {
@@ -378,371 +326,22 @@ export const getCompactType = (
   return 0
 }
 
-const mergeContentWithText = (
-  tr: AnthropicToolResultBlock,
-  textBlock: AnthropicTextBlock,
-): AnthropicToolResultBlock => {
-  if (typeof tr.content === "string") {
-    return { ...tr, content: `${tr.content}\n\n${textBlock.text}` }
-  }
-  // Unable to merge, discard other text blocks, wait for the next round of re-request
-  if (hasToolRef(tr)) {
-    return tr
-  }
-  return {
-    ...tr,
-    content: [...tr.content, stripContentBlockCacheControl(textBlock)],
-  }
-}
-
-const mergeContentWithTexts = (
-  tr: AnthropicToolResultBlock,
-  textBlocks: Array<AnthropicTextBlock>,
-): AnthropicToolResultBlock => {
-  if (typeof tr.content === "string") {
-    const appendedTexts = textBlocks.map((tb) => tb.text).join("\n\n")
-    return { ...tr, content: `${tr.content}\n\n${appendedTexts}` }
-  }
-  // Unable to merge, discard other text blocks, wait for the next round of re-request
-  if (hasToolRef(tr)) {
-    return tr
-  }
-  return {
-    ...tr,
-    content: [...tr.content, ...textBlocks.map(stripContentBlockCacheControl)],
-  }
-}
-
-const mergeContentWithAttachments = (
-  tr: AnthropicToolResultBlock,
-  attachments: Array<AnthropicAttachmentBlock>,
-): AnthropicToolResultBlock => {
-  const cleanAttachments = attachments.map(stripContentBlockCacheControl)
-
-  if (typeof tr.content === "string") {
-    return {
-      ...tr,
-      content: [{ type: "text", text: tr.content }, ...cleanAttachments],
-    }
-  }
-
-  return {
-    ...tr,
-    content: [...tr.content, ...cleanAttachments],
-  }
-}
-
-const stripContentBlockCacheControl = <
-  T extends AnthropicToolResultContentBlock,
->(
-  block: T,
-): T => {
-  if (!Object.hasOwn(block, "cache_control")) {
-    return block
-  }
-
-  const copy = { ...block }
-  delete copy.cache_control
-  return copy
-}
-
-const isAttachmentBlock = (
-  block: AnthropicUserContentBlock,
-): block is AnthropicAttachmentBlock => {
-  return block.type === "image" || block.type === "document"
-}
-
-const getMergeableToolResultIndices = (
-  toolResults: Array<AnthropicToolResultBlock>,
-): Array<number> => {
-  return toolResults.flatMap((block, index) =>
-    block.is_error || hasToolRef(block) ? [] : [index],
-  )
-}
-
-const mergeAttachmentsIntoToolResults = (
-  toolResults: Array<AnthropicToolResultBlock>,
-  attachmentsByToolResultIndex: Map<number, Array<IndexedAttachment>>,
-): Array<AnthropicToolResultBlock> => {
-  if (attachmentsByToolResultIndex.size === 0) {
-    return toolResults
-  }
-
-  return toolResults.map((block, index) => {
-    const matchedAttachments = attachmentsByToolResultIndex.get(index)
-    if (!matchedAttachments) {
-      return block
-    }
-
-    const orderedAttachments = [...matchedAttachments]
-      .sort((left, right) => left.order - right.order)
-      .map(({ attachment }) => attachment)
-
-    return mergeContentWithAttachments(block, orderedAttachments)
-  })
-}
-
-const assignAttachmentsToToolResults = (
-  target: Map<number, Array<IndexedAttachment>>,
-  attachments: Array<IndexedAttachment>,
-  options: {
-    toolResultIndices: Array<number>
-    fallbackToolResultIndices?: Array<number>
-  },
+// Align IDE metadata with VS Code Copilot while allowing native Messages
+// callers to preserve executeCode when the upstream model supports it.
+export const sanitizeIdeTools = (
+  payload: AnthropicMessagesPayload,
+  options: { preserveExecuteCode?: boolean } = {},
 ): void => {
-  const { toolResultIndices } = options
-  const fallbackToolResultIndices =
-    options.fallbackToolResultIndices ?? toolResultIndices
-
-  if (attachments.length === 0) {
-    return
-  }
-
-  if (
-    toolResultIndices.length > 0
-    && toolResultIndices.length === attachments.length
-  ) {
-    for (const [index, toolResultIndex] of toolResultIndices.entries()) {
-      const currentAttachments = target.get(toolResultIndex)
-      if (currentAttachments) {
-        currentAttachments.push(attachments[index])
-        continue
-      }
-
-      target.set(toolResultIndex, [attachments[index]])
-    }
-    return
-  }
-
-  const lastToolResultIndex = fallbackToolResultIndices.at(-1)
-  if (lastToolResultIndex === undefined) {
-    return
-  }
-
-  const currentAttachments = target.get(lastToolResultIndex)
-  if (currentAttachments) {
-    currentAttachments.push(...attachments)
-    return
-  }
-
-  target.set(lastToolResultIndex, [...attachments])
-}
-
-const startsWithPdfFileRead = (
-  toolResult: AnthropicToolResultBlock,
-): boolean => {
-  if (typeof toolResult.content === "string") {
-    return toolResult.content.startsWith(PDF_FILE_READ_PREFIX)
-  }
-
-  if (toolResult.content.some((block) => block.type === "document")) {
-    return false
-  }
-
-  if (toolResult.content.length === 0) {
-    return false
-  }
-
-  const firstBlock = toolResult.content[0]
-  if (firstBlock.type !== "text") {
-    return false
-  }
-
-  return firstBlock.text.startsWith(PDF_FILE_READ_PREFIX)
-}
-
-const collectMergeableUserContent = (
-  content: Array<AnthropicUserContentBlock>,
-): {
-  toolResults: Array<AnthropicToolResultBlock>
-  textBlocks: Array<AnthropicTextBlock>
-  attachments: Array<IndexedAttachment>
-} | null => {
-  const toolResults: Array<AnthropicToolResultBlock> = []
-  const textBlocks: Array<AnthropicTextBlock> = []
-  const attachments: Array<IndexedAttachment> = []
-
-  for (const [order, block] of content.entries()) {
-    if (block.type === "tool_result") {
-      toolResults.push(block)
-      continue
-    }
-    if (block.type === "text") {
-      textBlocks.push(block)
-      continue
-    }
-    if (isAttachmentBlock(block)) {
-      attachments.push({ attachment: block, order })
-      continue
-    }
-
-    return null
-  }
-
-  return {
-    toolResults,
-    textBlocks,
-    attachments,
-  }
-}
-
-const mergeAttachmentsForToolResults = (
-  toolResults: Array<AnthropicToolResultBlock>,
-  attachments: Array<IndexedAttachment>,
-): Array<AnthropicToolResultBlock> => {
-  if (attachments.length === 0) {
-    return toolResults
-  }
-
-  const documentBlocks = attachments.filter(
-    ({ attachment }) => attachment.type === "document",
-  )
-  const mergeableToolResultIndices = getMergeableToolResultIndices(toolResults)
-  const pdfReadToolResultIndices = mergeableToolResultIndices.filter((index) =>
-    startsWithPdfFileRead(toolResults[index]),
-  )
-
-  const attachmentsByToolResultIndex = new Map<
-    number,
-    Array<IndexedAttachment>
-  >()
-  let remainingAttachments = attachments
-  let countMatchToolResultIndices = mergeableToolResultIndices
-
-  // Match PDF read tool results and documents in order first, then leave any
-  // unmatched documents to the generic fallback path below.
-  if (documentBlocks.length > 0 && pdfReadToolResultIndices.length > 0) {
-    const matchedDocumentCount = Math.min(
-      pdfReadToolResultIndices.length,
-      documentBlocks.length,
-    )
-    const matchedDocuments = documentBlocks.slice(0, matchedDocumentCount)
-    const matchedDocumentOrders = new Set(
-      matchedDocuments.map(({ order }) => order),
-    )
-    const matchedPdfToolResultIndices = pdfReadToolResultIndices.slice(
-      0,
-      matchedDocumentCount,
-    )
-    const matchedPdfToolResultIndexSet = new Set(matchedPdfToolResultIndices)
-
-    assignAttachmentsToToolResults(
-      attachmentsByToolResultIndex,
-      matchedDocuments,
-      {
-        toolResultIndices: matchedPdfToolResultIndices,
-      },
-    )
-    countMatchToolResultIndices = mergeableToolResultIndices.filter(
-      (index) => !matchedPdfToolResultIndexSet.has(index),
-    )
-    remainingAttachments = attachments.filter(
-      ({ attachment, order }) =>
-        attachment.type !== "document" || !matchedDocumentOrders.has(order),
-    )
-  }
-
-  // Everything else keeps the existing count-match / last-tool-result fallback.
-  assignAttachmentsToToolResults(
-    attachmentsByToolResultIndex,
-    remainingAttachments,
-    {
-      toolResultIndices: countMatchToolResultIndices,
-      fallbackToolResultIndices: mergeableToolResultIndices,
-    },
-  )
-
-  return mergeAttachmentsIntoToolResults(
-    toolResults,
-    attachmentsByToolResultIndex,
-  )
-}
-
-const mergeUserMessageContent = (
-  content: Array<AnthropicUserContentBlock>,
-): Array<AnthropicUserContentBlock> | null => {
-  const mergeableContent = collectMergeableUserContent(content)
-  if (!mergeableContent) {
-    return null
-  }
-
-  const { toolResults, textBlocks, attachments } = mergeableContent
-  if (
-    toolResults.length === 0
-    || (textBlocks.length === 0 && attachments.length === 0)
-  ) {
-    return null
-  }
-
-  const mergedToolResults =
-    textBlocks.length === 0 ?
-      toolResults
-    : mergeToolResult(toolResults, textBlocks)
-
-  return mergeAttachmentsForToolResults(mergedToolResults, attachments)
-}
-
-const mergeToolResult = (
-  toolResults: Array<AnthropicToolResultBlock>,
-  textBlocks: Array<AnthropicTextBlock>,
-): Array<AnthropicToolResultBlock> => {
-  if (toolResults.length === textBlocks.length) {
-    return toolResults.map((tr, i) => mergeContentWithText(tr, textBlocks[i]))
-  }
-
-  const lastIndex = toolResults.length - 1
-  return toolResults.map((tr, i) =>
-    i === lastIndex ? mergeContentWithTexts(tr, textBlocks) : tr,
-  )
-}
-
-export const stripToolReferenceTurnBoundary = (
-  anthropicPayload: AnthropicMessagesPayload,
-): void => {
-  for (const msg of anthropicPayload.messages) {
-    if (msg.role !== "user" || !Array.isArray(msg.content)) continue
-
-    const hasToolReference = msg.content.some(
-      (block) => block.type === "tool_result" && hasToolRef(block),
-    )
-    if (!hasToolReference) continue
-
-    msg.content = msg.content.filter(
-      (block) =>
-        block.type !== "text"
-        || block.text.trim() !== TOOL_REFERENCE_TURN_BOUNDARY,
-    )
-  }
-}
-
-export const mergeToolResultForClaude = (
-  anthropicPayload: AnthropicMessagesPayload,
-  options?: {
-    skipLastMessage?: boolean
-  },
-): void => {
-  const lastMessageIndex = anthropicPayload.messages.length - 1
-
-  for (const [index, msg] of anthropicPayload.messages.entries()) {
-    if (options?.skipLastMessage && index === lastMessageIndex) continue
-
-    if (msg.role !== "user" || !Array.isArray(msg.content)) continue
-
-    const mergedContent = mergeUserMessageContent(msg.content)
-    if (mergedContent) {
-      msg.content = mergedContent
-    }
-  }
-}
-
-// align with vscode copilot claude agent tools
-export const sanitizeIdeTools = (payload: AnthropicMessagesPayload): void => {
   if (!payload.tools || payload.tools.length === 0) {
     return
   }
 
   payload.tools = payload.tools.flatMap((tool) => {
-    if (tool.name === IDE_EXECUTE_CODE_TOOL && !tool.defer_loading) {
+    if (
+      tool.name === IDE_EXECUTE_CODE_TOOL
+      && !tool.defer_loading
+      && !options.preserveExecuteCode
+    ) {
       return []
     }
 
@@ -759,23 +358,47 @@ export const sanitizeIdeTools = (payload: AnthropicMessagesPayload): void => {
   })
 }
 
-const hasToolRef = (block: AnthropicToolResultBlock) => {
-  return (
-    Array.isArray(block.content)
-    && block.content.some((c) => c.type === "tool_reference")
-  )
-}
-
-// Strip cache_control from system content blocks as the
-// Copilot Messages API does not support them (rejects extra fields like scope).
-// commit by nicktogo
+// Keep supported cache markers while removing `scope`, which Copilot's native
+// Messages endpoint rejects. Traverse only protocol-defined marker locations so
+// arbitrary tool input schemas are never rewritten.
 const stripCacheControl = (payload: AnthropicMessagesPayload): void => {
+  const stripScope = (holder: {
+    cache_control?: AnthropicCacheControl | null
+  }): void => {
+    const cacheControl = holder.cache_control
+    if (!cacheControl || typeof cacheControl !== "object") {
+      return
+    }
+
+    const { scope: _scope, ...supported } = cacheControl
+    holder.cache_control = supported as AnthropicCacheControl
+  }
+
+  stripScope(payload)
+
   if (Array.isArray(payload.system)) {
     for (const block of payload.system) {
-      const cacheControl = block.cache_control
-      if (cacheControl && typeof cacheControl === "object") {
-        const { scope, ...rest } = cacheControl
-        block.cache_control = rest
+      stripScope(block)
+    }
+  }
+
+  for (const tool of payload.tools ?? []) {
+    stripScope(tool)
+  }
+
+  for (const message of payload.messages) {
+    if (!Array.isArray(message.content)) {
+      continue
+    }
+
+    for (const block of message.content) {
+      if ("cache_control" in block) {
+        stripScope(block)
+      }
+      if (block.type === "tool_result" && Array.isArray(block.content)) {
+        for (const nestedBlock of block.content) {
+          stripScope(nestedBlock)
+        }
       }
     }
   }
@@ -854,55 +477,116 @@ const filterAssistantThinkingBlocks = (
           && block.thinking !== "Thinking..."
           && block.signature
           && !block.signature.includes("@")
+          && !isOpenAIReasoningCarrierSignature(block.signature)
         )
       })
     }
   }
 }
 
+const resolveEffortForThinkingBudget = (
+  budgetTokens: number | undefined,
+  maxThinkingBudget: number | undefined,
+  supportedEfforts: Array<GatewayReasoningEffort> | undefined,
+): GatewayReasoningEffort | undefined => {
+  if (
+    typeof budgetTokens !== "number"
+    || typeof maxThinkingBudget !== "number"
+    || maxThinkingBudget <= 0
+    || !supportedEfforts
+    || supportedEfforts.length === 0
+  ) {
+    return undefined
+  }
+
+  const orderedEfforts = supportedEfforts.filter(
+    (effort) => effort !== "none" && effort !== "minimal",
+  )
+  if (orderedEfforts.length === 0) {
+    return undefined
+  }
+
+  const ratio = Math.max(0, Math.min(1, budgetTokens / maxThinkingBudget))
+  const index = Math.min(
+    orderedEfforts.length - 1,
+    Math.max(0, Math.ceil(ratio * orderedEfforts.length) - 1),
+  )
+  return orderedEfforts[index]
+}
+
 export const prepareMessagesApiPayload = (
   payload: AnthropicMessagesPayload,
   selectedModel?: Model,
+  options: { reasoningEffort?: GatewayReasoningEffort } = {},
 ): void => {
   stripCacheControl(payload)
   applyTopLevelCacheControl(payload)
   stripToolEagerInputStreaming(payload)
   filterAssistantThinkingBlocks(payload)
 
-  const hasThinking = Boolean(payload.thinking)
-
-  // https://platform.claude.com/docs/en/build-with-claude/extended-thinking#extended-thinking-with-tool-use
-  // Using tool_choice: {"type": "any"} or tool_choice: {"type": "tool", "name": "..."} will result in an error because these options force tool use, which is incompatible with extended thinking.
+  // Adaptive thinking supports forced tool choice. Older enabled/budget shapes
+  // still need to be normalized before the forced choice is forwarded.
   const toolChoice = payload.tool_choice
   const disableThink = toolChoice?.type === "any" || toolChoice?.type === "tool"
+  const requestedThinkingBudget =
+    payload.thinking?.type === "enabled" ?
+      payload.thinking.budget_tokens
+    : undefined
 
-  if (selectedModel?.capabilities.supports.adaptive_thinking && !disableThink) {
-    payload.thinking = {
-      type: "adaptive",
-    }
-    // align with vscode copilot
-    if (!hasThinking) {
+  if (
+    selectedModel?.capabilities.supports.adaptive_thinking
+    && (!disableThink || payload.thinking !== undefined)
+  ) {
+    if (!payload.thinking) {
+      payload.thinking = {
+        type: "adaptive",
+      }
+      // align with vscode copilot
+      payload.thinking.display = "summarized"
+    } else if (payload.thinking.type === "disabled") {
+      delete payload.thinking.display
+      delete payload.thinking.budget_tokens
+      return
+    } else if (shouldUseAdaptiveThinkingForModel(payload.model)) {
+      payload.thinking = {
+        type: "adaptive",
+        display: payload.thinking.display ?? "summarized",
+      }
+    } else if (
+      shouldSummarizeThinkingDisplayForModel(payload.model)
+      && !payload.thinking.display
+    ) {
       payload.thinking.display = "summarized"
     }
-    if (shouldSummarizeThinkingDisplayForModel(payload.model)) {
-      payload.thinking.display = "summarized"
+
+    if (payload.thinking.type !== "adaptive") {
+      return
     }
-    let effort =
-      payload.output_config?.effort ?? getReasoningEffortForModel(payload.model)
+    const maxThinkingBudget =
+      selectedModel.capabilities.supports.max_thinking_budget
+    const reasoningEffort = selectedModel.capabilities.supports.reasoning_effort
+    let effort: GatewayReasoningEffort =
+      normalizeGatewayReasoningEffort(payload.output_config?.effort)
+      ?? resolveEffortForThinkingBudget(
+        requestedThinkingBudget,
+        maxThinkingBudget,
+        reasoningEffort,
+      )
+      ?? options.reasoningEffort
+      ?? getReasoningEffortForModel(payload.model)
     if (effort === "none" || effort === "minimal") {
       effort = "low"
     }
-    const reasoningEffort = selectedModel.capabilities.supports.reasoning_effort
     if (reasoningEffort && !reasoningEffort.includes(effort)) {
-      effort = reasoningEffort.at(-1) as
-        | "low"
-        | "medium"
-        | "high"
-        | "xhigh"
-        | "max"
+      effort =
+        reasoningEffort.findLast((candidate) =>
+          Boolean(normalizeMessageReasoningEffort(candidate)),
+        ) ?? "low"
     }
+    const messageEffort = normalizeMessageReasoningEffort(effort) ?? "low"
     payload.output_config = {
-      effort: effort,
+      ...payload.output_config,
+      effort: messageEffort,
     }
   }
 

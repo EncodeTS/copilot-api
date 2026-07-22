@@ -1,5 +1,3 @@
-import consola from "consola"
-
 import {
   BRIDGE_TOOL_SEARCH_NAME,
   formatToolSearchBridgeArguments,
@@ -11,13 +9,13 @@ import {
   selectDeferredToolsByNames,
   shouldEnableResponsesToolSearch,
 } from "~/lib/tool-search"
-import { HTTPError } from "~/lib/error"
 import {
   getExtraPromptForModel,
   getReasoningEffortForModel,
   isGpt56OrAbove,
 } from "~/lib/config"
 import { requestContext } from "~/lib/request-context"
+import { normalizeResponsesUsage } from "~/lib/token-usage"
 import { parseUserIdMetadata } from "~/lib/utils"
 import {
   type ResponsesPayload,
@@ -49,9 +47,20 @@ import {
 } from "~/services/copilot/create-responses"
 
 import {
+  isAnthropicDocumentBlock,
+  isAnthropicDocumentContainerBlock,
+  isAnthropicFileDocumentBlock,
+  isAnthropicFileImageBlock,
+  isAnthropicCustomTool,
+  isAnthropicImageBlock,
+  isAnthropicTextBlock,
+  isAnthropicToolReferenceBlock,
   type AnthropicAssistantContentBlock,
   type AnthropicAssistantMessage,
+  type AnthropicCustomTool,
   type AnthropicDocumentBlock,
+  type AnthropicFileDocumentBlock,
+  type AnthropicFileImageBlock,
   type AnthropicResponse,
   type AnthropicImageBlock,
   type AnthropicMessage,
@@ -65,17 +74,64 @@ import {
   type AnthropicUserContentBlock,
   type AnthropicUserMessage,
 } from "./anthropic-types"
+import { createMessagesInvalidRequestError } from "./invalid-request-error"
+import {
+  decodeVersionedReasoningCarrier,
+  encodeVersionedReasoningCarrier,
+  parseLegacyOpenAIReasoningCarrierSignature,
+  type ReasoningCarrierEndpoint,
+} from "./reasoning-carrier"
+import {
+  normalizeMessageReasoningEffort,
+  type GatewayReasoningEffort,
+} from "~/lib/reasoning-effort"
 import { normalizeToolSchema } from "./non-stream-translation"
+import { assertResponsesResultUsable } from "./responses-result"
+import { parseFunctionCallArguments } from "./tool-arguments"
+import { validateAnthropicToolResultContent } from "./tool-result-content"
+import type { RestoredWebSearchTurn } from "./web-search/carrier-sanitizer"
 
 const MESSAGE_TYPE = "message"
 const COMPACTION_SIGNATURE_PREFIX = "cm1#"
 const COMPACTION_SIGNATURE_SEPARATOR = "@"
 
 export const THINKING_TEXT = "Thinking..."
-export const REASONING_SUMMARY_SEPARATOR = "\u2063\n\n"
+export const REASONING_SUMMARY_SEPARATOR = "\u00a0\n\n"
+const REASONING_SUMMARY_SEPARATOR_PATTERN = /\u00a0\n\n|\u2063\n\n/
 
-const resolveReasoningEffort = (payload: AnthropicMessagesPayload) =>
-  payload.output_config?.effort ?? getReasoningEffortForModel(payload.model)
+interface ResponsesTranslationPolicy {
+  extraPrompt?: string
+  reasoningEffort?: GatewayReasoningEffort
+  restoredWebSearchTurns?: ReadonlyArray<RestoredWebSearchTurn>
+}
+
+const resolveReasoningEffort = (
+  payload: AnthropicMessagesPayload,
+  policy: ResponsesTranslationPolicy,
+) =>
+  normalizeMessageReasoningEffort(payload.output_config?.effort)
+  ?? policy.reasoningEffort
+  ?? getReasoningEffortForModel(payload.model)
+
+export const hasTrailingAssistantPrefill = (
+  payload: AnthropicMessagesPayload,
+): boolean => {
+  const lastMessage = payload.messages.at(-1)
+  if (!lastMessage || lastMessage.role !== "assistant") {
+    return false
+  }
+
+  if (typeof lastMessage.content === "string") {
+    return lastMessage.content.length > 0
+  }
+
+  return (
+    Array.isArray(lastMessage.content)
+    && lastMessage.content.some(
+      (block) => block.type === "text" && block.text.length > 0,
+    )
+  )
+}
 
 const buildPromptCacheKey = (
   basePromptCacheKey: string | null,
@@ -96,24 +152,69 @@ const buildPromptCacheKey = (
 export const translateAnthropicMessagesToResponsesPayload = (
   payload: AnthropicMessagesPayload,
   subagentAgentId?: string | null,
+  carrierTarget: ReasoningCarrierEndpoint = {
+    model: payload.model,
+    provider: "copilot",
+  },
+  policy: ResponsesTranslationPolicy = {},
 ): ResponsesPayload => {
   const input: Array<ResponseInputItem> = []
+  const exactRestoredItems = new WeakSet<object>()
   const applyPhase = shouldApplyPhase(payload.model)
   const toolSearchEnabled = shouldEnableResponsesToolSearch({
     model: payload.model,
     tools: payload.tools,
   })
   const translationState: TranslationState = {
+    carrierTarget,
     originalTools: payload.tools ?? [],
     toolSearchEnabled,
     toolUseNameById: new Map(),
   }
 
-  for (const message of payload.messages as Array<AnthropicMessage>) {
+  const restoredTurnsByMessageIndex = new Map(
+    (policy.restoredWebSearchTurns ?? []).map((turn) => [
+      turn.messageIndex,
+      turn,
+    ]),
+  )
+  for (const [messageIndex, message] of (
+    payload.messages as Array<AnthropicMessage>
+  ).entries()) {
+    const restored = restoredTurnsByMessageIndex.get(messageIndex)
+    if (restored) {
+      if (message.role !== "assistant") {
+        throw createMessagesInvalidRequestError(
+          "Restored Web Search history must replace an assistant message.",
+        )
+      }
+      const restoredItems = structuredClone(
+        restored.outputItems,
+      ) as Array<ResponseInputItem>
+      for (const item of restoredItems) {
+        if (typeof item === "object" && item !== null) {
+          exactRestoredItems.add(item)
+        }
+      }
+      input.push(...restoredItems)
+      restoredTurnsByMessageIndex.delete(messageIndex)
+      continue
+    }
     input.push(
       ...translateMessage(message, payload.model, applyPhase, translationState),
     )
   }
+  if (restoredTurnsByMessageIndex.size > 0) {
+    throw createMessagesInvalidRequestError(
+      "Restored Web Search history references a missing message.",
+    )
+  }
+
+  const hasExplicitCacheBreakpoints = retainLatestPromptCacheBreakpoints(
+    input,
+    isGpt56OrAbove(payload.model) ? 3 : 0,
+    exactRestoredItems,
+  )
 
   const hasOriginalTools =
     Array.isArray(payload.tools) && payload.tools.length > 0
@@ -125,6 +226,7 @@ export const translateAnthropicMessagesToResponsesPayload = (
     payload.tool_choice,
     toolSearchEnabled,
   )
+  const outputFormat = payload.output_config?.format
 
   // Remove safetyIdentifier to align with vscode copilot
   const { sessionId: metadataPromptCacheKey } = parseUserIdMetadata(
@@ -142,33 +244,98 @@ export const translateAnthropicMessagesToResponsesPayload = (
   const responsesPayload: ResponsesPayload = {
     model: payload.model,
     input,
-    instructions: translateSystemPrompt(payload.system, payload.model),
-    temperature: 1, // reasoning high temperature fixed to 1
+    instructions: translateSystemPrompt(
+      payload.system,
+      payload.model,
+      policy.extraPrompt,
+    ),
+    temperature: payload.temperature ?? 1,
     top_p: payload.top_p ?? null,
-    max_output_tokens: Math.max(payload.max_tokens, 12800),
+    max_output_tokens: payload.max_tokens,
     tools: translatedTools,
-    tool_choice: toolChoice,
+    ...(hasOriginalTools ? { tool_choice: toolChoice } : {}),
     metadata: payload.metadata ? { ...payload.metadata } : null,
+    ...(hasExplicitCacheBreakpoints ?
+      {
+        prompt_cache_options: {
+          mode: "implicit" as const,
+          ttl: "30m" as const,
+        },
+      }
+    : {}),
     //prompt_cache_retention: "24h",  not work in gpt-5.4
     stream: payload.stream ?? null,
     store: false,
-    parallel_tool_calls: true,
+    parallel_tool_calls: !payload.tool_choice?.disable_parallel_tool_use,
     reasoning: {
-      effort: resolveReasoningEffort(payload),
+      effort:
+        payload.thinking?.type === "disabled" ?
+          "none"
+        : resolveReasoningEffort(payload, policy),
       summary: "auto",
       context: isSupportAllTurns(payload) ? "all_turns" : "auto",
     },
     include: ["reasoning.encrypted_content"],
+    ...(outputFormat ?
+      {
+        text: {
+          format: {
+            type: "json_schema" as const,
+            name: "anthropic_output",
+            strict: true,
+            schema: outputFormat.schema,
+          },
+        },
+      }
+    : {}),
   }
 
-  if (hasOriginalTools) {
+  if (hasOriginalTools || (isGpt56OrAbove(payload.model) && promptCacheKey)) {
     responsesPayload.prompt_cache_key = promptCacheKey
   }
 
   return responsesPayload
 }
 
+const retainLatestPromptCacheBreakpoints = (
+  input: Array<ResponseInputItem>,
+  limit: number,
+  exactRestoredItems: WeakSet<object> = new WeakSet(),
+): boolean => {
+  const markedBlocks: Array<Record<string, unknown>> = []
+
+  for (const item of input) {
+    if (!isRecord(item)) continue
+    if (exactRestoredItems.has(item)) continue
+
+    const content =
+      Array.isArray(item.content) ? item.content
+      : Array.isArray(item.output) ? item.output
+      : []
+
+    for (const block of content) {
+      if (
+        isRecord(block)
+        && isRecord(block.prompt_cache_breakpoint)
+        && block.prompt_cache_breakpoint.mode === "explicit"
+      ) {
+        markedBlocks.push(block)
+      }
+    }
+  }
+
+  for (const block of markedBlocks.slice(
+    0,
+    Math.max(0, markedBlocks.length - limit),
+  )) {
+    delete block.prompt_cache_breakpoint
+  }
+
+  return markedBlocks.length > 0 && limit > 0
+}
+
 interface TranslationState {
+  carrierTarget: ReasoningCarrierEndpoint
   originalTools: Array<AnthropicTool>
   toolSearchEnabled: boolean
   toolUseNameById: Map<string, string>
@@ -210,6 +377,17 @@ export const decodeCompactionCarrierSignature = (
   }
 
   return undefined
+}
+
+export const encodeReasoningCarrierSignature = (
+  reasoning: ResponseOutputReasoning,
+  source: ReasoningCarrierEndpoint,
+): string | undefined => {
+  if (!reasoning.encrypted_content || !reasoning.id) {
+    return undefined
+  }
+
+  return encodeVersionedReasoningCarrier(reasoning, source)
 }
 
 const translateMessage = (
@@ -303,12 +481,16 @@ const translateAssistantMessage = (
         continue
       }
 
-      if (block.signature.includes("@")) {
+      const reasoningContent = createReasoningContent(
+        block,
+        state.carrierTarget,
+      )
+      if (reasoningContent) {
         flushPendingContent(pendingContent, items, {
           role: "assistant",
           phase: assistantPhase,
         })
-        items.push(createReasoningContent(block))
+        items.push(reasoningContent)
         continue
       }
     }
@@ -332,13 +514,15 @@ const translateUserContentBlock = (
 ): Array<ResponseInputContent> => {
   switch (block.type) {
     case "text": {
-      return [createTextContent(block.text)]
+      return [createTextContent(block.text, Boolean(block.cache_control))]
     }
     case "image": {
-      return [createImageContent(block)]
+      return [convertCanonicalImageBlock(block, Boolean(block.cache_control))]
     }
     case "document": {
-      return [createFileContent(block)]
+      return [
+        convertCanonicalDocumentBlock(block, Boolean(block.cache_control)),
+      ]
     }
     default: {
       return []
@@ -346,12 +530,49 @@ const translateUserContentBlock = (
   }
 }
 
+const convertCanonicalImageBlock = (
+  block: unknown,
+  cacheBreakpoint = false,
+): ResponseInputImage => {
+  const candidate = block as AnthropicToolResultContentBlock
+  if (isAnthropicImageBlock(candidate)) {
+    return createImageContent(candidate, cacheBreakpoint)
+  }
+  if (isAnthropicFileImageBlock(block)) {
+    return createFileImageContent(block, cacheBreakpoint)
+  }
+  throw createMessagesInvalidRequestError(
+    "Malformed Anthropic image source is not supported by the Responses translation path.",
+  )
+}
+
+const convertCanonicalDocumentBlock = (
+  block: unknown,
+  cacheBreakpoint = false,
+): ResponseInputFile => {
+  const candidate = block as AnthropicToolResultContentBlock
+  if (isAnthropicDocumentBlock(candidate)) {
+    return createFileContent(candidate, cacheBreakpoint)
+  }
+  if (isAnthropicFileDocumentBlock(block)) {
+    return createFileDocumentContent(block, cacheBreakpoint)
+  }
+  if (isAnthropicDocumentContainerBlock(block)) {
+    throw createMessagesInvalidRequestError(
+      "Anthropic document text/content sources are not supported by the Responses translation path.",
+    )
+  }
+  throw createMessagesInvalidRequestError(
+    "Malformed Anthropic document source is not supported by the Responses translation path.",
+  )
+}
+
 const translateAssistantContentBlock = (
   block: AnthropicAssistantContentBlock,
 ): ResponseInputContent | undefined => {
   switch (block.type) {
     case "text": {
-      return createOutPutTextContent(block.text)
+      return createOutPutTextContent(block)
     }
     default: {
       return undefined
@@ -415,38 +636,172 @@ const shouldApplyPhase = (_model: string): boolean => {
   return true
 }
 
-const createTextContent = (text: string): ResponseInputText => ({
+const createTextContent = (
+  text: string,
+  cacheBreakpoint = false,
+): ResponseInputText => ({
   type: "input_text",
   text,
+  ...(cacheBreakpoint ?
+    { prompt_cache_breakpoint: { mode: "explicit" as const } }
+  : {}),
 })
 
-const createOutPutTextContent = (text: string): ResponseInputText => ({
-  type: "output_text",
-  text,
-})
+const createOutPutTextContent = (
+  block: AnthropicTextBlock,
+): ResponseInputText => {
+  const rawCitations: unknown = block.citations
+  if (rawCitations !== undefined && !Array.isArray(rawCitations)) {
+    throw createMessagesInvalidRequestError(
+      "Anthropic Web Search citations must be an array.",
+    )
+  }
+  const citations = rawCitations ?? []
+  if (citations.length > 1_024 || block.text.length > 1024 * 1024) {
+    throw createMessagesInvalidRequestError(
+      "Anthropic Web Search citations exceed the local safety limit.",
+    )
+  }
+  const annotations: NonNullable<ResponseInputText["annotations"]> = []
+  let nextSearchIndex = 0
+  let citationCharacters = 0
+  for (const citation of citations) {
+    if (
+      !isRecord(citation)
+      || citation.type !== "web_search_result_location"
+      || typeof citation.cited_text !== "string"
+      || !citation.cited_text
+      || typeof citation.url !== "string"
+      || !citation.url
+      || typeof citation.title !== "string"
+      || !citation.title
+      || Object.hasOwn(citation, "encrypted_index")
+      || Object.keys(citation).some(
+        (key) => !["cited_text", "title", "type", "url"].includes(key),
+      )
+    ) {
+      throw createMessagesInvalidRequestError(
+        "Anthropic Web Search citation is malformed.",
+      )
+    }
+    citationCharacters +=
+      citation.cited_text.length + citation.url.length + citation.title.length
+    if (citationCharacters > 1024 * 1024) {
+      throw createMessagesInvalidRequestError(
+        "Anthropic Web Search citations exceed the local safety limit.",
+      )
+    }
+    let startIndex = block.text.indexOf(citation.cited_text, nextSearchIndex)
+    if (startIndex < 0) startIndex = block.text.indexOf(citation.cited_text)
+    if (startIndex < 0) {
+      throw createMessagesInvalidRequestError(
+        "Anthropic Web Search citation does not match its text block.",
+      )
+    }
+    const endIndex = startIndex + citation.cited_text.length
+    nextSearchIndex = endIndex
+    annotations.push({
+      type: "url_citation",
+      start_index: startIndex,
+      end_index: endIndex,
+      url: citation.url,
+      title: citation.title,
+    })
+  }
+  return {
+    type: "output_text",
+    text: block.text,
+    ...(annotations.length > 0 && { annotations }),
+  }
+}
 
 const createImageContent = (
   block: AnthropicImageBlock,
+  cacheBreakpoint = false,
+): ResponseInputImage => {
+  const imageUrl =
+    block.source.type === "url" ?
+      block.source.url
+    : `data:${block.source.media_type};base64,${block.source.data}`
+
+  return {
+    type: "input_image",
+    image_url: imageUrl,
+    detail: "auto",
+    ...(cacheBreakpoint ?
+      { prompt_cache_breakpoint: { mode: "explicit" as const } }
+    : {}),
+  }
+}
+
+const createFileImageContent = (
+  block: AnthropicFileImageBlock,
+  cacheBreakpoint = false,
 ): ResponseInputImage => ({
   type: "input_image",
-  image_url: `data:${block.source.media_type};base64,${block.source.data}`,
+  file_id: block.source.file_id,
   detail: "auto",
+  ...(cacheBreakpoint ?
+    { prompt_cache_breakpoint: { mode: "explicit" as const } }
+  : {}),
 })
 
 const createFileContent = (
   block: AnthropicDocumentBlock,
+  cacheBreakpoint = false,
+): ResponseInputFile => {
+  const cache =
+    cacheBreakpoint ?
+      { prompt_cache_breakpoint: { mode: "explicit" as const } }
+    : {}
+
+  if (block.source.type === "url") {
+    return {
+      type: "input_file",
+      file_url: block.source.url,
+      ...cache,
+    }
+  }
+
+  return {
+    type: "input_file",
+    file_data: `data:${block.source.media_type};base64,${block.source.data}`,
+    filename: block.title ?? "document.pdf",
+    ...cache,
+  }
+}
+
+const createFileDocumentContent = (
+  block: AnthropicFileDocumentBlock,
+  cacheBreakpoint = false,
 ): ResponseInputFile => ({
   type: "input_file",
-  file_data: `data:${block.source.media_type};base64,${block.source.data}`,
-  filename: block.title ?? "document.pdf",
+  file_id: block.source.file_id,
+  ...(cacheBreakpoint ?
+    { prompt_cache_breakpoint: { mode: "explicit" as const } }
+  : {}),
 })
 
 const createReasoningContent = (
   block: AnthropicThinkingBlock,
-): ResponseInputReasoning => {
+  carrierTarget: ReasoningCarrierEndpoint,
+): ResponseInputReasoning | undefined => {
+  const versionedCarrier = decodeReasoningCarrierSignature(
+    block.signature,
+    carrierTarget,
+  )
+  if (versionedCarrier) {
+    return versionedCarrier
+  }
+
   // align with vscode-copilot-chat extractThinkingData, should add id
   // https://github.com/microsoft/vscode/blob/1.128.0/extensions/copilot/src/platform/endpoint/node/responsesApi.ts#L651
-  const { encryptedContent, id } = parseReasoningSignature(block.signature)
+  const carrier = parseLegacyOpenAIReasoningCarrierSignature(block.signature)
+  if (!carrier) {
+    return undefined
+  }
+
+  const { encryptedContent, id } = carrier
   const thinking = block.thinking === THINKING_TEXT ? "" : block.thinking
 
   return {
@@ -464,11 +819,11 @@ const createReasoningSummary = (
     return []
   }
 
-  if (!thinking.includes(REASONING_SUMMARY_SEPARATOR)) {
+  if (!REASONING_SUMMARY_SEPARATOR_PATTERN.test(thinking)) {
     return [{ type: "summary_text", text: thinking }]
   }
 
-  return thinking.split(REASONING_SUMMARY_SEPARATOR).map((text) => ({
+  return thinking.split(REASONING_SUMMARY_SEPARATOR_PATTERN).map((text) => ({
     type: "summary_text",
     text,
   }))
@@ -489,20 +844,59 @@ const createCompactionContent = (
   }
 }
 
-const parseReasoningSignature = (
+const decodeReasoningCarrierSignature = (
   signature: string,
-): { encryptedContent: string; id: string } => {
-  const splitIndex = signature.lastIndexOf("@")
-
-  if (splitIndex <= 0 || splitIndex === signature.length - 1) {
-    return { encryptedContent: signature, id: "" }
+  carrierTarget: ReasoningCarrierEndpoint,
+): ResponseInputReasoning | undefined => {
+  const carrier = decodeVersionedReasoningCarrier(signature)
+  if (!carrier) {
+    return undefined
+  }
+  if (
+    carrier.source
+    && (carrier.source.provider !== carrierTarget.provider
+      || carrier.source.model !== carrierTarget.model)
+  ) {
+    return undefined
   }
 
-  return {
-    encryptedContent: signature.slice(0, splitIndex),
-    id: signature.slice(splitIndex + 1),
+  const value = carrier.item
+  try {
+    if (
+      !isRecord(value)
+      || value.type !== "reasoning"
+      || typeof value.id !== "string"
+      || value.id.length === 0
+      || typeof value.encrypted_content !== "string"
+      || value.encrypted_content.length === 0
+      || !isValidReasoningSummary(value.summary)
+      || !isValidReasoningStatus(value.status)
+    ) {
+      return undefined
+    }
+
+    return value as ResponseInputReasoning
+  } catch {
+    return undefined
   }
 }
+
+const isValidReasoningSummary = (summary: unknown): boolean =>
+  summary === undefined
+  || (Array.isArray(summary)
+    && summary.every(
+      (block) =>
+        isRecord(block)
+        && typeof block.type === "string"
+        && block.type.length > 0
+        && (block.text === undefined || typeof block.text === "string"),
+    ))
+
+const isValidReasoningStatus = (status: unknown): boolean =>
+  status === undefined
+  || status === "completed"
+  || status === "in_progress"
+  || status === "incomplete"
 
 const createFunctionToolCall = (
   block: AnthropicToolUseBlock,
@@ -544,7 +938,7 @@ const createFunctionCallOutput = (
 ): ResponseFunctionCallOutputItem => ({
   type: "function_call_output",
   call_id: block.tool_use_id,
-  output: convertToolResultContent(block.content),
+  output: convertToolResultContent(block.content, Boolean(block.cache_control)),
   status: block.is_error ? "incomplete" : "completed",
 })
 
@@ -552,6 +946,8 @@ const createToolCallOutput = (
   block: AnthropicToolResultBlock,
   state: TranslationState,
 ): ResponseFunctionCallOutputItem | ResponseToolSearchOutputItem => {
+  validateAnthropicToolResultContent(block.content)
+
   const toolUseName = state.toolUseNameById.get(block.tool_use_id)
   if (state.toolSearchEnabled && isBridgeToolSearchName(toolUseName ?? "")) {
     return createToolSearchOutput(block, state.originalTools)
@@ -609,7 +1005,7 @@ const extractToolReferenceNames = (
   }
 
   return content.flatMap((block) =>
-    block.type === "tool_reference" ? [block.tool_name] : [],
+    isAnthropicToolReferenceBlock(block) ? [block.tool_name] : [],
   )
 }
 
@@ -621,7 +1017,7 @@ const extractMcpToolSearchSentinel = (
   }
 
   for (const block of content) {
-    if (block.type !== "text") {
+    if (!isAnthropicTextBlock(block)) {
       continue
     }
 
@@ -637,13 +1033,13 @@ const extractMcpToolSearchSentinel = (
 const resolveDeferredTool = (
   toolName: string,
   originalTools: Array<AnthropicTool>,
-): AnthropicTool => {
+): AnthropicCustomTool => {
   const tool = originalTools.find((candidate) => candidate.name === toolName)
-  if (tool && isDeferredToolName(tool.name)) {
+  if (tool && isAnthropicCustomTool(tool) && isDeferredToolName(tool.name)) {
     return tool
   }
 
-  throw createInvalidRequestError(
+  throw createMessagesInvalidRequestError(
     `Tool reference '${toolName}' has no corresponding deferred tool definition`,
   )
 }
@@ -652,32 +1048,16 @@ const uniqueToolNames = (toolNames: Array<string>): Array<string> => [
   ...new Set(toolNames),
 ]
 
-const createInvalidRequestError = (message: string): HTTPError =>
-  new HTTPError(
-    message,
-    new Response(
-      JSON.stringify({
-        error: {
-          message,
-          type: "invalid_request_error",
-        },
-      }),
-      {
-        status: 400,
-        headers: { "content-type": "application/json" },
-      },
-    ),
-  )
-
 const translateSystemPrompt = (
   system: string | Array<AnthropicTextBlock> | undefined,
   model: string,
+  configuredExtraPrompt?: string,
 ): string | null => {
   if (!system) {
     return null
   }
 
-  const extraPrompt = getExtraPromptForModel(model)
+  const extraPrompt = configuredExtraPrompt ?? getExtraPromptForModel(model)
 
   if (typeof system === "string") {
     return system + extraPrompt
@@ -698,16 +1078,19 @@ const convertAnthropicTools = (
   tools: Array<AnthropicTool> | undefined,
   toolSearchEnabled: boolean,
 ): Array<Tool> | null => {
-  if (!tools || tools.length === 0) {
+  if (!tools) {
     return null
   }
 
+  if (tools.length === 0) return []
+
   const converted: Array<Tool> = []
   let addedToolSearch = false
+  const customTools = tools.filter(isAnthropicCustomTool)
   const searchableToolNames =
-    toolSearchEnabled ? listDeferredToolNames(tools) : []
+    toolSearchEnabled ? listDeferredToolNames(customTools) : []
 
-  for (const tool of tools) {
+  for (const tool of customTools) {
     if (isBridgeToolSearchName(tool.name)) {
       if (toolSearchEnabled && !addedToolSearch) {
         converted.push(createResponsesToolSearchDefinition(searchableToolNames))
@@ -752,7 +1135,7 @@ const createResponsesToolSearchDefinition = (
   },
 })
 
-const convertToolToFunction = (tool: AnthropicTool): Tool => ({
+const convertToolToFunction = (tool: AnthropicCustomTool): Tool => ({
   type: "function",
   name: tool.name,
   parameters: normalizeToolSchema(tool.input_schema),
@@ -760,7 +1143,7 @@ const convertToolToFunction = (tool: AnthropicTool): Tool => ({
   ...(tool.description ? { description: tool.description } : {}),
 })
 
-const convertDeferredToolToNamespace = (tool: AnthropicTool): Tool => ({
+const convertDeferredToolToNamespace = (tool: AnthropicCustomTool): Tool => ({
   type: "namespace",
   name: tool.name,
   ...(tool.description ? { description: tool.description } : {}),
@@ -811,22 +1194,38 @@ const convertAnthropicToolChoice = (
 }
 
 interface ResponsesToAnthropicOptions {
+  carrierSource?: ReasoningCarrierEndpoint
   toolSearchName?: string
   hasToolCall?: boolean
+  includeThinking?: boolean
 }
 
 export const translateResponsesResultToAnthropic = (
   response: ResponsesResult,
   options?: ResponsesToAnthropicOptions,
 ): AnthropicResponse => {
-  const contentBlocks = mapOutputToAnthropicContent(response.output, options)
-  const usage = mapResponsesUsage(response)
+  assertResponsesResultUsable(response)
+  const resolvedOptions = {
+    ...options,
+    carrierSource: options?.carrierSource ?? {
+      model: response.model,
+      provider: "copilot",
+    },
+  }
+  const contentBlocks = mapOutputToAnthropicContent(
+    response.output,
+    resolvedOptions,
+  )
+  const usage = mapResponsesUsageToAnthropic(response.usage)
   let anthropicContent = fallbackContentBlocks(response.output_text)
   if (contentBlocks.length > 0) {
     anthropicContent = contentBlocks
   }
 
-  const stopReason = mapResponsesStopReason(response, options)
+  const stopReason = mapResponsesStopReasonToAnthropic(
+    response,
+    resolvedOptions,
+  )
 
   return {
     id: response.id,
@@ -851,12 +1250,22 @@ const mapOutputToAnthropicContent = (
   for (const item of output) {
     switch (item.type) {
       case "reasoning": {
+        if (options?.includeThinking === false) {
+          break
+        }
         const thinkingText = extractReasoningText(item)
         if (thinkingText.length > 0) {
           contentBlocks.push({
             type: "thinking",
             thinking: thinkingText,
-            signature: (item.encrypted_content ?? "") + "@" + item.id,
+            signature:
+              encodeReasoningCarrierSignature(
+                item,
+                options?.carrierSource ?? {
+                  model: "unknown",
+                  provider: "copilot",
+                },
+              ) ?? "",
           })
         }
         break
@@ -889,6 +1298,9 @@ const mapOutputToAnthropicContent = (
         break
       }
       case "compaction": {
+        if (options?.includeThinking === false) {
+          break
+        }
         const compactionBlock = createCompactionThinkingBlock(item)
         if (compactionBlock) {
           contentBlocks.push(compactionBlock)
@@ -1033,33 +1445,6 @@ const createCompactionThinkingBlock = (
   }
 }
 
-const parseFunctionCallArguments = (
-  rawArguments: string,
-): Record<string, unknown> => {
-  if (typeof rawArguments !== "string" || rawArguments.trim().length === 0) {
-    return {}
-  }
-
-  try {
-    const parsed: unknown = JSON.parse(rawArguments)
-
-    if (Array.isArray(parsed)) {
-      return { arguments: parsed }
-    }
-
-    if (parsed && typeof parsed === "object") {
-      return parsed as Record<string, unknown>
-    }
-  } catch (error) {
-    consola.warn("Failed to parse function call arguments", {
-      error,
-      rawArguments,
-    })
-  }
-
-  return { raw_arguments: rawArguments }
-}
-
 const parseToolSearchArguments = (
   argumentsValue: Record<string, unknown> | string,
 ): Record<string, unknown> => {
@@ -1081,11 +1466,20 @@ const fallbackContentBlocks = (
   ]
 }
 
-const mapResponsesStopReason = (
+const hasExplicitRefusal = (response: ResponsesResult): boolean =>
+  response.output.some(
+    (item) =>
+      item.type === "message"
+      && item.content?.some((block) => block.type === "refusal"),
+  )
+
+export const mapResponsesStopReasonToAnthropic = (
   response: ResponsesResult,
   options?: ResponsesToAnthropicOptions,
 ): AnthropicResponse["stop_reason"] => {
   const { status, incomplete_details: incompleteDetails } = response
+  const incompleteReason = (incompleteDetails as { reason?: string } | null)
+    ?.reason
 
   if (status === "completed") {
     if (!response.output || response.output.length === 0) {
@@ -1104,35 +1498,37 @@ const mapResponsesStopReason = (
   }
 
   if (status === "incomplete") {
-    if (incompleteDetails?.reason === "max_output_tokens") {
+    if (
+      incompleteReason === "max_output_tokens"
+      || incompleteReason === "max_tokens"
+    ) {
       return "max_tokens"
     }
-    if (incompleteDetails?.reason === "content_filter") {
-      return "end_turn"
+    if (incompleteReason === "content_filter" && hasExplicitRefusal(response)) {
+      return "refusal"
     }
   }
 
   return null
 }
 
-const mapResponsesUsage = (
-  response: ResponsesResult,
+export const mapResponsesUsageToAnthropic = (
+  usage: ResponsesResult["usage"],
 ): AnthropicResponse["usage"] => {
-  const inputTokens = response.usage?.input_tokens ?? 0
-  const outputTokens = response.usage?.output_tokens ?? 0
-  const inputCachedTokens = response.usage?.input_tokens_details?.cached_tokens
-  const cacheWriteTokens =
-    response.usage?.input_tokens_details?.cache_write_tokens
+  const normalized = normalizeResponsesUsage(usage)
+  const hasCachedTokens = Boolean(
+    usage?.input_tokens_details
+      && Object.hasOwn(usage.input_tokens_details, "cached_tokens"),
+  )
 
   return {
-    input_tokens:
-      inputTokens - (inputCachedTokens ?? 0) - (cacheWriteTokens ?? 0),
-    output_tokens: outputTokens,
-    ...(inputCachedTokens !== undefined && {
-      cache_read_input_tokens: inputCachedTokens,
+    input_tokens: normalized.input_tokens ?? 0,
+    output_tokens: normalized.output_tokens ?? 0,
+    ...(hasCachedTokens && {
+      cache_read_input_tokens: normalized.cache_read_input_tokens ?? 0,
     }),
-    ...(cacheWriteTokens !== undefined && {
-      cache_creation_input_tokens: cacheWriteTokens,
+    ...(typeof normalized.cache_creation_input_tokens === "number" && {
+      cache_creation_input_tokens: normalized.cache_creation_input_tokens,
     }),
   }
 }
@@ -1156,40 +1552,72 @@ const isResponseOutputRefusal = (
 
 const convertToolResultContent = (
   content: string | Array<AnthropicToolResultContentBlock>,
+  cacheBreakpoint = false,
 ): string | Array<ResponseInputContent> => {
   if (typeof content === "string") {
-    return content
+    return cacheBreakpoint ? [createTextContent(content, true)] : content
   }
 
-  if (Array.isArray(content)) {
-    const result: Array<ResponseInputContent> = []
-    for (const block of content) {
-      switch (block.type) {
-        case "text": {
-          result.push(createTextContent(block.text))
+  const result: Array<ResponseInputContent> = []
+  for (const block of content) {
+    switch (block.type) {
+      case "text": {
+        if (!isAnthropicTextBlock(block)) {
+          result.push(createTextContent(JSON.stringify(block)))
           break
         }
-        case "image": {
-          result.push(createImageContent(block))
+        result.push(createTextContent(block.text, Boolean(block.cache_control)))
+        break
+      }
+      case "image": {
+        result.push(
+          convertCanonicalImageBlock(block, Boolean(block.cache_control)),
+        )
+        break
+      }
+      case "document": {
+        result.push(
+          convertCanonicalDocumentBlock(block, Boolean(block.cache_control)),
+        )
+        break
+      }
+      case "tool_reference": {
+        if (!isAnthropicToolReferenceBlock(block)) {
+          result.push(createTextContent(JSON.stringify(block)))
           break
         }
-        case "document": {
-          result.push(createFileContent(block))
-          break
-        }
-        case "tool_reference": {
-          result.push(createTextContent(`Tool ${block.tool_name} loaded`))
-          break
-        }
-        default: {
-          break
-        }
+        result.push(
+          createTextContent(
+            `Tool ${block.tool_name} loaded`,
+            Boolean(block.cache_control),
+          ),
+        )
+        break
+      }
+      default: {
+        result.push(
+          createTextContent(
+            JSON.stringify(block),
+            Boolean((block as { cache_control?: unknown }).cache_control),
+          ),
+        )
+        break
       }
     }
-    return result
   }
 
-  return ""
+  if (cacheBreakpoint) {
+    const lastCacheableBlock = result.findLast(
+      (block) =>
+        block.type === "input_text"
+        || block.type === "input_image"
+        || block.type === "input_file",
+    )
+    if (lastCacheableBlock) {
+      lastCacheableBlock.prompt_cache_breakpoint = { mode: "explicit" }
+    }
+  }
+  return result
 }
 
 const isSupportAllTurns = (payload: AnthropicMessagesPayload): boolean => {

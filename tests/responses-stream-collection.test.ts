@@ -6,7 +6,10 @@ import type {
   ResponsesStream,
 } from "~/services/copilot/create-responses"
 
-import { collectResponsesStreamResult } from "~/routes/messages/responses-stream-collection"
+import {
+  BufferedResponsesTerminalError,
+  collectResponsesStreamResult,
+} from "~/routes/messages/responses-stream-collection"
 
 type StreamChunk = {
   data?: string
@@ -132,7 +135,121 @@ describe("responses stream collection", () => {
     expect(collected).toEqual(result)
   })
 
-  test("throws the upstream error message", async () => {
+  test("overlays partial done items without dropping the terminal transcript", async () => {
+    const terminalOutput = [
+      {
+        id: "search-first",
+        type: "web_search_call",
+        status: "completed",
+        action: { type: "search", query: "first" },
+      },
+      {
+        id: "search-second",
+        type: "web_search_call",
+        status: "completed",
+        action: { type: "open", url: "https://example.test" },
+      },
+      {
+        id: "message-complete",
+        type: "message",
+        role: "assistant",
+        status: "completed",
+        content: [
+          {
+            type: "output_text",
+            text: "complete answer",
+            annotations: [
+              {
+                type: "url_citation",
+                start_index: 0,
+                end_index: 8,
+                url: "https://example.test",
+                title: "Example",
+              },
+            ],
+          },
+        ],
+      },
+    ] as ResponsesResult["output"]
+    const terminal = makeResult({ output: terminalOutput })
+    const doneFirst = {
+      ...terminalOutput[0],
+      provider_done_extension: true,
+    } as ResponsesResult["output"][number]
+
+    const collected = await collect([
+      {
+        data: JSON.stringify({
+          item: doneFirst,
+          output_index: 0,
+          sequence_number: 1,
+          type: "response.output_item.done",
+        }),
+      },
+      {
+        data: JSON.stringify({
+          response: terminal,
+          sequence_number: 2,
+          type: "response.completed",
+        }),
+      },
+    ])
+
+    expect(collected.output).toEqual([
+      doneFirst,
+      terminalOutput[1],
+      terminalOutput[2],
+    ])
+  })
+
+  test("rejects output-index gaps instead of compacting the transcript", async () => {
+    const result = makeResult({ output: [] })
+    let thrown: unknown
+    try {
+      await collect([
+        {
+          data: JSON.stringify({
+            item: makeResult().output[0],
+            output_index: 2,
+            sequence_number: 1,
+            type: "response.output_item.done",
+          }),
+        },
+        {
+          data: JSON.stringify({
+            response: result,
+            sequence_number: 2,
+            type: "response.completed",
+          }),
+        },
+      ])
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(thrown).toBeInstanceOf(Error)
+    expect((thrown as Error).message).toBe(
+      "Responses terminal output is missing output_index 0",
+    )
+  })
+
+  test("keeps waiting for a typed terminal after an early DONE marker", async () => {
+    const result = makeResult()
+    const collected = await collect([
+      { data: "[DONE]" },
+      {
+        data: JSON.stringify({
+          response: result,
+          sequence_number: 1,
+          type: "response.completed",
+        }),
+      },
+    ])
+
+    expect(collected).toEqual(result)
+  })
+
+  test("surfaces an independent error with a content-safe message", async () => {
     let thrown: unknown
     try {
       await collect([
@@ -152,10 +269,12 @@ describe("responses stream collection", () => {
     }
 
     expect(thrown).toBeInstanceOf(Error)
-    expect((thrown as Error).message).toBe("stream failed")
+    expect((thrown as Error).message).toBe(
+      "Responses upstream reported an error",
+    )
   })
 
-  test("throws the failed response message", async () => {
+  test("surfaces a failed response with a content-safe message", async () => {
     const failedResult = makeResult({
       error: { code: "upstream_error", message: "response failed" },
       output: [],
@@ -178,10 +297,127 @@ describe("responses stream collection", () => {
     }
 
     expect(thrown).toBeInstanceOf(Error)
-    expect((thrown as Error).message).toBe("response failed")
+    expect((thrown as Error).message).toBe(
+      "Responses upstream reported an error",
+    )
   })
 
-  test("uses the configured error prefix for a failed response without details", async () => {
+  test("exposes failed terminal usage without retaining private response data", async () => {
+    const failedResult = makeResult({
+      error: {
+        code: "server_error",
+        message: "private upstream detail bearer-secret",
+      },
+      id: "resp-private-opaque-id",
+      output: [
+        {
+          id: "msg-private-output",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [
+            {
+              type: "output_text",
+              text: "private generated output",
+              annotations: [],
+            },
+          ],
+        },
+      ],
+      output_text: "private generated output",
+      status: "failed",
+      usage: {
+        input_tokens: 21,
+        input_tokens_details: {
+          cached_tokens: 5,
+          cache_write_tokens: 3,
+        },
+        output_tokens: 8,
+        total_tokens: 29,
+      },
+    })
+
+    let thrown: unknown
+    try {
+      await collect([
+        {
+          data: JSON.stringify({
+            copilot_usage: { total_nano_aiu: 4_500_000_000 },
+            response: failedResult,
+            sequence_number: 1,
+            type: "response.failed",
+          }),
+        },
+      ])
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(thrown).toBeInstanceOf(BufferedResponsesTerminalError)
+    expect((thrown as BufferedResponsesTerminalError).failure).toEqual({
+      errorCode: "upstream_error",
+      message: "Responses upstream reported an error",
+      terminal: "response.failed",
+      usage: {
+        cache_creation_input_tokens: 3,
+        cache_read_input_tokens: 5,
+        input_tokens: 13,
+        output_tokens: 8,
+        total_nano_aiu: 4_500_000_000,
+        total_tokens: 29,
+      },
+    })
+    const serialized = JSON.stringify(thrown)
+    expect(serialized).not.toContain("private upstream")
+    expect(serialized).not.toContain("resp-private")
+    expect(serialized).not.toContain("private generated")
+  })
+
+  test("normalizes usage attached to an independent error terminal", async () => {
+    let thrown: unknown
+    try {
+      await collect([
+        {
+          data: JSON.stringify({
+            code: "rate_limit_exceeded",
+            copilot_usage: { total_nano_aiu: 700 },
+            error: {
+              code: "rate_limit_exceeded",
+              message: "private provider quota detail",
+            },
+            message: "private provider quota detail",
+            sequence_number: 1,
+            type: "error",
+            usage: {
+              input_tokens: 12,
+              input_tokens_details: { cached_tokens: 2 },
+              output_tokens: 1,
+              total_tokens: 13,
+            },
+          }),
+        },
+      ])
+    } catch (error) {
+      thrown = error
+    }
+
+    expect(thrown).toBeInstanceOf(BufferedResponsesTerminalError)
+    expect((thrown as BufferedResponsesTerminalError).failure).toEqual({
+      errorCode: "rate_limited",
+      message: "Responses upstream reported an error",
+      terminal: "error",
+      usage: {
+        cache_read_input_tokens: 2,
+        input_tokens: 10,
+        output_tokens: 1,
+        total_nano_aiu: 700,
+        total_tokens: 13,
+      },
+    })
+    expect(JSON.stringify(thrown)).not.toContain("private provider")
+  })
+
+  test("uses a fixed safe message for a failed response without details", async () => {
     const failedResult = makeResult({
       output: [],
       output_text: "",
@@ -207,7 +443,9 @@ describe("responses stream collection", () => {
     }
 
     expect(thrown).toBeInstanceOf(Error)
-    expect((thrown as Error).message).toBe("Codex responses stream failed")
+    expect((thrown as Error).message).toBe(
+      "Responses upstream reported an error",
+    )
   })
 
   test("throws when the stream ends without a terminal event", async () => {
@@ -241,7 +479,7 @@ describe("responses stream collection", () => {
 
     expect(thrown).toBeInstanceOf(Error)
     expect((thrown as Error).message).toBe(
-      "Responses stream ended without a response",
+      "Responses stream ended without a terminal event",
     )
   })
 })

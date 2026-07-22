@@ -12,16 +12,6 @@ import {
 import { THINKING_TEXT } from "./non-stream-translation"
 import { mapOpenAIStopReasonToAnthropic } from "./utils"
 
-function isToolBlockOpen(state: AnthropicStreamState): boolean {
-  if (!state.contentBlockOpen) {
-    return false
-  }
-  // Check if the current block index corresponds to any known tool call
-  return Object.values(state.toolCalls).some(
-    (tc) => tc.anthropicBlockIndex === state.contentBlockIndex,
-  )
-}
-
 export function translateChunkToAnthropicEvents(
   chunk: ChatCompletionChunk,
   state: AnthropicStreamState,
@@ -29,7 +19,9 @@ export function translateChunkToAnthropicEvents(
   const events: Array<AnthropicStreamEventData> = []
 
   if (chunk.choices.length === 0) {
-    completePendingMessage(state, events, chunk)
+    if (chunk.usage) {
+      completePendingMessage(state, events, chunk)
+    }
     return events
   }
 
@@ -86,19 +78,26 @@ function handleFinish(
 ) {
   const { events, chunk } = context
   if (choice.finish_reason && choice.finish_reason.length > 0) {
+    const thinkingClosed = closeThinkingBlockIfOpen(
+      state,
+      events,
+      choice.delta.reasoning_opaque,
+    )
+
     if (state.contentBlockOpen) {
-      const toolBlockOpen = isToolBlockOpen(state)
       context.events.push({
         type: "content_block_stop",
         index: state.contentBlockIndex,
       })
       state.contentBlockOpen = false
       state.contentBlockIndex++
-      if (!toolBlockOpen) {
-        handleReasoningOpaque(choice.delta, events, state)
-      }
     }
 
+    if (!thinkingClosed) {
+      handleReasoningOpaque(choice.delta, events, state)
+    }
+
+    flushBufferedToolCalls(state, events)
     flushDeferredContent(state, events)
 
     state.pendingMessageDelta = {
@@ -157,58 +156,31 @@ function handleToolCalls(
   events: Array<AnthropicStreamEventData>,
 ) {
   if (delta.tool_calls && delta.tool_calls.length > 0) {
-    closeThinkingBlockIfOpen(state, events)
-
-    handleReasoningOpaqueInToolCalls(state, events, delta)
+    const thinkingClosed = closeThinkingBlockIfOpen(
+      state,
+      events,
+      delta.reasoning_opaque,
+    )
+    if (!thinkingClosed) {
+      handleReasoningOpaqueInToolCalls(state, events, delta)
+    }
 
     for (const toolCall of delta.tool_calls) {
-      if (toolCall.id && toolCall.function?.name) {
-        // New tool call starting.
-        if (state.contentBlockOpen) {
-          // Close any previously open block.
-          events.push({
-            type: "content_block_stop",
-            index: state.contentBlockIndex,
-          })
-          state.contentBlockIndex++
-          state.contentBlockOpen = false
-        }
-
-        const anthropicBlockIndex = state.contentBlockIndex
-        state.toolCalls[toolCall.index] = {
-          id: toolCall.id,
-          name: toolCall.function.name,
-          anthropicBlockIndex,
-        }
-
-        events.push({
-          type: "content_block_start",
-          index: anthropicBlockIndex,
-          content_block: {
-            type: "tool_use",
-            id: toolCall.id,
-            name: toolCall.function.name,
-            input: {},
-          },
-        })
-        state.contentBlockOpen = true
+      const toolCallState = state.toolCalls[toolCall.index] ?? {
+        arguments: "",
       }
 
+      if (toolCall.id) {
+        toolCallState.id = toolCall.id
+      }
+      if (toolCall.function?.name) {
+        toolCallState.name = toolCall.function.name
+      }
       if (toolCall.function?.arguments) {
-        const toolCallInfo = state.toolCalls[toolCall.index]
-        // Tool call can still be empty
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-        if (toolCallInfo) {
-          events.push({
-            type: "content_block_delta",
-            index: toolCallInfo.anthropicBlockIndex,
-            delta: {
-              type: "input_json_delta",
-              partial_json: toolCall.function.arguments,
-            },
-          })
-        }
+        toolCallState.arguments += toolCall.function.arguments
       }
+
+      state.toolCalls[toolCall.index] = toolCallState
     }
   }
 }
@@ -218,7 +190,7 @@ function handleReasoningOpaqueInToolCalls(
   events: Array<AnthropicStreamEventData>,
   delta: Delta,
 ) {
-  if (state.contentBlockOpen && !isToolBlockOpen(state)) {
+  if (state.contentBlockOpen) {
     events.push({
       type: "content_block_stop",
       index: state.contentBlockIndex,
@@ -237,7 +209,7 @@ function handleContent(
   if (delta.content && delta.content.length > 0) {
     closeThinkingBlockIfOpen(state, events)
 
-    if (isToolBlockOpen(state) || hasToolCallDelta(delta)) {
+    if (hasBufferedToolCalls(state) || hasToolCallDelta(delta)) {
       state.deferredContent = `${state.deferredContent ?? ""}${delta.content}`
       return
     }
@@ -292,6 +264,53 @@ function handleContent(
 
 function hasToolCallDelta(delta: Delta): boolean {
   return Boolean(delta.tool_calls && delta.tool_calls.length > 0)
+}
+
+const hasBufferedToolCalls = (state: AnthropicStreamState): boolean =>
+  Object.keys(state.toolCalls).length > 0
+
+function flushBufferedToolCalls(
+  state: AnthropicStreamState,
+  events: Array<AnthropicStreamEventData>,
+): void {
+  const toolCalls = Object.entries(state.toolCalls).sort(
+    ([left], [right]) => Number(left) - Number(right),
+  )
+
+  for (const [, toolCall] of toolCalls) {
+    if (!toolCall.id || !toolCall.name) {
+      continue
+    }
+
+    const blockIndex = state.contentBlockIndex
+    events.push({
+      type: "content_block_start",
+      index: blockIndex,
+      content_block: {
+        type: "tool_use",
+        id: toolCall.id,
+        name: toolCall.name,
+        input: {},
+      },
+    })
+    if (toolCall.arguments) {
+      events.push({
+        type: "content_block_delta",
+        index: blockIndex,
+        delta: {
+          type: "input_json_delta",
+          partial_json: toolCall.arguments,
+        },
+      })
+    }
+    events.push({
+      type: "content_block_stop",
+      index: blockIndex,
+    })
+    state.contentBlockIndex++
+  }
+
+  state.toolCalls = {}
 }
 
 function flushDeferredContent(
@@ -375,6 +394,10 @@ function handleReasoningOpaque(
   events: Array<AnthropicStreamEventData>,
   state: AnthropicStreamState,
 ) {
+  if (state.emitThinking === false) {
+    return
+  }
+
   if (delta.reasoning_opaque && delta.reasoning_opaque.length > 0) {
     events.push(
       {
@@ -415,6 +438,10 @@ function handleThinkingText(
   state: AnthropicStreamState,
   events: Array<AnthropicStreamEventData>,
 ) {
+  if (state.emitThinking === false) {
+    return
+  }
+
   const reasoningText = delta.reasoning_text ?? delta.reasoning_content
   if (reasoningText && reasoningText.length > 0) {
     // compatible with copilot API returning content->reasoning_text->reasoning_opaque in different deltas
@@ -453,7 +480,8 @@ function handleThinkingText(
 function closeThinkingBlockIfOpen(
   state: AnthropicStreamState,
   events: Array<AnthropicStreamEventData>,
-): void {
+  signature?: string | null,
+): boolean {
   if (state.thinkingBlockOpen) {
     events.push(
       {
@@ -461,7 +489,7 @@ function closeThinkingBlockIfOpen(
         index: state.contentBlockIndex,
         delta: {
           type: "signature_delta",
-          signature: "",
+          signature: signature ?? "",
         },
       },
       {
@@ -471,7 +499,9 @@ function closeThinkingBlockIfOpen(
     )
     state.contentBlockIndex++
     state.thinkingBlockOpen = false
+    return true
   }
+  return false
 }
 
 export function translateErrorToAnthropicErrorEvent(): AnthropicStreamEventData {

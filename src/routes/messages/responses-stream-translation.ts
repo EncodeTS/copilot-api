@@ -15,6 +15,8 @@ import {
   type ResponseReasoningSummaryPartAddedEvent,
   type ResponseReasoningSummaryTextDeltaEvent,
   type ResponseReasoningSummaryTextDoneEvent,
+  type ResponseRefusalDeltaEvent,
+  type ResponseRefusalDoneEvent,
   type ResponsesResult,
   type ResponseStreamEvent,
   type ResponseTextDeltaEvent,
@@ -22,10 +24,13 @@ import {
 } from "~/services/copilot/create-responses"
 
 import { type AnthropicStreamEventData } from "./anthropic-types"
+import type { ReasoningCarrierEndpoint } from "./reasoning-carrier"
 import {
   REASONING_SUMMARY_SEPARATOR,
   THINKING_TEXT,
   encodeCompactionCarrierSignature,
+  encodeReasoningCarrierSignature,
+  mapResponsesUsageToAnthropic,
   resolveToolUseName,
   translateResponsesResultToAnthropic,
 } from "./responses-translation"
@@ -36,6 +41,40 @@ class FunctionCallArgumentsValidationError extends Error {
   constructor(message: string) {
     super(message)
     this.name = "FunctionCallArgumentsValidationError"
+  }
+}
+
+class CanonicalStreamValueValidationError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "CanonicalStreamValueValidationError"
+  }
+}
+
+const getCanonicalMissingSuffix = (
+  accumulated: string,
+  canonical: string,
+  label: string,
+): string => {
+  if (!canonical.startsWith(accumulated)) {
+    throw new CanonicalStreamValueValidationError(
+      `${label} done value diverged from streamed deltas.`,
+    )
+  }
+
+  return canonical.slice(accumulated.length)
+}
+
+const isValidFunctionArguments = (argumentsText: string): boolean => {
+  if (argumentsText.length === 0) {
+    return true
+  }
+
+  try {
+    const value: unknown = JSON.parse(argumentsText)
+    return typeof value === "object" && value !== null && !Array.isArray(value)
+  } catch {
+    return false
   }
 }
 
@@ -66,19 +105,26 @@ const updateWhitespaceRunState = (
 }
 
 export interface ResponsesStreamState {
+  carrierSource?: ReasoningCarrierEndpoint
   messageStartSent: boolean
   messageCompleted: boolean
   nextContentBlockIndex: number
   blockIndexByKey: Map<string, number>
   openBlocks: Set<number>
   blockHasDelta: Set<number>
+  textByBlockKey: Map<string, string>
   reasoningSummaryHasDelta: Set<string>
+  reasoningSummaryTextByKey: Map<string, string>
+  completedFunctionCallStateByOutputIndex: Map<number, FunctionCallStreamState>
   functionCallStateByOutputIndex: Map<number, FunctionCallStreamState>
+  outputItemDoneIndexes: Set<number>
   toolSearchName: string
   hasToolCall: boolean
+  emitThinking: boolean
 }
 
 type FunctionCallStreamState = {
+  argumentsText: string
   blockIndex: number
   toolCallId: string
   name: string
@@ -86,18 +132,26 @@ type FunctionCallStreamState = {
 }
 
 export const createResponsesStreamState = (options?: {
+  carrierSource?: ReasoningCarrierEndpoint
   toolSearchName?: string
+  emitThinking?: boolean
 }): ResponsesStreamState => ({
+  carrierSource: options?.carrierSource,
   messageStartSent: false,
   messageCompleted: false,
   nextContentBlockIndex: 0,
   blockIndexByKey: new Map(),
   openBlocks: new Set(),
   blockHasDelta: new Set(),
+  textByBlockKey: new Map(),
   reasoningSummaryHasDelta: new Set(),
+  reasoningSummaryTextByKey: new Map(),
+  completedFunctionCallStateByOutputIndex: new Map(),
   functionCallStateByOutputIndex: new Map(),
+  outputItemDoneIndexes: new Set(),
   toolSearchName: options?.toolSearchName ?? BRIDGE_TOOL_SEARCH_NAME,
   hasToolCall: false,
+  emitThinking: options?.emitThinking ?? true,
 })
 
 export const translateResponsesStreamEvent = (
@@ -132,6 +186,15 @@ export const translateResponsesStreamEvent = (
 
     case "response.output_text.done": {
       return handleOutputTextDone(rawEvent, state)
+    }
+    case "response.content_part.done": {
+      return handleContentPartDone(rawEvent, state)
+    }
+    case "response.refusal.delta": {
+      return handleRefusalDelta(rawEvent, state)
+    }
+    case "response.refusal.done": {
+      return handleRefusalDone(rawEvent, state)
     }
     case "response.output_item.done": {
       return handleOutputItemDone(rawEvent, state)
@@ -201,6 +264,11 @@ const handleOutputItemAdded = (
       },
     })
     state.blockHasDelta.add(blockIndex)
+    const functionCallState =
+      state.functionCallStateByOutputIndex.get(outputIndex)
+    if (functionCallState) {
+      functionCallState.argumentsText += initialArguments
+    }
   }
 
   return events
@@ -214,6 +282,14 @@ const handleOutputItemDone = (
   const item = rawEvent.item
   const itemType = item.type
   const outputIndex = rawEvent.output_index
+  state.outputItemDoneIndexes.add(outputIndex)
+
+  if (
+    (itemType === "reasoning" || itemType === "compaction")
+    && !state.emitThinking
+  ) {
+    return events
+  }
 
   if (itemType === "tool_search_call") {
     const blockIndex = openFunctionCallBlock(state, {
@@ -236,7 +312,16 @@ const handleOutputItemDone = (
       state.blockHasDelta.add(blockIndex)
     }
 
-    state.functionCallStateByOutputIndex.delete(outputIndex)
+    const functionCallState =
+      state.functionCallStateByOutputIndex.get(outputIndex)
+    if (functionCallState) {
+      functionCallState.argumentsText = finalArguments ?? ""
+      state.completedFunctionCallStateByOutputIndex.set(
+        outputIndex,
+        functionCallState,
+      )
+      state.functionCallStateByOutputIndex.delete(outputIndex)
+    }
     return events
   }
 
@@ -277,34 +362,39 @@ const handleOutputItemDone = (
     return events
   }
 
-  const blockIndex = openThinkingBlockIfNeeded(state, outputIndex, events)
-  const signature = (item.encrypted_content ?? "") + "@" + item.id
-  if (signature) {
-    // Compatible with opencode, it will filter out blocks where the thinking text is empty, so we add a default thinking text here
-    if (
-      (!item.summary || item.summary.length === 0)
-      && !state.blockHasDelta.has(blockIndex)
-    ) {
-      events.push({
-        type: "content_block_delta",
-        index: blockIndex,
-        delta: {
-          type: "thinking_delta",
-          thinking: THINKING_TEXT,
-        },
-      })
-    }
+  const signature = encodeReasoningCarrierSignature(
+    item,
+    state.carrierSource ?? { model: "unknown", provider: "copilot" },
+  )
+  if (!signature) {
+    return events
+  }
 
+  const blockIndex = openThinkingBlockIfNeeded(state, outputIndex, events)
+  // Compatible with opencode, it will filter out blocks where the thinking text is empty, so we add a default thinking text here
+  if (
+    (!item.summary || item.summary.length === 0)
+    && !state.blockHasDelta.has(blockIndex)
+  ) {
     events.push({
       type: "content_block_delta",
       index: blockIndex,
       delta: {
-        type: "signature_delta",
-        signature,
+        type: "thinking_delta",
+        thinking: THINKING_TEXT,
       },
     })
-    state.blockHasDelta.add(blockIndex)
   }
+
+  events.push({
+    type: "content_block_delta",
+    index: blockIndex,
+    delta: {
+      type: "signature_delta",
+      signature,
+    },
+  })
+  state.blockHasDelta.add(blockIndex)
 
   return events
 }
@@ -354,6 +444,7 @@ const handleFunctionCallArgumentsDelta = (
     )
   }
   functionCallState.consecutiveWhitespaceCount = nextCount
+  functionCallState.argumentsText += deltaText
 
   events.push({
     type: "content_block_delta",
@@ -381,19 +472,54 @@ const handleFunctionCallArgumentsDone = (
 
   const finalArguments =
     typeof rawEvent.arguments === "string" ? rawEvent.arguments : undefined
+  const functionCallState =
+    state.functionCallStateByOutputIndex.get(outputIndex)
 
-  if (!state.blockHasDelta.has(blockIndex) && finalArguments) {
+  let missingSuffix = ""
+  if (finalArguments !== undefined) {
+    try {
+      missingSuffix = getCanonicalMissingSuffix(
+        functionCallState?.argumentsText ?? "",
+        finalArguments,
+        "Responses function arguments",
+      )
+    } catch (error) {
+      return handleCanonicalStreamValueValidationError(error, state, events)
+    }
+
+    if (!isValidFunctionArguments(finalArguments)) {
+      return handleCanonicalStreamValueValidationError(
+        new CanonicalStreamValueValidationError(
+          "Responses function arguments done value is not a valid JSON object.",
+        ),
+        state,
+        events,
+      )
+    }
+  }
+
+  if (missingSuffix) {
     events.push({
       type: "content_block_delta",
       index: blockIndex,
       delta: {
         type: "input_json_delta",
-        partial_json: finalArguments,
+        partial_json: missingSuffix,
       },
     })
     state.blockHasDelta.add(blockIndex)
   }
 
+  if (functionCallState && finalArguments !== undefined) {
+    functionCallState.argumentsText = finalArguments
+  }
+
+  if (functionCallState) {
+    state.completedFunctionCallStateByOutputIndex.set(
+      outputIndex,
+      functionCallState,
+    )
+  }
   state.functionCallStateByOutputIndex.delete(outputIndex)
   return events
 }
@@ -426,6 +552,11 @@ const handleOutputTextDelta = (
     },
   })
   state.blockHasDelta.add(blockIndex)
+  const key = getBlockKey(outputIndex, contentIndex)
+  state.textByBlockKey.set(
+    key,
+    (state.textByBlockKey.get(key) ?? "") + deltaText,
+  )
 
   return events
 }
@@ -434,6 +565,10 @@ const handleReasoningSummaryTextDelta = (
   rawEvent: ResponseReasoningSummaryTextDeltaEvent,
   state: ResponsesStreamState,
 ): Array<AnthropicStreamEventData> => {
+  if (!state.emitThinking) {
+    return []
+  }
+
   const outputIndex = rawEvent.output_index
   const summaryIndex = rawEvent.summary_index
   const deltaText = rawEvent.delta
@@ -454,7 +589,12 @@ const handleReasoningSummaryTextDelta = (
     },
   })
   state.blockHasDelta.add(blockIndex)
-  state.reasoningSummaryHasDelta.add(getBlockKey(outputIndex, summaryIndex))
+  const summaryKey = getBlockKey(outputIndex, summaryIndex)
+  state.reasoningSummaryHasDelta.add(summaryKey)
+  state.reasoningSummaryTextByKey.set(
+    summaryKey,
+    (state.reasoningSummaryTextByKey.get(summaryKey) ?? "") + deltaText,
+  )
 
   return events
 }
@@ -463,14 +603,19 @@ const handleReasoningSummaryPartAdded = (
   rawEvent: ResponseReasoningSummaryPartAddedEvent,
   state: ResponsesStreamState,
 ): Array<AnthropicStreamEventData> => {
-  const events = new Array<AnthropicStreamEventData>()
-  const blockIndex = openThinkingBlockIfNeeded(
-    state,
-    rawEvent.output_index,
-    events,
-  )
+  if (!state.emitThinking) {
+    return []
+  }
 
+  const events = new Array<AnthropicStreamEventData>()
   if (rawEvent.summary_index === 0) {
+    return events
+  }
+
+  const blockIndex = state.blockIndexByKey.get(
+    getBlockKey(rawEvent.output_index, 0),
+  )
+  if (blockIndex === undefined || !state.blockHasDelta.has(blockIndex)) {
     return events
   }
 
@@ -490,24 +635,59 @@ const handleReasoningSummaryTextDone = (
   rawEvent: ResponseReasoningSummaryTextDoneEvent,
   state: ResponsesStreamState,
 ): Array<AnthropicStreamEventData> => {
+  if (!state.emitThinking) {
+    return []
+  }
+
   const outputIndex = rawEvent.output_index
   const summaryIndex = rawEvent.summary_index
   const text = rawEvent.text
   const events = new Array<AnthropicStreamEventData>()
-  const blockIndex = openThinkingBlockIfNeeded(state, outputIndex, events)
   const summaryKey = getBlockKey(outputIndex, summaryIndex)
-
-  if (text && !state.reasoningSummaryHasDelta.has(summaryKey)) {
-    events.push({
-      type: "content_block_delta",
-      index: blockIndex,
-      delta: {
-        type: "thinking_delta",
-        thinking: text,
-      },
-    })
-    state.blockHasDelta.add(blockIndex)
+  const accumulated = state.reasoningSummaryTextByKey.get(summaryKey) ?? ""
+  let missingSuffix: string
+  try {
+    missingSuffix = getCanonicalMissingSuffix(
+      accumulated,
+      text,
+      "Responses reasoning summary",
+    )
+  } catch (error) {
+    return handleCanonicalStreamValueValidationError(error, state, events)
   }
+
+  if (!missingSuffix) {
+    state.reasoningSummaryTextByKey.set(summaryKey, text)
+    return events
+  }
+
+  const existingBlockIndex = state.blockIndexByKey.get(
+    getBlockKey(outputIndex, 0),
+  )
+  if (
+    existingBlockIndex !== undefined
+    && !state.openBlocks.has(existingBlockIndex)
+  ) {
+    return handleCanonicalStreamValueValidationError(
+      new CanonicalStreamValueValidationError(
+        "Responses reasoning summary terminal value arrived after its content block closed.",
+      ),
+      state,
+      events,
+    )
+  }
+
+  const blockIndex = openThinkingBlockIfNeeded(state, outputIndex, events)
+  events.push({
+    type: "content_block_delta",
+    index: blockIndex,
+    delta: {
+      type: "thinking_delta",
+      thinking: missingSuffix,
+    },
+  })
+  state.blockHasDelta.add(blockIndex)
+  state.reasoningSummaryTextByKey.set(summaryKey, text)
 
   return events
 }
@@ -520,25 +700,105 @@ const handleOutputTextDone = (
   const outputIndex = rawEvent.output_index
   const contentIndex = rawEvent.content_index
   const text = rawEvent.text
+  const key = getBlockKey(outputIndex, contentIndex)
+
+  const accumulated = state.textByBlockKey.get(key) ?? ""
+  let missingSuffix: string
+  try {
+    missingSuffix = getCanonicalMissingSuffix(
+      accumulated,
+      text,
+      "Responses output text",
+    )
+  } catch (error) {
+    return handleCanonicalStreamValueValidationError(error, state, events)
+  }
+
+  if (!missingSuffix) {
+    state.textByBlockKey.set(key, text)
+    return events
+  }
+
+  const existingBlockIndex = state.blockIndexByKey.get(key)
+  if (
+    existingBlockIndex !== undefined
+    && !state.openBlocks.has(existingBlockIndex)
+  ) {
+    return handleCanonicalStreamValueValidationError(
+      new CanonicalStreamValueValidationError(
+        "Responses output text terminal value arrived after its content block closed.",
+      ),
+      state,
+      events,
+    )
+  }
 
   const blockIndex = openTextBlockIfNeeded(state, {
     outputIndex,
     contentIndex,
     events,
   })
-
-  if (text && !state.blockHasDelta.has(blockIndex)) {
-    events.push({
-      type: "content_block_delta",
-      index: blockIndex,
-      delta: {
-        type: "text_delta",
-        text,
-      },
-    })
-  }
+  events.push({
+    type: "content_block_delta",
+    index: blockIndex,
+    delta: {
+      type: "text_delta",
+      text: missingSuffix,
+    },
+  })
+  state.textByBlockKey.set(key, text)
 
   return events
+}
+
+const handleRefusalDelta = (
+  rawEvent: ResponseRefusalDeltaEvent,
+  state: ResponsesStreamState,
+): Array<AnthropicStreamEventData> =>
+  handleOutputTextDelta(
+    {
+      ...rawEvent,
+      type: "response.output_text.delta",
+    },
+    state,
+  )
+
+const handleRefusalDone = (
+  rawEvent: ResponseRefusalDoneEvent,
+  state: ResponsesStreamState,
+): Array<AnthropicStreamEventData> =>
+  handleOutputTextDone(
+    {
+      ...rawEvent,
+      text: rawEvent.refusal,
+      type: "response.output_text.done",
+    },
+    state,
+  )
+
+const handleContentPartDone = (
+  rawEvent: Extract<
+    ResponseStreamEvent,
+    { type: "response.content_part.done" }
+  >,
+  state: ResponsesStreamState,
+): Array<AnthropicStreamEventData> => {
+  const part = rawEvent.part as { refusal?: unknown; type?: unknown }
+  if (part.type !== "refusal" || typeof part.refusal !== "string") {
+    return []
+  }
+
+  return handleOutputTextDone(
+    {
+      content_index: rawEvent.content_index,
+      item_id: rawEvent.item_id,
+      output_index: rawEvent.output_index,
+      sequence_number: rawEvent.sequence_number,
+      text: part.refusal,
+      type: "response.output_text.done",
+    },
+    state,
+  )
 }
 
 const handleResponseCompleted = (
@@ -548,9 +808,18 @@ const handleResponseCompleted = (
   const response = rawEvent.response
   const events = new Array<AnthropicStreamEventData>()
 
+  if (!state.messageStartSent) {
+    events.push(...messageStart(state, response))
+  }
+  backfillTerminalOutput(response, state, events)
+  if (state.messageCompleted) {
+    return events
+  }
   closeAllOpenBlocks(state, events)
   const anthropic = translateResponsesResultToAnthropic(response, {
+    carrierSource: state.carrierSource,
     hasToolCall: state.hasToolCall,
+    includeThinking: state.emitThinking,
     toolSearchName: state.toolSearchName,
   })
   events.push(
@@ -566,6 +835,138 @@ const handleResponseCompleted = (
   )
   state.messageCompleted = true
   return events
+}
+
+const backfillTerminalOutput = (
+  response: ResponsesResult,
+  state: ResponsesStreamState,
+  events: Array<AnthropicStreamEventData>,
+): void => {
+  for (const [outputIndex, item] of response.output.entries()) {
+    if (item.type === "message") {
+      for (const [contentIndex, content] of (item.content ?? []).entries()) {
+        const block = content as {
+          refusal?: unknown
+          text?: unknown
+          type?: unknown
+        }
+        const text =
+          block.type === "output_text" && typeof block.text === "string" ?
+            block.text
+          : block.type === "refusal" && typeof block.refusal === "string" ?
+            block.refusal
+          : undefined
+        if (text === undefined) {
+          continue
+        }
+
+        events.push(
+          ...handleOutputTextDone(
+            {
+              content_index: contentIndex,
+              item_id: item.id,
+              output_index: outputIndex,
+              sequence_number: 0,
+              text,
+              type: "response.output_text.done",
+            },
+            state,
+          ),
+        )
+        if (state.messageCompleted) {
+          return
+        }
+      }
+      continue
+    }
+
+    if (item.type === "function_call") {
+      const existingFunctionCall =
+        state.functionCallStateByOutputIndex.get(outputIndex)
+        ?? state.completedFunctionCallStateByOutputIndex.get(outputIndex)
+      if (existingFunctionCall) {
+        let missingSuffix: string
+        try {
+          missingSuffix = getCanonicalMissingSuffix(
+            existingFunctionCall.argumentsText,
+            item.arguments,
+            "Responses function arguments",
+          )
+        } catch (error) {
+          events.push(
+            ...handleCanonicalStreamValueValidationError(error, state),
+          )
+          return
+        }
+        if (!isValidFunctionArguments(item.arguments)) {
+          events.push(
+            ...handleCanonicalStreamValueValidationError(
+              new CanonicalStreamValueValidationError(
+                "Responses function arguments done value is not a valid JSON object.",
+              ),
+              state,
+            ),
+          )
+          return
+        }
+        if (!missingSuffix) {
+          continue
+        }
+        if (!state.openBlocks.has(existingFunctionCall.blockIndex)) {
+          events.push(
+            ...handleCanonicalStreamValueValidationError(
+              new CanonicalStreamValueValidationError(
+                "Responses function arguments terminal value arrived after its content block closed.",
+              ),
+              state,
+            ),
+          )
+          return
+        }
+        state.functionCallStateByOutputIndex.set(
+          outputIndex,
+          existingFunctionCall,
+        )
+      }
+      openFunctionCallBlock(state, {
+        outputIndex,
+        toolCallId: item.call_id,
+        name: resolveToolUseName(item),
+        events,
+      })
+      events.push(
+        ...handleFunctionCallArgumentsDone(
+          {
+            arguments: item.arguments,
+            item_id: item.id ?? item.call_id,
+            name: item.name,
+            output_index: outputIndex,
+            sequence_number: 0,
+            type: "response.function_call_arguments.done",
+          },
+          state,
+        ),
+      )
+      if (state.messageCompleted) {
+        return
+      }
+      continue
+    }
+
+    if (!state.outputItemDoneIndexes.has(outputIndex)) {
+      events.push(
+        ...handleOutputItemDone(
+          {
+            item,
+            output_index: outputIndex,
+            sequence_number: 0,
+            type: "response.output_item.done",
+          },
+          state,
+        ),
+      )
+    }
+  }
 }
 
 const handleResponseFailed = (
@@ -613,18 +1014,28 @@ const handleFunctionCallArgumentsValidationError = (
   return events
 }
 
+const handleCanonicalStreamValueValidationError = (
+  error: unknown,
+  state: ResponsesStreamState,
+  events: Array<AnthropicStreamEventData> = [],
+): Array<AnthropicStreamEventData> => {
+  abortAllOpenBlocks(state)
+  state.messageCompleted = true
+  events.push(
+    buildErrorEvent(
+      error instanceof Error ? error.message : "Responses stream diverged",
+    ),
+  )
+  return events
+}
+
 const messageStart = (
   state: ResponsesStreamState,
   response: ResponsesResult,
 ): Array<AnthropicStreamEventData> => {
+  state.carrierSource ??= { model: response.model, provider: "copilot" }
   state.messageStartSent = true
-  const inputCachedTokens = response.usage?.input_tokens_details?.cached_tokens
-  const cacheWriteTokens =
-    response.usage?.input_tokens_details?.cache_write_tokens
-  const inputTokens =
-    (response.usage?.input_tokens ?? 0)
-    - (inputCachedTokens ?? 0)
-    - (cacheWriteTokens ?? 0)
+  const usage = mapResponsesUsageToAnthropic(response.usage)
   return [
     {
       type: "message_start",
@@ -637,12 +1048,8 @@ const messageStart = (
         stop_reason: null,
         stop_sequence: null,
         usage: {
-          input_tokens: inputTokens,
+          ...usage,
           output_tokens: 0,
-          cache_read_input_tokens: inputCachedTokens ?? 0,
-          ...(cacheWriteTokens !== undefined && {
-            cache_creation_input_tokens: cacheWriteTokens,
-          }),
         },
       },
     },
@@ -745,7 +1152,22 @@ const closeAllOpenBlocks = (
   closeOpenBlocks(state, events)
 
   state.functionCallStateByOutputIndex.clear()
+  state.completedFunctionCallStateByOutputIndex.clear()
+  state.outputItemDoneIndexes.clear()
   state.reasoningSummaryHasDelta.clear()
+  state.reasoningSummaryTextByKey.clear()
+  state.textByBlockKey.clear()
+}
+
+const abortAllOpenBlocks = (state: ResponsesStreamState): void => {
+  state.openBlocks.clear()
+  state.blockHasDelta.clear()
+  state.functionCallStateByOutputIndex.clear()
+  state.completedFunctionCallStateByOutputIndex.clear()
+  state.outputItemDoneIndexes.clear()
+  state.reasoningSummaryHasDelta.clear()
+  state.reasoningSummaryTextByKey.clear()
+  state.textByBlockKey.clear()
 }
 
 export const buildErrorEvent = (message: string): AnthropicStreamEventData => ({
@@ -772,7 +1194,12 @@ const openFunctionCallBlock = (
 
   state.hasToolCall = true
 
-  let functionCallState = state.functionCallStateByOutputIndex.get(outputIndex)
+  let functionCallState =
+    state.functionCallStateByOutputIndex.get(outputIndex)
+    ?? state.completedFunctionCallStateByOutputIndex.get(outputIndex)
+  if (functionCallState) {
+    state.functionCallStateByOutputIndex.set(outputIndex, functionCallState)
+  }
 
   if (!functionCallState) {
     const blockIndex = state.nextContentBlockIndex
@@ -782,6 +1209,7 @@ const openFunctionCallBlock = (
     const resolvedName = name ?? "function"
 
     functionCallState = {
+      argumentsText: "",
       blockIndex,
       toolCallId: resolvedToolCallId,
       name: resolvedName,

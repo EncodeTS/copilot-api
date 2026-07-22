@@ -18,7 +18,12 @@ import {
 import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
+import {
+  fetchWithUpstreamLifecycle,
+  type UpstreamLifecycleTimeouts,
+} from "~/lib/upstream-lifecycle"
 import { parseUserIdMetadata } from "~/lib/utils"
+import { prepareNativeMessagesOutbound } from "~/services/copilot/native-messages-outbound"
 
 export type MessagesStream = ReturnType<typeof events>
 export type CreateMessagesReturn = AnthropicResponse | MessagesStream
@@ -31,38 +36,37 @@ const allowedAnthropicBetas = new Set([
   ADVANCED_TOOL_USE_BETA,
 ])
 
-const buildAnthropicBetaHeader = (
+export const buildAnthropicBetaHeader = (
   anthropicBetaHeader: string | undefined,
   thinking: AnthropicMessagesPayload["thinking"],
   _model: string,
 ): string | undefined => {
   const isAdaptiveThinking = thinking?.type === "adaptive"
-
-  if (anthropicBetaHeader) {
-    const filteredBeta = anthropicBetaHeader
-      .split(",")
+  const shouldEnableInterleavedThinking = Boolean(
+    thinking?.budget_tokens && !isAdaptiveThinking,
+  )
+  const filteredBetas =
+    anthropicBetaHeader
+      ?.split(",")
       .map((item) => item.trim())
       .filter((item) => item.length > 0)
-      .filter((item) => allowedAnthropicBetas.has(item))
+      .filter((item) => allowedAnthropicBetas.has(item)) ?? []
 
-    // in vscode copilot extension, advanced-tool-use is enabled by default
-    // align header with vscode copilot extension
-    const uniqueFilteredBetas = [...filteredBeta]
-    if (uniqueFilteredBetas.length > 0) {
-      return uniqueFilteredBetas.join(",")
-    }
-
-    return undefined
+  if (shouldEnableInterleavedThinking) {
+    filteredBetas.push(INTERLEAVED_THINKING_BETA)
   }
 
-  if (thinking?.budget_tokens && !isAdaptiveThinking) {
-    return INTERLEAVED_THINKING_BETA
+  // in vscode copilot extension, advanced-tool-use is enabled by default
+  // align header with vscode copilot extension
+  const uniqueFilteredBetas = [...new Set(filteredBetas)]
+  if (uniqueFilteredBetas.length > 0) {
+    return uniqueFilteredBetas.join(",")
   }
 
   return undefined
 }
 
-export const createMessages = async (
+export const buildMessagesRequestHeaders = (
   payload: AnthropicMessagesPayload,
   anthropicBetaHeader: string | undefined,
   options: {
@@ -71,7 +75,7 @@ export const createMessages = async (
     sessionId?: string
     compactType?: CompactType
   },
-): Promise<CreateMessagesReturn> => {
+): Record<string, string> => {
   if (!state.copilotToken) throw new Error("Copilot token not found")
 
   const enableVision = payload.messages.some((message) => {
@@ -125,7 +129,6 @@ export const createMessages = async (
     prepareMessageProxyHeaders(headers)
   }
 
-  // align with vscode copilot extension anthropic-beta
   const anthropicBeta = buildAnthropicBetaHeader(
     anthropicBetaHeader,
     payload.thinking,
@@ -135,13 +138,79 @@ export const createMessages = async (
     headers["anthropic-beta"] = anthropicBeta
   }
 
+  return headers
+}
+
+export const countMessagesTokens = async (
+  payload: AnthropicMessagesPayload,
+  anthropicBetaHeader: string | undefined,
+  options: {
+    requestId: string
+    sessionId?: string
+    signal?: AbortSignal
+    timeouts?: UpstreamLifecycleTimeouts
+  },
+): Promise<{ input_tokens: number }> => {
+  const headers = buildMessagesRequestHeaders(
+    payload,
+    anthropicBetaHeader,
+    options,
+  )
+  const outbound = prepareNativeMessagesOutbound(payload, "token_count")
+  const response = await fetchWithUpstreamLifecycle(
+    `${copilotBaseUrl(state)}/v1/messages/count_tokens`,
+    {
+      method: "POST",
+      headers,
+      body: outbound.body,
+    },
+    {
+      signal: options.signal,
+      timeouts: options.timeouts,
+    },
+  )
+
+  logCopilotRateLimits(response.headers)
+  if (!response.ok) {
+    throw new HTTPError("Failed to count messages tokens", response)
+  }
+
+  return (await response.json()) as { input_tokens: number }
+}
+
+export const createMessages = async (
+  payload: AnthropicMessagesPayload,
+  anthropicBetaHeader: string | undefined,
+  options: {
+    subagentMarker?: SubagentMarker | null
+    requestId: string
+    sessionId?: string
+    signal?: AbortSignal
+    timeouts?: UpstreamLifecycleTimeouts
+    compactType?: CompactType
+  },
+): Promise<CreateMessagesReturn> => {
+  const headers = buildMessagesRequestHeaders(
+    payload,
+    anthropicBetaHeader,
+    options,
+  )
+  const outbound = prepareNativeMessagesOutbound(payload, "generation")
+
   consola.log(`<-- model: ${payload.model}`)
 
-  const response = await fetch(`${copilotBaseUrl(state)}/v1/messages`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-  })
+  const response = await fetchWithUpstreamLifecycle(
+    `${copilotBaseUrl(state)}/v1/messages`,
+    {
+      method: "POST",
+      headers,
+      body: outbound.body,
+    },
+    {
+      signal: options.signal,
+      timeouts: options.timeouts,
+    },
+  )
 
   logCopilotRateLimits(response.headers)
 

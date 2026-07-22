@@ -1,4 +1,9 @@
 import type { ToolContentSupportType } from "~/lib/config"
+import {
+  GATEWAY_REASONING_EFFORTS,
+  normalizeMessageReasoningEffort,
+  type GatewayReasoningEffort,
+} from "~/lib/reasoning-effort"
 import type { Model } from "~/services/copilot/get-models"
 
 import { state } from "~/lib/state"
@@ -13,6 +18,14 @@ import {
 } from "~/services/copilot/create-chat-completions"
 
 import {
+  isAnthropicDocumentBlock,
+  isAnthropicDocumentContainerBlock,
+  isAnthropicCustomTool,
+  isAnthropicFileDocumentBlock,
+  isAnthropicFileImageBlock,
+  isAnthropicImageBlock,
+  isAnthropicTextBlock,
+  isAnthropicToolReferenceBlock,
   type AnthropicAssistantContentBlock,
   type AnthropicAssistantMessage,
   type AnthropicDocumentBlock,
@@ -28,6 +41,9 @@ import {
   type AnthropicUserContentBlock,
   type AnthropicUserMessage,
 } from "./anthropic-types"
+import { createMessagesInvalidRequestError } from "./invalid-request-error"
+import { parseFunctionCallArguments } from "./tool-arguments"
+import { validateAnthropicToolResultContent } from "./tool-result-content"
 import { mapOpenAIStopReasonToAnthropic } from "./utils"
 
 // Compatible with opencode, it will filter out blocks where the thinking text is empty, so we need add a default thinking text
@@ -56,10 +72,11 @@ interface ToolResultMessages {
 }
 
 interface TranslateToOpenAIOptions {
+  model?: Model | null
   supportPdf?: boolean
   toolContentSupportType?: Array<ToolContentSupportType>
   validateReasoningEffort?: boolean
-  reasoningEffortSupport?: Array<string>
+  reasoningEffortSupport?: Array<GatewayReasoningEffort>
 }
 
 type MappableContentBlock =
@@ -67,13 +84,21 @@ type MappableContentBlock =
   | AnthropicAssistantContentBlock
   | AnthropicToolResultContentBlock
 
+interface MapContentOptions {
+  preserveUnknownToolResult?: boolean
+  supportPdf?: boolean
+}
+
 // Payload translation
 export function translateToOpenAI(
   payload: AnthropicMessagesPayload,
   options: TranslateToOpenAIOptions = {},
 ): ChatCompletionsPayload {
   const modelId = payload.model
-  const model = state.models?.data.find((m) => m.id === modelId)
+  const model =
+    Object.hasOwn(options, "model") ?
+      (options.model ?? undefined)
+    : state.models?.data.find((candidate) => candidate.id === modelId)
   const thinkingBudget = getThinkingBudget(payload, model)
   const reasoningEffort = getReasoningEffort(payload, options)
   const capabilities = {
@@ -104,8 +129,23 @@ export function translateToOpenAI(
 function getReasoningEffort(
   payload: AnthropicMessagesPayload,
   options: TranslateToOpenAIOptions,
-): string | undefined {
-  const effort = payload.output_config?.effort
+): GatewayReasoningEffort | undefined {
+  if (payload.thinking?.type === "disabled") {
+    if (!options.validateReasoningEffort) {
+      return undefined
+    }
+
+    const supportedEfforts = options.reasoningEffortSupport
+    if (!supportedEfforts || supportedEfforts.length === 0) {
+      return undefined
+    }
+
+    return GATEWAY_REASONING_EFFORTS.find((effort) =>
+      supportedEfforts.includes(effort),
+    )
+  }
+
+  const effort = normalizeMessageReasoningEffort(payload.output_config?.effort)
   if (!effort) {
     return undefined
   }
@@ -131,19 +171,25 @@ function getThinkingBudget(
   model: Model | undefined,
 ): number | undefined {
   const thinking = payload.thinking
-  if (model && thinking?.budget_tokens !== undefined) {
-    const maxThinkingBudget = Math.min(
-      model.capabilities.supports.max_thinking_budget ?? 0,
-      (model.capabilities.limits.max_output_tokens ?? 0) - 1,
+  if (
+    !model
+    || thinking?.type !== "enabled"
+    || thinking.budget_tokens === undefined
+  ) {
+    return undefined
+  }
+
+  const maxThinkingBudget = Math.min(
+    model.capabilities.supports.max_thinking_budget ?? 0,
+    (model.capabilities.limits.max_output_tokens ?? 0) - 1,
+  )
+  if (maxThinkingBudget > 0) {
+    const requestedBudget = thinking.budget_tokens ?? maxThinkingBudget
+    const budgetTokens = Math.min(requestedBudget, maxThinkingBudget)
+    return Math.max(
+      budgetTokens,
+      model.capabilities.supports.min_thinking_budget ?? 1024,
     )
-    thinking.budget_tokens ??= maxThinkingBudget
-    if (maxThinkingBudget > 0) {
-      const budgetTokens = Math.min(thinking.budget_tokens, maxThinkingBudget)
-      return Math.max(
-        budgetTokens,
-        model.capabilities.supports.min_thinking_budget ?? 1024,
-      )
-    }
   }
   return undefined
 }
@@ -230,22 +276,21 @@ function handleToolResultBlock(
   block: AnthropicToolResultBlock,
   capabilities: TranslationCapabilities,
 ): ToolResultMessages {
-  if (typeof block.content === "string") {
-    return {
-      toolMessage: createToolMessage(block.tool_use_id, block.content),
-    }
-  }
+  const validatedContent = validateAnthropicToolResultContent(block.content)
 
-  if (!Array.isArray(block.content)) {
+  if (typeof validatedContent === "string") {
     return {
-      toolMessage: createToolMessage(block.tool_use_id, ""),
+      toolMessage: createToolMessage(block.tool_use_id, validatedContent),
     }
   }
 
   const support = getToolContentSupport(capabilities)
-  const hasImage = block.content.some((block) => block.type === "image")
-  const hasDocument = block.content.some((block) => block.type === "document")
-  const content = mapContent(block.content, {
+  const hasImage = validatedContent.some((block) => block.type === "image")
+  const hasDocument = validatedContent.some(
+    (block) => block.type === "document",
+  )
+  const content = mapContent(validatedContent, {
+    preserveUnknownToolResult: true,
     supportPdf: capabilities.supportPdf,
   })
 
@@ -324,6 +369,7 @@ function createToolResultUserMessage(
     text: `Tool result for ${block.tool_use_id}:`,
   }
   const content = mapContent(block.content, {
+    preserveUnknownToolResult: true,
     supportPdf,
   })
   if (Array.isArray(content)) {
@@ -414,7 +460,7 @@ function handleAssistantMessage(
 
 function mapContent(
   content: string | Array<MappableContentBlock>,
-  options: { supportPdf?: boolean } = {},
+  options: MapContentOptions = {},
 ): string | Array<ContentPart> | null {
   if (typeof content === "string") {
     return content
@@ -427,34 +473,77 @@ function mapContent(
   for (const block of content) {
     switch (block.type) {
       case "text": {
-        contentParts.push({ type: "text", text: block.text })
-        break
-      }
-      case "image": {
-        contentParts.push({
-          type: "image_url",
-          image_url: {
-            url: `data:${block.source.media_type};base64,${block.source.data}`,
-          },
-        })
-        break
-      }
-      case "document": {
         contentParts.push(
-          options.supportPdf ?
-            createDocumentFilePart(block)
-          : createDocumentTextPart(),
+          isAnthropicTextBlock(block) ?
+            { type: "text", text: block.text }
+          : createUnknownContentTextPart(block),
         )
         break
       }
+      case "image": {
+        if (isAnthropicImageBlock(block)) {
+          contentParts.push({
+            type: "image_url",
+            image_url: {
+              url:
+                block.source.type === "url" ?
+                  block.source.url
+                : `data:${block.source.media_type};base64,${block.source.data}`,
+            },
+          })
+          break
+        }
+        if (isAnthropicFileImageBlock(block)) {
+          throw createMessagesInvalidRequestError(
+            "Chat Completions cannot express file-backed image inputs",
+          )
+        }
+        throw createMessagesInvalidRequestError(
+          "Invalid Anthropic image source",
+        )
+      }
+      case "document": {
+        if (isAnthropicDocumentBlock(block)) {
+          contentParts.push(
+            options.supportPdf ?
+              createDocumentFilePart(block)
+            : createDocumentTextPart(),
+          )
+          break
+        }
+        if (isAnthropicFileDocumentBlock(block)) {
+          contentParts.push({
+            type: "file",
+            file: { file_id: block.source.file_id },
+          })
+          break
+        }
+        if (isAnthropicDocumentContainerBlock(block)) {
+          throw createMessagesInvalidRequestError(
+            "Chat Completions cannot express text or content document sources",
+          )
+        }
+        throw createMessagesInvalidRequestError(
+          "Invalid Anthropic document source",
+        )
+      }
       case "tool_reference": {
+        if (!isAnthropicToolReferenceBlock(block)) {
+          contentParts.push(createUnknownContentTextPart(block))
+          break
+        }
         contentParts.push({
           type: "text",
           text: `Tool ${block.tool_name} loaded`,
         })
         break
       }
-      // No default
+      default: {
+        if (options.preserveUnknownToolResult) {
+          contentParts.push(createUnknownContentTextPart(block))
+        }
+        break
+      }
     }
   }
   if (contentParts.length === 0) {
@@ -462,6 +551,13 @@ function mapContent(
   }
   return contentParts
 }
+
+const createUnknownContentTextPart = (
+  block: MappableContentBlock,
+): TextPart => ({
+  type: "text",
+  text: JSON.stringify(block),
+})
 
 function createDocumentTextPart(): TextPart {
   return {
@@ -471,6 +567,10 @@ function createDocumentTextPart(): TextPart {
 }
 
 function createDocumentFilePart(block: AnthropicDocumentBlock): ContentPart {
+  if (block.source.type === "url") {
+    return createDocumentTextPart()
+  }
+
   return {
     type: "file",
     file: {
@@ -486,7 +586,7 @@ function translateAnthropicToolsToOpenAI(
   if (!anthropicTools) {
     return undefined
   }
-  return anthropicTools.map((tool) => ({
+  return anthropicTools.filter(isAnthropicCustomTool).map((tool) => ({
     type: "function",
     function: {
       name: tool.name,
@@ -545,6 +645,7 @@ function translateAnthropicToolChoiceToOpenAI(
 
 export function translateToAnthropic(
   response: ChatCompletionResponse,
+  options: { includeThinking?: boolean } = {},
 ): AnthropicResponse {
   // Merge content from all choices
   const assistantContentBlocks: Array<AnthropicAssistantContentBlock> = []
@@ -553,10 +654,13 @@ export function translateToAnthropic(
   // Process all choices to extract text and tool use blocks
   for (const choice of response.choices) {
     const textBlocks = getAnthropicTextBlocks(choice.message.content)
-    const thinkBlocks = getAnthropicThinkBlocks(
-      getOpenAIReasoningText(choice.message),
-      choice.message.reasoning_opaque,
-    )
+    const thinkBlocks =
+      options.includeThinking === false ?
+        []
+      : getAnthropicThinkBlocks(
+          getOpenAIReasoningText(choice.message),
+          choice.message.reasoning_opaque,
+        )
     const toolUseBlocks = getAnthropicToolUseBlocks(choice.message.tool_calls)
 
     assistantContentBlocks.push(...thinkBlocks, ...textBlocks, ...toolUseBlocks)
@@ -662,6 +766,6 @@ function getAnthropicToolUseBlocks(
     type: "tool_use",
     id: toolCall.id,
     name: toolCall.function.name,
-    input: JSON.parse(toolCall.function.arguments) as Record<string, unknown>,
+    input: parseFunctionCallArguments(toolCall.function.arguments),
   }))
 }
