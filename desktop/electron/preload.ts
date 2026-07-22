@@ -1,23 +1,58 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type {
+  AuthResult,
+  DesktopApi,
+  DesktopAuthMode,
+  DesktopSettings,
+  LogFeedBatch,
+  LogFeedSnapshot,
+  LogFeedUpdate,
+  ProviderAuthInput,
+  ServerStatus,
+  TokenUsagePeriod,
+} from '../../shared-types'
 
-contextBridge.exposeInMainWorld('electronAPI', {
+const LOG_QUEUE_CAPACITY = 2000
+let nextLogSubscriptionRequestId = 1
+
+function mergeQueuedLogBatch(
+  previous: LogFeedBatch | undefined,
+  next: LogFeedBatch,
+): LogFeedBatch {
+  if (previous && next.cursor < previous.cursor) return previous
+
+  const combined =
+    next.reset ? next.entries : [...(previous?.entries ?? []), ...next.entries]
+  const byCursor = new Map(combined.map((entry) => [entry.cursor, entry]))
+  const ordered = [...byCursor.values()].sort(
+    (left, right) => left.cursor - right.cursor,
+  )
+  const overflowed = ordered.length > LOG_QUEUE_CAPACITY
+  return {
+    cursor: next.cursor,
+    entries: ordered.slice(-LOG_QUEUE_CAPACITY),
+    reset: Boolean(previous?.reset || next.reset || overflowed),
+  }
+}
+
+const electronApi = {
   getAuthStatus: () => ipcRenderer.invoke('auth:get-status'),
   getDeviceCode: () => ipcRenderer.invoke('auth:get-device-code'),
   saveToken: (token: string) => ipcRenderer.invoke('auth:save-token', token),
   checkSavedToken: () => ipcRenderer.invoke('auth:check-saved'),
-  configureProvider: (input: unknown) =>
+  configureProvider: (input: ProviderAuthInput) =>
     ipcRenderer.invoke('auth:configure-provider', input),
   startCodexLogin: (callbackUrlOrCode?: string) =>
     ipcRenderer.invoke('auth:start-codex-login', callbackUrlOrCode),
   logout: () => ipcRenderer.invoke('auth:logout'),
 
-  startServer: (port: number, authMode?: string) =>
+  startServer: (port: number, authMode?: DesktopAuthMode) =>
     ipcRenderer.invoke('server:start', port, authMode),
   stopServer: () => ipcRenderer.invoke('server:stop'),
   getServerStatus: () => ipcRenderer.invoke('server:get-status'),
 
   getSettings: () => ipcRenderer.invoke('settings:get'),
-  saveSettings: (settings: unknown) =>
+  saveSettings: (settings: DesktopSettings) =>
     ipcRenderer.invoke('settings:save', settings),
   getModelMappingsConfig: () => ipcRenderer.invoke('config:get-model-mappings'),
   saveModelMappings: (modelMappings: Record<string, string>) =>
@@ -27,11 +62,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   fetchUsage: () => ipcRenderer.invoke('server:fetch-usage'),
   fetchModels: () => ipcRenderer.invoke('server:fetch-models'),
-  fetchTokenUsage: (period: string) =>
+  fetchTokenUsage: (period: TokenUsagePeriod) =>
     ipcRenderer.invoke('server:fetch-token-usage', period),
-  fetchTokenUsageDaily: (period: string) =>
+  fetchTokenUsageDaily: (period: TokenUsagePeriod) =>
     ipcRenderer.invoke('server:fetch-token-usage-daily', period),
-  fetchTokenUsageEvents: (period: string, page: number, pageSize: number) =>
+  fetchTokenUsageEvents: (
+    period: TokenUsagePeriod,
+    page: number,
+    pageSize: number,
+  ) =>
     ipcRenderer.invoke(
       'server:fetch-token-usage-events',
       period,
@@ -39,27 +78,100 @@ contextBridge.exposeInMainWorld('electronAPI', {
       pageSize,
     ),
   getServerAuthInfo: () => ipcRenderer.invoke('server:get-auth-info'),
-  getLogs: () => ipcRenderer.invoke('server:get-logs'),
+  getServerLogSnapshot: () => ipcRenderer.invoke('server:logs-snapshot'),
+  clearServerLogs: () => ipcRenderer.invoke('server:logs-clear'),
 
-  onAuthSuccess: (callback: (result: unknown) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, result: unknown) =>
+  onAuthSuccess: (callback: (result: AuthResult) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, result: AuthResult) =>
       callback(result)
     ipcRenderer.on('auth:success', handler)
     return () => ipcRenderer.off('auth:success', handler)
   },
 
-  onServerStatus: (callback: (status: unknown) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, status: unknown) =>
+  onServerStatus: (callback: (status: ServerStatus) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: ServerStatus) =>
       callback(status)
     ipcRenderer.on('server:status', handler)
     return () => ipcRenderer.off('server:status', handler)
   },
 
-  onServerLog: (callback: (log: string) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, log: string) =>
-      callback(log)
-    ipcRenderer.on('server:log', handler)
-    return () => ipcRenderer.off('server:log', handler)
+  subscribeServerLogs: (callback: (update: LogFeedUpdate) => void) => {
+    type SubscriptionResult = {
+      snapshot: LogFeedSnapshot
+      subscriptionId: string
+    }
+    type BatchEnvelope = {
+      batch: LogFeedBatch
+      requestId: string
+      subscriptionId: string
+    }
+
+    let disposed = false
+    let mainUnsubscribeRequested = false
+    let subscriptionId: string | null = null
+    let queuedBatch: LogFeedBatch | undefined
+    const requestId = `renderer-log-${nextLogSubscriptionRequestId}`
+    nextLogSubscriptionRequestId += 1
+
+    const requestMainUnsubscribe = () => {
+      if (subscriptionId === null || mainUnsubscribeRequested) return
+      mainUnsubscribeRequested = true
+      void ipcRenderer
+        .invoke('server:logs-unsubscribe', subscriptionId)
+        .catch(() => undefined)
+    }
+    const dispose = (notifyMain: boolean) => {
+      if (!disposed) {
+        disposed = true
+        queuedBatch = undefined
+        ipcRenderer.off('server:log-batch', handler)
+      }
+      if (notifyMain) requestMainUnsubscribe()
+    }
+    const deliver = (update: LogFeedUpdate): boolean => {
+      try {
+        callback(update)
+        return true
+      } catch {
+        dispose(true)
+        return false
+      }
+    }
+    function handler(
+      _event: Electron.IpcRendererEvent,
+      envelope: BatchEnvelope,
+    ) {
+      if (disposed || envelope.requestId !== requestId) return
+      if (subscriptionId === null) {
+        queuedBatch = mergeQueuedLogBatch(queuedBatch, envelope.batch)
+        return
+      }
+      if (envelope.subscriptionId === subscriptionId) {
+        deliver({ batch: envelope.batch, kind: 'batch' })
+      }
+    }
+    ipcRenderer.on('server:log-batch', handler)
+
+    void ipcRenderer
+      .invoke('server:logs-subscribe', requestId)
+      .then((result: SubscriptionResult) => {
+        subscriptionId = result.subscriptionId
+        if (disposed) {
+          requestMainUnsubscribe()
+          return
+        }
+
+        if (!deliver({ kind: 'snapshot', snapshot: result.snapshot })) return
+        if (queuedBatch) {
+          if (!deliver({ batch: queuedBatch, kind: 'batch' })) return
+        }
+        queuedBatch = undefined
+      })
+      .catch(() => {
+        dispose(false)
+      })
+
+    return () => dispose(true)
   },
 
   platform: process.platform,
@@ -78,4 +190,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('window:maximize-changed', handler)
     return () => ipcRenderer.off('window:maximize-changed', handler)
   },
-})
+} satisfies DesktopApi
+
+contextBridge.exposeInMainWorld('electronAPI', electronApi)

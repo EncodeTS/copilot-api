@@ -1,11 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 
+import { ModelMappingRowEditor } from '../components/ModelMappingRowEditor'
 import { useLanguage } from '../contexts/LanguageContext'
 import {
+  applyModelMappingsDiagnostics,
   buildModelMappingsFromRows,
   createModelMappingRow,
+  getModelMappingsSavePresentation,
   modelMappingsToRows,
   type ModelMappingRow,
+  type ModelMappingsSavePresentation,
 } from '../lib/model-mappings-editor'
 
 interface ModelMappingsPageProps {
@@ -23,6 +27,8 @@ export default function ModelMappingsPage({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [saveMessage, setSaveMessage] = useState('')
+  const [savePresentation, setSavePresentation] =
+    useState<ModelMappingsSavePresentation | null>(null)
 
   useEffect(() => {
     translationRef.current = t
@@ -37,6 +43,7 @@ export default function ModelMappingsPage({
     setConfigPath('')
     setRows([])
     setSaveMessage('')
+    setSavePresentation(null)
     setError(t('advancedConfig.serverRequired'))
   }, [serverRunning, t])
 
@@ -57,8 +64,21 @@ export default function ModelMappingsPage({
           return
         }
 
-        setConfigPath(result.configPath)
-        setRows(modelMappingsToRows(result.modelMappings))
+        if (!result.ok) {
+          setError(
+            `${translationRef.current('advancedConfig.loadFailed')}: ${result.error.message}`,
+          )
+          setRows((currentRows) =>
+            applyModelMappingsDiagnostics(
+              currentRows,
+              result.error.diagnostics,
+            ),
+          )
+          return
+        }
+
+        setConfigPath(result.config.configPath)
+        setRows(modelMappingsToRows(result.config.modelMappings))
       } catch (err) {
         if (cancelled) {
           return
@@ -88,23 +108,35 @@ export default function ModelMappingsPage({
   ) => {
     setRows((currentRows) =>
       currentRows.map((row) =>
-        row.id === id ? { ...row, [field]: value } : row,
+        row.id === id ?
+          { ...row, [field]: value, diagnostics: [] }
+        : { ...row, diagnostics: [] },
       ),
     )
     setError('')
     setSaveMessage('')
+    setSavePresentation(null)
   }
 
   const handleAddRow = () => {
-    setRows((currentRows) => [...currentRows, createModelMappingRow()])
+    setRows((currentRows) => [
+      ...currentRows.map((row) => ({ ...row, diagnostics: [] })),
+      createModelMappingRow(),
+    ])
     setError('')
     setSaveMessage('')
+    setSavePresentation(null)
   }
 
   const handleRemoveRow = (id: string) => {
-    setRows((currentRows) => currentRows.filter((row) => row.id !== id))
+    setRows((currentRows) =>
+      currentRows
+        .filter((row) => row.id !== id)
+        .map((row) => ({ ...row, diagnostics: [] })),
+    )
     setError('')
     setSaveMessage('')
+    setSavePresentation(null)
   }
 
   const buildModelMappings = (): Record<string, string> | null => {
@@ -113,9 +145,14 @@ export default function ModelMappingsPage({
       return result.modelMappings
     }
 
-    if (result.reason === 'duplicate') {
+    setRows((currentRows) =>
+      applyModelMappingsDiagnostics(currentRows, result.diagnostics),
+    )
+    if (result.diagnostics[0]?.code === 'duplicate_source') {
       setError(
-        t('advancedConfig.validationDuplicate', { model: result.model ?? '' }),
+        t('advancedConfig.validationDuplicate', {
+          model: result.diagnostics[0].source ?? '',
+        }),
       )
       return null
     }
@@ -127,6 +164,7 @@ export default function ModelMappingsPage({
   const handleSave = async () => {
     setError('')
     setSaveMessage('')
+    setSavePresentation(null)
 
     const nextModelMappings = buildModelMappings()
     if (!nextModelMappings) {
@@ -135,9 +173,36 @@ export default function ModelMappingsPage({
 
     setSaving(true)
     try {
-      await window.electronAPI.saveModelMappings(nextModelMappings)
-      setRows(modelMappingsToRows(nextModelMappings))
-      setSaveMessage(t('advancedConfig.saved'))
+      const outcome =
+        await window.electronAPI.saveModelMappings(nextModelMappings)
+      if (!outcome.ok) {
+        setRows((currentRows) =>
+          applyModelMappingsDiagnostics(currentRows, outcome.error.diagnostics),
+        )
+        setError(`${t('advancedConfig.saveFailed')}: ${outcome.error.message}`)
+        return
+      }
+
+      const result = outcome.result
+      setRows(modelMappingsToRows(result.modelMappings))
+      const presentation = getModelMappingsSavePresentation(result)
+      const messages = {
+        saved: t('advancedConfig.saved'),
+        savedRefreshFailed: t('advancedConfig.savedRefreshFailed'),
+        savedRefreshSkipped: t('advancedConfig.savedRefreshSkipped'),
+        savedRestartRequired: t('advancedConfig.savedRestartRequired'),
+      }
+      setSavePresentation(presentation)
+      setSaveMessage(
+        [
+          messages[presentation.messageKey],
+          presentation.degradedMessageKey ?
+            t('advancedConfig.savedDegraded')
+          : null,
+        ]
+          .filter(Boolean)
+          .join(' '),
+      )
     } catch (err) {
       setError(`${t('advancedConfig.saveFailed')}: ${(err as Error).message}`)
     } finally {
@@ -182,7 +247,18 @@ export default function ModelMappingsPage({
         )}
 
         {saveMessage && !error && (
-          <div className="shrink-0 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[13px] text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-400">
+          <div
+            className={
+              savePresentation?.tone === 'error' ?
+                'shrink-0 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-700 dark:border-red-500/30 dark:bg-red-500/15 dark:text-red-400'
+              : savePresentation?.tone === 'info' ?
+                'shrink-0 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[13px] text-blue-700 dark:border-blue-500/30 dark:bg-blue-500/15 dark:text-blue-300'
+              : savePresentation?.tone === 'warning' ?
+                'shrink-0 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/15 dark:text-amber-300'
+              : 'shrink-0 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[13px] text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-400'
+
+            }
+          >
             {saveMessage}
           </div>
         )}
@@ -210,47 +286,17 @@ export default function ModelMappingsPage({
               </div>
             : <div className="divide-y divide-line-soft flex-1 overflow-y-auto">
                 {rows.map((row) => (
-                  <div
+                  <ModelMappingRowEditor
                     key={row.id}
-                    className="grid gap-2 px-3 py-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_72px] lg:items-center"
-                  >
-                    <label className="block min-w-0">
-                      <div className="mb-1 text-[12px] font-medium text-ink-soft lg:hidden">
-                        {t('advancedConfig.sourceModel')}
-                      </div>
-                      <input
-                        type="text"
-                        value={row.source}
-                        onChange={(event) =>
-                          handleRowChange(row.id, 'source', event.target.value)
-                        }
-                        placeholder="gpt-5.5"
-                        className="h-8 w-full rounded-md border border-line bg-sunken px-2.5 text-[13px] text-ink placeholder-ink-faint transition-colors focus:bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40"
-                      />
-                    </label>
-
-                    <label className="block min-w-0">
-                      <div className="mb-1 text-[12px] font-medium text-ink-soft lg:hidden">
-                        {t('advancedConfig.targetModel')}
-                      </div>
-                      <input
-                        type="text"
-                        value={row.target}
-                        onChange={(event) =>
-                          handleRowChange(row.id, 'target', event.target.value)
-                        }
-                        placeholder="codex/gpt-5.5"
-                        className="h-8 w-full rounded-md border border-line bg-sunken px-2.5 text-[13px] text-ink placeholder-ink-faint transition-colors focus:bg-surface focus:outline-none focus:ring-2 focus:ring-accent/40"
-                      />
-                    </label>
-
-                    <button
-                      onClick={() => handleRemoveRow(row.id)}
-                      className="inline-flex h-8 items-center justify-center rounded-md border border-red-200 px-2 text-[13px] font-medium text-red-600 transition-colors hover:bg-red-50 dark:border-red-500/30 dark:hover:bg-red-500/15"
-                    >
-                      {t('advancedConfig.remove')}
-                    </button>
-                  </div>
+                    onChange={(field, value) =>
+                      handleRowChange(row.id, field, value)
+                    }
+                    onRemove={() => handleRemoveRow(row.id)}
+                    removeLabel={t('advancedConfig.remove')}
+                    row={row}
+                    sourceLabel={t('advancedConfig.sourceModel')}
+                    targetLabel={t('advancedConfig.targetModel')}
+                  />
                 ))}
               </div>
             }

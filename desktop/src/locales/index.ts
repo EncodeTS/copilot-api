@@ -72,6 +72,7 @@ export interface Locale {
     tokenUsageModel: string
     tokenUsageModelBreakdown: string
     tokenUsageOutput: string
+    tokenUsageOutcome: string
     tokenUsagePage: string
     tokenUsagePeriodDay: string
     tokenUsagePeriodMonth: string
@@ -134,6 +135,7 @@ export interface Locale {
     portInUse: string
     startFailed: string
     startTimeout: string
+    stopTimeout: string
     processExit: string
   }
   settings: {
@@ -163,8 +165,6 @@ export interface Locale {
     enterpriseUrlDesc: string
     verbose: string
     verboseDesc: string
-    showToken: string
-    showTokenDesc: string
     sectionLanguage: string
     langAuto: string
     langEn: string
@@ -175,6 +175,7 @@ export interface Locale {
     themeAuto: string
     cancel: string
     save: string
+    saveFailed: string
     saving: string
   }
   advancedConfig: {
@@ -195,6 +196,10 @@ export interface Locale {
     emptyDescription: string
     saveHelp: string
     saved: string
+    savedDegraded: string
+    savedRefreshFailed: string
+    savedRefreshSkipped: string
+    savedRestartRequired: string
     loadFailed: string
     saveFailed: string
     serverRequired: string

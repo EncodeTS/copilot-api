@@ -72,6 +72,7 @@ const en: Locale = {
     tokenUsageModel: 'Model',
     tokenUsageModelBreakdown: 'Model breakdown',
     tokenUsageOutput: 'Output',
+    tokenUsageOutcome: 'Outcome',
     tokenUsagePage: 'Page {{page}} / {{total}}',
     tokenUsagePeriodDay: 'Day',
     tokenUsagePeriodMonth: '30 days',
@@ -138,6 +139,7 @@ const en: Locale = {
       'Server process failed to start (exit code {{code}}); refer to the log panel below for details',
     startTimeout:
       'Server startup timed out, port {{port}} may already be in use',
+    stopTimeout: 'Server process did not exit after graceful termination',
     processExit: 'Process exited with code {{code}}',
   },
   settings: {
@@ -151,7 +153,7 @@ const en: Locale = {
     minimizeToTrayDesc: "Hide to system tray when closing, don't quit",
     sectionNetwork: 'Network',
     proxySystemNote:
-      'System proxy is used by default. When custom proxy is selected, Electron and newly started local services use the settings below; when no proxy is selected, network requests connect directly. Restart any running service to apply changes.',
+      'System proxy is used by default. Custom proxy mode is fail-closed and applies to Electron and the local service. A running service is restarted automatically when this policy changes.',
     proxyMode: 'Proxy mode',
     proxyModeSystem: 'System proxy',
     proxyModeCustom: 'Custom proxy',
@@ -172,9 +174,8 @@ const en: Locale = {
     enterpriseUrlDesc:
       'Optional value such as company.ghe.com for GitHub Enterprise.',
     verbose: 'Verbose logging',
-    verboseDesc: 'Output more detailed debug information',
-    showToken: 'Show token',
-    showTokenDesc: 'Print GitHub/Copilot token values in logs',
+    verboseDesc:
+      'Write structured diagnostics; prompts, message text, tool data, and reasoning content are omitted by default',
     sectionLanguage: 'Language',
     langAuto: 'Follow system',
     langEn: 'English',
@@ -185,6 +186,7 @@ const en: Locale = {
     themeAuto: 'Follow system',
     cancel: 'Cancel',
     save: 'Save',
+    saveFailed: 'Settings were saved, but the runtime change failed.',
     saving: 'Saving…',
   },
   advancedConfig: {
@@ -212,6 +214,14 @@ const en: Locale = {
       'Only the modelMappings field is updated through the service API. Other config values remain untouched.',
     saved:
       'Saved through the service API. New requests to /v1/messages, /v1/messages/count_tokens, /v1/responses, and /v1/chat/completions will use the updated mappings immediately.',
+    savedDegraded:
+      'The projected catalog is degraded because unavailable aliases were omitted.',
+    savedRefreshFailed:
+      'Mappings are active for new requests, but the Codex startup catalog could not be refreshed. The previous startup catalog was preserved.',
+    savedRefreshSkipped:
+      'Mappings are active for new requests. The Codex startup catalog refresh was skipped, so no restart is currently required.',
+    savedRestartRequired:
+      'Mappings are active for new requests and the Codex startup catalog was updated. Restart Codex to load the new capabilities.',
     loadFailed: 'Failed to load model mappings',
     saveFailed: 'Failed to save model mappings',
     serverRequired:

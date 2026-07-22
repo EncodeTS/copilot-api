@@ -1,6 +1,6 @@
 {
   "extends": "./tsconfig.base.json",
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "../shared-types/**/*"],
   "compilerOptions": {
     "composite": true,
     "lib": ["ESNext", "DOM", "DOM.Iterable"]

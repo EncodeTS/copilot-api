@@ -71,6 +71,7 @@ const zh: Locale = {
     tokenUsageModel: '模型',
     tokenUsageModelBreakdown: '模型明细',
     tokenUsageOutput: '输出',
+    tokenUsageOutcome: '结果',
     tokenUsagePage: '第 {{page}} / {{total}} 页',
     tokenUsagePeriodDay: '日',
     tokenUsagePeriodMonth: '近 30 天',
@@ -133,6 +134,7 @@ const zh: Locale = {
     portInUse: '端口 {{port}} 已被占用，请更换其他端口',
     startFailed: '服务进程启动失败（退出码 {{code}}），可参考下方服务日志排查',
     startTimeout: '服务启动超时，端口 {{port}} 可能已被占用',
+    stopTimeout: '服务进程在正常终止请求后仍未退出',
     processExit: '进程退出，代码 {{code}}',
   },
   settings: {
@@ -146,7 +148,7 @@ const zh: Locale = {
     minimizeToTrayDesc: '关闭窗口时隐藏到系统托盘，不退出程序',
     sectionNetwork: '网络',
     proxySystemNote:
-      '默认使用系统代理。选择自定义代理后，Electron 和新启动的本地服务会使用下方配置；选择不使用代理后将直连网络。已运行的服务需重启后生效。',
+      '默认使用系统代理。自定义代理采用失败即关闭策略，并同时应用于 Electron 与本地服务；策略变化时，运行中的服务会自动安全重启。',
     proxyMode: '代理模式',
     proxyModeSystem: '系统代理',
     proxyModeCustom: '自定义代理',
@@ -166,9 +168,8 @@ const zh: Locale = {
     enterpriseUrlDesc:
       '可选，例如 company.ghe.com。用于连接 GitHub Enterprise。',
     verbose: '详细日志',
-    verboseDesc: '输出更详细的调试信息',
-    showToken: '显示 Token',
-    showTokenDesc: '在日志中打印 GitHub/Copilot Token 值',
+    verboseDesc:
+      '写入结构化诊断信息；默认不记录提示词、消息文本、工具数据和推理内容',
     sectionLanguage: '语言',
     langAuto: '跟随系统',
     langEn: 'English',
@@ -179,6 +180,7 @@ const zh: Locale = {
     themeAuto: '跟随系统',
     cancel: '取消',
     save: '保存',
+    saveFailed: '设置已保存，但运行时应用失败。',
     saving: '保存中…',
   },
   advancedConfig: {
@@ -205,6 +207,13 @@ const zh: Locale = {
       '保存时会通过服务接口只更新 config.json 里的 modelMappings 字段，不会覆盖其他配置。',
     saved:
       '已通过服务接口保存。后续新的 `POST /v1/messages`、`POST /v1/messages/count_tokens`、`POST /v1/responses` 和 `POST /v1/chat/completions` 请求都会立即使用最新映射。',
+    savedDegraded: '目录投影已降级，不可用的别名已被省略。',
+    savedRefreshFailed:
+      '映射已对新请求生效，但 Codex 启动目录刷新失败，之前的启动目录已保留。',
+    savedRefreshSkipped:
+      '映射已对新请求生效。Codex 启动目录刷新已跳过，目前无需重启。',
+    savedRestartRequired:
+      '映射已对新请求生效，Codex 启动目录也已更新；请重启 Codex 以加载新的能力信息。',
     loadFailed: '加载模型映射失败',
     saveFailed: '保存模型映射失败',
     serverRequired: '请先启动本地服务，再通过接口读取或保存模型映射。',

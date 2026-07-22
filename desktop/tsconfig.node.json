@@ -4,24 +4,33 @@
     "electron.vite.config.*",
     "electron/**/*",
     "tests/**/*",
+    "../shared-types/**/*",
     "src/locales/**/*",
     "src/types/**/*",
     "../src/lib/api-config.ts",
+    "../src/lib/auth-request.ts",
+    "../src/lib/codex-token-manager.ts",
     "../src/lib/compact.ts",
     "../src/lib/config.ts",
     "../src/lib/copilot-rate-limit.ts",
     "../src/lib/credential-store.ts",
+    "../src/lib/credential-lock.ts",
+    "../src/lib/copilot-token-manager.ts",
     "../src/lib/deviceid.ts",
     "../src/lib/error.ts",
+    "../src/lib/github-login.ts",
     "../src/lib/oauth/**/*.ts",
     "../src/lib/opencode.ts",
     "../src/lib/paths.ts",
     "../src/lib/quick-providers.ts",
+    "../src/lib/refresh-lifecycle.ts",
     "../src/lib/request-auth.ts",
     "../src/lib/request-context.ts",
     "../src/lib/state.ts",
     "../src/lib/subagent.ts",
     "../src/lib/token.ts",
+    "../src/lib/token-manager-types.d.ts",
+    "../src/lib/token-refresh-policy.ts",
     "../src/lib/utils.ts",
     "../src/routes/messages/anthropic-types.ts",
     "../src/services/codex/**/*.ts",
@@ -32,11 +41,9 @@
     "../src/services/responses-websocket.ts",
     "../src/lib/electron-fetch.ts"
   ],
+  "exclude": ["electron/preload.ts"],
   "compilerOptions": {
     "composite": true,
-    "paths": {
-      "~/*": ["../src/*"]
-    },
     "types": ["electron-vite/node", "node", "bun"]
   }
 }

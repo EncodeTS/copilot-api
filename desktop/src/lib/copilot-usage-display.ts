@@ -11,6 +11,13 @@ export interface CopilotQuotaSnapshotsLike {
 }
 
 export interface CopilotUsageDisplayLike {
+  _copilot_api?: {
+    error_code?: string | null
+    freshness?: 'fresh' | 'stale'
+    last_attempt_at_ms?: number
+    last_success_at_ms?: number
+    stale_since_at_ms?: number | null
+  }
   copilot_plan?: string
   quota_reset_date?: string
   quota_snapshots?: CopilotQuotaSnapshotsLike
@@ -77,4 +84,11 @@ export function shouldShowCopilotQuotaUsage(
   usage: CopilotUsageDisplayLike | null | undefined,
 ): boolean {
   return hasAnyCopilotQuotaSnapshot(usage?.quota_snapshots)
+}
+
+export function getCopilotUsageLastSuccessAt(
+  usage: CopilotUsageDisplayLike | null | undefined,
+): number | null {
+  const value = usage?._copilot_api?.last_success_at_ms
+  return isFiniteNumber(value) && value > 0 ? value : null
 }

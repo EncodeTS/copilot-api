@@ -9,7 +9,32 @@ const PROXY_ENV_KEYS = [
   'https_proxy',
   'NO_PROXY',
   'no_proxy',
+  'NPM_CONFIG_ALL_PROXY',
+  'npm_config_all_proxy',
+  'NPM_CONFIG_HTTP_PROXY',
+  'npm_config_http_proxy',
+  'NPM_CONFIG_HTTPS_PROXY',
+  'npm_config_https_proxy',
+  'NPM_CONFIG_NO_PROXY',
+  'npm_config_no_proxy',
+  'NPM_CONFIG_PROXY',
+  'npm_config_proxy',
 ] as const
+
+const SUPPORTED_PROXY_PROTOCOLS = new Set(['http:', 'https:', 'socks5:'])
+
+export type DesktopProxyConfigurationErrorCode =
+  'invalid_proxy_url' | 'missing_proxy' | 'unsupported_proxy_protocol'
+
+export class DesktopProxyConfigurationError extends Error {
+  readonly code: DesktopProxyConfigurationErrorCode
+
+  constructor(message: string, code: DesktopProxyConfigurationErrorCode) {
+    super(message)
+    this.name = 'DesktopProxyConfigurationError'
+    this.code = code
+  }
+}
 
 export type ElectronProxyConfig =
   | ElectronDirectProxyConfig
@@ -35,9 +60,20 @@ function createProxyUrl(rawProxy: string): URL | null {
   if (!value) return null
 
   try {
-    return new URL(value.includes('://') ? value : `http://${value}`)
-  } catch {
-    return null
+    const url = new URL(value.includes('://') ? value : `http://${value}`)
+    if (!SUPPORTED_PROXY_PROTOCOLS.has(url.protocol)) {
+      throw new DesktopProxyConfigurationError(
+        `Unsupported proxy protocol '${url.protocol}'; use HTTP, HTTPS, or SOCKS5`,
+        'unsupported_proxy_protocol',
+      )
+    }
+    return url
+  } catch (error) {
+    if (error instanceof DesktopProxyConfigurationError) throw error
+    throw new DesktopProxyConfigurationError(
+      'Proxy URL is invalid',
+      'invalid_proxy_url',
+    )
   }
 }
 
@@ -68,8 +104,6 @@ function formatProxyServer(rawProxy: string): string | null {
       return host
     case 'https:':
       return `https://${host}`
-    case 'socks:':
-    case 'socks4:':
     case 'socks5:':
       return `${url.protocol}//${host}`
     default:
@@ -124,7 +158,12 @@ export function resolveElectronProxyConfigFromSettings(
 
   const httpProxyServer = httpProxy ? formatProxyServer(httpProxy) : null
   const httpsProxyServer = httpsProxy ? formatProxyServer(httpsProxy) : null
-  if (!httpProxyServer && !httpsProxyServer) return { mode: 'system' }
+  if (!httpProxyServer && !httpsProxyServer) {
+    throw new DesktopProxyConfigurationError(
+      'Custom proxy mode requires an HTTP, HTTPS, or SOCKS5 proxy URL',
+      'missing_proxy',
+    )
+  }
 
   const proxyRules = [
     httpProxyServer ? `http=${httpProxyServer}` : null,
@@ -146,12 +185,20 @@ export function applyDesktopProxySettingsToEnv(
     delete env[key]
   }
 
+  delete env.COPILOT_API_PROXY_REQUIRED
   if (proxySettings.mode !== 'custom') return false
 
   const httpProxy = normalizeProxyEnvValue(proxySettings.http_proxy)
   const httpsProxy = normalizeProxyEnvValue(proxySettings.https_proxy)
   const noProxy = proxySettings.no_proxy.trim()
-  if (!httpProxy && !httpsProxy) return false
+  if (!httpProxy && !httpsProxy) {
+    throw new DesktopProxyConfigurationError(
+      'Custom proxy mode requires an HTTP, HTTPS, or SOCKS5 proxy URL',
+      'missing_proxy',
+    )
+  }
+
+  env.COPILOT_API_PROXY_REQUIRED = '1'
 
   if (httpProxy) {
     env.HTTP_PROXY = httpProxy
