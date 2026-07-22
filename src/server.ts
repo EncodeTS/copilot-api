@@ -113,6 +113,7 @@ server.route("/v1/messages", messageRoutes)
 
 // Provider-scoped endpoints
 server.route("/:provider/v1/alpha/search", alphaSearchRoutes)
+server.route("/:provider/v1/images", imageRoutes)
 server.route("/:provider/v1/messages", providerMessageRoutes)
 server.route("/:provider/v1/models", providerModelRoutes)
 server.route("/:provider/v1/responses", providerResponsesRoutes)

@@ -711,6 +711,8 @@ curl http://localhost:4141/admin/config/model-mappings \
 | `POST /v1/responses`              | `POST` | OpenAI 中用于生成模型响应的高级接口。支持 `openai-responses` provider 的 `provider/model` 别名。                                                                                               |
 | `POST /:provider/v1/responses`    | `POST` | 将 Responses 请求直接代理到指定的 `openai-responses` provider。模型应使用不带 `provider/` 前缀的上游模型 ID。                                                                                  |
 | `POST /:provider/v1/alpha/search` | `POST` | 将 Alpha Search 直接代理到指定的 `openai-responses` provider。网关会精确保留 query string 和 JSON 请求字节、以 provider 鉴权覆盖调用方凭据，并且不提供无版本前缀的 provider 路由。             |
+| `POST /:provider/v1/images/generations` | `POST` | 将图片生成请求代理到指定 provider，精确保留 JSON 请求体和 query，并以 provider 鉴权覆盖调用方凭据。使用独立且有界的 15 分钟 deadline，不套用内置 Responses 图片压缩或估算策略。 |
+| `POST /:provider/v1/images/edits` | `POST` | 将图片编辑请求以流式方式代理到指定 provider，精确保留 multipart 原始字节、boundary、content type 与 query。provider `baseUrl` 已以 `/v1` 结尾时不会重复拼接路径。 |
 | `POST /v1/chat/completions`       | `POST` | 为给定聊天对话创建模型响应。支持 `openai-compatible` provider 的 `provider/model` 别名；目标 provider 已配置时可在没有 Copilot 的情况下使用。                                                  |
 | `GET /v1/models`                  | `GET`  | 列出 Copilot 模型以及已启用 provider 的 `provider/model-id` 模型。Codex 客户端会收到与自身版本匹配的 bundled descriptor，并叠加 Copilot 官方实时上下文能力；无法匹配时安全回退为空的远端列表。 |
 | `POST /v1/embeddings`             | `POST` | 创建表示输入文本的向量嵌入。                                                                                                                                                                   |

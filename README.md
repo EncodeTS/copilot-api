@@ -744,6 +744,8 @@ These endpoints mimic the OpenAI API structure.
 | `POST /v1/responses`              | `POST` | OpenAI Most advanced interface for generating model responses. Supports `provider/model` aliases for `openai-responses` providers.                                                                                                                                         |
 | `POST /:provider/v1/responses`    | `POST` | Directly proxies a Responses request to the named `openai-responses` provider. Use the upstream model ID without a `provider/` prefix.                                                                                                                                     |
 | `POST /:provider/v1/alpha/search` | `POST` | Directly proxies Alpha Search to the named `openai-responses` provider. The gateway preserves the query string and JSON request bytes exactly, replaces caller credentials with provider auth, and does not expose an unversioned provider route.                          |
+| `POST /:provider/v1/images/generations` | `POST` | Proxies image generation to the named provider, preserving the exact JSON body and query while replacing caller credentials with provider auth. Uses an independent bounded 15-minute deadline and does not apply the built-in Responses image compressor or estimator. |
+| `POST /:provider/v1/images/edits` | `POST` | Streams image edits to the named provider while preserving the exact multipart bytes, boundary, content type, and query. The provider `baseUrl` may include `/v1` without producing a duplicated path. |
 | `POST /v1/chat/completions`       | `POST` | Creates a model response for the given chat conversation. Supports `provider/model` aliases for `openai-compatible` providers and can be used without Copilot when the target provider is configured.                                                                      |
 | `GET /v1/models`                  | `GET`  | Lists Copilot models plus enabled provider models using `provider/model-id` IDs. Codex clients receive their own version-matched bundled descriptors with live Copilot context limits; unavailable or mismatched client catalogs safely fall back to an empty remote list. |
 | `POST /v1/embeddings`             | `POST` | Creates an embedding vector representing the input text.                                                                                                                                                                                                                   |
@@ -752,6 +754,11 @@ Codex provider availability comes from the official Codex catalog. If that
 discovery is temporarily unavailable, responses use a bounded last-known-good
 or static fallback and report the effective source and freshness in
 `x-copilot-api-codex-catalog-*` headers.
+
+Provider-scoped image routes send provider authentication instead of caller
+credentials and return the upstream status, safe headers, and response stream
+without applying the built-in Copilot Responses 32 MiB profile, Sharp
+compression, or media-token estimation.
 
 ### Codex Backend Proxy Endpoints
 
