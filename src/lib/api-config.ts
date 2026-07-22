@@ -109,6 +109,16 @@ export const prepareForCompact = (
   }
 }
 
+export const resolveInteractionInitiator = ({
+  compactType,
+  initiator,
+  isSubagent,
+}: {
+  compactType?: CompactType
+  initiator: "agent" | "user"
+  isSubagent: boolean
+}): "agent" | "user" => (compactType || isSubagent ? "agent" : initiator)
+
 export const prepareInteractionHeaders = (
   sessionId: string | undefined,
   isSubagent: boolean,

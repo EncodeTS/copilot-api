@@ -5,7 +5,7 @@ import { streamSSE, type SSEMessage } from "hono/streaming"
 
 import { resolveMappedModel } from "~/lib/config"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
-import { parseProviderModelAlias } from "~/lib/provider-model"
+import { normalizeGatewayReasoningEffort } from "~/lib/reasoning-effort"
 import { state } from "~/lib/state"
 import {
   createCopilotTokenUsageRecorder,
@@ -14,7 +14,7 @@ import {
   type UsageTokens,
 } from "~/lib/token-usage"
 import { generateRequestIdFromPayload, getUUID, isNullish } from "~/lib/utils"
-import { handleProviderChatCompletionsForProvider } from "~/routes/provider/chat-completions/handler"
+import { routeProviderModelAlias } from "~/routes/provider/model-router"
 import {
   createChatCompletions,
   type ChatCompletionChunk,
@@ -24,8 +24,33 @@ import {
 
 const logger = createHandlerLogger("chat-completions-handler")
 
+export const chatCompletionsHandlerDependencies = {
+  createChatCompletions,
+}
+
 export async function handleCompletion(c: Context) {
   let payload = await c.req.json<ChatCompletionsPayload>()
+  if (Object.hasOwn(payload, "reasoning_effort")) {
+    if (payload.reasoning_effort === null) {
+      delete payload.reasoning_effort
+    } else {
+      const effort = normalizeGatewayReasoningEffort(payload.reasoning_effort)
+      if (!effort) {
+        return c.json(
+          {
+            error: {
+              code: "unsupported_value",
+              message: "Unsupported Chat Completions reasoning effort",
+              param: "reasoning_effort",
+              type: "invalid_request_error",
+            },
+          },
+          400,
+        )
+      }
+      payload.reasoning_effort = effort
+    }
+  }
   const requestedModel = payload.model
   payload.model = resolveMappedModel(payload.model)
   if (payload.model !== requestedModel) {
@@ -34,14 +59,11 @@ export async function handleCompletion(c: Context) {
     )
   }
 
-  const providerModelAlias = parseProviderModelAlias(payload.model)
-  if (providerModelAlias) {
-    payload.model = providerModelAlias.model
-    return await handleProviderChatCompletionsForProvider(c, {
-      payload,
-      provider: providerModelAlias.provider,
-    })
-  }
+  const providerResponse = await routeProviderModelAlias(c, {
+    endpoint: "chat_completions",
+    payload,
+  })
+  if (providerResponse) return providerResponse
 
   debugJson(logger, "Request payload:", payload)
 
@@ -78,12 +100,15 @@ export async function handleCompletion(c: Context) {
     endpoint: "chat_completions",
     fallbackSessionId: sessionId,
     model: payload.model,
+    outcome: "completed",
   })
 
-  const response = await createChatCompletions(payload, {
-    requestId,
-    sessionId,
-  })
+  const response =
+    await chatCompletionsHandlerDependencies.createChatCompletions(payload, {
+      requestId,
+      sessionId,
+      signal: c.req.raw.signal,
+    })
 
   if (isNonStreaming(response)) {
     debugJson(logger, "Non-streaming response:", response)

@@ -16,6 +16,7 @@ embeddingRoutes.post("/", async (c) => {
     const recordUsage = createCopilotTokenUsageRecorder({
       endpoint: "embeddings",
       model: paylod.model,
+      outcome: "completed",
     })
 
     recordUsage({

@@ -12,7 +12,12 @@ import {
 } from "~/lib/api-config"
 import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
+import type { GatewayReasoningEffort } from "~/lib/reasoning-effort"
 import { state } from "~/lib/state"
+import {
+  fetchWithUpstreamLifecycle,
+  type UpstreamLifecycleTimeouts,
+} from "~/lib/upstream-lifecycle"
 
 export const createChatCompletions = async (
   payload: ChatCompletionsPayload,
@@ -20,6 +25,8 @@ export const createChatCompletions = async (
     subagentMarker?: SubagentMarker | null
     requestId: string
     sessionId?: string
+    signal?: AbortSignal
+    timeouts?: UpstreamLifecycleTimeouts
     compactType?: CompactType
   },
 ) => {
@@ -58,11 +65,18 @@ export const createChatCompletions = async (
 
   consola.log(`<-- model: ${payload.model}`)
 
-  const response = await fetch(`${copilotBaseUrl(state)}/chat/completions`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-  })
+  const response = await fetchWithUpstreamLifecycle(
+    `${copilotBaseUrl(state)}/chat/completions`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    },
+    {
+      signal: options.signal,
+      timeouts: options.timeouts,
+    },
+  )
 
   logCopilotRateLimits(response.headers)
 
@@ -125,7 +139,13 @@ export interface Delta {
 export interface Choice {
   index: number
   delta: Delta
-  finish_reason: "stop" | "length" | "tool_calls" | "content_filter" | null
+  finish_reason:
+    | "stop"
+    | "length"
+    | "tool_calls"
+    | "content_filter"
+    | "error"
+    | null
   logprobs: object | null
 }
 
@@ -169,7 +189,7 @@ interface ChoiceNonStreaming {
   index: number
   message: ResponseMessage
   logprobs: object | null
-  finish_reason: "stop" | "length" | "tool_calls" | "content_filter"
+  finish_reason: "stop" | "length" | "tool_calls" | "content_filter" | "error"
 }
 
 // Payload types
@@ -205,7 +225,7 @@ export interface ChatCompletionsPayload {
     include_usage?: boolean | null
   } | null
   thinking_budget?: number
-  reasoning_effort?: string
+  reasoning_effort?: GatewayReasoningEffort | null
   top_k?: number | null
   parallel_tool_calls?: boolean | null
 }
@@ -230,6 +250,7 @@ export interface Message {
   reasoning_text?: string | null
   reasoning_opaque?: string | null
   copilot_cache_control?: CopilotCacheControl
+  audio?: { id: string } | null
 }
 
 export interface ToolCall {
@@ -241,7 +262,7 @@ export interface ToolCall {
   }
 }
 
-export type ContentPart = TextPart | ImagePart | FilePart
+export type ContentPart = TextPart | ImagePart | FilePart | InputAudioPart
 
 export interface CacheControl {
   type: "ephemeral"
@@ -268,9 +289,25 @@ export interface ImagePart {
 
 export interface FilePart {
   type: "file"
-  file: {
-    file_data: string
-    filename?: string
+  file:
+    | {
+        file_data: string
+        file_id?: never
+        filename?: string
+      }
+    | {
+        file_data?: never
+        file_id: string
+        filename?: string
+      }
+  cache_control?: CacheControl
+}
+
+export interface InputAudioPart {
+  type: "input_audio"
+  input_audio: {
+    data: string
+    format: "wav" | "mp3"
   }
   cache_control?: CacheControl
 }

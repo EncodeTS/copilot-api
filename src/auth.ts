@@ -2,6 +2,7 @@
 
 import { defineCommand } from "citty"
 import consola from "consola"
+import { createInterface } from "node:readline/promises"
 
 import {
   getRawProviderConfig,
@@ -20,12 +21,43 @@ import {
   type QuickProviderName,
 } from "./lib/quick-providers"
 import { state } from "./lib/state"
-import { persistCodexCredentials, setupGitHubToken } from "./lib/token"
+import {
+  beginCodexLogin,
+  cancelCodexLogin,
+  persistCodexCredentials,
+  setupGitHubToken,
+} from "./lib/token"
 
 interface RunAuthOptions {
   provider?: string
   verbose: boolean
   showToken: boolean
+}
+
+export interface PromptTextStreams {
+  input: NodeJS.ReadableStream
+  output: NodeJS.WritableStream
+}
+
+export async function promptTextWithSignal(
+  message: string,
+  signal?: AbortSignal,
+  streams: PromptTextStreams = {
+    input: process.stdin,
+    output: process.stdout,
+  },
+): Promise<string> {
+  const readline = createInterface({
+    input: streams.input,
+    output: streams.output,
+  })
+  try {
+    return signal ?
+        await readline.question(`${message} `, { signal })
+      : await readline.question(`${message} `)
+  } finally {
+    readline.close()
+  }
 }
 
 const authArgs = {
@@ -379,6 +411,9 @@ function buildCustomProviderConfig(
     type: options.type,
     enabled: true,
     baseUrl: options.baseUrl,
+    ...(existingProviderConfig.allowInsecureHttp === true ?
+      { allowInsecureHttp: true }
+    : {}),
     apiKey: options.apiKey,
     ...(options.authType ? { authType: options.authType } : {}),
     pricingCurrency:
@@ -451,25 +486,33 @@ async function configureQuickProvider(
 }
 
 async function loginWithCodex(): Promise<void> {
-  const credentials = await loginCodex({
-    onAuth(info) {
-      consola.info("Open the following URL to authenticate with Codex:")
-      consola.log(info.url)
-      if (info.instructions) {
-        consola.info(info.instructions)
-      }
-    },
-    onPrompt(message) {
-      return consola.prompt(message, {
-        type: "text",
-      })
-    },
-    onProgress(message) {
-      consola.debug(message)
-    },
-  })
+  const loginSession = await beginCodexLogin()
+  try {
+    const credentials = await loginCodex({
+      onAuth(info) {
+        consola.info("Open the following URL to authenticate with Codex:")
+        consola.log(info.url)
+        if (info.instructions) {
+          consola.info(info.instructions)
+        }
+      },
+      onPrompt(message, signal) {
+        return promptTextWithSignal(message, signal)
+      },
+      onProgress(message) {
+        consola.debug(message)
+      },
+      signal: loginSession.signal,
+    })
 
-  await persistCodexCredentials(credentials, { enableProvider: true })
+    await persistCodexCredentials(credentials, {
+      enableProvider: true,
+      loginSession,
+    })
+  } catch (error) {
+    cancelCodexLogin(loginSession)
+    throw error
+  }
   consola.success(
     `Codex provider config written to ${PATHS.CONFIG_PATH} and credentials written to ${PATHS.CODEX_CREDENTIAL_PATH}`,
   )
