@@ -3,8 +3,10 @@ import type { Dispatcher, RequestInit as UndiciRequestInit } from "undici"
 import type { ResolvedProviderConfig } from "~/lib/config"
 import type { UpstreamFetch } from "~/lib/upstream-lifecycle"
 import { buildCodexRequestHeaders } from "~/services/codex/create-responses"
-import { buildProviderUpstreamHeaders } from "~/services/providers/provider-proxy"
-import { createProviderResponsesSafeHeaders } from "~/services/providers/provider-responses-port"
+import {
+  buildProviderUpstreamHeaders,
+  createProviderSafeResponseHeaders,
+} from "~/services/providers/provider-proxy"
 
 export type ProviderImagesOperation = "generations" | "edits"
 
@@ -174,7 +176,7 @@ const applyImagesContentHeaders = (
 
 const createSafeImagesResponse = (response: Response): Response =>
   new Response(response.body, {
-    headers: createProviderResponsesSafeHeaders(response.headers),
+    headers: createProviderSafeResponseHeaders(response.headers),
     status: response.status,
     statusText: response.statusText,
   })

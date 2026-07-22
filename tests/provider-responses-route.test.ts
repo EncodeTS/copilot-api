@@ -244,15 +244,24 @@ describe("versioned provider Responses route", () => {
   })
 
   test("streams provider Responses events through the public route", async () => {
+    const encoder = new TextEncoder()
+    let upstreamController:
+      | ReadableStreamDefaultController<Uint8Array>
+      | undefined
     const completed = createResponsesResult("gpt-test")
     fetchMock.mockImplementationOnce(() =>
       Promise.resolve(
         new Response(
-          [
-            'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","sequence_number":0,"delta":"hello"}',
-            `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", sequence_number: 1, response: completed })}`,
-            "",
-          ].join("\n\n"),
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              upstreamController = controller
+              controller.enqueue(
+                encoder.encode(
+                  'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","sequence_number":0,"delta":"hello"}\n\n',
+                ),
+              )
+            },
+          }),
           {
             headers: {
               "content-type": "text/event-stream; charset=utf-8",
@@ -261,6 +270,7 @@ describe("versioned provider Responses route", () => {
               "x-request-id": "request-stream-live",
             },
             status: 202,
+            statusText: "Accepted Exactly",
           },
         ),
       ),
@@ -273,12 +283,22 @@ describe("versioned provider Responses route", () => {
     )
 
     expect(response.status).toBe(202)
+    expect(response.statusText).toBe("Accepted Exactly")
     expect(response.headers.get("content-type")).toStartWith(
       "text/event-stream",
     )
     expect(response.headers.get("x-request-id")).toBe("request-stream-live")
     expect(response.headers.get("x-ratelimit-remaining")).toBe("41")
     expect(response.headers.get("set-cookie")).toBeNull()
+    if (!upstreamController) {
+      throw new Error("Missing upstream stream controller")
+    }
+    upstreamController.enqueue(
+      encoder.encode(
+        `event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", sequence_number: 1, response: completed })}\n\n`,
+      ),
+    )
+    upstreamController.close()
     const body = await response.text()
     expect(body).toContain("event: response.output_text.delta")
     expect(body).toContain('"delta":"hello"')

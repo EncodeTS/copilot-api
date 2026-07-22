@@ -15,18 +15,20 @@ const ANTHROPIC_FORWARDABLE_HEADERS = [
   "anthropic-beta",
 ] as const
 
-const STRIPPED_RESPONSE_HEADERS = [
+const STRIPPED_RESPONSE_HEADERS = new Set([
   "connection",
   "content-encoding",
   "content-length",
   "keep-alive",
   "proxy-authenticate",
   "proxy-authorization",
+  "set-cookie",
+  "set-cookie2",
   "te",
   "trailer",
   "transfer-encoding",
   "upgrade",
-] as const
+])
 
 export function buildProviderUpstreamHeaders(
   providerConfig: ResolvedProviderConfig,
@@ -70,17 +72,25 @@ export function createProviderProxyResponse(
   upstreamResponse: Response,
   body?: ReadableStream<Uint8Array> | null,
 ): Response {
-  const headers = new Headers(upstreamResponse.headers)
-
-  for (const headerName of STRIPPED_RESPONSE_HEADERS) {
-    headers.delete(headerName)
-  }
+  const headers = createProviderSafeResponseHeaders(upstreamResponse.headers)
 
   return new Response(body ?? upstreamResponse.body, {
     headers,
     status: upstreamResponse.status,
     statusText: upstreamResponse.statusText,
   })
+}
+
+export function createProviderSafeResponseHeaders(
+  headers: Headers,
+): Readonly<Record<string, string>> {
+  const safeHeaders = Object.create(null) as Record<string, string>
+  for (const [name, value] of headers) {
+    if (!STRIPPED_RESPONSE_HEADERS.has(name.toLowerCase())) {
+      safeHeaders[name] = value
+    }
+  }
+  return Object.freeze(safeHeaders)
 }
 
 export async function forwardProviderMessages(

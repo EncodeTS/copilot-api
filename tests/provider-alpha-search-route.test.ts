@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import { Hono } from "hono"
 
+import { AuthRequestError } from "../src/lib/auth-request"
 import type { ResolvedProviderConfig } from "../src/lib/config"
 import { state } from "../src/lib/state"
 import { UpstreamLifecycleTimeoutError } from "../src/lib/upstream-lifecycle"
@@ -239,6 +240,37 @@ describe("provider alpha search routing", () => {
     expect(serializedDiagnostics).toContain("alpha_search.upstream_error")
     expect(serializedDiagnostics).toContain("transport_error")
     expect(diagnosticMock.mock.calls.at(-1)?.[1]).toBe("error")
+  })
+
+  test("preserves provider credential refresh failures and retry metadata", async () => {
+    const authError = new AuthRequestError({
+      action: "Refresh provider credentials",
+      downstreamStatus: 401,
+      headers: { "retry-after": "19" },
+      kind: "retryable",
+      oauthCode: "temporarily_unavailable",
+      status: 401,
+    })
+    const routes = createAlphaSearchRoutes({
+      logDiagnosticEvent: diagnosticMock,
+      resolveProviderConfig: () => Promise.reject(authError),
+    })
+    const app = new Hono()
+    app.route("/:provider/v1/alpha/search", routes)
+
+    const response = await app.request("/codex/v1/alpha/search", {
+      body: "{}",
+      method: "POST",
+    })
+
+    expect(response.status).toBe(401)
+    expect(response.headers.get("retry-after")).toBe("19")
+    expect(await response.json()).toEqual({
+      error: {
+        message: authError.message,
+        type: "auth_error",
+      },
+    })
   })
 
   test("maps shared lifecycle timeouts without exposing the phase details", async () => {

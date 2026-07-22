@@ -15,22 +15,10 @@ import type {
   ResponsesTransport,
 } from "~/services/copilot/create-responses"
 
-import { forwardProviderResponses } from "./provider-proxy"
-
-const STRIPPED_RESPONSE_HEADERS = new Set([
-  "connection",
-  "content-encoding",
-  "content-length",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "set-cookie",
-  "set-cookie2",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
-])
+import {
+  createProviderSafeResponseHeaders,
+  forwardProviderResponses,
+} from "./provider-proxy"
 
 export type ProviderResponsesAdapter = "codex" | "http"
 
@@ -155,18 +143,6 @@ export const createProviderResponsesPort = (
   })
 }
 
-export const createProviderResponsesSafeHeaders = (
-  headers: Headers,
-): Readonly<Record<string, string>> => {
-  const safeHeaders = Object.create(null) as Record<string, string>
-  for (const [name, value] of headers) {
-    if (!STRIPPED_RESPONSE_HEADERS.has(name.toLowerCase())) {
-      safeHeaders[name] = value
-    }
-  }
-  return Object.freeze(safeHeaders)
-}
-
 const adaptCodexDispatch = async (
   dispatched: CodexResponsesDispatch,
   options: {
@@ -206,7 +182,7 @@ const adaptHttpResponse = async (
     observer: ProviderResponsesObserver
   },
 ): Promise<ProviderResponsesDispatch> => {
-  const headers = createProviderResponsesSafeHeaders(response.headers)
+  const headers = createProviderSafeResponseHeaders(response.headers)
   const common = {
     adapter: options.adapter,
     headers,

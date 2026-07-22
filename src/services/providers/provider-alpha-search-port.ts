@@ -10,8 +10,10 @@ import {
   resolveCodexAlphaSearchUrl,
 } from "~/services/codex/alpha-search"
 
-import { buildProviderUpstreamHeaders } from "./provider-proxy"
-import { createProviderResponsesSafeHeaders } from "./provider-responses-port"
+import {
+  buildProviderUpstreamHeaders,
+  createProviderSafeResponseHeaders,
+} from "./provider-proxy"
 
 export type ProviderAlphaSearchAdapter = "codex" | "http"
 
@@ -76,7 +78,7 @@ export const createProviderAlphaSearchPort = (
               timeouts: request.timeouts,
             },
           )
-      const safeHeaders = createProviderResponsesSafeHeaders(response.headers)
+      const safeHeaders = createProviderSafeResponseHeaders(response.headers)
       return Object.freeze({
         adapter,
         headers: safeHeaders,

@@ -1,5 +1,7 @@
 import { Hono } from "hono"
 
+import { AuthRequestError } from "~/lib/auth-request"
+import { forwardError } from "~/lib/error"
 import { createHandlerLogger, logDiagnosticEvent } from "~/lib/logger"
 import { resolveProviderConfig } from "~/lib/provider-resolver"
 import { UpstreamLifecycleTimeoutError } from "~/lib/upstream-lifecycle"
@@ -81,6 +83,19 @@ export const createAlphaSearchRoutes = (
       )
       return dispatched.response
     } catch (error) {
+      if (error instanceof AuthRequestError) {
+        dependencies.logDiagnosticEvent(
+          logger,
+          error.kind === "retryable" ? "warn" : "error",
+          "alpha_search.auth_error",
+          {
+            provider,
+            retryable: error.kind === "retryable",
+            statusCode: error.downstreamStatus,
+          },
+        )
+        return await forwardError(c, error)
+      }
       const failure = classifyAlphaSearchFailure(error, c.req.raw.signal)
       dependencies.logDiagnosticEvent(
         logger,

@@ -39,11 +39,11 @@ import {
 } from "~/services/codex/get-models"
 import {
   createProviderResponsesPort,
-  createProviderResponsesSafeHeaders,
   type ProviderResponsesErrorDispatch,
   type ProviderResponsesResultDispatch,
   type ProviderResponsesStreamDispatch,
 } from "~/services/providers/provider-responses-port"
+import { createProviderSafeResponseHeaders } from "~/services/providers/provider-proxy"
 import type { ContentfulStatusCode } from "hono/utils/http-status"
 
 import {
@@ -295,6 +295,8 @@ const streamProviderResponses = async (
       return projectPrefetchedProviderResponses(c, prefetched, {
         normalizeSseEventNames: dispatched.normalizeSseEventNames,
         provider: options.provider,
+        status: dispatched.status,
+        statusText: dispatched.statusText,
         transport: dispatched.transport,
       })
     } finally {
@@ -304,30 +306,33 @@ const streamProviderResponses = async (
     }
   }
 
-  return streamSSE(c, async (stream) => {
-    try {
-      await relayResponsesStreamSession({
-        eofErrorMessage:
-          "Provider Responses stream ended without a terminal event",
-        flow: "provider_responses",
-        logger,
-        observeFrame: (frame) =>
-          observeProviderResponsesFrame(frame, dispatched, options.provider),
-        output: stream,
-        projectFrame:
-          dispatched.normalizeSseEventNames ?
-            projectCodexResponsesFrame
-          : undefined,
-        recordUsage: options.recordUsage,
-        signal: dispatched.signal,
-        source: prefetched.source,
-        transport: dispatched.transport,
-      })
-    } finally {
-      await prefetched.cancel()
-      await dispatched.cancel(new Error("Provider Responses stream finished"))
-    }
-  })
+  return createExactProviderResponsesStreamResponse(
+    streamSSE(c, async (stream) => {
+      try {
+        await relayResponsesStreamSession({
+          eofErrorMessage:
+            "Provider Responses stream ended without a terminal event",
+          flow: "provider_responses",
+          logger,
+          observeFrame: (frame) =>
+            observeProviderResponsesFrame(frame, dispatched, options.provider),
+          output: stream,
+          projectFrame:
+            dispatched.normalizeSseEventNames ?
+              projectCodexResponsesFrame
+            : undefined,
+          recordUsage: options.recordUsage,
+          signal: dispatched.signal,
+          source: prefetched.source,
+          transport: dispatched.transport,
+        })
+      } finally {
+        await prefetched.cancel()
+        await dispatched.cancel(new Error("Provider Responses stream finished"))
+      }
+    }),
+    dispatched,
+  )
 }
 
 const projectPrefetchedProviderResponses = (
@@ -336,6 +341,8 @@ const projectPrefetchedProviderResponses = (
   options: {
     normalizeSseEventNames: boolean
     provider: string
+    status: number
+    statusText: string
     transport: ProviderResponsesStreamDispatch["transport"]
   },
 ): Response => {
@@ -362,23 +369,26 @@ const projectPrefetchedProviderResponses = (
     || outcome.kind === "incomplete"
     || (outcome.kind === "eof" && outcome.endedBy === "done")
   ) {
-    return streamSSE(c, async (stream) => {
-      for (const frame of prefetched.frames) {
-        const message =
-          options.normalizeSseEventNames ?
-            projectCodexResponsesFrame(frame)
-          : projectResponsesSessionFrame(frame)
-        if (message) await stream.writeSSE(message)
-      }
-      if (outcome.kind === "eof") {
-        await emitPrefetchedProviderStreamFailure(
-          stream,
-          outcome,
-          options.transport,
-          c.req.raw.signal,
-        )
-      }
-    })
+    return createExactProviderResponsesStreamResponse(
+      streamSSE(c, async (stream) => {
+        for (const frame of prefetched.frames) {
+          const message =
+            options.normalizeSseEventNames ?
+              projectCodexResponsesFrame(frame)
+            : projectResponsesSessionFrame(frame)
+          if (message) await stream.writeSSE(message)
+        }
+        if (outcome.kind === "eof") {
+          await emitPrefetchedProviderStreamFailure(
+            stream,
+            outcome,
+            options.transport,
+            c.req.raw.signal,
+          )
+        }
+      }),
+      options,
+    )
   }
 
   if (outcome.kind === "abort") {
@@ -423,7 +433,7 @@ const toHeaderRecord = (value: unknown): Record<string, string> | undefined => {
     (entry): entry is [string, string] => typeof entry[1] === "string",
   )
   if (entries.length === 0) return undefined
-  const headers = createProviderResponsesSafeHeaders(new Headers(entries))
+  const headers = createProviderSafeResponseHeaders(new Headers(entries))
   return Object.keys(headers).length > 0 ? { ...headers } : undefined
 }
 
@@ -474,6 +484,16 @@ const applyProviderResponsesStreamMetadata = (
     if (name.toLowerCase() !== "content-type") c.header(name, value)
   }
 }
+
+const createExactProviderResponsesStreamResponse = (
+  response: Response,
+  dispatched: Pick<ProviderResponsesStreamDispatch, "status" | "statusText">,
+): Response =>
+  new Response(response.body, {
+    headers: response.headers,
+    status: dispatched.status,
+    statusText: dispatched.statusText,
+  })
 
 const createExactProviderResponsesResponse = (
   c: Context,
