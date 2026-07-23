@@ -48,6 +48,7 @@ import {
   createPooledWebSocketIdentity,
   createWebSocketUrl,
   isWebSocketNotSentError,
+  isWebSocketSentUnknownError,
   type PooledWebSocketRequest,
 } from "~/services/responses-websocket"
 import { projectResponsesWebSocketChunk } from "~/services/responses-websocket-chunk"
@@ -58,12 +59,17 @@ import {
 } from "~/services/copilot/responses-reasoning-recovery-registry"
 import {
   admitResponsesWirePayload,
+  createHttpResponsesWireArtifact,
   isResponsesWireArtifact,
   prepareResponsesWirePayload,
   prepareResponsesWirePayloadWithSummary,
   type ResponsesWireArtifact,
   type ResponsesWireSerializationObserver,
 } from "~/services/copilot/responses-wire-artifact"
+import {
+  degradeResponsesWebSocketTransport,
+  shouldPreferResponsesHttpTransport,
+} from "~/services/copilot/responses-transport-health"
 
 const CONNECTION_OWNERSHIP_ERROR =
   "input item does not belong to this connection"
@@ -346,7 +352,7 @@ export interface CopilotUsage {
 export type Metadata = { [key: string]: string }
 
 export interface IncompleteDetails {
-  reason?: "max_output_tokens" | "content_filter"
+  reason?: "max_output_tokens" | "max_tokens" | "content_filter"
 }
 
 export interface ResponseError {
@@ -726,14 +732,31 @@ interface ResponsesRequestOptions {
   wireSerializationObserver?: ResponsesWireSerializationObserver
 }
 
-const resolveResponsesTransport = (
+interface ResponsesTransportDecision {
+  downgradedForTransportHealth: boolean
+  transport: ResponsesTransport
+}
+
+const resolveResponsesTransportDecision = (
   payload: ResponsesPayload,
   requestedTransport: ResponsesTransport,
+  allowHttpFallback: boolean,
   compactType?: CompactType,
-): ResponsesTransport =>
-  payload.stream !== true || compactType === COMPACT_REQUEST ?
-    "http"
-  : requestedTransport
+): ResponsesTransportDecision => {
+  if (payload.stream !== true || compactType === COMPACT_REQUEST) {
+    return { downgradedForTransportHealth: false, transport: "http" }
+  }
+  if (
+    requestedTransport === "websocket"
+    && shouldPreferResponsesHttpTransport(allowHttpFallback)
+  ) {
+    return { downgradedForTransportHealth: true, transport: "http" }
+  }
+  return {
+    downgradedForTransportHealth: false,
+    transport: requestedTransport,
+  }
+}
 
 export const createResponses = async (
   payload: ResponsesPayload,
@@ -771,15 +794,24 @@ export const createResponses = async (
       )
     }
     payload = wireArtifact.payload
-    const actualTransport = resolveResponsesTransport(
+    const transportDecision = resolveResponsesTransportDecision(
       payload,
       transport,
+      allowHttpFallback,
       compactType,
     )
-    if (wireArtifact.transport !== actualTransport) {
-      throw new TypeError(
-        "Responses wire artifact transport does not match the request",
-      )
+    if (wireArtifact.transport !== transportDecision.transport) {
+      if (
+        wireArtifact.transport === "websocket"
+        && transportDecision.downgradedForTransportHealth
+      ) {
+        wireArtifact = createHttpResponsesWireArtifact(wireArtifact)
+        payload = wireArtifact.payload
+      } else {
+        throw new TypeError(
+          "Responses wire artifact transport does not match the request",
+        )
+      }
     }
   }
   const preparationReasoningRecoveryScope = createReasoningRecoveryScope({
@@ -801,10 +833,16 @@ export const createResponses = async (
       })
     }
     payload = preparation.payload
+    const transportDecision = resolveResponsesTransportDecision(
+      payload,
+      transport,
+      allowHttpFallback,
+      compactType,
+    )
     wireArtifact = admitResponsesWirePayload(
       payload,
       initiator,
-      resolveResponsesTransport(payload, transport, compactType),
+      transportDecision.transport,
       { observer: wireSerializationObserver },
     )
     payload = wireArtifact.payload
@@ -1345,6 +1383,9 @@ const createRetryableResponsesWebSocketStream = async function* (
     }
     if (isWebSocketNotSentError(error)) {
       throw new RetryableStreamTransportError(error.message, error)
+    }
+    if (!options.signal?.aborted && isWebSocketSentUnknownError(error)) {
+      degradeResponsesWebSocketTransport("sent_unknown_disconnect")
     }
     throw error
   }

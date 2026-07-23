@@ -142,7 +142,8 @@ function resolveUserId(input: TokenUsageEventInput): string {
 function toPersistedEvent(
   input: TokenUsageEventInput,
 ): PersistedTokenUsageEvent | null {
-  if (!hasAnyToken(input)) {
+  const outcome = normalizeTokenUsageOutcome(input.outcome)
+  if (!hasAnyToken(input) && outcome === "completed") {
     return null
   }
 
@@ -161,7 +162,7 @@ function toPersistedEvent(
     error_code: normalizeTokenUsageErrorCode(input.errorCode),
     input_tokens: normalizeToken(input.input_tokens),
     model: input.model.trim() || "unknown",
-    outcome: normalizeTokenUsageOutcome(input.outcome),
+    outcome,
     output_tokens: normalizeToken(input.output_tokens),
     provider_name: input.providerName?.trim() || null,
     session_id: resolveTokenUsageSessionId(
@@ -195,8 +196,8 @@ export function recordTokenUsageEvent(
 export function createTokenUsageRecorder(
   options: TokenUsageRecorderOptions,
 ): TokenUsageRecorder {
-  // A recorder is request-scoped. The first non-zero terminal usage wins so
-  // retrying caller cleanup cannot duplicate one request in the ledger.
+  // A recorder is request-scoped. The first recordable terminal outcome wins
+  // so retrying caller cleanup cannot duplicate one request in the ledger.
   let recorded = false
   let rejectedFingerprint: string | null = null
   let retryConsumed = false

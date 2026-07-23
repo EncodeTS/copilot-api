@@ -94,14 +94,14 @@ class MockWebSocket {
     })
   }
 
-  failLatestResponse(message: string): void {
+  failLatestResponse(message: string, code?: string): void {
     if (!this.sent.at(-1)) {
       throw new Error("No websocket request to fail")
     }
 
     this.emit("message", {
       data: JSON.stringify({
-        error: { message },
+        error: { code, message },
         type: "error",
       }),
     })
@@ -150,9 +150,15 @@ const codexResponsesModule = await import(
   "../src/services/codex/create-responses"
 )
 const { forwardCodexResponses } = codexResponsesModule
+const responsesTransportHealthModule = await import(
+  "../src/services/copilot/responses-transport-health"
+)
 const responsesWebSocketModule = await import(
   "../src/services/responses-websocket"
 )
+const originalTransportHealthNow =
+  responsesTransportHealthModule.responsesWebSocketTransportHealthDependencies
+    .now
 
 const originalState = {
   codexAccessToken: state.codexAccessToken,
@@ -197,6 +203,9 @@ const mockFetchJsonResponse = (body: unknown): void => {
 
 beforeEach(() => {
   responsesWebSocketModule.clearPooledWebSocketConnections("network_change")
+  responsesTransportHealthModule.resetResponsesWebSocketTransportHealth()
+  responsesTransportHealthModule.responsesWebSocketTransportHealthDependencies.now =
+    originalTransportHealthNow
   MockWebSocket.autoComplete = true
   MockWebSocket.instances = []
   state.codexAccessToken = "codex-token"
@@ -211,6 +220,9 @@ afterEach(() => {
     websocket.close()
   }
   responsesWebSocketModule.clearPooledWebSocketConnections("network_change")
+  responsesTransportHealthModule.resetResponsesWebSocketTransportHealth()
+  responsesTransportHealthModule.responsesWebSocketTransportHealthDependencies.now =
+    originalTransportHealthNow
 
   state.codexAccessToken = originalState.codexAccessToken
   state.codexAccountId = originalState.codexAccountId
@@ -417,7 +429,7 @@ test("forwardCodexResponses reuses the websocket after response.completed", asyn
   expect(secondChunks[0]?.event).toBe("response.completed")
 })
 
-test("forwardCodexResponses opens a new websocket after an error terminal", async () => {
+test("forwardCodexResponses keeps websocket health after an internal error terminal", async () => {
   MockWebSocket.autoComplete = false
   const payload = {
     input: "hello",
@@ -437,7 +449,10 @@ test("forwardCodexResponses opens a new websocket after an error terminal", asyn
   )
 
   await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
-  MockWebSocket.instances[0]?.failLatestResponse("first request failed")
+  MockWebSocket.instances[0]?.failLatestResponse(
+    "first request failed",
+    "internal_error",
+  )
 
   const firstChunks = await firstChunksPromise
   expect(firstChunks).toHaveLength(1)
@@ -459,6 +474,124 @@ test("forwardCodexResponses opens a new websocket after an error terminal", asyn
   expect(MockWebSocket.instances[1]?.sent).toHaveLength(1)
   expect(secondChunks).toHaveLength(1)
   expect(secondChunks[0]?.event).toBe("response.completed")
+  expect(
+    responsesTransportHealthModule.getResponsesWebSocketTransportHealthDiagnostics()
+      .active,
+  ).toBe(false)
+})
+
+test("forwardCodexResponses keeps sent-unknown at-most-once and uses HTTP during cooldown", async () => {
+  let now = 1_000
+  responsesTransportHealthModule.responsesWebSocketTransportHealthDependencies.now =
+    () => now
+
+  await collectStreamChunks(
+    (await forwardCodexResponses(
+      {
+        input: "warm idle connection",
+        model: "gpt-5.3-codex",
+        stream: true,
+      },
+      new Headers(),
+      undefined,
+      { transport: "websocket" },
+    )) as AsyncIterable<unknown>,
+  )
+  expect(MockWebSocket.instances).toHaveLength(1)
+
+  MockWebSocket.autoComplete = false
+  const interruptedPayload = {
+    input: "continue after network change",
+    model: "gpt-5.4",
+    stream: true,
+  } as const
+  const interruptedResponse = await forwardCodexResponses(
+    interruptedPayload,
+    new Headers(),
+    undefined,
+    { transport: "websocket" },
+  )
+  const interruptedChunksPromise = collectStreamChunks(
+    interruptedResponse as AsyncIterable<unknown>,
+  )
+  await waitFor(() => MockWebSocket.instances[1]?.sent.length === 1)
+  MockWebSocket.instances[1]?.close()
+  const interruptedChunks = await interruptedChunksPromise
+
+  expect(fetchMock).not.toHaveBeenCalled()
+  expect(interruptedChunks).toHaveLength(1)
+  expect(interruptedChunks[0]?.event).toBe("error")
+  expect(
+    responsesTransportHealthModule.getResponsesWebSocketTransportHealthDiagnostics(),
+  ).toMatchObject({
+    active: true,
+    reason: "sent_unknown_disconnect",
+  })
+  expect(MockWebSocket.instances[0]?.readyState).toBe(MockWebSocket.CLOSED)
+
+  fetchMock.mockImplementation(() =>
+    Promise.resolve(
+      new Response(
+        [
+          "event: response.completed",
+          `data: ${JSON.stringify({
+            response: createResponsesResult("gpt-5.4", "resp-http-cooldown"),
+            sequence_number: 1,
+            type: "response.completed",
+          })}`,
+          "",
+          "",
+        ].join("\n"),
+        {
+          headers: { "content-type": "text/event-stream" },
+          status: 200,
+        },
+      ),
+    ),
+  )
+  MockWebSocket.autoComplete = true
+  const cooldownChunks = await collectStreamChunks(
+    (await forwardCodexResponses(interruptedPayload, new Headers(), undefined, {
+      transport: "websocket",
+    })) as AsyncIterable<unknown>,
+  )
+
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(MockWebSocket.instances).toHaveLength(2)
+  expect(cooldownChunks[0]?.data).toContain("resp-http-cooldown")
+
+  now +=
+    responsesTransportHealthModule.DEFAULT_RESPONSES_WEBSOCKET_COOLDOWN_MS + 1
+  const recoveredChunks = await collectStreamChunks(
+    (await forwardCodexResponses(interruptedPayload, new Headers(), undefined, {
+      transport: "websocket",
+    })) as AsyncIterable<unknown>,
+  )
+
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(MockWebSocket.instances).toHaveLength(3)
+  expect(MockWebSocket.instances[2]?.sent).toHaveLength(1)
+  expect(recoveredChunks[0]?.event).toBe("response.completed")
+})
+
+test("forwardCodexResponses caller abort does not degrade websocket transport", async () => {
+  MockWebSocket.autoComplete = false
+  const controller = new AbortController()
+  const response = await forwardCodexResponses(
+    { input: "hello", model: "gpt-5.4", stream: true },
+    new Headers(),
+    undefined,
+    { signal: controller.signal, transport: "websocket" },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  controller.abort(new Error("caller disconnected"))
+  await chunksPromise
+
+  expect(
+    responsesTransportHealthModule.getResponsesWebSocketTransportHealthDiagnostics()
+      .active,
+  ).toBe(false)
 })
 
 test("forwardCodexResponses emits an error event when the websocket closes without a terminal response", async () => {

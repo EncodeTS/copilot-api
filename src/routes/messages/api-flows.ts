@@ -7,6 +7,7 @@ import type { Model } from "~/services/copilot/get-models"
 import { debugJson, debugJsonTail, debugLazy } from "~/lib/logger"
 import { resolveBridgeToolSearchName } from "~/lib/tool-search"
 import { getResponsesEndpointCapabilities } from "~/lib/responses-capabilities"
+import { getResponsesResultUsageMetadata } from "~/lib/responses-stream-usage"
 import {
   createCopilotTokenUsageRecorder,
   mergeAnthropicUsage,
@@ -318,12 +319,15 @@ export const handlePreparedResponsesApi = async (
 
   const responsesResult = response as ResponsesResult
   debugJson(logger, "Non-streaming Responses result:", responsesResult)
-  recordUsage({
-    ...normalizeResponsesUsage(responsesResult.usage),
-    total_nano_aiu: normalizeOptionalToken(
-      responsesResult.copilot_usage?.total_nano_aiu,
-    ),
-  })
+  recordUsage(
+    {
+      ...normalizeResponsesUsage(responsesResult.usage),
+      total_nano_aiu: normalizeOptionalToken(
+        responsesResult.copilot_usage?.total_nano_aiu,
+      ),
+    },
+    getResponsesResultUsageMetadata(responsesResult),
+  )
   const failureMessage = getResponsesResultFailureMessage(responsesResult)
   if (failureMessage) {
     return responseContext.json(createAnthropicErrorBody(failureMessage), 502)

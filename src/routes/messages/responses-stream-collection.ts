@@ -12,7 +12,11 @@ import {
   type ResponsesStreamSessionOutcome,
 } from "~/lib/responses-stream-session"
 import {
-  TOKEN_USAGE_ERROR_CODE_VALUES,
+  normalizeResponsesErrorCode,
+  resolveResponsesStreamSessionUsageRecord,
+  type ResponsesStreamSessionUsageRecord,
+} from "~/lib/responses-stream-usage"
+import {
   type TokenUsageErrorCode,
   type TokenUsageRecordResult,
   type TokenUsageRecorder,
@@ -50,6 +54,93 @@ export class BufferedResponsesTerminalError extends Error {
   }
 }
 
+type BufferedResponsesTerminalInterruptionKind =
+  | "abort"
+  | "delivery_failed"
+  | "timeout"
+
+const BUFFERED_RESPONSES_SURFACED_ERROR_MESSAGE: Readonly<
+  Record<BufferedResponsesTerminalInterruptionKind, string>
+> = Object.freeze({
+  abort: "Responses stream aborted after terminal event",
+  delivery_failed: "Responses stream delivery failed after terminal event",
+  timeout: "Responses stream timed out after terminal event",
+})
+
+export class BufferedResponsesTerminalInterruptionError extends Error {
+  readonly record: ResponsesStreamSessionUsageRecord
+  readonly surfacedError: Error
+
+  constructor(
+    record: ResponsesStreamSessionUsageRecord,
+    interruption: BufferedResponsesTerminalInterruptionKind,
+  ) {
+    super("Responses stream interrupted after a terminal event")
+    this.name = "BufferedResponsesTerminalInterruptionError"
+    this.record = Object.freeze({
+      metadata: Object.freeze({ ...record.metadata }),
+      usage: Object.freeze({ ...record.usage }),
+    })
+    this.surfacedError = new Error(
+      BUFFERED_RESPONSES_SURFACED_ERROR_MESSAGE[interruption],
+    )
+  }
+}
+
+export interface BufferedResponsesCollectionLimits {
+  readonly maxOutputIndex: number
+  readonly maxOutputItemBytes: number
+  readonly maxOutputItems: number
+  readonly maxTotalOutputItemBytes: number
+}
+
+// Responses normally emits only a handful of output items. Leave generous room
+// for tool arguments while bounding retained state and sparse materialization.
+export const DEFAULT_BUFFERED_RESPONSES_COLLECTION_LIMITS: Readonly<BufferedResponsesCollectionLimits> =
+  Object.freeze({
+    maxOutputIndex: 4_095,
+    maxOutputItemBytes: 8 * 1024 * 1024,
+    maxOutputItems: 1_024,
+    maxTotalOutputItemBytes: 32 * 1024 * 1024,
+  })
+
+export type BufferedResponsesCollectionLimitViolation =
+  | "output-index"
+  | "output-item-bytes"
+  | "output-item-count"
+  | "total-output-item-bytes"
+
+export class BufferedResponsesCollectionLimitError extends Error {
+  readonly limit: number
+  readonly observed: number
+  declare readonly record?: ResponsesStreamSessionUsageRecord
+  readonly violation: BufferedResponsesCollectionLimitViolation
+
+  constructor({
+    limit,
+    observed,
+    record,
+    violation,
+  }: {
+    limit: number
+    observed: number
+    record?: ResponsesStreamSessionUsageRecord
+    violation: BufferedResponsesCollectionLimitViolation
+  }) {
+    super("Responses stream output collection exceeded its limit")
+    this.name = "BufferedResponsesCollectionLimitError"
+    this.limit = limit
+    this.observed = observed
+    if (record) {
+      this.record = Object.freeze({
+        metadata: Object.freeze({ ...record.metadata }),
+        usage: Object.freeze({ ...record.usage }),
+      })
+    }
+    this.violation = violation
+  }
+}
+
 export const recordBufferedResponsesTerminalFailure = (
   recordUsage: TokenUsageRecorder,
   error: BufferedResponsesTerminalError,
@@ -60,11 +151,21 @@ export const recordBufferedResponsesTerminalFailure = (
     terminal: error.failure.terminal,
   })
 
+export const recordBufferedResponsesTerminalInterruption = (
+  recordUsage: TokenUsageRecorder,
+  error: BufferedResponsesTerminalInterruptionError,
+): TokenUsageRecordResult =>
+  recordUsage(error.record.usage, error.record.metadata)
+
 interface ResponsesStreamCollection {
+  limits: Readonly<BufferedResponsesCollectionLimits>
+  outputItemBytesByIndex: Map<number, number>
   outputItemsByIndex: Map<number, ResponsesResult["output"][number]>
+  totalOutputItemBytes: number
 }
 
 export const collectResponsesStreamResult = async ({
+  collectionLimits = DEFAULT_BUFFERED_RESPONSES_COLLECTION_LIMITS,
   errorMessagePrefix = "Responses stream",
   onEvent,
   onParsed,
@@ -72,6 +173,7 @@ export const collectResponsesStreamResult = async ({
   upstreamResponse,
   logger,
 }: {
+  collectionLimits?: Readonly<BufferedResponsesCollectionLimits>
   errorMessagePrefix?: string
   onEvent?: (event: ResponseStreamEvent) => void
   onParsed?: (event: unknown) => void
@@ -79,7 +181,7 @@ export const collectResponsesStreamResult = async ({
   upstreamResponse: ResponsesStream
   logger: ConsolaInstance
 }): Promise<ResponsesResult> => {
-  const state = createResponsesStreamCollection()
+  const state = createResponsesStreamCollection(collectionLimits)
   const outcome = await runResponsesStreamSession({
     doneMarkerBehavior: "continue",
     onFrame: (frame) => {
@@ -111,8 +213,13 @@ export const collectResponsesStreamResult = async ({
   )
 }
 
-const createResponsesStreamCollection = (): ResponsesStreamCollection => ({
+const createResponsesStreamCollection = (
+  limits: Readonly<BufferedResponsesCollectionLimits>,
+): ResponsesStreamCollection => ({
+  limits,
+  outputItemBytesByIndex: new Map(),
   outputItemsByIndex: new Map(),
+  totalOutputItemBytes: 0,
 })
 
 const collectResponsesStreamEvent = (
@@ -122,12 +229,51 @@ const collectResponsesStreamEvent = (
   if (event.type !== "response.output_item.done") return
   const outputIndex = event.output_index
   if (!Number.isSafeInteger(outputIndex) || Number(outputIndex) < 0) return
+  const normalizedOutputIndex = Number(outputIndex)
+  if (normalizedOutputIndex > state.limits.maxOutputIndex) {
+    throw new BufferedResponsesCollectionLimitError({
+      limit: state.limits.maxOutputIndex,
+      observed: normalizedOutputIndex,
+      violation: "output-index",
+    })
+  }
   const item = event.item
   if (typeof item !== "object" || item === null || Array.isArray(item)) return
+  if (
+    !state.outputItemsByIndex.has(normalizedOutputIndex)
+    && state.outputItemsByIndex.size + 1 > state.limits.maxOutputItems
+  ) {
+    throw new BufferedResponsesCollectionLimitError({
+      limit: state.limits.maxOutputItems,
+      observed: state.outputItemsByIndex.size + 1,
+      violation: "output-item-count",
+    })
+  }
+  const outputItemBytes = Buffer.byteLength(JSON.stringify(item), "utf8")
+  if (outputItemBytes > state.limits.maxOutputItemBytes) {
+    throw new BufferedResponsesCollectionLimitError({
+      limit: state.limits.maxOutputItemBytes,
+      observed: outputItemBytes,
+      violation: "output-item-bytes",
+    })
+  }
+  const previousOutputItemBytes =
+    state.outputItemBytesByIndex.get(normalizedOutputIndex) ?? 0
+  const nextTotalOutputItemBytes =
+    state.totalOutputItemBytes - previousOutputItemBytes + outputItemBytes
+  if (nextTotalOutputItemBytes > state.limits.maxTotalOutputItemBytes) {
+    throw new BufferedResponsesCollectionLimitError({
+      limit: state.limits.maxTotalOutputItemBytes,
+      observed: nextTotalOutputItemBytes,
+      violation: "total-output-item-bytes",
+    })
+  }
+  state.outputItemBytesByIndex.set(normalizedOutputIndex, outputItemBytes)
   state.outputItemsByIndex.set(
-    Number(outputIndex),
+    normalizedOutputIndex,
     item as ResponsesResult["output"][number],
   )
+  state.totalOutputItemBytes = nextTotalOutputItemBytes
 }
 
 const resolveResponsesStreamCollectionOutcome = (
@@ -138,7 +284,7 @@ const resolveResponsesStreamCollectionOutcome = (
   switch (outcome.kind) {
     case "completed":
     case "incomplete":
-      return materializeResponsesResult(outcome.terminal.event, state)
+      return materializeResponsesResult(outcome, state)
     case "error":
     case "failed":
       throw createBufferedResponsesTerminalError(
@@ -146,8 +292,20 @@ const resolveResponsesStreamCollectionOutcome = (
         outcome.terminal.usage,
       )
     case "abort":
+      if (outcome.terminal) {
+        throw new BufferedResponsesTerminalInterruptionError(
+          resolveResponsesStreamSessionUsageRecord(outcome),
+          "abort",
+        )
+      }
       throw asError(outcome.reason, `${errorMessagePrefix} aborted`)
     case "delivery_failed":
+      if (outcome.terminal) {
+        throw new BufferedResponsesTerminalInterruptionError(
+          resolveResponsesStreamSessionUsageRecord(outcome),
+          "delivery_failed",
+        )
+      }
       throw asError(
         outcome.deliveryError,
         `${errorMessagePrefix} collection failed`,
@@ -157,21 +315,43 @@ const resolveResponsesStreamCollectionOutcome = (
     case "throw":
       throw asError(outcome.error, `${errorMessagePrefix} failed`)
     case "timeout":
+      if (outcome.terminal) {
+        throw new BufferedResponsesTerminalInterruptionError(
+          resolveResponsesStreamSessionUsageRecord(outcome),
+          "timeout",
+        )
+      }
       throw outcome.error
   }
 }
 
 const materializeResponsesResult = (
-  event: Extract<
-    ResponsesStreamTerminalEvent,
-    { type: "response.completed" | "response.incomplete" }
+  outcome: Extract<
+    ResponsesStreamSessionOutcome,
+    { kind: "completed" | "incomplete" }
   >,
   state: ResponsesStreamCollection,
 ): ResponsesResult => {
+  const event = outcome.terminal.event
   const response = event.response as unknown as ResponsesResult
   const lastCollectedIndex = Math.max(-1, ...state.outputItemsByIndex.keys())
   const outputLength = Math.max(response.output.length, lastCollectedIndex + 1)
-  const output = new Array<ResponsesResult["output"][number]>()
+  if (outputLength > state.limits.maxOutputItems) {
+    throw createTerminalCollectionLimitError(outcome, {
+      limit: state.limits.maxOutputItems,
+      observed: outputLength,
+      violation: "output-item-count",
+    })
+  }
+  const lastOutputIndex = outputLength - 1
+  if (lastOutputIndex > state.limits.maxOutputIndex) {
+    throw createTerminalCollectionLimitError(outcome, {
+      limit: state.limits.maxOutputIndex,
+      observed: lastOutputIndex,
+      violation: "output-index",
+    })
+  }
+  let totalOutputItemBytes = 0
   for (let index = 0; index < outputLength; index += 1) {
     const item = state.outputItemsByIndex.get(index) ?? response.output[index]
     if (item === undefined) {
@@ -179,7 +359,29 @@ const materializeResponsesResult = (
         `Responses terminal output is missing output_index ${index}`,
       )
     }
-    output.push(item)
+    const itemBytes =
+      state.outputItemBytesByIndex.get(index)
+      ?? Buffer.byteLength(JSON.stringify(item), "utf8")
+    if (itemBytes > state.limits.maxOutputItemBytes) {
+      throw createTerminalCollectionLimitError(outcome, {
+        limit: state.limits.maxOutputItemBytes,
+        observed: itemBytes,
+        violation: "output-item-bytes",
+      })
+    }
+    totalOutputItemBytes += itemBytes
+    if (totalOutputItemBytes > state.limits.maxTotalOutputItemBytes) {
+      throw createTerminalCollectionLimitError(outcome, {
+        limit: state.limits.maxTotalOutputItemBytes,
+        observed: totalOutputItemBytes,
+        violation: "total-output-item-bytes",
+      })
+    }
+  }
+  const output = new Array<ResponsesResult["output"][number]>(outputLength)
+  for (let index = 0; index < outputLength; index += 1) {
+    output[index] =
+      state.outputItemsByIndex.get(index) ?? response.output[index]
   }
   return {
     ...response,
@@ -189,17 +391,23 @@ const materializeResponsesResult = (
   }
 }
 
-const TOKEN_USAGE_ERROR_CODE_SET = new Set<string>(
-  TOKEN_USAGE_ERROR_CODE_VALUES,
-)
-
-const UPSTREAM_ERROR_CODE_ALIASES: Readonly<
-  Record<string, TokenUsageErrorCode>
-> = Object.freeze({
-  rate_limit_exceeded: "rate_limited",
-  server_error: "upstream_error",
-  temporarily_unavailable: "overloaded",
-})
+const createTerminalCollectionLimitError = (
+  outcome: Extract<
+    ResponsesStreamSessionOutcome,
+    { kind: "completed" | "incomplete" }
+  >,
+  details: {
+    limit: number
+    observed: number
+    violation: BufferedResponsesCollectionLimitViolation
+  },
+): BufferedResponsesCollectionLimitError =>
+  new BufferedResponsesCollectionLimitError({
+    ...details,
+    record: resolveResponsesStreamSessionUsageRecord(outcome, {
+      failureOrigin: "local_materialization_error",
+    }),
+  })
 
 const createBufferedResponsesTerminalError = (
   event: Extract<
@@ -214,25 +422,14 @@ const createBufferedResponsesTerminalError = (
       (event.error?.code ?? event.code)
     : event.response.error?.code
   return new BufferedResponsesTerminalError({
-    errorCode: normalizeBufferedResponsesErrorCode(rawCode, terminal),
+    errorCode: normalizeResponsesErrorCode(
+      rawCode,
+      terminal === "response.failed" ? "response_failed" : "upstream_error",
+    ),
     message: "Responses upstream reported an error",
     terminal,
     usage,
   })
-}
-
-const normalizeBufferedResponsesErrorCode = (
-  value: unknown,
-  terminal: BufferedResponsesFailureTerminal,
-): TokenUsageErrorCode => {
-  if (typeof value === "string") {
-    if (TOKEN_USAGE_ERROR_CODE_SET.has(value)) {
-      return value as TokenUsageErrorCode
-    }
-    const alias = UPSTREAM_ERROR_CODE_ALIASES[value]
-    if (alias) return alias
-  }
-  return terminal === "response.failed" ? "response_failed" : "upstream_error"
 }
 
 const asError = (value: unknown, fallbackMessage: string): Error =>

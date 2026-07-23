@@ -6,6 +6,11 @@ import type {
   TokenUsageRecordMetadata,
   UsageTokens,
 } from "../src/lib/token-usage"
+import {
+  normalizeResponsesErrorCode,
+  resolveResponsesStreamSessionUsageRecord,
+} from "../src/lib/responses-stream-usage"
+import { UpstreamLifecycleTimeoutError } from "../src/lib/upstream-lifecycle"
 import type { AnthropicMessagesPayload } from "../src/routes/messages/anthropic-types"
 import {
   BufferedResponsesTerminalError,
@@ -52,6 +57,7 @@ interface HarnessRunContext {
 interface HarnessResult {
   kind: ScenarioKind
   usage: UsageTokens
+  usageMetadata?: TokenUsageRecordMetadata
   usageRecordCount: number
 }
 
@@ -86,6 +92,47 @@ const logger = {
   warn: mock(() => {}),
 } as unknown as ConsolaInstance
 
+test("Responses usage error-code normalization is safe and shared", () => {
+  expect(normalizeResponsesErrorCode("server_error", "response_failed")).toBe(
+    "upstream_error",
+  )
+  expect(normalizeResponsesErrorCode("constructor", "response_failed")).toBe(
+    "response_failed",
+  )
+})
+
+for (const terminal of ["completed", "incomplete"] as const) {
+  test(`Responses usage marks local ${terminal} materialization failure without losing terminal truth`, async () => {
+    const prefetched = await prefetchResponsesStreamSession({
+      source: createScenarioStream(
+        terminal,
+        new Error("read past materialization terminal"),
+      ).stream,
+    })
+    expect(prefetched.kind).toBe("settled")
+    if (prefetched.kind !== "settled") {
+      throw new Error("expected settled terminal")
+    }
+
+    const record = resolveResponsesStreamSessionUsageRecord(
+      prefetched.outcome,
+      { failureOrigin: "local_materialization_error" },
+    )
+
+    expect(record).toEqual({
+      metadata: {
+        errorCode: "invalid_response",
+        outcome: "failed",
+        terminal: `response.${terminal}`,
+      },
+      usage: EXPECTED_TERMINAL_USAGE,
+    })
+    expect(Object.isFrozen(record)).toBe(true)
+    expect(Object.isFrozen(record.metadata)).toBe(true)
+    expect(Object.isFrozen(record.usage)).toBe(true)
+  })
+}
+
 const harnesses: Array<AdapterHarness> = [
   {
     name: "native SSE relay",
@@ -106,6 +153,7 @@ const harnesses: Array<AdapterHarness> = [
       return {
         kind: outcome.kind as ScenarioKind,
         usage: usage.lastUsage(),
+        usageMetadata: usage.lastMetadata(),
         usageRecordCount: usage.count(),
       }
     },
@@ -131,6 +179,7 @@ const harnesses: Array<AdapterHarness> = [
       return {
         kind: classifyAnthropicOutcome(messages, context),
         usage: usage.lastUsage(),
+        usageMetadata: usage.lastMetadata(),
         usageRecordCount: usage.count(),
       }
     },
@@ -191,6 +240,7 @@ const harnesses: Array<AdapterHarness> = [
         return {
           kind: prefetched.outcome.kind as ScenarioKind,
           usage: usage.lastUsage(),
+          usageMetadata: usage.lastMetadata(),
           usageRecordCount: usage.count(),
         }
       }
@@ -210,6 +260,7 @@ const harnesses: Array<AdapterHarness> = [
         return {
           kind: outcome.kind as ScenarioKind,
           usage: usage.lastUsage(),
+          usageMetadata: usage.lastMetadata(),
           usageRecordCount: usage.count(),
         }
       } finally {
@@ -249,7 +300,196 @@ for (const harness of harnesses) {
       expect(inspected.exhausted() || inspected.returnCount() > 0).toBe(true)
       if (scenario.kind !== "eof") expect(inspected.returnCount()).toBe(1)
       expect(result.usageRecordCount).toBe(harness.ownsUsageRecorder ? 1 : 0)
+      if (harness.ownsUsageRecorder) {
+        expect(result.usageMetadata).toEqual(
+          getExpectedUsageMetadata(scenario.kind),
+        )
+      }
     })
+  }
+}
+
+test("native SSE relay records an upstream timeout as a transport error", async () => {
+  const usage = createUsageCapture()
+  const timeout = new UpstreamLifecycleTimeoutError("Responses body", 10_000)
+  const outcome = await relayResponsesStreamSession({
+    eofErrorMessage: "matrix native EOF",
+    flow: "responses",
+    logger,
+    output: createResponsesOutput(),
+    recordUsage: usage.record,
+    source: createRejectingStream(timeout),
+    transport: "http",
+  })
+
+  expect(outcome.kind).toBe("timeout")
+  expect(usage.count()).toBe(1)
+  expect(usage.lastMetadata()).toEqual({
+    errorCode: "upstream_timeout",
+    outcome: "transport_error",
+    terminal: "transport_error",
+  })
+})
+
+test("native SSE relay keeps terminal truth when downstream delivery fails", async () => {
+  const usage = createUsageCapture()
+  const sinkError = new Error("matrix downstream write failed")
+  const source = createScenarioStream(
+    "incomplete",
+    new Error("matrix read past terminal"),
+  )
+  const outcome = await relayResponsesStreamSession({
+    eofErrorMessage: "matrix native EOF",
+    flow: "responses",
+    logger,
+    output: {
+      writeSSE: () => Promise.reject(sinkError),
+    } as unknown as SSEStreamingApi,
+    recordUsage: usage.record,
+    source: source.stream,
+    transport: "http",
+  })
+
+  expect(outcome.kind).toBe("delivery_failed")
+  expect(usage.count()).toBe(1)
+  expect(usage.lastUsage()).toEqual(EXPECTED_TERMINAL_USAGE)
+  expect(usage.lastMetadata()).toEqual({
+    errorCode: "connection_error",
+    outcome: "transport_error",
+    terminal: "response.incomplete",
+  })
+})
+
+test("native SSE relay does not invent an error code for content filtering", async () => {
+  const usage = createUsageCapture()
+  const response = createResponsesResult("incomplete")
+  response.incomplete_details = { reason: "content_filter" }
+
+  const outcome = await relayResponsesStreamSession({
+    eofErrorMessage: "matrix native EOF",
+    flow: "responses",
+    logger,
+    output: createResponsesOutput(),
+    recordUsage: usage.record,
+    source: createFiniteStream([
+      createResponsesTerminalChunk("response.incomplete", response),
+    ]),
+    transport: "http",
+  })
+
+  expect(outcome.kind).toBe("incomplete")
+  expect(usage.lastMetadata()).toEqual({
+    outcome: "incomplete",
+    terminal: "response.incomplete",
+  })
+})
+
+test("native SSE relay keeps private upstream error codes out of usage metadata", async () => {
+  const usage = createUsageCapture()
+  const response = createResponsesResult("failed")
+  response.error = {
+    code: "private-provider-secret-code",
+    message: "private provider detail",
+  }
+
+  await relayResponsesStreamSession({
+    eofErrorMessage: "matrix native EOF",
+    flow: "responses",
+    logger,
+    output: createResponsesOutput(),
+    recordUsage: usage.record,
+    source: createFiniteStream([
+      createResponsesTerminalChunk("response.failed", response),
+    ]),
+    transport: "http",
+  })
+
+  expect(usage.lastMetadata()).toEqual({
+    errorCode: "response_failed",
+    outcome: "failed",
+    terminal: "response.failed",
+  })
+  expect(JSON.stringify(usage.lastMetadata())).not.toContain("private")
+})
+
+for (const interruption of ["abort", "timeout"] as const) {
+  test(`native SSE relay keeps terminal truth after ${interruption} during delivery`, async () => {
+    const usage = createUsageCapture()
+    const controller = new AbortController()
+    const reason =
+      interruption === "timeout" ?
+        new UpstreamLifecycleTimeoutError("Responses delivery", 15_000)
+      : new Error("matrix caller abort")
+
+    const outcome = await relayResponsesStreamSession({
+      eofErrorMessage: "matrix native EOF",
+      flow: "responses",
+      logger,
+      output: {
+        writeSSE: () => {
+          queueMicrotask(() => controller.abort(reason))
+          return new Promise(() => {})
+        },
+      } as unknown as SSEStreamingApi,
+      recordUsage: usage.record,
+      signal: controller.signal,
+      source: createFiniteStream([createTerminalChunk("incomplete")]),
+      transport: "http",
+    })
+
+    expect(outcome.kind).toBe(interruption)
+    expect(usage.lastUsage()).toEqual(EXPECTED_TERMINAL_USAGE)
+    expect(usage.lastMetadata()).toEqual({
+      errorCode:
+        interruption === "timeout" ? "upstream_timeout" : "caller_aborted",
+      outcome: interruption === "timeout" ? "transport_error" : "aborted",
+      terminal: "response.incomplete",
+    })
+  })
+}
+
+const getExpectedUsageMetadata = (
+  kind: ScenarioKind,
+): TokenUsageRecordMetadata => {
+  switch (kind) {
+    case "abort":
+      return {
+        errorCode: "caller_aborted",
+        outcome: "aborted",
+        terminal: "aborted",
+      }
+    case "completed":
+      return { outcome: "completed", terminal: "response.completed" }
+    case "eof":
+      return {
+        errorCode: "upstream_disconnect",
+        outcome: "transport_error",
+        terminal: "eof",
+      }
+    case "error":
+      return {
+        errorCode: "upstream_error",
+        outcome: "failed",
+        terminal: "error",
+      }
+    case "failed":
+      return {
+        errorCode: "upstream_error",
+        outcome: "failed",
+        terminal: "response.failed",
+      }
+    case "incomplete":
+      return {
+        errorCode: "max_output_tokens",
+        outcome: "incomplete",
+        terminal: "response.incomplete",
+      }
+    case "throw":
+      return {
+        errorCode: "upstream_disconnect",
+        outcome: "transport_error",
+        terminal: "transport_error",
+      }
   }
 }
 
@@ -267,6 +507,7 @@ const observeFrameMetadata = (
 
 const createUsageCapture = (): {
   count: () => number
+  lastMetadata: () => TokenUsageRecordMetadata | undefined
   lastUsage: () => UsageTokens
   record: (
     usage: UsageTokens,
@@ -279,6 +520,7 @@ const createUsageCapture = (): {
   }>()
   return {
     count: () => calls.length,
+    lastMetadata: () => calls.at(-1)?.metadata,
     lastUsage: () => ({ ...(calls.at(-1)?.usage ?? {}) }),
     record: (usage, metadata) => {
       calls.push({ metadata, usage: { ...usage } })
@@ -332,6 +574,41 @@ const createScenarioStream = (
     },
   }
 }
+
+const createRejectingStream = (error: Error): ResponsesStream => ({
+  [Symbol.asyncIterator]: () => ({
+    next: () => Promise.reject(error),
+    return: () => Promise.resolve({ done: true, value: undefined }),
+  }),
+})
+
+const createFiniteStream = (
+  chunks: Array<{ data?: string; event?: string }>,
+): ResponsesStream => ({
+  [Symbol.asyncIterator]: () => {
+    let index = 0
+    return {
+      next: () => {
+        const value = chunks[index]
+        index += 1
+        return Promise.resolve(
+          value === undefined ?
+            { done: true as const, value: undefined }
+          : { done: false as const, value },
+        )
+      },
+      return: () => Promise.resolve({ done: true, value: undefined }),
+    }
+  },
+})
+
+const createResponsesTerminalChunk = (
+  type: "response.failed" | "response.incomplete",
+  response: ResponsesResult,
+) => ({
+  data: JSON.stringify({ response, sequence_number: 1, type }),
+  event: type,
+})
 
 const createMetadataChunk = () => ({
   data: JSON.stringify({

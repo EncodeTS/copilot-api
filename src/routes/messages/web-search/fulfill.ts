@@ -32,12 +32,8 @@ import type { Model } from "~/services/copilot/get-models"
 
 import type { AnthropicMessagesPayload } from "../anthropic-types"
 import { normalizeSystemMessages } from "../preprocess"
-import {
-  BufferedResponsesTerminalError,
-  collectResponsesStreamResult,
-  recordBufferedResponsesTerminalFailure,
-} from "../responses-stream-collection"
-import { createBufferedResponsesProtocolError } from "../responses-result"
+import { collectResponsesStreamResult } from "../responses-stream-collection"
+import { throwRecordedBufferedResponsesError } from "../responses-result"
 import {
   getResponsesRequestOptions,
   getResponsesTransportForModel,
@@ -341,11 +337,7 @@ const handleWebSearchViaResponsesWithDependencies = async (
         })
       : upstreamResult
   } catch (error) {
-    if (error instanceof BufferedResponsesTerminalError) {
-      recordBufferedResponsesTerminalFailure(recordUsage, error)
-      throw createBufferedResponsesProtocolError(error)
-    }
-    throw error
+    return throwRecordedBufferedResponsesError(recordUsage, error)
   }
 
   const usage = normalizeWebSearchResponsesUsage(result)

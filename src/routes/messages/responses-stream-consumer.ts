@@ -7,6 +7,7 @@ import {
   runResponsesStreamSession,
   type ResponsesStreamSessionFrame,
 } from "~/lib/responses-stream-session"
+import { recordResponsesStreamSessionUsage } from "~/lib/responses-stream-usage"
 import type { StreamTransport } from "~/lib/stream-lifecycle"
 import { type TokenUsageRecorder } from "~/lib/token-usage"
 import { resolveBridgeToolSearchName } from "~/lib/tool-search"
@@ -16,12 +17,8 @@ import type {
 } from "~/services/copilot/create-responses"
 
 import type { AnthropicMessagesPayload } from "./anthropic-types"
-import {
-  BufferedResponsesTerminalError,
-  collectResponsesStreamResult,
-  recordBufferedResponsesTerminalFailure,
-} from "./responses-stream-collection"
-import { createBufferedResponsesProtocolError } from "./responses-result"
+import { collectResponsesStreamResult } from "./responses-stream-collection"
+import { throwRecordedBufferedResponsesError } from "./responses-result"
 import {
   createResponsesStreamState,
   type ResponsesStreamState,
@@ -89,11 +86,7 @@ export const collectProviderResponsesStreamResult = async ({
       upstreamResponse,
     })
   } catch (error) {
-    if (error instanceof BufferedResponsesTerminalError) {
-      recordBufferedResponsesTerminalFailure(recordUsage, error)
-      throw createBufferedResponsesProtocolError(error)
-    }
-    throw error
+    return throwRecordedBufferedResponsesError(recordUsage, error)
   }
 }
 
@@ -267,7 +260,17 @@ const consumeTranslatedResponsesStream = async (
       transport,
     })
   }
-  recordUsage(outcome.terminal?.usage ?? {})
+  recordResponsesStreamSessionUsage(
+    recordUsage,
+    outcome,
+    (
+      outcome.kind === "abort"
+        && adapterTerminal.signal.aborted
+        && signal?.aborted !== true
+    ) ?
+      { abortOrigin: "local_protocol_error" }
+    : undefined,
+  )
 }
 
 const deliverTranslatedResponsesFrame = async ({

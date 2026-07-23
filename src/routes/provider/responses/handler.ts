@@ -15,6 +15,7 @@ import {
   type ResponsesStreamSessionFrame,
   type ResponsesStreamSessionOutcome,
 } from "~/lib/responses-stream-session"
+import { getResponsesResultUsageMetadata } from "~/lib/responses-stream-usage"
 import type { StreamTransport } from "~/lib/stream-lifecycle"
 import {
   createProviderTokenUsageRecorder,
@@ -259,7 +260,10 @@ async function handleProviderResponsesForProviderWithDependencies(
     })
   }
 
-  recordUsage(normalizeResponsesUsage(dispatched.result.usage))
+  recordUsage(
+    normalizeResponsesUsage(dispatched.result.usage),
+    getResponsesResultUsageMetadata(dispatched.result),
+  )
   await dispatched.cancel(new Error("Provider Responses result consumed"))
   return createExactProviderResponsesResponse(c, dispatched.rawBody, dispatched)
 }
@@ -302,20 +306,17 @@ const streamProviderResponses = async (
   })
 
   if (prefetched.kind === "settled") {
-    try {
-      recordResponsesStreamSessionUsage(options.recordUsage, prefetched.outcome)
-      return projectPrefetchedProviderResponses(c, prefetched, {
-        normalizeSseEventNames: dispatched.normalizeSseEventNames,
-        provider: options.provider,
-        status: dispatched.status,
-        statusText: dispatched.statusText,
-        transport: dispatched.transport,
-      })
-    } finally {
-      await dispatched.cancel(
-        new Error("Provider Responses prefetched stream settled"),
-      )
-    }
+    await dispatched.cancel(
+      new Error("Provider Responses prefetched stream settled"),
+    )
+    return projectPrefetchedProviderResponses(c, prefetched, {
+      normalizeSseEventNames: dispatched.normalizeSseEventNames,
+      provider: options.provider,
+      recordUsage: options.recordUsage,
+      status: dispatched.status,
+      statusText: dispatched.statusText,
+      transport: dispatched.transport,
+    })
   }
 
   return createExactProviderResponsesStreamResponse(
@@ -353,6 +354,7 @@ const projectPrefetchedProviderResponses = (
   options: {
     normalizeSseEventNames: boolean
     provider: string
+    recordUsage: TokenUsageRecorder
     status: number
     statusText: string
     transport: ProviderResponsesStreamDispatch["transport"]
@@ -360,6 +362,7 @@ const projectPrefetchedProviderResponses = (
 ): Response => {
   const { outcome } = prefetched
   if (outcome.kind === "error") {
+    recordResponsesStreamSessionUsage(options.recordUsage, outcome)
     const errorEvent = outcome.terminal.event
     const statusCode =
       typeof errorEvent.status_code === "number" ? errorEvent.status_code : 500
@@ -383,26 +386,50 @@ const projectPrefetchedProviderResponses = (
   ) {
     return createExactProviderResponsesStreamResponse(
       streamSSE(c, async (stream) => {
-        for (const frame of prefetched.frames) {
-          const message =
-            options.normalizeSseEventNames ?
-              projectCodexResponsesFrame(frame)
-            : projectResponsesSessionFrame(frame)
-          if (message) await stream.writeSSE(message)
-        }
-        if (outcome.kind === "eof") {
-          await emitPrefetchedProviderStreamFailure(
-            stream,
-            outcome,
-            options.transport,
-            c.req.raw.signal,
-          )
+        let usageOutcome: ResponsesStreamSessionOutcome = outcome
+        const replayAborted = createPrefetchedReplayAbort(stream)
+        try {
+          await Promise.race([stream.sleep(0), replayAborted])
+          assertPrefetchedReplayActive(stream)
+          for (const frame of prefetched.frames) {
+            assertPrefetchedReplayActive(stream)
+            const message =
+              options.normalizeSseEventNames ?
+                projectCodexResponsesFrame(frame)
+              : projectResponsesSessionFrame(frame)
+            if (message) {
+              await Promise.race([stream.writeSSE(message), replayAborted])
+            }
+            assertPrefetchedReplayActive(stream)
+          }
+          if (outcome.kind === "eof") {
+            await Promise.race([
+              emitPrefetchedProviderStreamFailure(
+                stream,
+                outcome,
+                options.transport,
+                c.req.raw.signal,
+              ),
+              replayAborted,
+            ])
+            assertPrefetchedReplayActive(stream)
+          }
+        } catch (deliveryError) {
+          usageOutcome = {
+            deliveryError,
+            diagnostics: outcome.diagnostics,
+            kind: "delivery_failed",
+            terminal: outcome.terminal,
+          }
+        } finally {
+          recordResponsesStreamSessionUsage(options.recordUsage, usageOutcome)
         }
       }),
       options,
     )
   }
 
+  recordResponsesStreamSessionUsage(options.recordUsage, outcome)
   if (outcome.kind === "abort") {
     throw asError(outcome.reason, "Provider Responses request aborted")
   }
@@ -414,6 +441,19 @@ const projectPrefetchedProviderResponses = (
     new Response("", { status: 502 }),
   )
 }
+
+const assertPrefetchedReplayActive = (stream: SSEStreamingApi): void => {
+  if (stream.aborted) {
+    throw new Error("Provider Responses prefetched replay was aborted")
+  }
+}
+
+const createPrefetchedReplayAbort = (stream: SSEStreamingApi): Promise<never> =>
+  new Promise((_, reject) => {
+    stream.onAbort(() => {
+      reject(new Error("Provider Responses prefetched replay was aborted"))
+    })
+  })
 
 const emitPrefetchedProviderStreamFailure = async (
   stream: SSEStreamingApi,

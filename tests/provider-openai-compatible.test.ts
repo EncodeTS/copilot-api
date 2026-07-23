@@ -995,7 +995,10 @@ describe("openai-responses provider messages", () => {
     expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
     expect(providerUsageRecorder).toHaveBeenCalledWith(
       normalizedResponsesUsage,
-      undefined,
+      {
+        outcome: "completed",
+        terminal: "response.completed",
+      },
     )
     expect(upstreamSignal).not.toBeNull()
     expect((upstreamSignal as unknown as AbortSignal).aborted).toBe(true)
@@ -1172,7 +1175,13 @@ describe("openai-responses provider messages", () => {
 
     expect(response.status).toBe(200)
     await response.text()
-    expect(providerUsageRecorder).toHaveBeenCalledWith(normalizedResponsesUsage)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      { ...normalizedResponsesUsage, total_nano_aiu: undefined },
+      {
+        outcome: "completed",
+        terminal: "response.completed",
+      },
+    )
   })
 
   test("turns a partial Responses provider failure into one Anthropic stream error", async () => {
@@ -1222,7 +1231,14 @@ describe("openai-responses provider messages", () => {
     expect(body).toContain("provider socket reset")
     expect(body).not.toContain("event: message_stop")
     expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
-    expect(providerUsageRecorder).toHaveBeenCalledWith({})
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      {},
+      {
+        errorCode: "upstream_disconnect",
+        outcome: "transport_error",
+        terminal: "transport_error",
+      },
+    )
     expect(upstreamSignal).not.toBeNull()
     expect((upstreamSignal as unknown as AbortSignal).aborted).toBe(true)
   })
@@ -1253,7 +1269,14 @@ describe("openai-responses provider messages", () => {
     expect(body).toContain("provider failed after usage")
     expect(body).not.toContain("event: message_stop")
     expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
-    expect(providerUsageRecorder).toHaveBeenCalledWith(normalizedResponsesUsage)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      { ...normalizedResponsesUsage, total_nano_aiu: undefined },
+      {
+        errorCode: "upstream_error",
+        outcome: "failed",
+        terminal: "response.failed",
+      },
+    )
     expect(transport.cancelCount()).toBe(1)
   })
 
@@ -1282,7 +1305,14 @@ describe("openai-responses provider messages", () => {
     expect(body).toContain('"stop_reason":"max_tokens"')
     expect(body).not.toContain("event: error")
     expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
-    expect(providerUsageRecorder).toHaveBeenCalledWith(normalizedResponsesUsage)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      { ...normalizedResponsesUsage, total_nano_aiu: undefined },
+      {
+        errorCode: "max_output_tokens",
+        outcome: "incomplete",
+        terminal: "response.incomplete",
+      },
+    )
     expect(transport.cancelCount()).toBe(1)
   })
 

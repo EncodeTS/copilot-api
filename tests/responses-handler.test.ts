@@ -1573,6 +1573,101 @@ describe("responses handler token usage", () => {
     expect(page.items[0]?.total_tokens).toBe(7)
   })
 
+  test("records a non-streaming incomplete response as incomplete", async () => {
+    createResponses.mockImplementation((payload) =>
+      Promise.resolve({
+        ...createResponsesResult(payload.model),
+        incomplete_details: { reason: "max_output_tokens" },
+        status: "incomplete",
+        usage: {
+          input_tokens: 9,
+          input_tokens_details: { cached_tokens: 2 },
+          output_tokens: 3,
+          total_tokens: 12,
+        },
+      } as never),
+    )
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ input: "hello", model: "gpt-test" }),
+    })
+
+    expect(response.status).toBe(200)
+    const eventsResponse = await app.request(
+      "/token-usage/events?period=day&page=1&page_size=10",
+    )
+    const page = (await eventsResponse.json()) as {
+      items: Array<{
+        error_code: string | null
+        outcome: string
+        terminal: string | null
+      }>
+    }
+    expect(page.items).toHaveLength(1)
+    expect(page.items[0]).toMatchObject({
+      error_code: "max_output_tokens",
+      outcome: "incomplete",
+      terminal: "response.incomplete",
+    })
+  })
+
+  test("records a streaming incomplete response as incomplete", async () => {
+    const incomplete = {
+      ...createResponsesResult("gpt-test"),
+      incomplete_details: { reason: "max_output_tokens" as const },
+      status: "incomplete",
+      usage: {
+        input_tokens: 9,
+        input_tokens_details: { cached_tokens: 2 },
+        output_tokens: 3,
+        total_tokens: 12,
+      },
+    }
+    createResponses.mockImplementation(() =>
+      Promise.resolve(
+        streamChunks([
+          {
+            data: JSON.stringify({
+              response: incomplete,
+              sequence_number: 1,
+              type: "response.incomplete",
+            }),
+            event: "response.incomplete",
+          },
+        ]) as never,
+      ),
+    )
+
+    const app = createApp()
+    const response = await app.request("/v1/responses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ input: "hello", model: "gpt-test", stream: true }),
+    })
+
+    expect(response.status).toBe(200)
+    await response.text()
+    const eventsResponse = await app.request(
+      "/token-usage/events?period=day&page=1&page_size=10",
+    )
+    const page = (await eventsResponse.json()) as {
+      items: Array<{
+        error_code: string | null
+        outcome: string
+        terminal: string | null
+      }>
+    }
+    expect(page.items).toHaveLength(1)
+    expect(page.items[0]).toMatchObject({
+      error_code: "max_output_tokens",
+      outcome: "incomplete",
+      terminal: "response.incomplete",
+    })
+  })
+
   test("emits one native Responses error when upstream ends without a typed terminal", async () => {
     createResponses.mockImplementation(() =>
       Promise.resolve(streamChunks([]) as never),

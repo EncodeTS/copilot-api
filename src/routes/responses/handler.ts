@@ -17,6 +17,7 @@ import { responsesDiagnosticsLogger } from "~/lib/responses-diagnostic-logger"
 import { summarizeResponsesPayload } from "~/lib/responses-diagnostics"
 import { getResponsesEndpointCapabilities } from "~/lib/responses-capabilities"
 import type { ResponsesStreamSessionFrame } from "~/lib/responses-stream-session"
+import { getResponsesResultUsageMetadata } from "~/lib/responses-stream-usage"
 import { normalizeGatewayReasoningEffort } from "~/lib/reasoning-effort"
 import {
   routeProviderModelAlias,
@@ -277,12 +278,15 @@ export const handleResponses = async (
     tailLength: 400,
   })
   const result = response as ResponsesResult
-  recordUsage({
-    ...normalizeResponsesUsage(result.usage),
-    total_nano_aiu: normalizeOptionalToken(
-      result.copilot_usage?.total_nano_aiu,
-    ),
-  })
+  recordUsage(
+    {
+      ...normalizeResponsesUsage(result.usage),
+      total_nano_aiu: normalizeOptionalToken(
+        result.copilot_usage?.total_nano_aiu,
+      ),
+    },
+    getResponsesResultUsageMetadata(result),
+  )
   return c.json(result)
 }
 

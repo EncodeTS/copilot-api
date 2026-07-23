@@ -8,6 +8,7 @@ import {
 } from "../src/lib/config"
 import { createProviderResolver } from "../src/lib/provider-resolver"
 import { createAuthMiddleware } from "../src/lib/request-auth"
+import type { TokenUsageRecorder } from "../src/lib/token-usage"
 import { handleResponses } from "../src/routes/responses/handler"
 import { createResponsesRoutes } from "../src/routes/responses/route"
 import { createProviderModelRouter } from "../src/routes/provider/model-router"
@@ -16,7 +17,8 @@ import { createProviderResponsesRoutes } from "../src/routes/provider/responses/
 import type { ResponsesResult } from "../src/services/copilot/create-responses"
 
 let providerConfigs: Record<string, ResolvedProviderConfig> = {}
-const recordUsage = mock(() => "accepted" as const)
+const recordTokenUsage: TokenUsageRecorder = () => "accepted"
+const recordUsage = mock(recordTokenUsage)
 
 const originalFetch = globalThis.fetch
 const config = getConfig()
@@ -63,6 +65,13 @@ const createResponsesResult = (model: string): ResponsesResult => ({
   top_p: null,
   usage: null,
 })
+
+const createPrefetchedTerminalStreamBody = (
+  terminal: Record<string, unknown>,
+): string =>
+  [`event: ${String(terminal.type)}\ndata: ${JSON.stringify(terminal)}`].join(
+    "\n\n",
+  ) + "\n\n"
 
 const parseJsonRequestBody = (body: unknown): unknown => {
   const serialized =
@@ -212,6 +221,156 @@ describe("versioned provider Responses route", () => {
         "user-agent": "provider-route-test",
       }),
     )
+  })
+
+  test("records a non-streaming incomplete provider response as incomplete", async () => {
+    const incomplete = {
+      ...createResponsesResult("gpt-test"),
+      incomplete_details: { reason: "max_output_tokens" as const },
+      status: "incomplete",
+      usage: {
+        input_tokens: 9,
+        input_tokens_details: { cached_tokens: 2 },
+        output_tokens: 3,
+        total_tokens: 12,
+      },
+    }
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(Response.json(incomplete)),
+    )
+
+    const response = await requestProviderResponses("/openai/v1/responses", {
+      input: "hello",
+      model: "gpt-test",
+    })
+
+    expect(response.status).toBe(200)
+    expect(recordUsage).toHaveBeenCalledTimes(1)
+    expect(recordUsage).toHaveBeenCalledWith(
+      {
+        cache_read_input_tokens: 2,
+        input_tokens: 7,
+        output_tokens: 3,
+        total_tokens: 12,
+      },
+      {
+        errorCode: "max_output_tokens",
+        outcome: "incomplete",
+        terminal: "response.incomplete",
+      },
+    )
+  })
+
+  test("records a non-streaming cancelled provider response as aborted", async () => {
+    const cancelled = {
+      ...createResponsesResult("gpt-test"),
+      status: "cancelled",
+      usage: {
+        input_tokens: 4,
+        output_tokens: 1,
+        total_tokens: 5,
+      },
+    }
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(Response.json(cancelled)),
+    )
+
+    const response = await requestProviderResponses("/openai/v1/responses", {
+      input: "hello",
+      model: "gpt-test",
+    })
+
+    expect(response.status).toBe(200)
+    expect(recordUsage).toHaveBeenCalledTimes(1)
+    expect(recordUsage).toHaveBeenCalledWith(
+      {
+        cache_read_input_tokens: 0,
+        input_tokens: 4,
+        output_tokens: 1,
+        total_tokens: 5,
+      },
+      {
+        errorCode: "aborted",
+        outcome: "aborted",
+        terminal: "aborted",
+      },
+    )
+  })
+
+  test("sanitizes a failed non-stream provider response error code", async () => {
+    const failed = {
+      ...createResponsesResult("gpt-test"),
+      error: {
+        code: "private-provider-account-code",
+        message: "private provider detail",
+      },
+      status: "failed",
+      usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5 },
+    }
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(Response.json(failed)),
+    )
+
+    const response = await requestProviderResponses("/openai/v1/responses", {
+      input: "hello",
+      model: "gpt-test",
+    })
+
+    expect(response.status).toBe(200)
+    expect(recordUsage.mock.calls[0]?.[1]).toEqual({
+      errorCode: "response_failed",
+      outcome: "failed",
+      terminal: "response.failed",
+    })
+    expect(JSON.stringify(recordUsage.mock.calls)).not.toContain(
+      "private-provider-account-code",
+    )
+  })
+
+  test("does not resolve prototype keys as provider error-code aliases", async () => {
+    const failed = {
+      ...createResponsesResult("gpt-test"),
+      error: { code: "constructor", message: "upstream failed" },
+      status: "failed",
+      usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5 },
+    }
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(Response.json(failed)),
+    )
+
+    await requestProviderResponses("/openai/v1/responses", {
+      input: "hello",
+      model: "gpt-test",
+    })
+
+    expect(recordUsage.mock.calls[0]?.[1]).toEqual({
+      errorCode: "response_failed",
+      outcome: "failed",
+      terminal: "response.failed",
+    })
+  })
+
+  test("rejects an unknown non-stream provider status in usage metadata", async () => {
+    const inProgress = {
+      ...createResponsesResult("gpt-test"),
+      status: "in_progress",
+      usage: { input_tokens: 4, output_tokens: 1, total_tokens: 5 },
+    }
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(Response.json(inProgress)),
+    )
+
+    const response = await requestProviderResponses("/openai/v1/responses", {
+      input: "hello",
+      model: "gpt-test",
+    })
+
+    expect(response.status).toBe(200)
+    expect(recordUsage.mock.calls[0]?.[1]).toEqual({
+      errorCode: "invalid_response",
+      outcome: "failed",
+      terminal: "unknown_terminal",
+    })
   })
 
   test("preserves direct provider query ordering and raw JSON request bytes", async () => {
@@ -381,7 +540,15 @@ describe("versioned provider Responses route", () => {
     const encoder = new TextEncoder()
     let upstreamSignal: AbortSignal | null = null
     let cancelCount = 0
-    const completed = createResponsesResult("gpt-test")
+    const completed = {
+      ...createResponsesResult("gpt-test"),
+      usage: {
+        input_tokens: 8,
+        input_tokens_details: { cached_tokens: 2 },
+        output_tokens: 3,
+        total_tokens: 11,
+      },
+    }
     fetchMock.mockImplementationOnce((_url, init) => {
       upstreamSignal = init?.signal ?? null
       return Promise.resolve(
@@ -390,11 +557,12 @@ describe("versioned provider Responses route", () => {
             start(controller) {
               controller.enqueue(
                 encoder.encode(
-                  `event: response.completed\ndata: ${JSON.stringify({
+                  createPrefetchedTerminalStreamBody({
+                    copilot_usage: { total_nano_aiu: 77 },
                     response: completed,
                     sequence_number: 1,
                     type: "response.completed",
-                  })}\n\n`,
+                  }),
                 ),
               )
             },
@@ -431,10 +599,79 @@ describe("versioned provider Responses route", () => {
       "request-stream-prefetched",
     )
     expect(response.headers.get("x-upstream-safe")).toBe("prefetched")
+    expect(recordUsage).not.toHaveBeenCalled()
     expect(await response.text()).toContain("event: response.completed")
+    expect(recordUsage).toHaveBeenCalledTimes(1)
+    expect(recordUsage).toHaveBeenCalledWith(
+      {
+        cache_read_input_tokens: 2,
+        input_tokens: 6,
+        output_tokens: 3,
+        total_nano_aiu: 77,
+        total_tokens: 11,
+      },
+      { outcome: "completed", terminal: "response.completed" },
+    )
     expect(upstreamSignal).not.toBeNull()
     expect((upstreamSignal as unknown as AbortSignal).aborted).toBe(true)
     expect(cancelCount).toBe(1)
+  })
+
+  test("records settled prefetch cancellation as a delivery failure", async () => {
+    const completed = {
+      ...createResponsesResult("gpt-test"),
+      usage: {
+        input_tokens: 8,
+        input_tokens_details: { cached_tokens: 2 },
+        output_tokens: 3,
+        total_tokens: 11,
+      },
+    }
+    fetchMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(
+          createPrefetchedTerminalStreamBody({
+            copilot_usage: { total_nano_aiu: 78 },
+            response: completed,
+            sequence_number: 1,
+            type: "response.completed",
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      ),
+    )
+    const recorded = Promise.withResolvers<{
+      metadata: Parameters<TokenUsageRecorder>[1]
+      usage: Parameters<TokenUsageRecorder>[0]
+    }>()
+    recordUsage.mockImplementationOnce((usage, metadata) => {
+      recorded.resolve({ metadata, usage })
+      return "accepted"
+    })
+
+    const response = await requestProviderResponses(
+      "/openai/v1/responses",
+      { input: "hello", model: "gpt-test", stream: true },
+      { accept: "text/event-stream" },
+    )
+
+    expect(recordUsage).not.toHaveBeenCalled()
+    await response.body?.cancel(new Error("synthetic downstream cancellation"))
+    expect(await recorded.promise).toEqual({
+      metadata: {
+        errorCode: "connection_error",
+        outcome: "transport_error",
+        terminal: "response.completed",
+      },
+      usage: {
+        cache_read_input_tokens: 2,
+        input_tokens: 6,
+        output_tokens: 3,
+        total_nano_aiu: 78,
+        total_tokens: 11,
+      },
+    })
+    expect(recordUsage).toHaveBeenCalledTimes(1)
   })
 
   test("projects a first-frame provider error only after session usage and cancellation", async () => {
@@ -499,7 +736,11 @@ describe("versioned provider Responses route", () => {
         total_nano_aiu: 77,
         total_tokens: 10,
       },
-      { outcome: "failed", terminal: "error" },
+      {
+        errorCode: "rate_limited",
+        outcome: "failed",
+        terminal: "error",
+      },
     )
   })
 
@@ -546,7 +787,11 @@ describe("versioned provider Responses route", () => {
         total_nano_aiu: 45,
         total_tokens: 8,
       },
-      { outcome: "failed", terminal: "response.failed" },
+      {
+        errorCode: "upstream_error",
+        outcome: "failed",
+        terminal: "response.failed",
+      },
     )
   })
 

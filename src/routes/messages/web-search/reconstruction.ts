@@ -1,4 +1,5 @@
 import { HTTPError } from "~/lib/error"
+import { getResponsesResultUsageMetadata } from "~/lib/responses-stream-usage"
 import {
   normalizeOptionalToken,
   normalizeResponsesUsage,
@@ -23,10 +24,7 @@ import type {
   AnthropicWebSearchResultItem,
 } from "../anthropic-types"
 import { parseFunctionCallArguments } from "../tool-arguments"
-import {
-  assertResponsesResultUsable,
-  getResponsesResultFailureMessage,
-} from "../responses-result"
+import { assertResponsesResultUsable } from "../responses-result"
 import {
   mapResponsesStopReasonToAnthropic,
   mapResponsesUsageToAnthropic,
@@ -507,38 +505,16 @@ export const normalizeWebSearchResponsesUsage = (result: ResponsesResult) => {
 export const getWebSearchUsageMetadata = (
   result: ResponsesResult,
   disposition: "mapped" | "rejected",
-): TokenUsageRecordMetadata | undefined => {
-  if (disposition === "rejected") {
-    const upstreamFailure = getResponsesResultFailureMessage(result)
-    return upstreamFailure ?
-        {
-          errorCode: "response_failed",
-          outcome: "failed",
-          terminal:
-            result.status === "failed" || result.error ?
-              "response.failed"
-            : "unknown_terminal",
-        }
-      : {
-          errorCode: "invalid_response",
-          outcome: "failed",
-          terminal:
-            result.status === "incomplete" ?
-              "response.incomplete"
-            : "unknown_terminal",
-        }
-  }
-  if (result.status === "incomplete") {
-    const reason = (result.incomplete_details as { reason?: string } | null)
-      ?.reason
+): TokenUsageRecordMetadata => {
+  const upstream = getResponsesResultUsageMetadata(result)
+  if (disposition === "rejected" && upstream.outcome === "completed") {
     return {
-      ...(reason === "max_output_tokens" || reason === "max_tokens" ?
-        { errorCode: "max_output_tokens" as const }
-      : {}),
-      outcome: "incomplete",
-      terminal: "response.incomplete",
+      ...upstream,
+      errorCode: "invalid_response",
+      outcome: "failed",
     }
   }
+  return upstream
 }
 
 const blockToStreamEvents = (

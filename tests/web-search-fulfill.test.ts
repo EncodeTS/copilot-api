@@ -1880,6 +1880,72 @@ describe("handleWebSearchViaResponses", () => {
     expect(JSON.stringify(caught)).not.toContain("private backend")
     expect(JSON.stringify(caught)).not.toContain("resp-private")
   })
+
+  it("records a buffered terminal interruption once before surfacing it", async () => {
+    const calls: Array<Array<unknown>> = []
+    const completed = makeResponsesResult()
+    webSearchFlowDependencies.createResponses = (() =>
+      Promise.resolve(
+        (async function* () {
+          await Promise.resolve()
+          yield {
+            data: JSON.stringify({
+              copilot_usage: { total_nano_aiu: 901 },
+              response: completed,
+              sequence_number: 1,
+              type: "response.completed",
+            }),
+          }
+        })(),
+      )) as never
+    webSearchFlowDependencies.createUsageRecorder = (() =>
+      (...args: Array<unknown>) => {
+        calls.push(args)
+        return "accepted"
+      }) as never
+    const interruptingLogger = {
+      debug: (message: unknown) => {
+        if (message === "messages.responses.buffered_frame") {
+          throw new Error("private Web Search terminal observer failure")
+        }
+      },
+      error: () => {},
+      warn: () => {},
+    } as unknown as typeof consola
+
+    const { c } = makeContext()
+    let caught: unknown
+    try {
+      await handleWebSearchViaResponses(c, makePayload(), {
+        ...baseOptions,
+        logger: interruptingLogger,
+      })
+    } catch (error) {
+      caught = error
+    }
+
+    expect(caught).toEqual(
+      new Error("Responses stream delivery failed after terminal event"),
+    )
+    expect(calls).toEqual([
+      [
+        {
+          cache_read_input_tokens: 0,
+          input_tokens: 100,
+          output_tokens: 50,
+          total_nano_aiu: 901,
+          total_tokens: 150,
+        },
+        {
+          errorCode: "connection_error",
+          outcome: "transport_error",
+          terminal: "response.completed",
+        },
+      ],
+    ])
+    expect(String(caught)).not.toContain("private Web Search")
+    expect(JSON.stringify(caught)).not.toContain("private Web Search")
+  })
 })
 
 describe("buildSyntheticStreamEvents", () => {

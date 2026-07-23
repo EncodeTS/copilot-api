@@ -18,6 +18,10 @@ import {
 import { state } from "~/lib/state"
 import { codexStartupCatalogManager } from "~/services/codex/startup-catalog"
 import {
+  enterResponsesWebSocketTransportCooldown,
+  getResponsesWebSocketTransportHealthDiagnostics,
+} from "~/services/copilot/responses-transport-health"
+import {
   clearPooledWebSocketConnections,
   getPooledWebSocketDiagnostics,
 } from "~/services/responses-websocket"
@@ -26,7 +30,9 @@ export const configRoutes = new Hono()
 
 export const configRouteDependencies = {
   clearResponsesWebSocketConnections: clearPooledWebSocketConnections,
+  enterResponsesWebSocketTransportCooldown,
   getPooledWebSocketDiagnostics,
+  getResponsesWebSocketTransportHealthDiagnostics,
   getResponsesWebSocketResourceLimits,
   previewLegacyLogs: () =>
     previewLegacyLogCleanup({ logDirectory: getHandlerLogDirectory() }),
@@ -98,6 +104,8 @@ configRoutes.get("/responses-websocket", (c) => {
     configPath: PATHS.CONFIG_PATH,
     diagnostics: configRouteDependencies.getPooledWebSocketDiagnostics(),
     limits: configRouteDependencies.getResponsesWebSocketResourceLimits(),
+    transportHealth:
+      configRouteDependencies.getResponsesWebSocketTransportHealthDiagnostics(),
   })
 })
 
@@ -122,9 +130,14 @@ configRoutes.post("/responses-websocket/clear", async (c) => {
     configRouteDependencies.clearResponsesWebSocketConnections(
       parseResult.data.reason,
     )
+  const transportHealth =
+    configRouteDependencies.enterResponsesWebSocketTransportCooldown(
+      parseResult.data.reason,
+    )
   return c.json({
     clearedConnections,
     diagnostics: configRouteDependencies.getPooledWebSocketDiagnostics(),
+    transportHealth,
   })
 })
 

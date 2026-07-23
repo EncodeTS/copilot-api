@@ -943,7 +943,7 @@ describe("provider messages web_search", () => {
   test("returns max_tokens for provider Web Search max_tokens incomplete", async () => {
     responsesResultOverride = makeResponsesResult({
       status: "incomplete",
-      incomplete_details: { reason: "max_tokens" } as never,
+      incomplete_details: { reason: "max_tokens" },
     })
 
     const response = await createApp().request("/search/v1/messages", {
@@ -996,9 +996,69 @@ describe("provider messages web_search", () => {
       total_nano_aiu: 800,
     })
     expect(providerUsageRecorder.mock.calls[0]?.[1]).toEqual({
+      outcome: "incomplete",
+      terminal: "response.incomplete",
+    })
+  })
+
+  test("preserves cancelled provider Web Search usage as aborted", async () => {
+    responsesResultOverride = makeResponsesResult({
+      error: null,
+      output: [],
+      output_text: "",
+      status: "cancelled",
+    })
+
+    const response = await createApp().request("/search/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "Search" }],
+        model: "gpt-search",
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(response.status).toBe(502)
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder.mock.calls[0]?.[1]).toEqual({
+      errorCode: "aborted",
+      outcome: "aborted",
+      terminal: "aborted",
+    })
+  })
+
+  test("marks only completed Web Search reconstruction rejection invalid", async () => {
+    responsesResultOverride = makeResponsesResult({
+      output: [
+        {
+          id: "malformed-completed-message",
+          type: "message",
+          role: "assistant",
+          status: "completed",
+          content: [{ type: "output_text", text: 123, annotations: [] }],
+        } as never,
+      ],
+    })
+
+    const response = await createApp().request("/search/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        max_tokens: 128,
+        messages: [{ role: "user", content: "Search" }],
+        model: "gpt-search",
+        tools: [webSearchTool],
+      }),
+    })
+
+    expect(response.status).toBe(502)
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder.mock.calls[0]?.[1]).toEqual({
       errorCode: "invalid_response",
       outcome: "failed",
-      terminal: "response.incomplete",
+      terminal: "response.completed",
     })
   })
 
@@ -1412,7 +1472,7 @@ describe("provider messages web_search", () => {
     expect(providerUsageRecorder).toHaveBeenCalledWith(
       normalizedCodexResponsesUsage,
       {
-        errorCode: "response_failed",
+        errorCode: "upstream_error",
         outcome: "failed",
         terminal: "response.failed",
       },
@@ -1980,6 +2040,35 @@ describe("provider messages web_search", () => {
     })
   })
 
+  test("records an incomplete non-stream Codex result as incomplete", async () => {
+    configureCodexProvider()
+    responsesResultOverride = {
+      ...makePlainResponsesResult(),
+      incomplete_details: { reason: "max_output_tokens" },
+      status: "incomplete",
+    }
+
+    const response = await createApp().request("/codex/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(createCodexMessagesPayload({ stream: false })),
+    })
+
+    expect(response.status).toBe(200)
+    expect(((await response.json()) as AnthropicResponse).stop_reason).toBe(
+      "max_tokens",
+    )
+    expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      normalizedCodexResponsesUsage,
+      {
+        errorCode: "max_output_tokens",
+        outcome: "incomplete",
+        terminal: "response.incomplete",
+      },
+    )
+  })
+
   test("collects a non-stream Codex tool call into Anthropic JSON", async () => {
     configureCodexProvider()
     responsesResultOverride = makeResponsesResult({
@@ -2127,7 +2216,8 @@ describe("provider messages web_search", () => {
     expect(body).not.toContain("event: error")
     expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
     expect(providerUsageRecorder).toHaveBeenCalledWith(
-      normalizedCodexResponsesUsage,
+      { ...normalizedCodexResponsesUsage, total_nano_aiu: undefined },
+      { outcome: "completed", terminal: "response.completed" },
     )
     expect(upstreamSignal).not.toBeNull()
     expect((upstreamSignal as unknown as AbortSignal).aborted).toBe(true)
@@ -2158,7 +2248,12 @@ describe("provider messages web_search", () => {
     expect(body).not.toContain("event: error")
     expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
     expect(providerUsageRecorder).toHaveBeenCalledWith(
-      normalizedCodexResponsesUsage,
+      { ...normalizedCodexResponsesUsage, total_nano_aiu: undefined },
+      {
+        errorCode: "max_output_tokens",
+        outcome: "incomplete",
+        terminal: "response.incomplete",
+      },
     )
     expect(transport.cancelCount()).toBe(1)
   })
@@ -2190,7 +2285,12 @@ describe("provider messages web_search", () => {
     expect(body).not.toContain("event: message_stop")
     expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
     expect(providerUsageRecorder).toHaveBeenCalledWith(
-      normalizedCodexResponsesUsage,
+      { ...normalizedCodexResponsesUsage, total_nano_aiu: undefined },
+      {
+        errorCode: "upstream_error",
+        outcome: "failed",
+        terminal: "response.failed",
+      },
     )
     expect(transport.cancelCount()).toBe(1)
   })
@@ -2215,7 +2315,14 @@ describe("provider messages web_search", () => {
     expect(body).toContain("Codex provider stream error")
     expect(body).not.toContain("event: message_stop")
     expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
-    expect(providerUsageRecorder).toHaveBeenCalledWith({})
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      {},
+      {
+        errorCode: "upstream_error",
+        outcome: "failed",
+        terminal: "error",
+      },
+    )
     expect(transport.cancelCount()).toBe(1)
   })
 
@@ -2275,7 +2382,14 @@ describe("provider messages web_search", () => {
     expect(body).not.toContain("event: error")
     expect(body).not.toContain("event: message_stop")
     expect(providerUsageRecorder).toHaveBeenCalledTimes(1)
-    expect(providerUsageRecorder).toHaveBeenCalledWith({})
+    expect(providerUsageRecorder).toHaveBeenCalledWith(
+      {},
+      {
+        errorCode: "caller_aborted",
+        outcome: "aborted",
+        terminal: "aborted",
+      },
+    )
     expect(upstreamSignal).not.toBeNull()
     expect((upstreamSignal as unknown as AbortSignal).aborted).toBe(true)
     expect((upstreamSignal as unknown as AbortSignal).reason).toBe(abortReason)

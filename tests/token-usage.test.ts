@@ -200,6 +200,75 @@ describe("token usage storage", () => {
     expect(page.items[0]?.error_code).toBe("upstream_disconnect")
   })
 
+  test("persists zero-token non-completions while ignoring zero-token completions", async () => {
+    const nonCompletions = [
+      {
+        errorCode: "caller_aborted" as const,
+        outcome: "aborted" as const,
+        terminal: "aborted" as const,
+      },
+      {
+        errorCode: "response_failed" as const,
+        outcome: "failed" as const,
+        terminal: "response.failed" as const,
+      },
+      {
+        errorCode: "max_output_tokens" as const,
+        outcome: "incomplete" as const,
+        terminal: "response.incomplete" as const,
+      },
+      {
+        errorCode: "upstream_disconnect" as const,
+        outcome: "transport_error" as const,
+        terminal: "transport_error" as const,
+      },
+    ]
+
+    for (const metadata of nonCompletions) {
+      const recordUsage = createCopilotTokenUsageRecorder({
+        endpoint: "responses",
+        model: `zero-${metadata.outcome}`,
+        outcome: "completed",
+      })
+      expect(recordUsage({}, metadata)).toBe("accepted")
+      expect(recordUsage({}, metadata)).toBe("already_recorded")
+    }
+    const recordCompleted = createCopilotTokenUsageRecorder({
+      endpoint: "responses",
+      model: "zero-completed",
+      outcome: "completed",
+    })
+    expect(
+      recordCompleted(
+        {},
+        {
+          outcome: "completed",
+          terminal: "response.completed",
+        },
+      ),
+    ).toBe("ignored_empty")
+
+    const page = await fetchEventsPage()
+    expect(page.items).toHaveLength(nonCompletions.length)
+    expect(
+      page.items.map((item) => ({
+        errorCode: item.error_code,
+        model: item.model,
+        outcome: item.outcome,
+        terminal: item.terminal,
+        totalTokens: item.total_tokens,
+      })),
+    ).toEqual(
+      [...nonCompletions].reverse().map((metadata) => ({
+        errorCode: metadata.errorCode,
+        model: `zero-${metadata.outcome}`,
+        outcome: metadata.outcome,
+        terminal: metadata.terminal,
+        totalTokens: 0,
+      })),
+    )
+  })
+
   test("bounds pending ledger writes and exposes dropped-event counters", async () => {
     process.env[WRITE_QUEUE_CAPACITY_ENV] = "2"
     for (let index = 0; index < 4; index += 1) {

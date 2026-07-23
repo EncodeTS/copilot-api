@@ -250,6 +250,28 @@ export const isResponsesWireArtifact = (
   && value !== null
   && responsesWireArtifacts.has(value)
 
+export const createHttpResponsesWireArtifact = (
+  wireArtifact: ResponsesWireArtifact,
+): ResponsesWireArtifact => {
+  if (!isResponsesWireArtifact(wireArtifact)) {
+    throw new TypeError("Invalid Responses wire artifact")
+  }
+  if (wireArtifact.transport === "http") {
+    return wireArtifact
+  }
+
+  return createWireArtifactRecord(
+    parseSerializedResponsesPayload(wireArtifact.serializedPayload),
+    {
+      immutable: true,
+      payloadBytes: wireArtifact.summary.httpBodyBytes,
+      serializedPayload: wireArtifact.serializedPayload,
+      sourcePayload: wireArtifact.payload,
+    },
+    wireArtifact.summary.initiator,
+  )
+}
+
 export const isImmutableResponsesPayloadSerialization = (
   value: unknown,
 ): value is ImmutableResponsesPayloadSerialization =>

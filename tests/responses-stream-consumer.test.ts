@@ -3,7 +3,9 @@ import type { ConsolaInstance } from "consola"
 
 import type { UsageTokens } from "../src/lib/token-usage"
 import type { AnthropicMessagesPayload } from "../src/routes/messages/anthropic-types"
+import { BufferedResponsesCollectionLimitError } from "../src/routes/messages/responses-stream-collection"
 import {
+  collectProviderResponsesStreamResult,
   consumeResponsesStream,
   type AnthropicStreamOutput,
 } from "../src/routes/messages/responses-stream-consumer"
@@ -47,13 +49,19 @@ test("Copilot Responses consumer owns terminal, usage, and incremental output", 
   expect(messages.map(({ event }) => event)).toContain("message_start")
   expect(messages.map(({ event }) => event)).toContain("message_stop")
   expect(messages.map(({ event }) => event)).not.toContain("error")
-  expect(recordUsage).toHaveBeenCalledWith({
-    cache_read_input_tokens: 2,
-    input_tokens: 10,
-    output_tokens: 4,
-    total_nano_aiu: 3_000_000_000,
-    total_tokens: 16,
-  })
+  expect(recordUsage).toHaveBeenCalledWith(
+    {
+      cache_read_input_tokens: 2,
+      input_tokens: 10,
+      output_tokens: 4,
+      total_nano_aiu: 3_000_000_000,
+      total_tokens: 16,
+    },
+    {
+      outcome: "completed",
+      terminal: "response.completed",
+    },
+  )
 })
 
 test("Provider Responses consumer keeps parser, DONE, and usage semantics private", async () => {
@@ -90,12 +98,19 @@ test("Provider Responses consumer keeps parser, DONE, and usage semantics privat
   expect(messages.map(({ event }) => event)).toContain("message_start")
   expect(messages.map(({ event }) => event)).toContain("message_stop")
   expect(messages.map(({ event }) => event)).not.toContain("error")
-  expect(recordUsage).toHaveBeenCalledWith({
-    cache_read_input_tokens: 2,
-    input_tokens: 10,
-    output_tokens: 4,
-    total_tokens: 16,
-  })
+  expect(recordUsage).toHaveBeenCalledWith(
+    {
+      cache_read_input_tokens: 2,
+      input_tokens: 10,
+      output_tokens: 4,
+      total_nano_aiu: undefined,
+      total_tokens: 16,
+    },
+    {
+      outcome: "completed",
+      terminal: "response.completed",
+    },
+  )
 })
 
 test("Provider Responses consumer owns incomplete-stream error and recording", async () => {
@@ -123,7 +138,14 @@ test("Provider Responses consumer owns incomplete-stream error and recording", a
   expect(messages.at(-1)?.data).toContain(
     "example stream ended without a completion event",
   )
-  expect(recordUsage).toHaveBeenCalledWith({})
+  expect(recordUsage).toHaveBeenCalledWith(
+    {},
+    {
+      errorCode: "upstream_disconnect",
+      outcome: "transport_error",
+      terminal: "eof",
+    },
+  )
 })
 
 test("Provider Responses consumer turns a partial source failure into one Anthropic error", async () => {
@@ -151,7 +173,124 @@ test("Provider Responses consumer turns a partial source failure into one Anthro
   expect(messages.filter(({ event }) => event === "error")).toHaveLength(1)
   expect(messages.at(-1)?.data).toContain("provider socket reset")
   expect(recordUsage).toHaveBeenCalledTimes(1)
-  expect(recordUsage).toHaveBeenCalledWith({})
+  expect(recordUsage).toHaveBeenCalledWith(
+    {},
+    {
+      errorCode: "upstream_disconnect",
+      outcome: "transport_error",
+      terminal: "transport_error",
+    },
+  )
+})
+
+test("Provider buffered Responses records terminal usage once before surfacing an interruption", async () => {
+  const logger = createLogger()
+  const recordUsage = mock((_usage: UsageTokens) => "accepted" as const)
+  const response = createResponsesResult()
+  response.usage = {
+    input_tokens: 12,
+    input_tokens_details: { cached_tokens: 2 },
+    output_tokens: 4,
+    total_tokens: 16,
+  }
+
+  let caught: unknown
+  try {
+    await collectProviderResponsesStreamResult({
+      errorMessagePrefix: "provider buffered Responses",
+      logger,
+      observeParsed: (event) => {
+        if ((event as { type?: unknown }).type === "response.completed") {
+          throw new Error("private downstream observer failure")
+        }
+      },
+      recordUsage,
+      upstreamResponse: createStream([
+        createResponseCompletedChunk(response, {
+          copilot_usage: { total_nano_aiu: 77 },
+        }),
+      ]),
+    })
+  } catch (error) {
+    caught = error
+  }
+
+  expect(caught).toEqual(
+    new Error("Responses stream delivery failed after terminal event"),
+  )
+  expect(recordUsage).toHaveBeenCalledTimes(1)
+  expect(recordUsage).toHaveBeenCalledWith(
+    {
+      cache_read_input_tokens: 2,
+      input_tokens: 10,
+      output_tokens: 4,
+      total_nano_aiu: 77,
+      total_tokens: 16,
+    },
+    {
+      errorCode: "connection_error",
+      outcome: "transport_error",
+      terminal: "response.completed",
+    },
+  )
+  expect(JSON.stringify(caught)).not.toContain("private downstream")
+})
+
+test("Provider buffered Responses records terminal usage once before rethrowing a collection limit", async () => {
+  const logger = createLogger()
+  const recordUsage = mock((_usage: UsageTokens) => "accepted" as const)
+  const response = createResponsesResult()
+  response.output = Array.from({ length: 1_025 }, (_, index) => ({
+    content: [],
+    id: `msg-${index}`,
+    role: "assistant" as const,
+    status: "completed" as const,
+    type: "message" as const,
+  }))
+  response.usage = {
+    input_tokens: 12,
+    input_tokens_details: { cached_tokens: 2 },
+    output_tokens: 4,
+    total_tokens: 16,
+  }
+
+  let caught: unknown
+  try {
+    await collectProviderResponsesStreamResult({
+      errorMessagePrefix: "provider buffered Responses",
+      logger,
+      recordUsage,
+      upstreamResponse: createStream([
+        createResponseCompletedChunk(response, {
+          copilot_usage: { total_nano_aiu: 78 },
+        }),
+      ]),
+    })
+  } catch (error) {
+    caught = error
+  }
+
+  expect(caught).toBeInstanceOf(BufferedResponsesCollectionLimitError)
+  expect(caught).toMatchObject({
+    limit: 1_024,
+    observed: 1_025,
+    violation: "output-item-count",
+  })
+  expect(recordUsage).toHaveBeenCalledTimes(1)
+  expect(recordUsage).toHaveBeenCalledWith(
+    {
+      cache_read_input_tokens: 2,
+      input_tokens: 10,
+      output_tokens: 4,
+      total_nano_aiu: 78,
+      total_tokens: 16,
+    },
+    {
+      errorCode: "invalid_response",
+      outcome: "failed",
+      terminal: "response.completed",
+    },
+  )
 })
 
 test("Provider Responses consumer stops pulling after a typed terminal", async () => {
@@ -187,12 +326,19 @@ test("Provider Responses consumer stops pulling after a typed terminal", async (
   )
   expect(messages.map(({ event }) => event)).not.toContain("error")
   expect(recordUsage).toHaveBeenCalledTimes(1)
-  expect(recordUsage).toHaveBeenCalledWith({
-    cache_read_input_tokens: 0,
-    input_tokens: 8,
-    output_tokens: 3,
-    total_tokens: 11,
-  })
+  expect(recordUsage).toHaveBeenCalledWith(
+    {
+      cache_read_input_tokens: 0,
+      input_tokens: 8,
+      output_tokens: 3,
+      total_nano_aiu: undefined,
+      total_tokens: 11,
+    },
+    {
+      outcome: "completed",
+      terminal: "response.completed",
+    },
+  )
 })
 
 test("Provider Responses consumer stops pulling after a canonical translation error", async () => {
@@ -235,7 +381,14 @@ test("Provider Responses consumer stops pulling after a canonical translation er
   expect(messages.filter(({ event }) => event === "error")).toHaveLength(1)
   expect(messages.at(-1)?.data).toContain("diverged from streamed deltas")
   expect(readsPastTerminal).toBe(0)
-  expect(recordUsage).toHaveBeenCalledWith({})
+  expect(recordUsage).toHaveBeenCalledWith(
+    {},
+    {
+      errorCode: "invalid_response",
+      outcome: "failed",
+      terminal: "unknown_terminal",
+    },
+  )
 })
 
 test("Provider Responses consumer releases an already-aborted source without fabricating an error", async () => {
@@ -264,7 +417,14 @@ test("Provider Responses consumer releases an already-aborted source without fab
   expect(source.nextCount()).toBe(0)
   expect(source.returnCount()).toBe(1)
   expect(recordUsage).toHaveBeenCalledTimes(1)
-  expect(recordUsage).toHaveBeenCalledWith({})
+  expect(recordUsage).toHaveBeenCalledWith(
+    {},
+    {
+      errorCode: "caller_aborted",
+      outcome: "aborted",
+      terminal: "aborted",
+    },
+  )
 })
 
 test("Provider Responses consumer releases the source when the caller aborts after partial output", async () => {
@@ -307,7 +467,14 @@ test("Provider Responses consumer releases the source when the caller aborts aft
   expect(source.nextCount()).toBe(2)
   expect(source.returnCount()).toBe(1)
   expect(recordUsage).toHaveBeenCalledTimes(1)
-  expect(recordUsage).toHaveBeenCalledWith({})
+  expect(recordUsage).toHaveBeenCalledWith(
+    {},
+    {
+      errorCode: "caller_aborted",
+      outcome: "aborted",
+      terminal: "aborted",
+    },
+  )
 })
 
 test("Provider Responses consumer keeps release diagnostics content-safe", async () => {

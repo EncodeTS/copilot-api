@@ -1,8 +1,15 @@
 import { HTTPError } from "~/lib/error"
+import type { TokenUsageRecorder } from "~/lib/token-usage"
 
 import type { ResponsesResult } from "~/services/copilot/create-responses"
 
-import type { BufferedResponsesTerminalError } from "./responses-stream-collection"
+import {
+  BufferedResponsesCollectionLimitError,
+  BufferedResponsesTerminalError,
+  BufferedResponsesTerminalInterruptionError,
+  recordBufferedResponsesTerminalFailure,
+  recordBufferedResponsesTerminalInterruption,
+} from "./responses-stream-collection"
 
 export const getResponsesResultFailureMessage = (
   result: ResponsesResult,
@@ -65,3 +72,22 @@ export const createBufferedResponsesProtocolError = (
       },
     ),
   )
+
+export const throwRecordedBufferedResponsesError = (
+  recordUsage: TokenUsageRecorder,
+  error: unknown,
+): never => {
+  if (error instanceof BufferedResponsesCollectionLimitError && error.record) {
+    recordUsage(error.record.usage, error.record.metadata)
+    throw error
+  }
+  if (error instanceof BufferedResponsesTerminalInterruptionError) {
+    recordBufferedResponsesTerminalInterruption(recordUsage, error)
+    throw error.surfacedError
+  }
+  if (error instanceof BufferedResponsesTerminalError) {
+    recordBufferedResponsesTerminalFailure(recordUsage, error)
+    throw createBufferedResponsesProtocolError(error)
+  }
+  throw error
+}

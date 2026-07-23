@@ -227,6 +227,12 @@ const createResponses: typeof createResponsesImpl = (payload, options) =>
 const { responsesReasoningRecoveryRegistry } = await import(
   "../src/services/copilot/responses-reasoning-recovery-registry"
 )
+const responsesTransportHealthModule = await import(
+  "../src/services/copilot/responses-transport-health"
+)
+const originalTransportHealthNow =
+  responsesTransportHealthModule.responsesWebSocketTransportHealthDependencies
+    .now
 const responsesWebSocketModule = await import(
   "../src/services/responses-websocket"
 )
@@ -326,6 +332,9 @@ const captureError = async (run: () => Promise<unknown>): Promise<unknown> => {
 
 beforeEach(() => {
   responsesWebSocketModule.clearPooledWebSocketConnections?.("network_change")
+  responsesTransportHealthModule.resetResponsesWebSocketTransportHealth()
+  responsesTransportHealthModule.responsesWebSocketTransportHealthDependencies.now =
+    originalTransportHealthNow
   MockWebSocket.autoComplete = true
   MockWebSocket.closeAfterComplete = false
   MockWebSocket.deferClose = false
@@ -355,6 +364,9 @@ afterEach(() => {
     websocket.close()
   }
   responsesWebSocketModule.clearPooledWebSocketConnections?.("network_change")
+  responsesTransportHealthModule.resetResponsesWebSocketTransportHealth()
+  responsesTransportHealthModule.responsesWebSocketTransportHealthDependencies.now =
+    originalTransportHealthNow
 
   state.accountType = originalState.accountType
   state.copilotApiUrl = originalState.copilotApiUrl
@@ -438,6 +450,10 @@ test("pooled websocket rejects global capacity before sending", async () => {
   ).toBe("not-sent")
   expect(MockWebSocket.instances).toHaveLength(1)
   expect(MockWebSocket.instances[0]?.sent).toHaveLength(1)
+  expect(
+    responsesTransportHealthModule.getResponsesWebSocketTransportHealthDiagnostics()
+      .active,
+  ).toBe(false)
 
   MockWebSocket.instances[0]?.completeLatestResponse()
   await firstChunk
@@ -1041,6 +1057,10 @@ test("Copilot safe stream emits exactly one content-safe terminal error on queue
   })
   expect(chunks[0]?.data).not.toContain("private-frame")
   expect(
+    responsesTransportHealthModule.getResponsesWebSocketTransportHealthDiagnostics()
+      .active,
+  ).toBe(false)
+  expect(
     responsesWebSocketModule.getPooledWebSocketDiagnostics(),
   ).toMatchObject({
     activeRequests: 0,
@@ -1246,6 +1266,15 @@ test("Responses websocket retries an initial internal error over the admitted HT
   expect(chunks).toHaveLength(1)
   expect(chunks[0]?.event).toBe("response.completed")
   expect(chunks[0]?.data).toContain("resp-http-internal-error-retry")
+
+  MockWebSocket.autoComplete = true
+  await collectResponsesStream("after-internal-error-retry", {
+    allowHttpFallback: true,
+    reasoningRecoverySessionId: "after-internal-error-retry",
+  })
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(MockWebSocket.instances).toHaveLength(2)
+  expect(MockWebSocket.instances[1]?.sent).toHaveLength(1)
 })
 
 test("Responses websocket does not retry a prompt token limit error", async () => {
@@ -1364,13 +1393,17 @@ test("Responses websocket falls back to HTTP when opening fails before send", as
   expect(chunks).toHaveLength(1)
   expect(chunks[0]?.event).toBe("response.completed")
   expect(chunks[0]?.data).toContain('"id":"resp-http-fallback"')
+  expect(
+    responsesTransportHealthModule.getResponsesWebSocketTransportHealthDiagnostics()
+      .active,
+  ).toBe(false)
 })
 
 test("Responses websocket does not fall back after sending without seeing a frame", async () => {
   MockWebSocket.autoComplete = false
   const reportTermination = mock(originalStreamLifecycleReporter)
   streamLifecycleDependencies.reportTermination = reportTermination
-  const fetchMock = mock(() =>
+  const fetchMock = mock((_input: unknown, _init?: RequestInit) =>
     Promise.resolve(
       new Response(
         [
@@ -1429,18 +1462,39 @@ test("Responses websocket does not fall back after sending without seeing a fram
   )
 })
 
-test("Responses websocket network interruption fails once and the next stable request is fresh", async () => {
+test("Responses websocket network interruption fails once and sends the next request over HTTP", async () => {
   const stableSession = "stable-network-session"
   await collectResponsesStream("network-warmup", {
     reasoningRecoverySessionId: stableSession,
   })
   expect(MockWebSocket.instances).toHaveLength(1)
+  await collectResponsesStream("network-other-warmup", {
+    reasoningRecoverySessionId: "other-network-session",
+  })
+  expect(MockWebSocket.instances).toHaveLength(2)
 
   MockWebSocket.autoComplete = false
   const reportTermination = mock(originalStreamLifecycleReporter)
   streamLifecycleDependencies.reportTermination = reportTermination
-  const fetchMock = mock(() =>
-    Promise.resolve(new Response("unsafe HTTP fallback")),
+  const fetchMock = mock((_input: unknown, _init?: RequestInit) =>
+    Promise.resolve(
+      new Response(
+        [
+          "event: response.completed",
+          `data: ${JSON.stringify({
+            response: createResponsesResult(
+              "gpt-test",
+              "resp-http-after-network-interruption",
+            ),
+            sequence_number: 1,
+            type: "response.completed",
+          })}`,
+          "",
+          "",
+        ].join("\n"),
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+    ),
   )
   ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
     fetchMock as unknown as typeof fetch
@@ -1476,13 +1530,182 @@ test("Responses websocket network interruption fails once and the next stable re
   })
   expect(chunks).toHaveLength(1)
   expect(chunks[0]?.event).toBe("error")
+  expect(MockWebSocket.instances[1]?.readyState).toBe(MockWebSocket.CLOSED)
 
   MockWebSocket.autoComplete = true
-  await collectResponsesStream("network-fresh", {
+  await collectResponsesStream("network-no-http-capability", {
+    allowHttpFallback: false,
+    reasoningRecoverySessionId: "websocket-only-session",
+  })
+  expect(fetchMock).not.toHaveBeenCalled()
+  expect(MockWebSocket.instances).toHaveLength(3)
+
+  const httpOnlyResponse = await createResponses(
+    { input: "hello", model: "gpt-test", stream: true },
+    {
+      initiator: "user",
+      requestId: "network-http-only",
+      transport: "http",
+      vision: false,
+    },
+  )
+  await collectStreamChunks(httpOnlyResponse as AsyncIterable<unknown>)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(MockWebSocket.instances).toHaveLength(3)
+
+  const recoveredPayload = prepareResponsesWirePayload({
+    input: "hello",
+    model: "gpt-test",
+    stream: true,
+  })
+  const websocketArtifact = admitResponsesWirePayload(
+    recoveredPayload,
+    "user",
+    "websocket",
+  )
+  const recoveredResponse = await createResponses(recoveredPayload, {
+    allowHttpFallback: true,
+    initiator: "user",
+    reasoningRecoverySessionId: stableSession,
+    requestId: "network-fresh",
+    transport: "websocket",
+    vision: false,
+    wireArtifact: websocketArtifact,
+  })
+  const recoveredChunks = await collectStreamChunks(
+    recoveredResponse as AsyncIterable<unknown>,
+  )
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(fetchMock.mock.calls[1]?.[1]?.body).toBe(websocketArtifact.httpBody)
+  expect(MockWebSocket.instances).toHaveLength(3)
+  expect(recoveredChunks[0]?.data).toContain(
+    "resp-http-after-network-interruption",
+  )
+
+  Date.now = () =>
+    originalDateNow()
+    + responsesTransportHealthModule.DEFAULT_RESPONSES_WEBSOCKET_COOLDOWN_MS
+    + 1
+  await collectResponsesStream("network-cooldown-expired", {
+    allowHttpFallback: true,
     reasoningRecoverySessionId: stableSession,
   })
-  expect(MockWebSocket.instances).toHaveLength(2)
-  expect(MockWebSocket.instances[1]?.sent).toHaveLength(1)
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+  expect(MockWebSocket.instances).toHaveLength(4)
+  expect(MockWebSocket.instances[3]?.sent).toHaveLength(1)
+})
+
+test("Responses websocket uses one cooldown snapshot when converting an admitted artifact", async () => {
+  const now = 1_000
+  responsesTransportHealthModule.responsesWebSocketTransportHealthDependencies.now =
+    () => now
+  responsesTransportHealthModule.enterResponsesWebSocketTransportCooldown(
+    "network_change",
+  )
+
+  let healthReads = 0
+  responsesTransportHealthModule.responsesWebSocketTransportHealthDependencies.now =
+    () => {
+      healthReads += 1
+      return healthReads === 1 ?
+          now + 1
+        : now
+            + responsesTransportHealthModule.DEFAULT_RESPONSES_WEBSOCKET_COOLDOWN_MS
+            + 1
+    }
+  const fetchMock = mock((_input: unknown, _init?: RequestInit) =>
+    Promise.resolve(
+      new Response(
+        [
+          "event: response.completed",
+          `data: ${JSON.stringify({
+            response: createResponsesResult(
+              "gpt-test",
+              "resp-http-single-health-snapshot",
+            ),
+            sequence_number: 1,
+            type: "response.completed",
+          })}`,
+          "",
+          "",
+        ].join("\n"),
+        { headers: { "content-type": "text/event-stream" } },
+      ),
+    ),
+  )
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+  const payload = prepareResponsesWirePayload({
+    input: "hello",
+    model: "gpt-test",
+    stream: true,
+  })
+  const websocketArtifact = admitResponsesWirePayload(
+    payload,
+    "user",
+    "websocket",
+  )
+
+  const response = await createResponses(payload, {
+    allowHttpFallback: true,
+    initiator: "user",
+    requestId: "single-health-snapshot",
+    transport: "websocket",
+    vision: false,
+    wireArtifact: websocketArtifact,
+  })
+  const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
+
+  expect(healthReads).toBe(1)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(websocketArtifact.httpBody)
+  expect(MockWebSocket.instances).toHaveLength(0)
+  expect(chunks[0]?.data).toContain("resp-http-single-health-snapshot")
+})
+
+test("Responses websocket degradation keeps unrelated active streams alive", async () => {
+  MockWebSocket.autoComplete = false
+
+  const activeResponse = await createResponses(
+    { input: "long-running", model: "gpt-test", stream: true },
+    {
+      allowHttpFallback: true,
+      initiator: "user",
+      reasoningRecoverySessionId: "active-network-session",
+      requestId: "active-network-request",
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const activeChunksPromise = collectStreamChunks(
+    activeResponse as AsyncIterable<unknown>,
+  )
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+
+  const interruptedResponse = await createResponses(
+    { input: "interrupted", model: "gpt-test", stream: true },
+    {
+      allowHttpFallback: true,
+      initiator: "user",
+      reasoningRecoverySessionId: "interrupted-network-session",
+      requestId: "interrupted-network-request",
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const interruptedChunksPromise = collectStreamChunks(
+    interruptedResponse as AsyncIterable<unknown>,
+  )
+  await waitFor(() => MockWebSocket.instances[1]?.sent.length === 1)
+  MockWebSocket.instances[1]?.close(1006, "network changed", false)
+
+  const interruptedChunks = await interruptedChunksPromise
+  expect(interruptedChunks.at(-1)?.event).toBe("error")
+  expect(MockWebSocket.instances[0]?.readyState).toBe(MockWebSocket.OPEN)
+
+  MockWebSocket.instances[0]?.completeLatestResponse()
+  const activeChunks = await activeChunksPromise
+  expect(activeChunks.at(-1)?.event).toBe("response.completed")
 })
 
 test("Responses websocket recovers incompatible reasoning history over HTTP", async () => {
@@ -2921,6 +3144,15 @@ test("Responses websocket closes after caller aborts a partial stream", async ()
   expect(websocket?.readyState).toBe(MockWebSocket.CLOSED)
   expect(chunks).toHaveLength(1)
   expect(chunks[0]?.event).toBe("response.created")
+
+  MockWebSocket.autoComplete = true
+  await collectResponsesStream("request-after-caller-abort", {
+    allowHttpFallback: true,
+    reasoningRecoverySessionId: "session-after-caller-abort",
+  })
+  expect(fetchMock).not.toHaveBeenCalled()
+  expect(MockWebSocket.instances).toHaveLength(2)
+  expect(MockWebSocket.instances[1]?.sent).toHaveLength(1)
 })
 
 test("Responses websocket accepts a string abort reason without retrying", async () => {
@@ -3542,6 +3774,7 @@ const collectDirectWebSocketIdentity = async (
 const collectResponsesStream = async (
   requestId: string,
   options: {
+    allowHttpFallback?: boolean
     model?: string
     reasoningRecoverySessionId?: string
     subagentMarker?: {
@@ -3551,7 +3784,7 @@ const collectResponsesStream = async (
     } | null
     vision?: boolean
   } = {},
-): Promise<void> => {
+): Promise<Array<{ data?: string; event?: string; id?: string | number }>> => {
   const response = await createResponses(
     {
       input: "hello",
@@ -3559,6 +3792,7 @@ const collectResponsesStream = async (
       stream: true,
     },
     {
+      allowHttpFallback: options.allowHttpFallback,
       initiator: "user",
       reasoningRecoverySessionId: options.reasoningRecoverySessionId,
       requestId,
@@ -3568,9 +3802,7 @@ const collectResponsesStream = async (
     },
   )
 
-  for await (const _chunk of response as AsyncIterable<unknown>) {
-    // consume stream
-  }
+  return collectStreamChunks(response as AsyncIterable<unknown>)
 }
 
 const collectStreamChunks = async (

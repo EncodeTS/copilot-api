@@ -137,6 +137,14 @@ export const clearPooledWebSocketRegistry = (): number => {
   return entries.length
 }
 
+export const clearIdlePooledWebSocketRegistry = (): number => {
+  const entries = [...new Set(websocketPool.values())].filter(isIdlePooledEntry)
+  for (const entry of entries) {
+    retirePooledWebSocketEntry(entry)
+  }
+  return entries.length
+}
+
 export const acquirePooledWebSocketConnection = async (
   options: AcquirePooledWebSocketOptions,
 ): Promise<PooledWebSocketLease> => {

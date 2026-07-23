@@ -42,6 +42,7 @@ import {
   type ResponsesWireSerialization,
 } from "~/services/copilot/responses-wire-artifact"
 import { createReasoningRecoveryScope } from "~/services/copilot/responses-reasoning-recovery-registry"
+import { shouldPreferResponsesHttpTransport } from "~/services/copilot/responses-transport-health"
 
 import {
   optimizeInputImagesForPayloadBudget,
@@ -74,6 +75,15 @@ export const createOptimizedCopilotResponses = async (
       initiator: options.requestOptions.initiator,
       isSubagent: Boolean(options.requestOptions.subagentMarker),
     }),
+    transport:
+      (
+        options.requestOptions.transport === "websocket"
+        && shouldPreferResponsesHttpTransport(
+          options.requestOptions.allowHttpFallback === true,
+        )
+      ) ?
+        "http"
+      : options.requestOptions.transport,
   }
   const firstPrepare = await prepareCopilotResponsesPayloadForSend(payload, {
     ...options,

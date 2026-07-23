@@ -8,12 +8,12 @@ import {
   type ResponsesStreamSessionFrame,
   type ResponsesStreamSessionOutcome,
 } from "~/lib/responses-stream-session"
-import type {
-  TokenUsageRecordResult,
-  TokenUsageRecorder,
-} from "~/lib/token-usage"
+import { recordResponsesStreamSessionUsage } from "~/lib/responses-stream-usage"
+import type { TokenUsageRecorder } from "~/lib/token-usage"
 
 import { emitResponsesStreamError } from "./stream-error"
+
+export { recordResponsesStreamSessionUsage } from "~/lib/responses-stream-usage"
 
 export interface ResponsesSseMessage {
   data: string
@@ -110,19 +110,6 @@ export const emitResponsesStreamSessionFailure = async ({
     },
     signal,
   })
-}
-
-export const recordResponsesStreamSessionUsage = (
-  recordUsage: TokenUsageRecorder,
-  outcome: ResponsesStreamSessionOutcome,
-): TokenUsageRecordResult => {
-  if (outcome.kind === "error" || outcome.kind === "failed") {
-    return recordUsage(outcome.terminal.usage, {
-      outcome: "failed",
-      terminal: outcome.terminal.event.type,
-    })
-  }
-  return recordUsage(outcome.terminal?.usage ?? {})
 }
 
 export const projectResponsesSessionFrame = (

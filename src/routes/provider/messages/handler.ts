@@ -45,6 +45,7 @@ import {
   type ProviderResolverPort,
 } from "~/lib/provider-resolver"
 import { normalizeMessageReasoningEffort } from "~/lib/reasoning-effort"
+import { getResponsesResultUsageMetadata } from "~/lib/responses-stream-usage"
 import { resolveBridgeToolSearchName } from "~/lib/tool-search"
 import {
   createProviderTokenUsageRecorder,
@@ -1683,13 +1684,7 @@ const recordProviderResponsesResultUsage = (
   const failureMessage = getResponsesResultFailureMessage(body)
   recordUsage(
     normalizeResponsesUsage(body.usage),
-    failureMessage ?
-      {
-        errorCode: "response_failed",
-        outcome: "failed",
-        terminal: "response.failed",
-      }
-    : undefined,
+    getResponsesResultUsageMetadata(body),
   )
   return failureMessage
 }

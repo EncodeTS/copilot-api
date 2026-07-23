@@ -1217,6 +1217,47 @@ test("messages Responses flow uses the actual HTTP transport when not streaming"
   expect(capturedResponsesOptions?.allowHttpFallback).toBe(false)
 })
 
+test("messages Responses flow records a non-stream incomplete result as incomplete", async () => {
+  createResponses.mockResolvedValueOnce({
+    ...createResponsesResult("gpt-test"),
+    incomplete_details: { reason: "max_output_tokens" },
+    status: "incomplete",
+    usage: {
+      input_tokens: 9,
+      input_tokens_details: { cached_tokens: 2 },
+      output_tokens: 3,
+      total_tokens: 12,
+    },
+  })
+  const payload: AnthropicMessagesPayload = {
+    max_tokens: 128,
+    messages: [{ role: "user", content: "hello" }],
+    model: "gpt-test",
+  }
+
+  const response = await handleWithResponsesApi(createContext(), payload, {
+    logger,
+    requestId: "request-incomplete-result",
+    selectedModel: createModel(["/responses"]),
+  })
+
+  expect(response.status).toBe(200)
+  expect(((await response.json()) as AnthropicResponse).stop_reason).toBe(
+    "max_tokens",
+  )
+  const usageEvents = await getTokenUsageEventsPage({
+    page: 1,
+    pageSize: 10,
+    period: "day",
+  })
+  expect(usageEvents.items).toHaveLength(1)
+  expect(usageEvents.items[0]).toMatchObject({
+    error_code: "max_output_tokens",
+    outcome: "incomplete",
+    terminal: "response.incomplete",
+  })
+})
+
 test("messages Responses flow maps disabled thinking to effort none", async () => {
   const payload: AnthropicMessagesPayload = {
     max_tokens: 128,

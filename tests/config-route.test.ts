@@ -40,6 +40,17 @@ const getPooledWebSocketDiagnostics = mock(() => ({
   queuedBytes: 7,
   queuedFrames: 8,
 }))
+const getResponsesWebSocketTransportHealthDiagnostics = mock(() => ({
+  active: true,
+  cooldownUntilMs: 31_000,
+  lastDegradedAtMs: 1_000,
+  reason: "sent_unknown_disconnect" as const,
+  remainingMs: 30_000,
+}))
+const enterResponsesWebSocketTransportCooldown = mock(
+  (_reason: "network_change" | "proxy_change") =>
+    getResponsesWebSocketTransportHealthDiagnostics(),
+)
 const getResponsesWebSocketResourceLimits = mock(() => ({
   capacityWaitMs: 250,
   dedicatedConnectionLimit: 64,
@@ -97,15 +108,21 @@ beforeEach(() => {
   setModelMappings.mockClear()
   refreshStartupCatalog.mockClear()
   clearResponsesWebSocketConnections.mockClear()
+  enterResponsesWebSocketTransportCooldown.mockClear()
   getPooledWebSocketDiagnostics.mockClear()
+  getResponsesWebSocketTransportHealthDiagnostics.mockClear()
   getResponsesWebSocketResourceLimits.mockClear()
   previewLegacyLogs.mockClear()
   applyLegacyLogs.mockClear()
   configRouteDependencies.refreshStartupCatalog = refreshStartupCatalog
   configRouteDependencies.clearResponsesWebSocketConnections =
     clearResponsesWebSocketConnections
+  configRouteDependencies.enterResponsesWebSocketTransportCooldown =
+    enterResponsesWebSocketTransportCooldown
   configRouteDependencies.getPooledWebSocketDiagnostics =
     getPooledWebSocketDiagnostics
+  configRouteDependencies.getResponsesWebSocketTransportHealthDiagnostics =
+    getResponsesWebSocketTransportHealthDiagnostics
   configRouteDependencies.getResponsesWebSocketResourceLimits =
     getResponsesWebSocketResourceLimits
   configRouteDependencies.previewLegacyLogs = previewLegacyLogs
@@ -174,6 +191,7 @@ describe("Responses websocket config routes", () => {
       configPath: actualPathsModule.PATHS.CONFIG_PATH,
       diagnostics: getPooledWebSocketDiagnostics(),
       limits: getResponsesWebSocketResourceLimits(),
+      transportHealth: getResponsesWebSocketTransportHealthDiagnostics(),
     })
   })
 
@@ -191,9 +209,13 @@ describe("Responses websocket config routes", () => {
     expect(clearResponsesWebSocketConnections).toHaveBeenCalledWith(
       "network_change",
     )
+    expect(enterResponsesWebSocketTransportCooldown).toHaveBeenCalledWith(
+      "network_change",
+    )
     expect(await response.json()).toEqual({
       clearedConnections: 2,
       diagnostics: getPooledWebSocketDiagnostics(),
+      transportHealth: getResponsesWebSocketTransportHealthDiagnostics(),
     })
   })
 

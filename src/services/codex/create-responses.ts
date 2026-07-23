@@ -29,9 +29,14 @@ import {
   createPooledWebSocketIdentity,
   createPooledWebSocketStream,
   createWebSocketUrl,
+  isWebSocketSentUnknownError,
   type PooledWebSocketRequest,
 } from "~/services/responses-websocket"
 import { projectResponsesWebSocketChunk } from "~/services/responses-websocket-chunk"
+import {
+  degradeResponsesWebSocketTransport,
+  shouldPreferResponsesHttpTransport,
+} from "~/services/copilot/responses-transport-health"
 import { requestContext } from "~/lib/request-context"
 import consola from "consola"
 
@@ -195,10 +200,15 @@ export function buildCodexRequestHeaders(requestHeaders: Headers): Headers {
 export function resolveCodexResponsesTransport(
   transport?: ResponsesTransport,
 ): ResponsesTransport {
-  return (
+  const resolvedTransport =
     transport
     ?? (isConfiguredResponsesApiWebSocketEnabled() ? "websocket" : "http")
-  )
+  return (
+      resolvedTransport === "websocket"
+        && shouldPreferResponsesHttpTransport(true)
+    ) ?
+      "http"
+    : resolvedTransport
 }
 
 export function buildCodexResponsesWebSocketHeaders(
@@ -539,14 +549,19 @@ const createCodexResponsesWebSocketStream = (
       terminalChunkMissingMessage:
         "Codex responses websocket ended without a terminal response",
     }),
+    request.signal,
   )
 
 const createCodexResponsesSafeStream = async function* (
   source: AsyncIterable<ServerSentEventChunk>,
+  signal?: AbortSignal,
 ): AsyncGenerator<ServerSentEventChunk, void, unknown> {
   try {
     yield* source
   } catch (error) {
+    if (!signal?.aborted && isWebSocketSentUnknownError(error)) {
+      degradeResponsesWebSocketTransport("sent_unknown_disconnect")
+    }
     yield createResponsesErrorServerSentEventChunk(getErrorMessage(error))
   }
 }

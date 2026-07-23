@@ -10,6 +10,7 @@ import {
 import { type PooledWebSocketIdentity } from "~/services/responses-websocket-identity"
 import {
   acquirePooledWebSocketConnection,
+  clearIdlePooledWebSocketRegistry,
   clearPooledWebSocketRegistry,
   getWebSocketConnectionRegistryDiagnostics,
   WebSocketConnectionCapacityError,
@@ -129,6 +130,12 @@ export const isWebSocketNotSentError = (
 ): error is PooledWebSocketRequestError =>
   error instanceof PooledWebSocketRequestError && error.sendState === "not-sent"
 
+export const isWebSocketSentUnknownError = (
+  error: unknown,
+): error is PooledWebSocketRequestError =>
+  error instanceof PooledWebSocketRequestError
+  && error.sendState === "sent-unknown"
+
 export const createWebSocketUrl = (url: string): string => {
   const websocketUrl = new URL(url)
   if (websocketUrl.protocol === "https:") {
@@ -150,6 +157,15 @@ export const clearPooledWebSocketConnections = (
 ): number => {
   const clearedConnections = clearPooledWebSocketRegistry()
   emitWebSocketDiagnostic("pool_cleared", { clearedConnections, reason })
+  return clearedConnections
+}
+
+export const clearIdlePooledWebSocketConnections = (): number => {
+  const clearedConnections = clearIdlePooledWebSocketRegistry()
+  emitWebSocketDiagnostic("idle_pool_cleared", {
+    clearedConnections,
+    reason: "transport_degraded",
+  })
   return clearedConnections
 }
 

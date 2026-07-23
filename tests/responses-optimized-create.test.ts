@@ -20,6 +20,10 @@ import {
   responsesReasoningRecoveryRegistry,
 } from "../src/services/copilot/responses-reasoning-recovery-registry"
 import {
+  degradeResponsesWebSocketTransport,
+  resetResponsesWebSocketTransportHealth,
+} from "../src/services/copilot/responses-transport-health"
+import {
   calculateResponsesPayloadBytes,
   optimizeInputImagesForPayloadBudget,
 } from "../src/routes/responses/utils"
@@ -235,6 +239,45 @@ test("selects HTTP before dispatch when websocket cannot be the actual transport
   )
 
   expect(selectedTransports).toEqual(["http", "http"])
+})
+
+test("selects HTTP before websocket admission while transport health is degraded", async () => {
+  const serializationStages: Array<string> = []
+  let dispatchedTransport: string | undefined
+  let artifactTransport: string | undefined
+  degradeResponsesWebSocketTransport("sent_unknown_disconnect")
+
+  try {
+    await createOptimizedCopilotResponses(
+      { input: "hello", model: "gpt-test", stream: true },
+      {
+        createResponses: (_payload, requestOptions) => {
+          dispatchedTransport = requestOptions.transport
+          artifactTransport = requestOptions.wireArtifact?.transport
+          return Promise.resolve(createResult("gpt-test"))
+        },
+        requestOptions: {
+          allowHttpFallback: true,
+          initiator: "user",
+          requestId: "request-transport-cooldown",
+          transport: "websocket",
+          vision: false,
+          wireSerializationObserver: {
+            onSerialization: (stage) => serializationStages.push(stage),
+          },
+        },
+        selectedModel: {
+          supported_endpoints: ["/responses", "ws:/responses"],
+        },
+      },
+    )
+  } finally {
+    resetResponsesWebSocketTransportHealth()
+  }
+
+  expect(dispatchedTransport).toBe("http")
+  expect(artifactTransport).toBe("http")
+  expect(serializationStages).toEqual(["budget_initial"])
 })
 
 test("websocket hard limit reserves the serialized envelope overhead", () => {

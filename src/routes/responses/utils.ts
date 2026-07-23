@@ -27,6 +27,7 @@ import {
   isResponsesApiWebSocketEnabled as isConfiguredResponsesApiWebSocketEnabled,
 } from "~/lib/config"
 import { getResponsesEndpointCapabilities } from "~/lib/responses-capabilities"
+import { shouldPreferResponsesHttpTransport } from "~/services/copilot/responses-transport-health"
 import {
   collectMediaFacts,
   type MediaFact,
@@ -83,6 +84,7 @@ export const getResponsesTransportForModel = (
     options.compactType !== COMPACT_REQUEST
     && useWebSocket
     && capabilities.websocket
+    && !shouldPreferResponsesHttpTransport(capabilities.http)
   ) {
     return "websocket"
   }
