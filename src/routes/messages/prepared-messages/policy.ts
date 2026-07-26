@@ -26,14 +26,53 @@ export interface PreparedMessagesPolicyPort {
   snapshot: (requestedModel?: string) => PreparedMessagesPolicySnapshot
 }
 
+/**
+ * Deep-frozen catalogs, keyed on the identity of the array they were built
+ * from. `refreshModels` replaces `state.models` wholesale, so identity changes
+ * exactly when the catalog does and a stale entry can never be served.
+ *
+ * Without this, every `/v1/messages` and `/v1/messages/count_tokens` request
+ * deep-copied and deep-froze the entire model catalog — measured at roughly
+ * 1,500 object-graph nodes for a 25-model enterprise catalog — to produce a
+ * value that is identical between 30-minute refreshes.
+ */
+const frozenCatalogs = new WeakMap<object, ReadonlyArray<Model>>()
+const EMPTY_CATALOG: ReadonlyArray<Model> = Object.freeze([])
+
+const freezeCatalog = (models: ReadonlyArray<Model>): ReadonlyArray<Model> => {
+  if (models.length === 0) {
+    // `state.models?.data ?? []` allocates a fresh array whenever the catalog
+    // is absent, which would never hit the cache.
+    return EMPTY_CATALOG
+  }
+
+  const cached = frozenCatalogs.get(models)
+  if (cached) {
+    return cached
+  }
+
+  const frozen = deepFreeze(structuredClone(models) as Array<Model>)
+  frozenCatalogs.set(models, frozen)
+  return frozen
+}
+
 export const createPreparedMessagesPolicyPort = (
   source: (
     requestedModel?: string,
   ) => PreparedMessagesPolicySnapshot = createRuntimePolicySnapshot,
 ): PreparedMessagesPolicyPort =>
   Object.freeze({
-    snapshot: (requestedModel?: string) =>
-      deepFreeze(structuredClone(source(requestedModel))),
+    snapshot: (requestedModel?: string) => {
+      const { models, ...rest } = source(requestedModel)
+      // Everything except the catalog is cheap and request-shaped, so it keeps
+      // its per-call copy; the catalog is shared. Both halves stay deeply
+      // frozen, so the immutability contract is unchanged.
+      const frozenRest = deepFreeze(structuredClone(rest))
+      return Object.freeze({
+        ...frozenRest,
+        models: freezeCatalog(models),
+      })
+    },
   })
 
 export const preparedMessagesPolicy = createPreparedMessagesPolicyPort()
