@@ -61,8 +61,10 @@ export interface PooledWebSocketStreamOptions<TChunk> {
 
 export interface PooledWebSocketDiagnostics {
   activeRequests: number
+  closingConnections: number
   connections: number
   dedicatedConnections: number
+  forcedCloseFinalizations: number
   idleConnections: number
   overflows: number
   poolHits: number

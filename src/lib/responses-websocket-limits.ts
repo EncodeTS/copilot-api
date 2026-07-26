@@ -1,5 +1,6 @@
 export interface ResponsesWebSocketResourceLimits {
   capacityWaitMs: number
+  closeTimeoutMs: number
   dedicatedConnectionLimit: number
   globalConnectionLimit: number
   idleConnectionLimit: number
@@ -12,6 +13,7 @@ export interface ResponsesWebSocketResourceLimits {
 
 export const DEFAULT_RESPONSES_WEBSOCKET_RESOURCE_LIMITS = {
   capacityWaitMs: 250,
+  closeTimeoutMs: 10_000,
   dedicatedConnectionLimit: 64,
   globalConnectionLimit: 128,
   idleConnectionLimit: 32,

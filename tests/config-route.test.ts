@@ -30,8 +30,10 @@ const setModelMappings = mock((nextModelMappings: Record<string, string>) => {
 const clearResponsesWebSocketConnections = mock(() => 2)
 const getPooledWebSocketDiagnostics = mock(() => ({
   activeRequests: 1,
+  closingConnections: 0,
   connections: 3,
   dedicatedConnections: 1,
+  forcedCloseFinalizations: 0,
   idleConnections: 1,
   overflows: 4,
   poolHits: 5,
@@ -53,6 +55,7 @@ const enterResponsesWebSocketTransportCooldown = mock(
 )
 const getResponsesWebSocketResourceLimits = mock(() => ({
   capacityWaitMs: 250,
+  closeTimeoutMs: 10_000,
   dedicatedConnectionLimit: 64,
   globalConnectionLimit: 128,
   idleConnectionLimit: 32,

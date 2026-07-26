@@ -4,11 +4,14 @@ import type { SupportedEncoding } from "../src/lib/tokenizer-encodings"
 import {
   closeIdleTokenizerWorker,
   countTextsInTokenizerWorker,
+  getTokenizerWorkerJobTimeoutMs,
   getTokenizerWorkerLoadSnapshot,
+  TOKENIZER_WORKER_JOB_TIMEOUT_BASE_MS,
   TOKENIZER_WORKER_MAX_PENDING_CODE_UNITS,
   TOKENIZER_WORKER_MAX_PENDING_JOBS,
   TokenizerWorkerBusyError,
   tokenizerWorkerClientDependencies,
+  TokenizerWorkerTimeoutError,
   type TokenizerWorkerTransport,
 } from "../src/lib/tokenizer-worker-client"
 import { runTokenizerWorkerLivenessFixture } from "./fixtures/tokenizer-worker-liveness"
@@ -223,6 +226,81 @@ test("tokenizer worker rejects job and code-unit overflow with a typed busy erro
     await Promise.allSettled(jobs)
     tokenizerWorkerClientDependencies.createWorker = originalCreateWorker
   }
+})
+
+test("tokenizer worker times out and replaces a wedged worker that never responds", async () => {
+  let terminated = 0
+  let created = 0
+  class WedgedWorker implements TokenizerWorkerTransport {
+    onError(): void {}
+    onExit(): void {}
+    onMessage(): void {}
+    // Emits neither a response nor error/exit, so only the watchdog can end it.
+    postMessage(): void {}
+    terminate(): Promise<number> {
+      terminated += 1
+      return Promise.resolve(0)
+    }
+    unref(): void {}
+  }
+
+  await closeIdleTokenizerWorker()
+  const originalCreateWorker = tokenizerWorkerClientDependencies.createWorker
+  const originalGetJobTimeoutMs =
+    tokenizerWorkerClientDependencies.getJobTimeoutMs
+  tokenizerWorkerClientDependencies.createWorker = () => {
+    created += 1
+    return new WedgedWorker()
+  }
+  tokenizerWorkerClientDependencies.getJobTimeoutMs = () => 5
+
+  try {
+    const wedged = countTextsInTokenizerWorker(
+      ["never answered"],
+      "o200k_base",
+      new AbortController().signal,
+    )
+
+    const error = await captureError(wedged)
+    expect(error).toBeInstanceOf(TokenizerWorkerTimeoutError)
+    expect(error).toMatchObject({
+      code: "tokenizer_worker_timeout",
+      codeUnits: 14,
+      timeoutMs: 5,
+    })
+    expect(terminated).toBe(1)
+    expect(created).toBe(1)
+    expect(getTokenizerWorkerLoadSnapshot()).toEqual(emptySnapshot)
+
+    // A queued job behind the wedged one must still run on a fresh worker.
+    const queued = countTextsInTokenizerWorker(
+      ["also never answered"],
+      "o200k_base",
+      new AbortController().signal,
+    )
+    const queuedError = await captureError(queued)
+    expect(queuedError).toBeInstanceOf(TokenizerWorkerTimeoutError)
+    expect(created).toBe(2)
+    expect(getTokenizerWorkerLoadSnapshot()).toEqual(emptySnapshot)
+  } finally {
+    tokenizerWorkerClientDependencies.createWorker = originalCreateWorker
+    tokenizerWorkerClientDependencies.getJobTimeoutMs = originalGetJobTimeoutMs
+  }
+})
+
+test("tokenizer worker job timeout scales with requested code units", () => {
+  expect(getTokenizerWorkerJobTimeoutMs(0)).toBe(
+    TOKENIZER_WORKER_JOB_TIMEOUT_BASE_MS,
+  )
+  expect(getTokenizerWorkerJobTimeoutMs(-100)).toBe(
+    TOKENIZER_WORKER_JOB_TIMEOUT_BASE_MS,
+  )
+  expect(getTokenizerWorkerJobTimeoutMs(2_500)).toBe(
+    TOKENIZER_WORKER_JOB_TIMEOUT_BASE_MS + 3,
+  )
+  expect(
+    getTokenizerWorkerJobTimeoutMs(TOKENIZER_WORKER_MAX_PENDING_CODE_UNITS),
+  ).toBeGreaterThan(TOKENIZER_WORKER_JOB_TIMEOUT_BASE_MS)
 })
 
 const captureError = async (promise: Promise<unknown>): Promise<unknown> => {

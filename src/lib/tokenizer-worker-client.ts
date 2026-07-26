@@ -5,6 +5,38 @@ import type { SupportedEncoding } from "~/lib/tokenizer-encodings"
 const WORKER_IDLE_TIMEOUT_MS = 5_000
 export const TOKENIZER_WORKER_MAX_PENDING_JOBS = 32
 export const TOKENIZER_WORKER_MAX_PENDING_CODE_UNITS = 8 * 1024 * 1024
+/**
+ * Watchdog for a worker that is wedged rather than dead.
+ *
+ * Worker `error`/`exit` already reject the active job, but a worker stuck
+ * inside an encode call emits neither, so without this bound the awaiting
+ * request hangs forever. The budget is generous and scales with input size so
+ * it never fires for legitimately large payloads: it is a liveness backstop,
+ * not a latency target.
+ */
+export const TOKENIZER_WORKER_JOB_TIMEOUT_BASE_MS = 30_000
+export const TOKENIZER_WORKER_JOB_TIMEOUT_CODE_UNITS_PER_MS = 1_000
+
+export class TokenizerWorkerTimeoutError extends Error {
+  readonly code = "tokenizer_worker_timeout"
+  readonly codeUnits: number
+  readonly timeoutMs: number
+
+  constructor(details: { codeUnits: number; timeoutMs: number }) {
+    super(
+      `Tokenizer worker did not respond within ${details.timeoutMs}ms and was terminated`,
+    )
+    this.name = "TokenizerWorkerTimeoutError"
+    this.codeUnits = details.codeUnits
+    this.timeoutMs = details.timeoutMs
+  }
+}
+
+export const getTokenizerWorkerJobTimeoutMs = (codeUnits: number): number =>
+  TOKENIZER_WORKER_JOB_TIMEOUT_BASE_MS
+  + Math.ceil(
+    Math.max(0, codeUnits) / TOKENIZER_WORKER_JOB_TIMEOUT_CODE_UNITS_PER_MS,
+  )
 
 export type TokenizerWorkerBusyLimitKind = "code_units" | "jobs"
 
@@ -65,6 +97,7 @@ export interface TokenizerWorkerTransport {
 
 export const tokenizerWorkerClientDependencies: {
   createWorker: (url: URL) => TokenizerWorkerTransport
+  getJobTimeoutMs: (codeUnits: number) => number
 } = {
   createWorker: (url) => {
     const worker = new Worker(url)
@@ -87,6 +120,7 @@ export const tokenizerWorkerClientDependencies: {
       },
     }
   },
+  getJobTimeoutMs: (codeUnits) => getTokenizerWorkerJobTimeoutMs(codeUnits),
 }
 
 /** Aggregate worker load only; no tokenized text or job identity is exposed. */
@@ -98,6 +132,7 @@ export interface TokenizerWorkerLoadSnapshot {
 }
 
 let activeJob: TokenizerJob | undefined
+let activeJobTimer: NodeJS.Timeout | undefined
 let idleTimer: NodeJS.Timeout | undefined
 let nextJobId = 1
 let pendingCodeUnits = 0
@@ -193,6 +228,7 @@ const startNextJob = () => {
   }
 
   activeJob = job
+  startActiveJobTimer(job)
   try {
     const activeWorker = getWorker()
     activeWorker.postMessage({
@@ -204,6 +240,29 @@ const startNextJob = () => {
     failActiveJob(error instanceof Error ? error : new Error(String(error)))
     terminateWorker()
   }
+}
+
+const startActiveJobTimer = (job: TokenizerJob) => {
+  clearActiveJobTimer()
+  const timeoutMs = tokenizerWorkerClientDependencies.getJobTimeoutMs(
+    job.codeUnits,
+  )
+  activeJobTimer = setTimeout(() => {
+    activeJobTimer = undefined
+    if (activeJob !== job) return
+    // The worker is presumed wedged, so reject the caller and replace it
+    // rather than leaving the request and the worker slot stuck.
+    failActiveJob(
+      new TokenizerWorkerTimeoutError({ codeUnits: job.codeUnits, timeoutMs }),
+    )
+    terminateWorker()
+  }, timeoutMs)
+  activeJobTimer.unref?.()
+}
+
+const clearActiveJobTimer = () => {
+  if (activeJobTimer) clearTimeout(activeJobTimer)
+  activeJobTimer = undefined
 }
 
 const getWorker = (): TokenizerWorkerTransport => {
@@ -236,6 +295,7 @@ const handleWorkerMessage = (
 
   const job = activeJob
   activeJob = undefined
+  clearActiveJobTimer()
   finishPendingJob(job)
   if (value.error !== undefined) {
     job.reject(new Error(value.error))
@@ -279,6 +339,7 @@ const handleWorkerExit = (
 const failActiveJob = (error: Error) => {
   const job = activeJob
   activeJob = undefined
+  clearActiveJobTimer()
   if (job) finishPendingJob(job)
   job?.reject(error)
 }
@@ -286,6 +347,7 @@ const failActiveJob = (error: Error) => {
 const cancelJob = (job: TokenizerJob) => {
   if (activeJob === job) {
     activeJob = undefined
+    clearActiveJobTimer()
     finishPendingJob(job)
     rejectWithAbortReason(job)
     terminateWorker()

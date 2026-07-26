@@ -4,6 +4,8 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
+import type { ResponsesWebSocketResourceLimits } from "../src/lib/responses-websocket-limits"
+
 interface ConfigFileShape {
   auth?: {
     adminApiKey?: string
@@ -39,6 +41,7 @@ interface ConfigFileShape {
   responsesPayloadRetryBudgetBytes?: number
   responsesPayloadSendHardLimitBytes?: number
   responsesWebSocketCapacityWaitMs?: number
+  responsesWebSocketCloseTimeoutMs?: number
   responsesWebSocketDedicatedConnectionLimit?: number
   responsesWebSocketGlobalConnectionLimit?: number
   responsesWebSocketIdleConnectionLimit?: number
@@ -332,6 +335,7 @@ describe("builtin provider config", () => {
 
     expect(JSON.parse(output)).toEqual({
       capacityWaitMs: 250,
+      closeTimeoutMs: 10_000,
       dedicatedConnectionLimit: 64,
       globalConnectionLimit: 128,
       idleConnectionLimit: 32,
@@ -350,6 +354,7 @@ describe("builtin provider config", () => {
     const tempDir = createTempConfigDir()
     writeConfigFile(tempDir, {
       responsesWebSocketCapacityWaitMs: -1,
+      responsesWebSocketCloseTimeoutMs: 0,
       responsesWebSocketDedicatedConnectionLimit: 12,
       responsesWebSocketGlobalConnectionLimit: 4,
       responsesWebSocketIdleConnectionLimit: 9,
@@ -367,6 +372,7 @@ describe("builtin provider config", () => {
 
     expect(JSON.parse(output)).toEqual({
       capacityWaitMs: 250,
+      closeTimeoutMs: 10_000,
       dedicatedConnectionLimit: 4,
       globalConnectionLimit: 4,
       idleConnectionLimit: 4,
@@ -376,6 +382,20 @@ describe("builtin provider config", () => {
       maxQueuedFrames: 4096,
       perCapacityKeyConnectionLimit: 4,
     })
+  })
+
+  test("accepts a configured Responses websocket close timeout", () => {
+    const tempDir = createTempConfigDir()
+    writeConfigFile(tempDir, { responsesWebSocketCloseTimeoutMs: 2_500 })
+
+    const output = runScript(
+      tempDir,
+      'const config = await import("./src/lib/config"); console.log(JSON.stringify(config.getResponsesWebSocketResourceLimits()));',
+    )
+
+    expect(
+      (JSON.parse(output) as ResponsesWebSocketResourceLimits).closeTimeoutMs,
+    ).toBe(2_500)
   })
 
   test("migrates the legacy Responses image budget defaults", () => {

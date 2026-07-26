@@ -48,6 +48,7 @@ export interface AppConfig {
   useMessagesApi?: boolean
   useResponsesApiWebSocket?: boolean
   responsesWebSocketCapacityWaitMs?: number
+  responsesWebSocketCloseTimeoutMs?: number
   responsesWebSocketDedicatedConnectionLimit?: number
   responsesWebSocketGlobalConnectionLimit?: number
   responsesWebSocketIdleConnectionLimit?: number
@@ -1266,6 +1267,11 @@ export function getResponsesWebSocketResourceLimits(): ResponsesWebSocketResourc
       "responsesWebSocketCapacityWaitMs",
       defaults.capacityWaitMs,
       { max: 30_000, min: 0 },
+    ),
+    closeTimeoutMs: getIntegerConfig(
+      "responsesWebSocketCloseTimeoutMs",
+      defaults.closeTimeoutMs,
+      { max: 600_000, min: 1 },
     ),
     dedicatedConnectionLimit: Math.min(
       globalConnectionLimit,

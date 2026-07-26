@@ -22,6 +22,8 @@ type ManagedWebSocket = InstanceType<typeof WebSocket>
 interface PooledWebSocketEntry {
   closed: boolean
   closeLogged: boolean
+  closeTimeoutMs: number
+  closeTimer: ReturnType<typeof setTimeout> | null
   createdAt: number
   identity: PooledWebSocketIdentity
   idleOrder: number
@@ -57,8 +59,10 @@ export interface WebSocketCloseDiagnostic {
 
 export interface WebSocketConnectionRegistryDiagnostics {
   activeRequests: number
+  closingConnections: number
   connections: number
   dedicatedConnections: number
+  forcedCloseFinalizations: number
   idleConnections: number
   poolHits: number
   poolMisses: number
@@ -101,13 +105,18 @@ const capacityWaiters = new Set<() => void>()
 let idleOrder = 0
 let poolHits = 0
 let poolMisses = 0
+let forcedCloseFinalizations = 0
 
 export const getWebSocketConnectionRegistryDiagnostics =
   (): WebSocketConnectionRegistryDiagnostics => {
+    let closingConnections = 0
     let dedicatedConnections = 0
     let idleConnections = 0
     let pooledConnections = 0
     for (const entry of websocketEntries) {
+      if (entry.closed) {
+        closingConnections += 1
+      }
       if (entry.pooled) {
         pooledConnections += 1
         if (isIdlePooledEntry(entry)) {
@@ -120,8 +129,10 @@ export const getWebSocketConnectionRegistryDiagnostics =
 
     return {
       activeRequests: sumMapValues(websocketActiveRequests),
+      closingConnections,
       connections: websocketEntries.size,
       dedicatedConnections,
+      forcedCloseFinalizations,
       idleConnections,
       poolHits,
       poolMisses,
@@ -229,6 +240,8 @@ const createPooledWebSocketEntry = (
   const entry: PooledWebSocketEntry = {
     closed: false,
     closeLogged: false,
+    closeTimeoutMs: options.limits.closeTimeoutMs,
+    closeTimer: null,
     createdAt: Date.now(),
     identity: options.identity,
     idleOrder: 0,
@@ -444,10 +457,38 @@ const retirePooledWebSocketEntry = (entry: PooledWebSocketEntry): void => {
   }
   if (entry.websocket.readyState === WebSocket.CLOSED) {
     finalizePooledWebSocketEntry(entry)
+    return
+  }
+  // A peer that never completes the close handshake (half-open TCP, a proxy
+  // that swallows the close ACK) would otherwise hold its capacity slot
+  // forever: only the "close" event frees it, and a closed entry is excluded
+  // from idle eviction. Bound that wait so capacity is always reclaimed.
+  startPooledWebSocketCloseTimer(entry)
+}
+
+const startPooledWebSocketCloseTimer = (entry: PooledWebSocketEntry): void => {
+  if (entry.closeTimer) {
+    return
+  }
+  entry.closeTimer = setTimeout(() => {
+    entry.closeTimer = null
+    if (websocketEntries.has(entry)) {
+      forcedCloseFinalizations += 1
+      finalizePooledWebSocketEntry(entry)
+    }
+  }, entry.closeTimeoutMs)
+  entry.closeTimer.unref?.()
+}
+
+const clearPooledWebSocketCloseTimer = (entry: PooledWebSocketEntry): void => {
+  if (entry.closeTimer) {
+    clearTimeout(entry.closeTimer)
+    entry.closeTimer = null
   }
 }
 
 const finalizePooledWebSocketEntry = (entry: PooledWebSocketEntry): void => {
+  clearPooledWebSocketCloseTimer(entry)
   if (websocketEntries.delete(entry)) {
     decrementCapacityKeyConnectionCount(entry.identity.capacityKey)
     notifyCapacityChanged()

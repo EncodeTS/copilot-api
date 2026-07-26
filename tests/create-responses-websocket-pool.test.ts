@@ -699,6 +699,45 @@ test("pooled websocket counts a closing LRU socket until its close event", async
   await next.next()
 })
 
+test("pooled websocket reclaims capacity when a closing socket never completes its handshake", async () => {
+  const limits = createResourceLimits({
+    capacityWaitMs: 100,
+    closeTimeoutMs: 5,
+    globalConnectionLimit: 1,
+    idleConnectionLimit: 1,
+    perCapacityKeyConnectionLimit: 1,
+  })
+  await collectDirectWebSocketStream("idle", "account-1", limits)
+  MockWebSocket.deferClose = true
+
+  const next = createDirectWebSocketStream("next", "account-1", limits)[
+    Symbol.asyncIterator
+  ]()
+  const nextChunk = next.next()
+  await new Promise<void>((resolve) => originalSetTimeout(resolve, 0))
+
+  // The peer never sends its close frame, so the socket stays CLOSING and the
+  // "close" event that normally frees the slot never fires.
+  expect(MockWebSocket.instances[0]?.readyState).toBe(MockWebSocket.CLOSING)
+  expect(
+    responsesWebSocketModule.getPooledWebSocketDiagnostics().connections,
+  ).toBe(1)
+
+  // The bounded close timer must finalize the entry anyway.
+  await waitFor(
+    () =>
+      responsesWebSocketModule.getPooledWebSocketDiagnostics()
+        .forcedCloseFinalizations === 1,
+  )
+  expect(MockWebSocket.instances[0]?.readyState).toBe(MockWebSocket.CLOSING)
+
+  MockWebSocket.deferClose = false
+  await waitFor(() => MockWebSocket.instances[1]?.sent.length === 1)
+  MockWebSocket.instances[1]?.completeLatestResponse()
+  await nextChunk
+  await next.next()
+})
+
 test("pooled websocket never evicts an active connection to satisfy the idle cap", async () => {
   MockWebSocket.autoComplete = false
   const limits = createResourceLimits({ idleConnectionLimit: 1 })

@@ -83,6 +83,9 @@ const countSemanticTextTokens = async (
   options: TokenizerSchedulingOptions,
 ): Promise<number> => {
   if (texts.length === 0) return 0
+  // A caller without a request signal gets a placeholder that never fires;
+  // liveness for that case is guaranteed by the tokenizer worker's own
+  // per-job watchdog rather than by cancellation.
   const signal = options.signal ?? new AbortController().signal
   signal.throwIfAborted()
   const countsPromise = responsesTokenEstimateDependencies.countTexts(
