@@ -262,26 +262,46 @@ const findLastUserContent = (
   return null
 }
 
+/**
+ * Extracts the only part of a payload that contributes to its request ID: the
+ * last user content, already redacted and stable-serialized.
+ *
+ * Callers that need to pin request identity before mutating a payload can keep
+ * this string instead of deep-copying the whole payload — for a tool-heavy
+ * conversation that is a few hundred bytes rather than hundreds of KB.
+ */
+export const extractRequestIdentityContent = (payload: {
+  messages: string | Array<PayloadMessage> | undefined
+}): string | null => {
+  const messages = payload.messages
+  if (!messages) {
+    return null
+  }
+
+  return typeof messages === "string" ? messages : findLastUserContent(messages)
+}
+
+export const generateRequestIdFromContent = (
+  content: string | null | undefined,
+  sessionId?: string,
+): string => {
+  if (content) {
+    return getUUID((sessionId ?? "") + (state.macMachineId ?? "") + content)
+  }
+
+  return randomUUID()
+}
+
 export const generateRequestIdFromPayload = (
   payload: {
     messages: string | Array<PayloadMessage> | undefined
   },
   sessionId?: string,
-): string => {
-  const messages = payload.messages
-  if (messages) {
-    const lastUserContent =
-      typeof messages === "string" ? messages : findLastUserContent(messages)
-
-    if (lastUserContent) {
-      return getUUID(
-        (sessionId ?? "") + (state.macMachineId ?? "") + lastUserContent,
-      )
-    }
-  }
-
-  return randomUUID()
-}
+): string =>
+  generateRequestIdFromContent(
+    extractRequestIdentityContent(payload),
+    sessionId,
+  )
 
 export const getRootSessionId = (
   anthropicPayload: AnthropicMessagesPayload,

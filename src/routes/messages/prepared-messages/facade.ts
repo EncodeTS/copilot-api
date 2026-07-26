@@ -6,7 +6,12 @@ import { normalizeSdkModelId } from "~/lib/models"
 import { createFallbackModel } from "~/lib/provider-model"
 import type { SubagentMarker } from "~/lib/subagent"
 import { getTokenCount } from "~/lib/tokenizer"
-import { generateRequestIdFromPayload, getUUID } from "~/lib/utils"
+import {
+  extractRequestIdentityContent,
+  generateRequestIdFromContent,
+  generateRequestIdFromPayload,
+  getUUID,
+} from "~/lib/utils"
 import {
   handlePreparedChatCompletions,
   handlePreparedMessagesApi,
@@ -103,7 +108,7 @@ export interface PreparedMessagesComposition {
 interface PreparedCommon {
   compactType?: CompactType
   endpointModel?: Model
-  requestIdentityPayload: AnthropicMessagesPayload
+  requestIdentityContent: string | null
   sourcePayload: AnthropicMessagesPayload
   subagentMarker?: SubagentMarker | null
   tokenizerModel: Model
@@ -174,22 +179,22 @@ export const createPreparedMessagesFacade = (
   const facade: PreparedMessagesFacade = {
     count: async (context, payload) => {
       const { policy } = context
-      const mappedPayload = mapPayloadModel(payload, policy)
+      const mappedModel = resolveMappedModelId(payload, policy)
       if (
-        !findEndpointModel(policy.models, mappedPayload.model)
+        !findEndpointModel(policy.models, mappedModel)
         && policy.catalogLoaded
       ) {
-        throw new PreparedMessagesUnsupportedModelError(mappedPayload.model)
+        throw new PreparedMessagesUnsupportedModelError(mappedModel)
       }
-      const plan = preparePlan(mappedPayload, policy, dependencies)
+      const plan = preparePlan(payload, policy, dependencies, mappedModel)
       return await countPreparedPlan(context, plan, policy, dependencies)
     },
     generate: async (context, payload) => {
       const { policy } = context
-      const mappedPayload = mapPayloadModel(payload, policy)
+      const mappedModel = resolveMappedModelId(payload, policy)
       return await generatePreparedPlan(
         context,
-        preparePlan(mappedPayload, policy, dependencies),
+        preparePlan(payload, policy, dependencies, mappedModel),
         dependencies,
       )
     },
@@ -199,21 +204,24 @@ export const createPreparedMessagesFacade = (
 
 export const preparedMessages = createPreparedMessagesFacade()
 
-const mapPayloadModel = (
+/**
+ * Resolves the mapped model id without copying the payload. This previously
+ * deep-copied the whole payload just to overwrite `model`, and `preparePlan`
+ * then immediately copied that result again, so the first copy never escaped.
+ */
+const resolveMappedModelId = (
   payload: AnthropicMessagesPayload,
   policy: PreparedMessagesPolicySnapshot,
-): AnthropicMessagesPayload => {
-  const mapped = structuredClone(payload)
-  mapped.model = resolvePreparedMessagesModel(policy, mapped.model)
-  return mapped
-}
+): string => resolvePreparedMessagesModel(policy, payload.model)
 
 const preparePlan = (
   input: AnthropicMessagesPayload,
   policy: PreparedMessagesPolicySnapshot,
   dependencies: PreparedMessagesDependencies,
+  mappedModel: string,
 ): PreparedPlan => {
   const sourcePayload = structuredClone(input)
+  sourcePayload.model = mappedModel
   normalizeSystemMessages(sourcePayload)
   const subagentMarker = parseSubagentMarkerFromFirstUser(sourcePayload)
   const endpointModel = findEndpointModel(policy.models, sourcePayload.model)
@@ -250,12 +258,16 @@ const preparePlan = (
   sanitizeIdeTools(sourcePayload, {
     preserveExecuteCode: kind !== "chat_completions",
   })
-  const requestIdentityPayload = structuredClone(sourcePayload)
+  // Only the last user content contributes to the request ID, so pinning that
+  // string is enough to keep identity fixed against the pre-mutation state.
+  // This used to deep-copy the whole payload, and the copy was never read at
+  // all on the count path.
+  const requestIdentityContent = extractRequestIdentityContent(sourcePayload)
   sourcePayload.model = endpointModel?.id ?? sourcePayload.model
   const common: PreparedCommon = {
     compactType,
     endpointModel,
-    requestIdentityPayload,
+    requestIdentityContent,
     sourcePayload,
     subagentMarker,
     tokenizerModel,
@@ -399,8 +411,8 @@ const generatePreparedPlan = async (
 
   const reasoningRecoverySessionId = context.reasoningRecoverySessionId
   let sessionId = reasoningRecoverySessionId
-  const requestId = generateRequestIdFromPayload(
-    plan.requestIdentityPayload,
+  const requestId = generateRequestIdFromContent(
+    plan.requestIdentityContent,
     sessionId,
   )
   logger.debug("Generated request ID:", requestId)

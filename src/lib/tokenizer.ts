@@ -383,12 +383,14 @@ const createResponsiveEncoder = async (
     numTokensForTools(payload.tools, collectingEncoder, constants)
   }
 
-  const textList = [...texts]
   if (totalCodeUnits < RESPONSIVE_ENCODING_THRESHOLD) {
     signal.throwIfAborted()
     return encoder
   }
 
+  // Materialized only past the threshold; below it the list is discarded
+  // immediately, and that is the common case.
+  const textList = [...texts]
   const supportedEncoding =
     isSupportedEncoding(tokenizer) ? tokenizer : "o200k_base"
   const countsPromise = countTextsInTokenizerWorker(

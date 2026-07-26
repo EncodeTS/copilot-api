@@ -172,3 +172,86 @@ test("getRootSessionId keeps legacy parsing before JSON fallback", () => {
     getUUID("7d0e2f61-4b5c-4a9d-8f11-2c3d4e5f6a7b"),
   )
 })
+
+test("splitting request identity extraction preserves the generated ID", async () => {
+  const { state } = await import("../src/lib/state")
+  const {
+    extractRequestIdentityContent,
+    generateRequestIdFromContent,
+    generateRequestIdFromPayload,
+  } = await import("../src/lib/utils")
+  const originalMachineId = state.macMachineId
+
+  state.macMachineId = "machine-1"
+  try {
+    // Ticket 06 replaced a whole-payload deep copy with the extracted identity
+    // string. The two must stay observationally identical for every shape that
+    // reaches a request ID, including the ones that fall back to a random UUID.
+    const payloads: Array<{
+      messages: AnthropicMessagesPayload["messages"] | string | undefined
+    }> = [
+      { messages: [{ content: "hello", role: "user" }] },
+      {
+        messages: [
+          { content: "hello", role: "user" },
+          { content: "hi", role: "assistant" },
+          { content: [{ text: "second turn", type: "text" }], role: "user" },
+        ],
+      },
+      {
+        messages: [
+          {
+            content: [
+              { content: "result", tool_use_id: "t1", type: "tool_result" },
+            ],
+            role: "user",
+          },
+        ],
+      },
+      { messages: [{ content: "", role: "user" }] },
+      { messages: [{ content: "only assistant", role: "assistant" }] },
+      { messages: [] },
+      { messages: undefined },
+    ]
+
+    for (const payload of payloads) {
+      const typed = payload as Parameters<
+        typeof generateRequestIdFromPayload
+      >[0]
+      const viaContent = generateRequestIdFromContent(
+        extractRequestIdentityContent(typed),
+        "session-1",
+      )
+      const viaPayload = generateRequestIdFromPayload(typed, "session-1")
+      const identityContent = extractRequestIdentityContent(typed)
+
+      if (identityContent) {
+        expect(viaContent).toBe(viaPayload)
+      } else {
+        // Both sides fall back to a fresh random UUID, so only the fallback
+        // decision itself can be asserted.
+        expect(viaContent).not.toBe(viaPayload)
+      }
+    }
+  } finally {
+    state.macMachineId = originalMachineId
+  }
+})
+
+test("request identity content is stable across unrelated payload mutation", async () => {
+  const { extractRequestIdentityContent } = await import("../src/lib/utils")
+
+  const payload = {
+    max_tokens: 16,
+    messages: [{ content: "pin this", role: "user" as const }],
+    model: "alias",
+  }
+  const pinned = extractRequestIdentityContent(payload)
+
+  // preparePlan pins identity and then rewrites `model`; the pinned value must
+  // not move with it, which is what the discarded deep copy used to guarantee.
+  payload.model = "resolved-endpoint-model"
+
+  expect(extractRequestIdentityContent(payload)).toBe(pinned)
+  expect(pinned).toBe("pin this")
+})
