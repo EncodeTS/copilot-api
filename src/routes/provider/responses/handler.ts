@@ -148,14 +148,28 @@ async function handleProviderResponsesForProviderWithDependencies(
     payload.model,
     { signal: c.req.raw.signal },
   )
-  if (
-    !resolvedProviderModel
-    || resolvedProviderModel.type !== "openai-responses"
-  ) {
+  if (!resolvedProviderModel) {
+    // An unknown or disabled provider is not the same failure as a provider
+    // whose protocol type cannot serve Responses. Every other provider-scoped
+    // route (messages, count-tokens, models, images, alpha-search) already
+    // answers this condition with the envelope below.
     return c.json(
       {
         error: {
+          message: `Provider '${provider}' not found or disabled`,
+          type: "invalid_request_error",
+        },
+      },
+      404,
+    )
+  }
+  if (resolvedProviderModel.type !== "openai-responses") {
+    return c.json(
+      {
+        error: {
+          code: "model_not_supported",
           message: `Provider '${provider}' does not support the /v1/responses endpoint`,
+          param: "model",
           type: "invalid_request_error",
         },
       },

@@ -37,7 +37,15 @@ export interface SqliteDbStoreOptions {
   getPath: () => string
   initialize?: (db: SqliteDatabase) => void
   openDatabase?: (dbPath: string) => Promise<SqliteDatabase>
+  /**
+   * Minimum gap between open attempts after a failure. Retries are driven by
+   * callers rather than a timer, so this only bounds how often a genuinely
+   * unusable file is re-opened.
+   */
+  retryCooldownMs?: number
 }
+
+export const DEFAULT_SQLITE_OPEN_RETRY_COOLDOWN_MS = 1_000
 
 const isBunRuntime = (): boolean =>
   Boolean((globalThis as { Bun?: unknown }).Bun)
@@ -170,15 +178,46 @@ export async function openSqliteDatabase(
 
 export class SqliteDbStore {
   private dbPromise: Promise<SqliteDatabase> | null = null
+  private lastOpenFailure: { at: number; error: unknown } | null = null
   private readonly options: SqliteDbStoreOptions
+  private readonly retryCooldownMs: number
 
   constructor(options: SqliteDbStoreOptions) {
     this.options = options
+    this.retryCooldownMs =
+      options.retryCooldownMs ?? DEFAULT_SQLITE_OPEN_RETRY_COOLDOWN_MS
   }
 
   getDb(): Promise<SqliteDatabase> {
-    this.dbPromise ??= this.open()
-    return this.dbPromise
+    if (this.dbPromise) {
+      return this.dbPromise
+    }
+
+    const failure = this.lastOpenFailure
+    if (failure && Date.now() - failure.at < this.retryCooldownMs) {
+      // Fail fast rather than re-opening once per queued write while the file
+      // stays unusable.
+      return Promise.reject(failure.error as Error)
+    }
+
+    const attempt = this.open()
+    this.dbPromise = attempt
+    void attempt.then(
+      () => {
+        this.lastOpenFailure = null
+      },
+      (error: unknown) => {
+        // A rejected promise is neither null nor undefined, so the previous
+        // `??=` cached it forever and one transient failure disabled every
+        // read for the process lifetime. Drop it so the next call can retry.
+        if (this.dbPromise === attempt) {
+          this.dbPromise = null
+        }
+        this.lastOpenFailure = { at: Date.now(), error }
+      },
+    )
+
+    return attempt
   }
 
   async close(input?: {
@@ -186,12 +225,21 @@ export class SqliteDbStore {
   }): Promise<void> {
     const currentDbPromise = this.dbPromise
     this.dbPromise = null
+    this.lastOpenFailure = null
 
     if (!currentDbPromise) {
       return
     }
 
-    const db = await currentDbPromise
+    let db: SqliteDatabase
+    try {
+      db = await currentDbPromise
+    } catch {
+      // Nothing was opened. The open failure was already surfaced to whoever
+      // called `getDb`; closing must not resurface it during shutdown.
+      return
+    }
+
     input?.beforeClose?.(db)
     db.close?.()
   }

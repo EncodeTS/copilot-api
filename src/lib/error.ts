@@ -62,6 +62,27 @@ export class LocalPayloadTooLargeError extends Error {
   }
 }
 
+/**
+ * Renders a client-safe message for a value that reached the terminal error
+ * branch. Non-`Error` throws are real here — `rejectWithAbortReason` in
+ * `tokenizer-worker-client.ts` deliberately preserves a non-`Error`
+ * `AbortSignal.reason` identity — and `(error as Error).message` would send
+ * `undefined` to the client for those. Objects are rendered via `String`
+ * rather than serialized so a thrown payload cannot leak into the response.
+ */
+function describeError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message || "Unknown error"
+  }
+
+  try {
+    return String(error) || "Unknown error"
+  } catch {
+    // Null-prototype objects and similar values have no primitive conversion.
+    return "Unknown error"
+  }
+}
+
 export async function forwardError(
   c: Context,
   error: unknown,
@@ -157,7 +178,7 @@ export async function forwardError(
   return c.json(
     {
       error: {
-        message: (error as Error).message,
+        message: describeError(error),
         type: "error",
       },
     },

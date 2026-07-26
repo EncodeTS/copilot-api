@@ -99,6 +99,65 @@ test("forwardError strips compression stack traces from local 413 responses", as
   ])
 })
 
+const nonErrorCases: Array<[string, unknown, string]> = [
+  ["a thrown string", "upstream socket closed", "upstream socket closed"],
+  ["a thrown plain object", { reason: "aborted" }, "[object Object]"],
+  ["a thrown undefined", undefined, "undefined"],
+  ["a thrown null", null, "null"],
+]
+
+for (const [label, thrown, expected] of nonErrorCases) {
+  test(`forwardError normalizes ${label}`, async () => {
+    const app = new Hono()
+    app.get("/", (c) => forwardError(c, thrown))
+
+    const response = await app.request("/")
+
+    expect(response.status).toBe(500)
+    expect(await response.json()).toEqual({
+      error: {
+        message: expected,
+        type: "error",
+      },
+    })
+  })
+}
+
+test("forwardError keeps a message for value types String() cannot render", async () => {
+  const app = new Hono()
+  app.get("/", (c) => forwardError(c, Object.create(null) as unknown))
+
+  const response = await app.request("/")
+
+  expect(response.status).toBe(500)
+  const body = (await response.json()) as { error: { message: string } }
+  expect(body.error.message).toBe("Unknown error")
+})
+
+test("forwardError substitutes a message for an Error with an empty message", async () => {
+  const app = new Hono()
+  app.get("/", (c) => forwardError(c, new Error("")))
+
+  const response = await app.request("/")
+
+  expect(response.status).toBe(500)
+  const body = (await response.json()) as { error: { message: string } }
+  expect(body.error.message).toBe("Unknown error")
+})
+
+test("forwardError does not leak thrown plain-object contents", async () => {
+  const app = new Hono()
+  app.get("/", (c) =>
+    forwardError(c, { authorization: "Bearer secret-token-value" }),
+  )
+
+  const response = await app.request("/")
+
+  const text = await response.text()
+  expect(text).not.toContain("secret-token-value")
+  expect(text).not.toContain("authorization")
+})
+
 test("forwardError preserves structured inbound body-limit errors", async () => {
   const app = new Hono()
   app.get("/", (c) => forwardError(c, new RequestBodyTooLargeError("encoded")))

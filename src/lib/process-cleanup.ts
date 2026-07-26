@@ -6,6 +6,20 @@ let cleanupPromise: Promise<void> | null = null
 let cleanupState: "idle" | "running" | "done" = "idle"
 let runtimeInitialized = false
 
+/**
+ * Cleanup failures are reported through `console.warn` rather than the shared
+ * logger: `logger.ts` registers its own flush handler here, so importing it
+ * would be circular, and the logger may already be torn down by the time a
+ * later handler fails. `logger.ts` reports its own failures the same way.
+ */
+function reportCleanupFailure(error: unknown): void {
+  try {
+    console.warn("Process cleanup handler failed:", error)
+  } catch {
+    // Reporting is best-effort; stdio can already be closed during exit.
+  }
+}
+
 function initializeProcessCleanupRuntime(): void {
   if (runtimeInitialized) {
     return
@@ -14,7 +28,7 @@ function initializeProcessCleanupRuntime(): void {
   runtimeInitialized = true
 
   process.once("beforeExit", () => {
-    void runProcessCleanups()
+    void runProcessCleanups().catch(reportCleanupFailure)
   })
   process.once("exit", runProcessCleanupsSync)
   process.once("SIGINT", () => {
@@ -25,7 +39,7 @@ function initializeProcessCleanupRuntime(): void {
   })
 }
 
-function runProcessCleanupsSync(): void {
+export function runProcessCleanupsSync(): void {
   if (cleanupState !== "idle") {
     return
   }
@@ -33,14 +47,16 @@ function runProcessCleanupsSync(): void {
   cleanupState = "done"
   for (const handler of Array.from(cleanupHandlers)) {
     try {
-      void handler()
-    } catch {
-      // Ignore best-effort cleanup failures during process exit.
+      // A handler may return a promise that settles after `exit` unwinds; a
+      // rejection must not surface as an unhandled rejection.
+      void Promise.resolve(handler()).catch(reportCleanupFailure)
+    } catch (error) {
+      reportCleanupFailure(error)
     }
   }
 }
 
-async function runProcessCleanups(): Promise<void> {
+export async function runProcessCleanups(): Promise<void> {
   if (cleanupPromise) {
     return cleanupPromise
   }
@@ -52,7 +68,13 @@ async function runProcessCleanups(): Promise<void> {
   cleanupState = "running"
   cleanupPromise = (async () => {
     for (const handler of Array.from(cleanupHandlers)) {
-      await handler()
+      try {
+        await handler()
+      } catch (error) {
+        // One failing handler must not skip the handlers registered after it,
+        // such as the logger flush.
+        reportCleanupFailure(error)
+      }
     }
     cleanupState = "done"
   })()
@@ -75,4 +97,15 @@ export function registerProcessCleanup(handler: CleanupHandler): () => void {
   return () => {
     cleanupHandlers.delete(handler)
   }
+}
+
+/**
+ * Clears registered handlers and run state so each test starts from `idle`.
+ * `runtimeInitialized` is deliberately left set: resetting it would re-register
+ * the process listeners on every subsequent `registerProcessCleanup` call.
+ */
+export function resetProcessCleanupStateForTests(): void {
+  cleanupHandlers.clear()
+  cleanupPromise = null
+  cleanupState = "idle"
 }

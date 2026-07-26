@@ -161,11 +161,21 @@ export const handleResponses = async (
   const endpointCapabilities = getResponsesEndpointCapabilities(selectedModel)
 
   if (!responsesTransport) {
+    // "Absent from a loaded catalog" and "present but without a Responses
+    // transport" are different failures. Upstream answers the former with
+    // `model_not_supported`; collapsing both into one untyped message left a
+    // client unable to branch on `error.code`. Without a loaded catalog the
+    // gateway cannot know a model is absent, so it keeps the endpoint wording.
+    const absentFromLoadedCatalog = Boolean(state.models) && !selectedModel
     return c.json(
       {
         error: {
+          code: "model_not_supported",
           message:
-            "This model does not support the responses endpoint. Please choose a different model.",
+            absentFromLoadedCatalog ?
+              "The requested model is not supported."
+            : "This model does not support the responses endpoint. Please choose a different model.",
+          param: "model",
           type: "invalid_request_error",
         },
       },

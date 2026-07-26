@@ -257,6 +257,84 @@ describe("responses handler token usage", () => {
     expect(createResponses).not.toHaveBeenCalled()
   })
 
+  test("rejects a model absent from a loaded catalog with the upstream code", async () => {
+    const response = await createApp().request("/v1/responses", {
+      body: JSON.stringify({
+        input: "hello",
+        model: "definitely-not-a-model",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(400)
+    // Matches the upstream envelope measured on 2026-07-26 so a client can
+    // branch on `error.code` to fall back or retry.
+    expect(await response.json()).toEqual({
+      error: {
+        code: "model_not_supported",
+        message: "The requested model is not supported.",
+        param: "model",
+        type: "invalid_request_error",
+      },
+    })
+    expect(createResponses).not.toHaveBeenCalled()
+  })
+
+  test("keeps a distinct message for a catalog model without Responses support", async () => {
+    state.models = {
+      object: "list",
+      data: [
+        {
+          capabilities: { limits: { max_prompt_tokens: 128000 } },
+          id: "chat-only",
+          supported_endpoints: ["/chat/completions"],
+        },
+      ],
+    } as typeof state.models
+
+    const response = await createApp().request("/v1/responses", {
+      body: JSON.stringify({ input: "hello", model: "chat-only" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      error: {
+        code: "model_not_supported",
+        message:
+          "This model does not support the responses endpoint. Please choose a different model.",
+        param: "model",
+        type: "invalid_request_error",
+      },
+    })
+    expect(createResponses).not.toHaveBeenCalled()
+  })
+
+  test("does not claim a model is absent before the catalog is loaded", async () => {
+    state.models = undefined
+
+    const response = await createApp().request("/v1/responses", {
+      body: JSON.stringify({ input: "hello", model: "gpt-test" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(400)
+    // Without a catalog the gateway cannot know the model is absent, so it must
+    // not borrow upstream's absent-model wording.
+    expect(await response.json()).toEqual({
+      error: {
+        code: "model_not_supported",
+        message:
+          "This model does not support the responses endpoint. Please choose a different model.",
+        param: "model",
+        type: "invalid_request_error",
+      },
+    })
+  })
+
   test("forwards the Hono request abort signal to the upstream lifecycle", async () => {
     createResponses.mockImplementation((payload) =>
       Promise.resolve(createResponsesResult(payload.model)),

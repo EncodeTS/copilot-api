@@ -845,11 +845,12 @@ describe("versioned provider Responses route", () => {
       model: "gpt-test",
     })
 
-    expect(response.status).toBe(400)
+    // Matches the shared provider-not-found envelope used by the messages,
+    // count-tokens, models, images, and alpha-search routes.
+    expect(response.status).toBe(404)
     expect(await response.json()).toEqual({
       error: {
-        message:
-          "Provider 'missing' does not support the /v1/responses endpoint",
+        message: "Provider 'missing' not found or disabled",
         type: "invalid_request_error",
       },
     })
@@ -870,8 +871,10 @@ describe("versioned provider Responses route", () => {
     expect(response.status).toBe(400)
     expect(await response.json()).toEqual({
       error: {
+        code: "model_not_supported",
         message:
           "Provider 'openai' does not support the /v1/responses endpoint",
+        param: "model",
         type: "invalid_request_error",
       },
     })
