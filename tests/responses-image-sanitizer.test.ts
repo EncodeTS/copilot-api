@@ -1109,3 +1109,88 @@ describe("optimizeInputImagesForPayloadBudget", () => {
     expect(result.textAndToolBytes).toBeLessThan(result.finalPayloadBytes)
   })
 })
+
+describe("image payload ledger serialization cost", () => {
+  const createReplaceablePayload = (imageCount: number): ResponsesPayload =>
+    ({
+      input: Array.from({ length: imageCount }, (_, index) => ({
+        content: [
+          { text: `image ${index}`, type: "input_text" },
+          {
+            detail: "high",
+            image_url: `data:image/png;base64,${"A".repeat(4096)}`,
+            type: "input_image",
+          },
+        ],
+        role: "user",
+      })),
+      model: "gpt-test",
+    }) as unknown as ResponsesPayload
+
+  test("does not serialize the payload once per mutated candidate", async () => {
+    const counts = [4, 12, 24, 48]
+    const serializations: Array<number> = []
+
+    for (const imageCount of counts) {
+      const result = await optimizeInputImagesForPayloadBudget(
+        createReplaceablePayload(imageCount),
+        {
+          allowNormalReplacement: true,
+          allowReplacingLatestImages: true,
+          budgetBytes: 8 * 1024,
+          enabled: true,
+          preserveLatestUserImageGroup: false,
+          sendHardLimitBytes: 16 * 1024,
+        },
+      )
+
+      expect(result.changed).toBe(true)
+      // The bytes admitted to the wire must remain exactly the bytes measured.
+      expect(result.finalPayloadBytes).toBe(
+        calculateResponsesPayloadBytes(result.outboundPayload),
+      )
+      expect(result.budgetInstrumentation.ledgerMismatches).toBe(0)
+      serializations.push(result.budgetInstrumentation.serializations)
+    }
+
+    // Was imageCount + 1 before ticket 05.
+    expect(new Set(serializations).size).toBe(1)
+  })
+
+  test("keeps the reported serialization in step with the mutated payload", async () => {
+    const result = await optimizeInputImagesForPayloadBudget(
+      createReplaceablePayload(12),
+      {
+        allowNormalReplacement: true,
+        allowReplacingLatestImages: true,
+        budgetBytes: 8 * 1024,
+        enabled: true,
+        preserveLatestUserImageGroup: false,
+        sendHardLimitBytes: 16 * 1024,
+      },
+    )
+
+    expect(result.changed).toBe(true)
+    // The lazily settled serialization must describe the payload actually
+    // emitted, not the pre-mutation one it was cloned from.
+    expect(result.payloadSerialization.payloadBytes).toBe(
+      calculateResponsesPayloadBytes(result.outboundPayload),
+    )
+  })
+
+  test("leaves an untouched payload on its initial serialization", async () => {
+    const payload = createReplaceablePayload(4)
+    const result = await optimizeInputImagesForPayloadBudget(payload, {
+      allowNormalReplacement: true,
+      budgetBytes: 10 * 1024 * 1024,
+      enabled: true,
+      sendHardLimitBytes: 20 * 1024 * 1024,
+    })
+
+    expect(result.changed).toBe(false)
+    expect(result.budgetInstrumentation.serializations).toBe(1)
+    expect(result.finalPayloadBytes).toBe(
+      calculateResponsesPayloadBytes(result.outboundPayload),
+    )
+  })
+})

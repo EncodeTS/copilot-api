@@ -289,6 +289,12 @@ interface ImagePayloadBudgetLedger {
   instrumentation: ImagePayloadBudgetInstrumentation
   payloadBytes: number
   payloadSerialization: ResponsesPayloadSerialization
+  /**
+   * Set when `payloadBytes` has been advanced by a mutation delta and
+   * `payloadSerialization` therefore describes an older payload. Cleared by
+   * `settleImagePayloadLedger`.
+   */
+  serializationStale: boolean
 }
 
 interface ImagePayloadMutationContext {
@@ -533,6 +539,7 @@ export const optimizeInputImagesForPayloadBudget = async (
     instrumentation,
     payloadBytes: initialPayloadBytes,
     payloadSerialization: initialSerialization,
+    serializationStale: false,
   }
   const mutationContext: ImagePayloadMutationContext = {
     candidates,
@@ -814,6 +821,9 @@ export const optimizeInputImagesForPayloadBudget = async (
     }
   }
 
+  // The only place an authoritative serialization is actually consumed: the
+  // terminal budget decision below and the wire body carried on the result.
+  settleImagePayloadLedger(mutationContext, ledger)
   const finalPayloadBytes = ledger.payloadBytes
   const protectedOversizedCount = candidates.filter(
     (candidate) =>
@@ -1238,8 +1248,7 @@ const replaceCandidateWithPlaceholder = (
   candidate.oversized = false
   insertImageOmissionMarker(candidate, content)
   shiftCandidatePathsAfterInsertion(context, candidate, content)
-  reconcileImagePayloadLedger(
-    context,
+  applyImagePayloadLedgerDelta(
     ledger,
     ledger.payloadBytes + serializedValueBytes(content) - beforeBytes,
   )
@@ -1341,23 +1350,53 @@ export const imageBudgetLedgerDependencies = {
     Buffer.byteLength(JSON.stringify(value), "utf8"),
 }
 
-const reconcileImagePayloadLedger = (
-  context: ImagePayloadMutationContext,
+/**
+ * Advances the ledger by a delta the caller already computed.
+ *
+ * This used to re-serialize the whole payload on every mutation purely to
+ * verify that delta, which made compressing N images cost N serializations of
+ * the entire payload including every other still-embedded Base64 image.
+ * Verification now happens once, in `settleImagePayloadLedger`.
+ */
+const applyImagePayloadLedgerDelta = (
   ledger: ImagePayloadBudgetLedger,
   expectedBytes: number,
 ): void => {
+  ledger.payloadBytes = expectedBytes
+  ledger.serializationStale = true
+}
+
+/**
+ * Produces the authoritative serialization, and with it the authoritative byte
+ * count, for the terminal budget decision and the wire body.
+ *
+ * Drift detection is retained here rather than removed: if the accumulated
+ * deltas disagree with the real serialization, `ledgerMismatches` still fires
+ * and candidate semantics are still refreshed. Detection is one-shot at loop
+ * exit instead of per candidate, so a drifting run now corrects its final
+ * numbers rather than correcting between mutations.
+ */
+const settleImagePayloadLedger = (
+  context: ImagePayloadMutationContext,
+  ledger: ImagePayloadBudgetLedger,
+): void => {
+  if (!ledger.serializationStale) {
+    return
+  }
+
   const actual = serializeImageBudgetPayload(
     context.payload,
     ledger.instrumentation,
     "budget_mutation",
     context.serializationObserver,
   )
-  if (actual.payloadBytes !== expectedBytes) {
+  if (actual.payloadBytes !== ledger.payloadBytes) {
     ledger.instrumentation.ledgerMismatches += 1
     refreshImagePayloadCandidateSemantics(context, ledger.instrumentation)
   }
   ledger.payloadBytes = actual.payloadBytes
   ledger.payloadSerialization = actual
+  ledger.serializationStale = false
 }
 
 const refreshImagePayloadCandidateSemantics = (
@@ -1631,8 +1670,7 @@ const applyCompressionProfile = async (
     )
     candidate.compressed = true
     compressedCount += 1
-    reconcileImagePayloadLedger(
-      context,
+    applyImagePayloadLedgerDelta(
       ledger,
       ledger.payloadBytes + serializedValueBytes(record) - beforeBytes,
     )
