@@ -10,6 +10,10 @@ AGENTS.local.md
 # aider
 .aider*
 
+# local agent tooling output
+/graphify-out/
+/.playwright-cli/
+
 # eslint cache
 .eslintcache
 
