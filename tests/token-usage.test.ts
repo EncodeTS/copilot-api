@@ -7,7 +7,7 @@ import {
   test,
 } from "bun:test"
 import { Hono } from "hono"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 
@@ -288,6 +288,8 @@ describe("token usage storage", () => {
       enqueued: 2,
       in_flight: 0,
       pending: 2,
+      statement_preparations: 0,
+      transactions: 0,
       write_errors: 0,
       written: 0,
     })
@@ -471,6 +473,147 @@ describe("token usage storage", () => {
       expect(getTokenUsageWriteQueueStatus()).toMatchObject({
         write_errors: 1,
         written: 1,
+      })
+    } finally {
+      await closeUsageStore()
+      rmSync(directory, { force: true, recursive: true })
+      process.env[DB_PATH_ENV] = ":memory:"
+    }
+  })
+
+  test("a burst of queued events shares one prepared statement and one transaction", async () => {
+    // Opens the database without touching the insert path, so the counters
+    // below describe the drain alone.
+    await fetchEventsPage()
+
+    for (let index = 0; index < 8; index += 1) {
+      recordTokenUsageEvent({
+        endpoint: "responses",
+        input_tokens: index + 1,
+        model: `burst-${index}`,
+        outcome: "completed",
+        source: "copilot",
+      })
+    }
+
+    const page = await fetchEventsPage()
+
+    expect(page.items).toHaveLength(8)
+    expect(getTokenUsageWriteQueueStatus()).toMatchObject({
+      pending: 0,
+      statement_preparations: 1,
+      transactions: 1,
+      write_errors: 0,
+      written: 8,
+    })
+  })
+
+  test("a single queued event skips the transaction wrapper", async () => {
+    await fetchEventsPage()
+
+    recordTokenUsageEvent({
+      endpoint: "responses",
+      input_tokens: 3,
+      model: "solo-model",
+      outcome: "completed",
+      source: "copilot",
+    })
+
+    const page = await fetchEventsPage()
+
+    expect(page.items.map((item) => item.model)).toEqual(["solo-model"])
+    // SQLite already wraps a lone INSERT in its own implicit transaction.
+    expect(getTokenUsageWriteQueueStatus()).toMatchObject({
+      statement_preparations: 1,
+      transactions: 0,
+      written: 1,
+    })
+  })
+
+  test("a failed batch rolls back and still persists every writable event", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "copilot-usage-batch-"))
+    const dbPath = path.join(directory, "usage.sqlite")
+    await closeUsageStore()
+    process.env[DB_PATH_ENV] = dbPath
+
+    try {
+      await fetchEventsPage()
+      const adminDb = await openSqliteDatabase(dbPath)
+      adminDb.exec(`
+        CREATE TRIGGER fail_one_usage_event
+        BEFORE INSERT ON token_usage_events
+        WHEN NEW.model = 'fail-model'
+        BEGIN
+          SELECT RAISE(FAIL, 'intentional test failure');
+        END
+      `)
+      adminDb.close?.()
+
+      for (const model of ["first-model", "fail-model", "last-model"]) {
+        recordTokenUsageEvent({
+          endpoint: "responses",
+          input_tokens: 1,
+          model,
+          outcome: "completed",
+          source: "copilot",
+        })
+      }
+
+      const page = await fetchEventsPage()
+
+      // The batch is rolled back whole, then replayed per event so one
+      // unwritable row cannot discard the rest of the burst.
+      expect(page.items.map((item) => item.model).toSorted()).toEqual([
+        "first-model",
+        "last-model",
+      ])
+      expect(getTokenUsageWriteQueueStatus()).toMatchObject({
+        pending: 0,
+        transactions: 1,
+        write_errors: 1,
+        written: 2,
+      })
+    } finally {
+      await closeUsageStore()
+      rmSync(directory, { force: true, recursive: true })
+      process.env[DB_PATH_ENV] = ":memory:"
+    }
+  })
+
+  test("counts every event in a batch when the database cannot be opened", async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "copilot-usage-noopen-"))
+    // The parent of the database path is a regular file, so creating the
+    // directory — and therefore opening the database — always fails.
+    const blocker = path.join(directory, "blocker")
+    writeFileSync(blocker, "not a directory")
+    await closeUsageStore()
+    process.env[DB_PATH_ENV] = path.join(blocker, "usage.sqlite")
+
+    try {
+      for (const model of ["a-model", "b-model", "c-model"]) {
+        recordTokenUsageEvent({
+          endpoint: "responses",
+          input_tokens: 1,
+          model,
+          outcome: "completed",
+          source: "copilot",
+        })
+      }
+
+      let status = getTokenUsageWriteQueueStatus()
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        if (status.write_errors + status.written === 3) break
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        status = getTokenUsageWriteQueueStatus()
+      }
+
+      // Nothing is written, but no queued event is silently forgotten either.
+      expect(status).toMatchObject({
+        in_flight: 0,
+        pending: 0,
+        transactions: 0,
+        write_errors: 3,
+        written: 0,
       })
     } finally {
       await closeUsageStore()
