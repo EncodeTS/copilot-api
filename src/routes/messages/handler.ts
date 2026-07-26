@@ -2,6 +2,7 @@ import type { Context } from "hono"
 
 import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { normalizeMessageReasoningEffort } from "~/lib/reasoning-effort"
+import { readAnthropicMessagesPayload } from "~/lib/request-payload-validation"
 import {
   handleProviderMessagesForProvider,
   type ProviderMessagesHandler,
@@ -112,7 +113,8 @@ const handleCompletionWithDependencies = async (
   c: Context,
   dependencies: MessagesHandlerDependencies,
 ): Promise<Response> => {
-  const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
+  const anthropicPayload =
+    await readAnthropicMessagesPayload<AnthropicMessagesPayload>(c)
   const outputConfig: unknown = anthropicPayload.output_config
   if (isRecord(outputConfig) && Object.hasOwn(outputConfig, "effort")) {
     const effort = normalizeMessageReasoningEffort(outputConfig.effort)

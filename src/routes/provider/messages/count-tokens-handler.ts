@@ -7,6 +7,7 @@ import {
   type ProviderResolverPort,
 } from "~/lib/provider-resolver"
 import { createFallbackModel } from "~/lib/provider-model"
+import { readAnthropicMessagesPayload } from "~/lib/request-payload-validation"
 import { getTokenCount as getTokenCountDefault } from "~/lib/tokenizer"
 import { type AnthropicMessagesPayload } from "~/routes/messages/anthropic-types"
 import { translateToOpenAI } from "~/routes/messages/non-stream-translation"
@@ -85,7 +86,8 @@ const handleProviderCountTokensWithDependencies = async (
   dependencies: ProviderCountTokensDependencies,
 ): Promise<Response> => {
   const provider = c.req.param("provider")
-  const payload = await c.req.json<AnthropicMessagesPayload>()
+  const payload =
+    await readAnthropicMessagesPayload<AnthropicMessagesPayload>(c)
   return await handleProviderCountTokensForProviderWithDependencies(
     c,
     { payload, provider },

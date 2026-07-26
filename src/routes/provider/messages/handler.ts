@@ -45,6 +45,7 @@ import {
   type ProviderResolverPort,
 } from "~/lib/provider-resolver"
 import { normalizeMessageReasoningEffort } from "~/lib/reasoning-effort"
+import { readAnthropicMessagesPayload } from "~/lib/request-payload-validation"
 import { getResponsesResultUsageMetadata } from "~/lib/responses-stream-usage"
 import { resolveBridgeToolSearchName } from "~/lib/tool-search"
 import {
@@ -254,7 +255,8 @@ async function handleProviderMessagesWithDependencies(
   dependencies: ProviderMessagesDependencies,
 ): Promise<Response> {
   const provider = c.req.param("provider")
-  const payload = await c.req.json<AnthropicMessagesPayload>()
+  const payload =
+    await readAnthropicMessagesPayload<AnthropicMessagesPayload>(c)
   return await handleProviderMessagesForProviderWithDependencies(
     c,
     { payload, provider },

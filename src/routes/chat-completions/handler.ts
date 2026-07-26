@@ -6,6 +6,7 @@ import { streamSSE, type SSEMessage } from "hono/streaming"
 import { resolveMappedModel } from "~/lib/config"
 import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { normalizeGatewayReasoningEffort } from "~/lib/reasoning-effort"
+import { readChatCompletionsPayload } from "~/lib/request-payload-validation"
 import { state } from "~/lib/state"
 import {
   createCopilotTokenUsageRecorder,
@@ -29,7 +30,7 @@ export const chatCompletionsHandlerDependencies = {
 }
 
 export async function handleCompletion(c: Context) {
-  let payload = await c.req.json<ChatCompletionsPayload>()
+  let payload = await readChatCompletionsPayload<ChatCompletionsPayload>(c)
   if (Object.hasOwn(payload, "reasoning_effort")) {
     if (payload.reasoning_effort === null) {
       delete payload.reasoning_effort

@@ -3,6 +3,7 @@ import type { Context } from "hono"
 import consola from "consola"
 
 import { routeProviderModelAlias } from "~/routes/provider/model-router"
+import { readAnthropicMessagesPayload } from "~/lib/request-payload-validation"
 
 import { type AnthropicMessagesPayload } from "~/routes/messages/anthropic-types"
 import {
@@ -34,7 +35,8 @@ export async function handleCountTokens(
   c: Context,
   composition: CountTokensHandlerComposition = defaultCountTokensHandlerComposition,
 ) {
-  const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
+  const anthropicPayload =
+    await readAnthropicMessagesPayload<AnthropicMessagesPayload>(c)
   const messagesRequestContext = createMessagesRequestContext(
     c,
     anthropicPayload,

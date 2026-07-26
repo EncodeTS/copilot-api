@@ -1,6 +1,11 @@
 import { Hono } from "hono"
 
 import { forwardError } from "~/lib/error"
+import {
+  assertPayloadShape,
+  createInvalidPayloadError,
+  RESPONSES_SHAPE,
+} from "~/lib/request-payload-validation"
 import type { ResponsesPayload } from "~/services/copilot/create-responses"
 
 import {
@@ -25,7 +30,20 @@ export const createProviderResponsesRoutes = (
     try {
       const provider = c.req.param("provider") ?? ""
       const rawBody = new Uint8Array(await c.req.raw.arrayBuffer())
-      const payload = (await new Response(rawBody).json()) as ResponsesPayload
+      let parsedBody: unknown
+      try {
+        parsedBody = await new Response(rawBody).json()
+      } catch {
+        throw createInvalidPayloadError(
+          "openai",
+          "The request body is not valid JSON.",
+        )
+      }
+      const payload = assertPayloadShape(
+        "openai",
+        parsedBody,
+        RESPONSES_SHAPE,
+      ) as ResponsesPayload
       return await responses.handleForProvider(c, {
         payload,
         provider,

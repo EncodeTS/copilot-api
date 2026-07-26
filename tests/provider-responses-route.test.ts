@@ -192,6 +192,50 @@ describe("versioned provider Responses route", () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  test("rejects a malformed JSON body with a native 400 before forwarding", async () => {
+    const response = await createApp().request("/openai/v1/responses", {
+      body: "{not json",
+      headers: {
+        authorization: "Bearer gateway-key",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      error: {
+        code: "invalid_request_body",
+        message: "The request body is not valid JSON.",
+        type: "invalid_request_error",
+      },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  test("rejects a structurally invalid body with a native 400 before forwarding", async () => {
+    const response = await createApp().request("/openai/v1/responses", {
+      body: JSON.stringify({ input: [null], model: "gpt-test" }),
+      headers: {
+        authorization: "Bearer gateway-key",
+        "content-type": "application/json",
+      },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({
+      error: {
+        code: "invalid_request_body",
+        message:
+          "Invalid type for 'input[0]': expected an object, but got null instead.",
+        param: "input[0]",
+        type: "invalid_request_error",
+      },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   test("forwards a non-streaming request to the named Responses provider", async () => {
     const payload = {
       input: "hello",

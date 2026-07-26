@@ -19,6 +19,7 @@ import { getResponsesEndpointCapabilities } from "~/lib/responses-capabilities"
 import type { ResponsesStreamSessionFrame } from "~/lib/responses-stream-session"
 import { getResponsesResultUsageMetadata } from "~/lib/responses-stream-usage"
 import { normalizeGatewayReasoningEffort } from "~/lib/reasoning-effort"
+import { readResponsesPayload } from "~/lib/request-payload-validation"
 import {
   routeProviderModelAlias,
   type ProviderModelRouter,
@@ -68,7 +69,7 @@ export const handleResponses = async (
   c: Context,
   composition: ResponsesHandlerComposition = {},
 ) => {
-  const payload = await c.req.json<ResponsesPayload>()
+  const payload = await readResponsesPayload<ResponsesPayload>(c)
   if (
     typeof payload.reasoning === "object"
     && payload.reasoning !== null
