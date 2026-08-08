@@ -6,6 +6,7 @@ import {
   parseResponsesPromptLimitFailure,
   summarizeResponsesPayload,
 } from "../src/lib/responses-diagnostics"
+import { UpstreamLifecycleTimeoutError } from "../src/lib/upstream-lifecycle"
 
 test("summarizes Responses payload shape without retaining private content", () => {
   const summary = summarizeResponsesPayload({
@@ -128,11 +129,10 @@ test("builds self-contained transport error diagnostics", () => {
 })
 
 test("preserves safe websocket wrapper and timeout cause metadata", () => {
-  const timeout = Object.assign(new Error("private timeout details"), {
-    name: "UpstreamLifecycleTimeoutError",
-    phase: "WebSocket first frame",
-    timeoutMs: 120_000,
-  })
+  const timeout = new UpstreamLifecycleTimeoutError(
+    "WebSocket first frame",
+    120_000,
+  )
   const nested = new Error("private intermediate details", { cause: timeout })
   const wrapped = Object.assign(
     new Error("private websocket wrapper", { cause: nested }),

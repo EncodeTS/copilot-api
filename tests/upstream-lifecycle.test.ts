@@ -2,8 +2,26 @@ import { afterEach, beforeEach, expect, mock, test } from "bun:test"
 
 import {
   fetchWithUpstreamLifecycle,
+  UpstreamLifecycleTimeoutError,
   upstreamLifecycleDependencies,
 } from "../src/lib/upstream-lifecycle"
+
+test("timeout errors own a stable content-safe diagnostic phase", () => {
+  expect(
+    new UpstreamLifecycleTimeoutError("WebSocket first frame", 120_000),
+  ).toMatchObject({
+    diagnosticPhase: "websocket_first_frame",
+    phase: "WebSocket first frame",
+    timeoutMs: 120_000,
+  })
+  expect(
+    new UpstreamLifecycleTimeoutError("private future phase", 1),
+  ).toMatchObject({
+    diagnosticPhase: "other",
+    phase: "private future phase",
+    timeoutMs: 1,
+  })
+})
 
 const originalUnrefTimer = upstreamLifecycleDependencies.unrefTimer
 

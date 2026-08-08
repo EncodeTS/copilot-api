@@ -5,6 +5,30 @@ export type UpstreamFetch = (
 
 export const DEFAULT_UPSTREAM_HTTP_HEADERS_TIMEOUT_MS = 120_000
 
+export type UpstreamLifecycleDiagnosticPhase =
+  | "http_first_byte"
+  | "http_headers"
+  | "http_inactivity"
+  | "http_total"
+  | "other"
+  | "websocket_connect"
+  | "websocket_first_frame"
+  | "websocket_inactivity"
+  | "websocket_total"
+
+const DIAGNOSTIC_PHASES: Readonly<
+  Record<string, UpstreamLifecycleDiagnosticPhase>
+> = {
+  "HTTP first byte": "http_first_byte",
+  "HTTP headers": "http_headers",
+  "HTTP inactivity": "http_inactivity",
+  "HTTP total": "http_total",
+  "WebSocket connect": "websocket_connect",
+  "WebSocket first frame": "websocket_first_frame",
+  "WebSocket inactivity": "websocket_inactivity",
+  "WebSocket total": "websocket_total",
+}
+
 export interface UpstreamLifecycleTimeouts {
   httpHeadersMs?: number
   httpFirstByteMs?: number
@@ -65,12 +89,14 @@ export const resolveUpstreamLifecycleTimeouts = (
 })
 
 export class UpstreamLifecycleTimeoutError extends Error {
+  readonly diagnosticPhase: UpstreamLifecycleDiagnosticPhase
   readonly phase: string
   readonly timeoutMs: number
 
   constructor(phase: string, timeoutMs: number) {
     super(`Upstream ${phase} timed out after ${timeoutMs}ms`)
     this.name = "UpstreamLifecycleTimeoutError"
+    this.diagnosticPhase = DIAGNOSTIC_PHASES[phase] ?? "other"
     this.phase = phase
     this.timeoutMs = timeoutMs
   }

@@ -20,17 +20,6 @@ const WEBSOCKET_SEND_STATES = new Set([
   "not-sent",
   "sent-unknown",
 ])
-const TIMEOUT_PHASES: Readonly<Record<string, string>> = {
-  "HTTP first byte": "http_first_byte",
-  "HTTP headers": "http_headers",
-  "HTTP inactivity": "http_inactivity",
-  "HTTP total": "http_total",
-  "WebSocket connect": "websocket_connect",
-  "WebSocket first frame": "websocket_first_frame",
-  "WebSocket inactivity": "websocket_inactivity",
-  "WebSocket total": "websocket_total",
-}
-
 export interface ResponsesPayloadDiagnosticSummary {
   compactThreshold?: number
   contextManagementItems: number
@@ -160,10 +149,7 @@ export const createResponsesTransportErrorDiagnostic = (options: {
     sendState,
     stream: payload.stream,
     timeoutMs,
-    timeoutPhase:
-      typeof timeout?.phase === "string" ?
-        TIMEOUT_PHASES[timeout.phase]
-      : undefined,
+    timeoutPhase: toSafeMetadata(timeout?.diagnosticPhase),
     transport: options.transport,
   }
 }

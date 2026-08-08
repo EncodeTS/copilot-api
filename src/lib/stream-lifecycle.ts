@@ -97,22 +97,11 @@ export class StreamLifecycleError extends Error {
   }
 }
 
-type StreamLifecycleLogger = DiagnosticLogger
-
 const streamLifecycleLogger = createHandlerLogger("stream-lifecycle", {
   mirrorToConsole: process.env.COPILOT_API_TEST_MODE !== "1",
 })
 const lifecycleErrors = new WeakMap<Error, StreamLifecycleError>()
 const reportedLifecycleErrors = new WeakSet<StreamLifecycleError>()
-
-const emitStreamLifecycleDiagnostic = (
-  logger: StreamLifecycleLogger,
-  level: "debug" | "error" | "info" | "warn",
-  event: string,
-  fields: Record<string, boolean | null | number | string | undefined>,
-): void => {
-  logDiagnosticEvent(logger, level, event, fields)
-}
 
 export const classifyStreamTermination = ({
   error,
@@ -127,7 +116,7 @@ export const classifyStreamTermination = ({
 
 export const reportStreamTermination = (
   input: ReportStreamTerminationInput,
-  logger: StreamLifecycleLogger = streamLifecycleLogger,
+  logger: DiagnosticLogger = streamLifecycleLogger,
 ): StreamLifecycleError => {
   const lifecycleError = getOrCreateStreamLifecycleError(input)
   if (
@@ -143,11 +132,11 @@ export const reportStreamTermination = (
     kind: lifecycleError.kind,
   }
   if (lifecycleError.kind === "client_abort") {
-    emitStreamLifecycleDiagnostic(logger, "debug", "stream.lifecycle", payload)
+    logDiagnosticEvent(logger, "debug", "stream.lifecycle", payload)
   } else if (lifecycleError.kind === "timeout") {
-    emitStreamLifecycleDiagnostic(logger, "warn", "stream.lifecycle", payload)
+    logDiagnosticEvent(logger, "warn", "stream.lifecycle", payload)
   } else {
-    emitStreamLifecycleDiagnostic(logger, "error", "stream.lifecycle", payload)
+    logDiagnosticEvent(logger, "error", "stream.lifecycle", payload)
   }
   return lifecycleError
 }
@@ -157,8 +146,7 @@ export const streamLifecycleDependencies = {
     level: "debug" | "error" | "info" | "warn",
     event: string,
     fields: Record<string, boolean | null | number | string | undefined>,
-  ): void =>
-    emitStreamLifecycleDiagnostic(streamLifecycleLogger, level, event, fields),
+  ): void => logDiagnosticEvent(streamLifecycleLogger, level, event, fields),
   reportTermination: reportStreamTermination,
 }
 
