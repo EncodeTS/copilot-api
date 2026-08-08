@@ -1,4 +1,8 @@
-import { createHandlerLogger } from "~/lib/logger"
+import {
+  createHandlerLogger,
+  logDiagnosticEvent,
+  type DiagnosticLogger,
+} from "~/lib/logger"
 import { HTTPError } from "~/lib/error"
 import { UpstreamLifecycleTimeoutError } from "~/lib/upstream-lifecycle"
 
@@ -93,17 +97,22 @@ export class StreamLifecycleError extends Error {
   }
 }
 
-interface StreamLifecycleLogger {
-  debug: (message: string, payload: unknown) => void
-  error: (message: string, payload: unknown) => void
-  warn: (message: string, payload: unknown) => void
-}
+type StreamLifecycleLogger = DiagnosticLogger
 
 const streamLifecycleLogger = createHandlerLogger("stream-lifecycle", {
   mirrorToConsole: process.env.COPILOT_API_TEST_MODE !== "1",
 })
 const lifecycleErrors = new WeakMap<Error, StreamLifecycleError>()
 const reportedLifecycleErrors = new WeakSet<StreamLifecycleError>()
+
+const emitStreamLifecycleDiagnostic = (
+  logger: StreamLifecycleLogger,
+  level: "debug" | "error" | "info" | "warn",
+  event: string,
+  fields: Record<string, boolean | null | number | string | undefined>,
+): void => {
+  logDiagnosticEvent(logger, level, event, fields)
+}
 
 export const classifyStreamTermination = ({
   error,
@@ -134,16 +143,22 @@ export const reportStreamTermination = (
     kind: lifecycleError.kind,
   }
   if (lifecycleError.kind === "client_abort") {
-    logger.debug("stream.lifecycle", payload)
+    emitStreamLifecycleDiagnostic(logger, "debug", "stream.lifecycle", payload)
   } else if (lifecycleError.kind === "timeout") {
-    logger.warn("stream.lifecycle", payload)
+    emitStreamLifecycleDiagnostic(logger, "warn", "stream.lifecycle", payload)
   } else {
-    logger.error("stream.lifecycle", payload)
+    emitStreamLifecycleDiagnostic(logger, "error", "stream.lifecycle", payload)
   }
   return lifecycleError
 }
 
 export const streamLifecycleDependencies = {
+  logDiagnostic: (
+    level: "debug" | "error" | "info" | "warn",
+    event: string,
+    fields: Record<string, boolean | null | number | string | undefined>,
+  ): void =>
+    emitStreamLifecycleDiagnostic(streamLifecycleLogger, level, event, fields),
   reportTermination: reportStreamTermination,
 }
 
@@ -192,6 +207,19 @@ export const superviseStream = async function* <T>({
         && !retryBudget.attempted
         && retry !== undefined
       if (shouldRetry) {
+        streamLifecycleDependencies.logDiagnostic(
+          "info",
+          "stream.transport_fallback",
+          {
+            elapsedMs: Date.now() - startedAt,
+            eventCount,
+            flow,
+            fromTransport: attempt.transport,
+            lastEventType,
+            reason: "retryable_transport_error",
+            toTransport: retry.transport,
+          },
+        )
         retryBudget.attempted = true
         attempt = retry
         continue

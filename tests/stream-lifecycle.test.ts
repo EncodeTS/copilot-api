@@ -2,6 +2,7 @@ import { expect, mock, test } from "bun:test"
 
 import { UpstreamLifecycleTimeoutError } from "../src/lib/upstream-lifecycle"
 import { HTTPError } from "../src/lib/error"
+import { state } from "../src/lib/state"
 import {
   classifyStreamTermination,
   RetryableStreamTransportError,
@@ -39,36 +40,54 @@ test("stream lifecycle does not infer client cancellation from AbortError alone"
 })
 
 test("stream lifecycle reports caller cancellation as debug", () => {
+  state.verbose = true
   const controller = new AbortController()
   controller.abort(new Error("client disconnected"))
   const debug = mock(() => {})
   const error = mock(() => {})
+  const info = mock(() => {})
   const warn = mock(() => {})
 
-  const reported = reportStreamTermination(
-    {
-      diagnostics: {
-        elapsedMs: 25,
-        eventCount: 0,
-        flow: "responses",
-        lastEventType: null,
-        retryCount: 0,
-        terminalSeen: false,
-        transport: "http",
+  try {
+    const reported = reportStreamTermination(
+      {
+        diagnostics: {
+          elapsedMs: 25,
+          eventCount: 0,
+          flow: "responses",
+          lastEventType: null,
+          retryCount: 0,
+          terminalSeen: false,
+          transport: "http",
+        },
+        error: controller.signal.reason,
+        signal: controller.signal,
       },
-      error: controller.signal.reason,
-      signal: controller.signal,
-    },
-    { debug, error, warn },
-  )
+      { debug, error, info, warn },
+    )
 
-  expect(reported.kind).toBe("client_abort")
-  expect(debug).toHaveBeenCalledWith(
-    "stream.lifecycle",
-    expect.objectContaining({ kind: "client_abort" }),
-  )
-  expect(error).not.toHaveBeenCalled()
-  expect(warn).not.toHaveBeenCalled()
+    expect(reported.kind).toBe("client_abort")
+    expect(debug).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "stream.lifecycle",
+        fields: {
+          elapsedMs: 25,
+          eventCount: 0,
+          flow: "responses",
+          kind: "client_abort",
+          lastEventType: null,
+          retryCount: 0,
+          terminalSeen: false,
+          transport: "http",
+        },
+        kind: "diagnostic_event",
+      }),
+    )
+    expect(error).not.toHaveBeenCalled()
+    expect(warn).not.toHaveBeenCalled()
+  } finally {
+    state.verbose = false
+  }
 })
 
 test("stream lifecycle gives timeout precedence over abort state", () => {
@@ -88,8 +107,9 @@ test("stream lifecycle gives timeout precedence over abort state", () => {
 test("stream lifecycle reports an upstream disconnect only once", () => {
   const debug = mock(() => {})
   const error = mock(() => {})
+  const info = mock(() => {})
   const warn = mock(() => {})
-  const logger = { debug, error, warn }
+  const logger = { debug, error, info, warn }
   const reset = new Error("connection reset")
   const input = {
     diagnostics: {
@@ -110,16 +130,22 @@ test("stream lifecycle reports an upstream disconnect only once", () => {
   expect(first).toBe(second)
   expect(first.kind).toBe("upstream_disconnect")
   expect(error).toHaveBeenCalledTimes(1)
-  expect(error).toHaveBeenCalledWith("stream.lifecycle", {
-    elapsedMs: 73_000,
-    eventCount: 1_703,
-    flow: "responses",
-    kind: "upstream_disconnect",
-    lastEventType: "response.output_text.delta",
-    retryCount: 0,
-    terminalSeen: false,
-    transport: "websocket",
-  })
+  expect(error).toHaveBeenCalledWith(
+    expect.objectContaining({
+      event: "stream.lifecycle",
+      fields: {
+        elapsedMs: 73_000,
+        eventCount: 1_703,
+        flow: "responses",
+        kind: "upstream_disconnect",
+        lastEventType: "response.output_text.delta",
+        retryCount: 0,
+        terminalSeen: false,
+        transport: "websocket",
+      },
+      kind: "diagnostic_event",
+    }),
+  )
   expect(debug).not.toHaveBeenCalled()
   expect(warn).not.toHaveBeenCalled()
 })
@@ -127,6 +153,7 @@ test("stream lifecycle reports an upstream disconnect only once", () => {
 test("stream lifecycle reports timeout as warn", () => {
   const debug = mock(() => {})
   const error = mock(() => {})
+  const info = mock(() => {})
   const warn = mock(() => {})
   const timeout = new UpstreamLifecycleTimeoutError("HTTP first byte", 120_000)
 
@@ -143,13 +170,25 @@ test("stream lifecycle reports timeout as warn", () => {
       },
       error: timeout,
     },
-    { debug, error, warn },
+    { debug, error, info, warn },
   )
 
   expect(reported.kind).toBe("timeout")
   expect(warn).toHaveBeenCalledWith(
-    "stream.lifecycle",
-    expect.objectContaining({ kind: "timeout" }),
+    expect.objectContaining({
+      event: "stream.lifecycle",
+      fields: {
+        elapsedMs: 120_000,
+        eventCount: 0,
+        flow: "responses",
+        kind: "timeout",
+        lastEventType: null,
+        retryCount: 0,
+        terminalSeen: false,
+        transport: "http",
+      },
+      kind: "diagnostic_event",
+    }),
   )
   expect(debug).not.toHaveBeenCalled()
   expect(error).not.toHaveBeenCalled()
@@ -158,6 +197,7 @@ test("stream lifecycle reports timeout as warn", () => {
 test("stream lifecycle does not log normal terminal completion", () => {
   const debug = mock(() => {})
   const error = mock(() => {})
+  const info = mock(() => {})
   const warn = mock(() => {})
 
   const reported = reportStreamTermination(
@@ -173,7 +213,7 @@ test("stream lifecycle does not log normal terminal completion", () => {
       },
       error: new Error("ignored after terminal"),
     },
-    { debug, error, warn },
+    { debug, error, info, warn },
   )
 
   expect(reported.kind).toBe("normal_terminal")
@@ -183,6 +223,9 @@ test("stream lifecycle does not log normal terminal completion", () => {
 })
 
 test("stream lifecycle retries one HTTP attempt before the first event", async () => {
+  const originalLogDiagnostic = streamLifecycleDependencies.logDiagnostic
+  const logDiagnostic = mock(() => {})
+  streamLifecycleDependencies.logDiagnostic = logDiagnostic
   let retryAttempts = 0
   const disconnectedWebSocket = () =>
     Promise.reject<AsyncIterable<{ type: string }>>(
@@ -197,24 +240,36 @@ test("stream lifecycle retries one HTTP attempt before the first event", async (
   }
 
   const events: Array<{ type: string }> = []
-  for await (const event of superviseStream({
-    flow: "responses",
-    getEventType: (item) => item.type,
-    isTerminalEvent: (item) => item.type === "response.completed",
-    primary: {
-      open: () => disconnectedWebSocket(),
-      transport: "websocket",
-    },
-    retry: {
-      open: () => completedHttp(),
-      transport: "http",
-    },
-  })) {
-    events.push(event)
+  try {
+    for await (const event of superviseStream({
+      flow: "responses",
+      getEventType: (item) => item.type,
+      isTerminalEvent: (item) => item.type === "response.completed",
+      primary: {
+        open: () => disconnectedWebSocket(),
+        transport: "websocket",
+      },
+      retry: {
+        open: () => completedHttp(),
+        transport: "http",
+      },
+    })) {
+      events.push(event)
+    }
+  } finally {
+    streamLifecycleDependencies.logDiagnostic = originalLogDiagnostic
   }
 
   expect(events).toEqual([{ type: "response.completed" }])
   expect(retryAttempts).toBe(1)
+  expect(logDiagnostic).toHaveBeenCalledTimes(1)
+  const fallbackDiagnostic = JSON.stringify(logDiagnostic.mock.calls)
+  expect(fallbackDiagnostic).toContain('"info"')
+  expect(fallbackDiagnostic).toContain('"stream.transport_fallback"')
+  expect(fallbackDiagnostic).toContain('"flow":"responses"')
+  expect(fallbackDiagnostic).toContain('"fromTransport":"websocket"')
+  expect(fallbackDiagnostic).toContain('"toTransport":"http"')
+  expect(fallbackDiagnostic).toContain('"reason":"retryable_transport_error"')
 })
 
 test("stream lifecycle does not retry after caller abort before the first event", async () => {
@@ -261,6 +316,7 @@ test("stream lifecycle never retries after yielding the first event", async () =
   const logger = {
     debug: mock(() => {}),
     error: loggedError,
+    info: mock(() => {}),
     warn: mock(() => {}),
   }
   streamLifecycleDependencies.reportTermination = (input) =>

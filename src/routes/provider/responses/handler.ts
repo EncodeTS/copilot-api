@@ -7,7 +7,7 @@ import {
   supportsProviderResponsesContextManagement,
 } from "~/lib/config"
 import { HTTPError } from "~/lib/error"
-import { createHandlerLogger, debugJson, debugJsonTail } from "~/lib/logger"
+import { createHandlerLogger, debugJson } from "~/lib/logger"
 import { resolveProviderModel } from "~/lib/provider-resolver"
 import { requestContext } from "~/lib/request-context"
 import {
@@ -508,10 +508,6 @@ const observeProviderResponsesFrame = (
   dispatched: ProviderResponsesStreamDispatch,
   provider: string,
 ): void => {
-  debugJsonTail(logger, "Responses stream chunk:", {
-    value: frame.wire,
-    tailLength: 1_000,
-  })
   if (frame.kind === "malformed") {
     logger.error("provider.responses.parse_chunk_error", {
       frameKind: frame.kind,

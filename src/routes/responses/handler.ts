@@ -263,10 +263,6 @@ export const handleResponses = async (
         flow: "responses",
         logger,
         observeFrame: (frame) => {
-          debugJsonTail(logger, "Responses stream chunk:", {
-            value: frame.wire,
-            tailLength: 1_000,
-          })
           if (frame.kind === "event") {
             observeCopilotResponsesMetadata(frame.event)
           }

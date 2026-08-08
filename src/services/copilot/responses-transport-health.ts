@@ -1,5 +1,4 @@
-import consola from "consola"
-
+import { createHandlerLogger, logDiagnosticEvent } from "~/lib/logger"
 import { clearIdlePooledWebSocketConnections } from "~/services/responses-websocket"
 
 export const DEFAULT_RESPONSES_WEBSOCKET_COOLDOWN_MS = 30_000
@@ -24,6 +23,7 @@ export const responsesWebSocketTransportHealthDependencies = {
 let cooldownUntilMs = 0
 let lastDegradedAtMs: number | null = null
 let degradedReason: ResponsesWebSocketDegradedReason | null = null
+const logger = createHandlerLogger("responses-transport-health")
 
 export const degradeResponsesWebSocketTransport = (
   reason: "sent_unknown_disconnect",
@@ -51,7 +51,7 @@ const startResponsesWebSocketTransportCooldown = (
   lastDegradedAtMs = now
   degradedReason = reason
 
-  consola.warn("responses.websocket_transport_degraded", {
+  logDiagnosticEvent(logger, "warn", "responses.websocket_transport_degraded", {
     ...diagnosticFields,
     cooldownMs: DEFAULT_RESPONSES_WEBSOCKET_COOLDOWN_MS,
     reason,

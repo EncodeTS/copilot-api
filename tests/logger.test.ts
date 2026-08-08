@@ -98,6 +98,92 @@ test("lifecycle fixture stays out of real App logs and remains console-visible",
   }
 })
 
+test("stream lifecycle diagnostics retain safe fields in managed logs", () => {
+  const testLogDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "copilot-api-lifecycle-diagnostics-"),
+  )
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    COPILOT_API_LOG_DIR: testLogDir,
+  }
+
+  try {
+    const lifecycleResult = Bun.spawnSync({
+      cmd: [
+        process.execPath,
+        "--eval",
+        `
+      const { reportStreamTermination } = await import("./src/lib/stream-lifecycle")
+      reportStreamTermination({
+        diagnostics: {
+          elapsedMs: 73000,
+          eventCount: 17,
+          flow: "responses",
+          lastEventType: "response.output_text.delta",
+          retryCount: 0,
+          terminalSeen: false,
+          transport: "websocket",
+        },
+        error: new Error("private upstream error text"),
+      })
+    `,
+      ],
+      cwd: path.resolve(import.meta.dir, ".."),
+      env,
+    })
+
+    expect(lifecycleResult.exitCode).toBe(0)
+    const lifecycleLogs = fs
+      .readdirSync(testLogDir)
+      .filter((entry) => entry.startsWith("stream-lifecycle-"))
+    expect(lifecycleLogs.length).toBeGreaterThan(0)
+    const content = lifecycleLogs
+      .map((entry) => fs.readFileSync(path.join(testLogDir, entry), "utf8"))
+      .join("\n")
+    expect(content).toContain("event: 'stream.lifecycle'")
+    expect(content).toContain("kind: 'upstream_disconnect'")
+    expect(content).toContain("eventCount: 17")
+    expect(content).toContain("transport: 'websocket'")
+    expect(content).not.toContain("kind: 'payload_summary'")
+    expect(content).not.toContain("private")
+  } finally {
+    fs.rmSync(testLogDir, { force: true, recursive: true })
+  }
+})
+
+test("websocket transport degradation is persisted as a safe diagnostic", () => {
+  const testLogDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), "copilot-api-transport-health-"),
+  )
+
+  try {
+    const result = Bun.spawnSync({
+      cmd: [
+        process.execPath,
+        "--eval",
+        'const { degradeResponsesWebSocketTransport } = await import("./src/services/copilot/responses-transport-health"); degradeResponsesWebSocketTransport("sent_unknown_disconnect");',
+      ],
+      cwd: path.resolve(import.meta.dir, ".."),
+      env: { ...process.env, COPILOT_API_LOG_DIR: testLogDir },
+    })
+
+    expect(result.exitCode).toBe(0)
+    const diagnosticLog = fs
+      .readdirSync(testLogDir)
+      .find((entry) => entry.startsWith("responses-transport-health-"))
+    expect(diagnosticLog).toBeString()
+    const content = fs.readFileSync(
+      path.join(testLogDir, diagnosticLog as string),
+      "utf8",
+    )
+    expect(content).toContain("event: 'responses.websocket_transport_degraded'")
+    expect(content).toContain("reason: 'sent_unknown_disconnect'")
+    expect(content).toContain("cooldownMs: 30000")
+  } finally {
+    fs.rmSync(testLogDir, { force: true, recursive: true })
+  }
+})
+
 test("handler logs are private on disk", () => {
   const testLogDir = fs.mkdtempSync(
     path.join(os.tmpdir(), "copilot-api-private-logs-"),

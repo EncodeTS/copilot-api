@@ -127,6 +127,42 @@ test("builds self-contained transport error diagnostics", () => {
   expect(JSON.stringify(diagnostic)).not.toContain("private")
 })
 
+test("preserves safe websocket wrapper and timeout cause metadata", () => {
+  const timeout = Object.assign(new Error("private timeout details"), {
+    name: "UpstreamLifecycleTimeoutError",
+    phase: "WebSocket first frame",
+    timeoutMs: 120_000,
+  })
+  const nested = new Error("private intermediate details", { cause: timeout })
+  const wrapped = Object.assign(
+    new Error("private websocket wrapper", { cause: nested }),
+    {
+      name: "PooledWebSocketRequestError",
+      sendState: "sent-unknown",
+    },
+  )
+
+  const diagnostic = createResponsesTransportErrorDiagnostic({
+    error: wrapped,
+    payload: {
+      input: [{ content: "private prompt", role: "user", type: "message" }],
+      model: "gpt-5.6-sol",
+      stream: true,
+    },
+    requestHeaders: {},
+    transport: "websocket",
+  })
+
+  expect(diagnostic).toMatchObject({
+    causeName: "UpstreamLifecycleTimeoutError",
+    errorName: "PooledWebSocketRequestError",
+    sendState: "sent-unknown",
+    timeoutMs: 120_000,
+    timeoutPhase: "websocket_first_frame",
+  })
+  expect(JSON.stringify(diagnostic)).not.toContain("private")
+})
+
 test("builds self-contained HTTP prompt limit diagnostics", () => {
   const diagnostic = createResponsesUpstreamErrorDiagnostic({
     failure: {

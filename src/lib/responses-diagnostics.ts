@@ -14,6 +14,23 @@ interface ResponsesFailureLike {
   message: string
 }
 
+const ERROR_CAUSE_DEPTH_LIMIT = 8
+const WEBSOCKET_SEND_STATES = new Set([
+  "frame-seen",
+  "not-sent",
+  "sent-unknown",
+])
+const TIMEOUT_PHASES: Readonly<Record<string, string>> = {
+  "HTTP first byte": "http_first_byte",
+  "HTTP headers": "http_headers",
+  "HTTP inactivity": "http_inactivity",
+  "HTTP total": "http_total",
+  "WebSocket connect": "websocket_connect",
+  "WebSocket first frame": "websocket_first_frame",
+  "WebSocket inactivity": "websocket_inactivity",
+  "WebSocket total": "websocket_total",
+}
+
 export interface ResponsesPayloadDiagnosticSummary {
   compactThreshold?: number
   contextManagementItems: number
@@ -104,18 +121,81 @@ export const createResponsesTransportErrorDiagnostic = (options: {
   const payload = summarizeResponsesPayload(options.payload, {
     includePayloadBytes: false,
   })
-  const error = options.error instanceof Error ? options.error : undefined
-  const errorRecord = isRecord(options.error) ? options.error : undefined
+  const errorChain = collectErrorChain(options.error)
+  const error = errorChain[0]?.error
+  const causeNames = errorChain
+    .slice(1)
+    .map(({ error: cause }) => toSafeMetadata(cause?.name))
+    .filter((value): value is string => value !== undefined)
+  const causeName =
+    causeNames.find((name) => name !== "Error") ?? causeNames.at(0)
+  const errorCode = errorChain
+    .map(({ record }) => toSafeMetadata(record.code))
+    .find((value) => value !== undefined)
+  const sendState = errorChain
+    .map(({ record }) => record.sendState)
+    .find(
+      (value): value is string =>
+        typeof value === "string" && WEBSOCKET_SEND_STATES.has(value),
+    )
+  const timeout = errorChain.find(({ record }) => {
+    const name = record.name
+    return (
+      name === "UpstreamLifecycleTimeoutError"
+      && typeof record.timeoutMs === "number"
+      && Number.isSafeInteger(record.timeoutMs)
+      && record.timeoutMs > 0
+    )
+  })?.record
+  const timeoutMs =
+    typeof timeout?.timeoutMs === "number" ? timeout.timeoutMs : undefined
   return {
-    errorCode: toSafeMetadata(errorRecord?.code),
+    causeName,
+    errorCode,
     errorName: toSafeMetadata(error?.name) ?? typeof options.error,
     inputItems: payload.inputItems,
     model: payload.model,
     requestId: getRequestHeader(options.requestHeaders, "x-request-id"),
     sessionId: getRequestHeader(options.requestHeaders, "x-interaction-id"),
+    sendState,
     stream: payload.stream,
+    timeoutMs,
+    timeoutPhase:
+      typeof timeout?.phase === "string" ?
+        TIMEOUT_PHASES[timeout.phase]
+      : undefined,
     transport: options.transport,
   }
+}
+
+interface ErrorChainEntry {
+  error?: Error
+  record: Record<string, unknown>
+}
+
+const collectErrorChain = (value: unknown): Array<ErrorChainEntry> => {
+  const chain: Array<ErrorChainEntry> = []
+  const seen = new Set<unknown>()
+  let current = value
+
+  while (
+    chain.length < ERROR_CAUSE_DEPTH_LIMIT
+    && isRecord(current)
+    && !seen.has(current)
+  ) {
+    seen.add(current)
+    chain.push({
+      error: current instanceof Error ? current : undefined,
+      record: current,
+    })
+    try {
+      current = current.cause
+    } catch {
+      break
+    }
+  }
+
+  return chain
 }
 
 export const createResponsesUpstreamErrorDiagnostic = (options: {

@@ -73,10 +73,12 @@ const sanitizeName = (name: string) => {
 type DebugLogger = Pick<ConsolaInstance, "debug">
 
 type DiagnosticLogLevel = "debug" | "error" | "info" | "warn"
-type DiagnosticLogger = Pick<
-  ConsolaInstance,
-  "debug" | "error" | "info" | "warn"
->
+export interface DiagnosticLogger {
+  debug: (message: unknown, ...args: Array<unknown>) => void
+  error: (message: unknown, ...args: Array<unknown>) => void
+  info: (message: unknown, ...args: Array<unknown>) => void
+  warn: (message: unknown, ...args: Array<unknown>) => void
+}
 type DiagnosticFieldValue = boolean | null | number | string | undefined
 
 const DIAGNOSTIC_EVENT_BRAND = Symbol("copilot-api.diagnostic-event")
