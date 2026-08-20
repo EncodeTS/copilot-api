@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test"
 
 import type {
+  ResponseCustomToolCallOutputItem,
+  ResponseInputImage,
   ResponsesPayload,
   ResponsesResult,
 } from "../src/services/copilot/create-responses"
@@ -69,6 +71,50 @@ test("optimized Responses requests budget encrypted reasoning before dispatch", 
   })
 
   expect(dispatchedPayload?.include).toContain("reasoning.encrypted_content")
+})
+
+test("normalizes invalid custom tool image detail before dispatch", async () => {
+  const image: ResponseInputImage = {
+    detail: "ultra" as ResponseInputImage["detail"],
+    image_url: "data:image/png;base64,AQID",
+    type: "input_image",
+  }
+  const payload = {
+    input: [
+      {
+        call_id: "call_custom",
+        output: [image],
+        status: "completed",
+        type: "custom_tool_call_output",
+      } satisfies ResponseCustomToolCallOutputItem,
+    ],
+    model: "gpt-test",
+  } satisfies ResponsesPayload
+  let dispatchedPayload: ResponsesPayload | undefined
+
+  await createOptimizedCopilotResponses(payload, {
+    createResponses: (outboundPayload) => {
+      dispatchedPayload = structuredClone(outboundPayload)
+      return Promise.resolve(createResult(outboundPayload.model))
+    },
+    requestOptions: {
+      initiator: "user",
+      requestId: "request-custom-tool-image-detail",
+      transport: "http",
+      vision: true,
+    },
+  })
+
+  const sentInput = dispatchedPayload?.input
+  const sentItem = Array.isArray(sentInput) ? sentInput[0] : undefined
+  expect(sentItem).toMatchObject({ type: "custom_tool_call_output" })
+  const sentCustomOutput = sentItem as ResponseCustomToolCallOutputItem
+  const sentImage =
+    Array.isArray(sentCustomOutput.output) ?
+      sentCustomOutput.output[0]
+    : undefined
+  expect(sentImage).toMatchObject({ detail: "auto" })
+  expect(image.detail as unknown).toBe("ultra")
 })
 
 test("dispatches the exact admitted HTTP artifact after all wire mutations", async () => {

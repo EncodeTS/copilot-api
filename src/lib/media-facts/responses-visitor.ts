@@ -380,7 +380,8 @@ export const collectResponsesMediaFacts = (
         collector,
       )
     } else if (
-      item.type === "function_call_output"
+      (item.type === "custom_tool_call_output"
+        || item.type === "function_call_output")
       && Array.isArray(item.output)
     ) {
       visitResponsesContent(

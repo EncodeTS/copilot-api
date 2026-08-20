@@ -1,5 +1,6 @@
 import type {
   ResponseContextManagementCompactionItem,
+  ResponseCustomToolCallOutputItem,
   ResponseFunctionCallOutputItem,
   ResponseInputContent,
   ResponseInputImage,
@@ -161,6 +162,29 @@ export const sanitizeAllInputImages = (payload: ResponsesPayload): number => {
   }
 
   return sanitizeInputImages(payload.input, () => true)
+}
+
+export const normalizeInputImageDetails = (
+  payload: ResponsesPayload,
+): number => {
+  if (!Array.isArray(payload.input)) {
+    return 0
+  }
+
+  let normalizedCount = 0
+  for (const image of collectInputImages(payload.input)) {
+    if (
+      image.detail === undefined
+      || VALID_INPUT_IMAGE_DETAILS.has(image.detail)
+    ) {
+      continue
+    }
+
+    image.detail = "auto"
+    normalizedCount += 1
+  }
+
+  return normalizedCount
 }
 
 export type ImageBudgetCandidateGroup =
@@ -889,7 +913,12 @@ const sanitizeInputImages = (
   shouldReplace: (image: InputImageDataUrl) => boolean,
 ): number => {
   let count = 0
-  for (const image of collectInputImageDataUrls(input)) {
+  for (const record of collectInputImages(input)) {
+    const image = getInputImageDataUrl(record)
+    if (!image) {
+      continue
+    }
+
     if (!shouldReplace(image)) {
       continue
     }
@@ -901,59 +930,51 @@ const sanitizeInputImages = (
   return count
 }
 
-const collectInputImageDataUrls = (
+const collectInputImages = (
   input: Array<ResponseInputItem>,
-  images: Array<InputImageDataUrl> = [],
-): Array<InputImageDataUrl> => {
+  images: Array<ResponseInputImage> = [],
+): Array<ResponseInputImage> => {
   for (const item of input) {
-    collectInputItemImageDataUrls(item, images)
+    if (isResponseInputMessage(item)) {
+      collectContentImages(item.content, images)
+    } else if (isResponseFunctionCallOutputItem(item)) {
+      collectContentImages(item.output, images)
+    }
   }
 
   return images
 }
 
-const collectInputItemImageDataUrls = (
-  item: ResponseInputItem,
-  images: Array<InputImageDataUrl>,
-): void => {
-  if (isResponseInputMessage(item)) {
-    collectContentImageDataUrls(item.content, images)
-  } else if (isResponseFunctionCallOutputItem(item)) {
-    collectContentImageDataUrls(item.output, images)
-  }
-}
-
-const collectContentImageDataUrls = (
+const collectContentImages = (
   content: string | Array<ResponseInputContent> | undefined,
-  images: Array<InputImageDataUrl>,
+  images: Array<ResponseInputImage>,
 ): void => {
   if (!Array.isArray(content)) {
     return
   }
 
   for (const block of content) {
-    const image = getInputImageDataUrl(block)
-    if (image) {
-      images.push(image)
+    if (isResponseInputImage(block)) {
+      images.push(block)
     }
   }
 }
 
 const getInputImageDataUrl = (
-  content: ResponseInputContent,
+  image: ResponseInputImage,
 ): InputImageDataUrl | null => {
-  if (!isResponseInputImage(content) || typeof content.image_url !== "string") {
+  if (typeof image.image_url !== "string") {
     return null
   }
 
-  const parsed = parseImageDataUrl(content.image_url)
+  const parsed = parseImageDataUrl(image.image_url)
   if (!parsed) {
     return null
   }
 
   return {
     decodedBytes: parsed.decodedBytes,
-    record: content,
+    record: image,
   }
 }
 
@@ -963,6 +984,10 @@ const replaceInputImageWithPlaceholder = (image: InputImageDataUrl): void => {
   image.record.detail = "low"
   delete image.record.file_id
 }
+
+const VALID_INPUT_IMAGE_DETAILS: ReadonlySet<
+  NonNullable<ResponseInputImage["detail"]>
+> = new Set(["auto", "high", "low", "original"])
 
 const createImagePayloadBudgetInstrumentation = (
   initialCloneCount?: number,
@@ -2032,12 +2057,15 @@ const isResponseInputMessage = (
 
 const isResponseFunctionCallOutputItem = (
   item: ResponseInputItem,
-): item is ResponseFunctionCallOutputItem => {
+): item is
+  | ResponseCustomToolCallOutputItem
+  | ResponseFunctionCallOutputItem => {
   return (
     typeof item === "object"
     && item !== null
     && "type" in item
-    && item.type === "function_call_output"
+    && (item.type === "custom_tool_call_output"
+      || item.type === "function_call_output")
   )
 }
 

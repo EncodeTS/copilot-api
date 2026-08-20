@@ -310,6 +310,35 @@ describe("Anthropic to OpenAI translation logic", () => {
     expect(getTextParts(assistantMessage?.content)).toContain("2+2 equals 4.")
   })
 
+  test("preserves signature-only thinking blocks as opaque reasoning", () => {
+    const anthropicPayload: AnthropicMessagesPayload = {
+      model: "claude-3-5-sonnet-20241022",
+      messages: [
+        { role: "user", content: "Continue." },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "thinking",
+              thinking: "",
+              signature: "sig-only",
+            },
+            { type: "text", text: "Previous answer." },
+          ],
+        },
+      ],
+      max_tokens: 100,
+    }
+
+    const openAIPayload = translateToOpenAI(anthropicPayload)
+    const assistantMessage = openAIPayload.messages.find(
+      (message) => message.role === "assistant",
+    )
+
+    expect(assistantMessage?.reasoning_opaque).toBe("sig-only")
+    expect(assistantMessage?.reasoning_text).toBeUndefined()
+  })
+
   test("should handle thinking blocks with tool calls", () => {
     const anthropicPayload: AnthropicMessagesPayload = {
       model: "claude-3-5-sonnet-20241022",

@@ -197,6 +197,13 @@ export interface ResponseFunctionCallOutputItem {
   status?: "in_progress" | "completed" | "incomplete"
 }
 
+export interface ResponseCustomToolCallOutputItem {
+  type: "custom_tool_call_output"
+  call_id: string
+  output: string | Array<ResponseInputContent>
+  status?: "in_progress" | "completed" | "incomplete"
+}
+
 export interface ResponseToolSearchCallItem {
   type: "tool_search_call"
   call_id: string
@@ -276,6 +283,7 @@ export type ResponseInputItem =
   | ResponseInputMessage
   | ResponseFunctionToolCallItem
   | ResponseFunctionCallOutputItem
+  | ResponseCustomToolCallOutputItem
   | ResponseToolSearchCallItem
   | ResponseToolSearchOutputItem
   | ResponseInputReasoning
@@ -310,7 +318,7 @@ export interface ResponseInputImage {
   type: "input_image"
   image_url?: string | null
   file_id?: string | null
-  detail: "low" | "high" | "auto" | "original"
+  detail?: "low" | "high" | "auto" | "original"
   prompt_cache_breakpoint?: { mode: "explicit" } | null
 }
 

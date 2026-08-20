@@ -45,6 +45,7 @@ import { createReasoningRecoveryScope } from "~/services/copilot/responses-reaso
 import { shouldPreferResponsesHttpTransport } from "~/services/copilot/responses-transport-health"
 
 import {
+  normalizeInputImageDetails,
   optimizeInputImagesForPayloadBudget,
   type ImageCompressionAdapter,
   type ImagePayloadBudgetResult,
@@ -184,6 +185,7 @@ export const prepareCopilotResponsesPayloadForSend = async (
     }),
   })
   const preparedPayload = preparation.payload
+  normalizeInputImageDetails(preparedPayload)
   if (preparation.removedReasoningItems > 0) {
     consola.debug("responses.reasoning_history_prefilter", {
       model: preparedPayload.model,

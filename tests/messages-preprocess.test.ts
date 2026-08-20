@@ -450,6 +450,56 @@ describe("prepareMessagesApiPayload", () => {
     expect(payload.output_config).toEqual({ effort: "xhigh" })
   })
 
+  test("keeps signature-only thinking blocks during native Claude preprocessing", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4.8",
+      max_tokens: 128,
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "thinking",
+              thinking: "",
+              signature: "sig-only",
+            },
+            {
+              type: "text",
+              text: "Visible text",
+            },
+          ],
+        },
+        {
+          role: "user",
+          content: "hello",
+        },
+      ],
+    }
+
+    prepareMessagesApiPayload(payload, {
+      capabilities: {
+        supports: {
+          adaptive_thinking: true,
+        },
+      },
+    } as never)
+
+    expect(payload.messages[0]).toEqual({
+      role: "assistant",
+      content: [
+        {
+          type: "thinking",
+          thinking: "",
+          signature: "sig-only",
+        },
+        {
+          type: "text",
+          text: "Visible text",
+        },
+      ],
+    })
+  })
+
   test("removes OpenAI bridge reasoning carriers before native Claude forwarding", () => {
     const versionedCarrier =
       "copilot-api-openai-reasoning-v1:"

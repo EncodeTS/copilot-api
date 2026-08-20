@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
 import type {
+  ResponseCustomToolCallOutputItem,
   ResponseFunctionCallOutputItem,
   ResponseInputImage,
   ResponsesPayload,
@@ -147,6 +148,38 @@ describe("sanitizeOversizedInputImages", () => {
     expect(sanitized).toBe(1)
     expect(toolOutputImage.type).toBe("input_image")
     expect(toolOutputImage.detail).toBe("low")
+    expect(
+      toolOutputImage.image_url?.startsWith("data:image/png;base64,"),
+    ).toBe(true)
+    expect(toolOutputImage.image_url).not.toBe(toolImageUrl)
+  })
+
+  test("sanitizes images inside custom tool call outputs", () => {
+    const toolImageUrl = imageDataUrl(128)
+    const toolOutputImage: ResponseInputImage = {
+      detail: "high",
+      image_url: toolImageUrl,
+      type: "input_image",
+    }
+    const payload = {
+      input: [
+        {
+          call_id: "call_123",
+          output: [toolOutputImage],
+          status: "completed",
+          type: "custom_tool_call_output",
+        } satisfies ResponseCustomToolCallOutputItem,
+      ],
+      model: "gpt-test",
+    } satisfies ResponsesPayload
+
+    const sanitized = sanitizeOversizedInputImages(payload, 64)
+
+    expect(sanitized).toBe(1)
+    expect(toolOutputImage).toMatchObject({
+      detail: "low",
+      type: "input_image",
+    })
     expect(
       toolOutputImage.image_url?.startsWith("data:image/png;base64,"),
     ).toBe(true)

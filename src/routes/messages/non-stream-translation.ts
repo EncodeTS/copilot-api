@@ -410,8 +410,7 @@ function handleAssistantMessage(
   if (modelId.startsWith("claude")) {
     thinkingBlocks = thinkingBlocks.filter(
       (b) =>
-        b.thinking
-        && b.thinking !== THINKING_TEXT
+        b.thinking !== THINKING_TEXT
         && b.signature
         // gpt signature has @ in it, so filter those out for claude models
         && !b.signature.includes("@"),

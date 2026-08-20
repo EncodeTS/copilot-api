@@ -17,6 +17,7 @@ import type {
   FilePart,
 } from "~/services/copilot/create-chat-completions"
 import type {
+  ResponseCustomToolCallOutputItem,
   ResponseInputFile,
   ResponseInputImage,
   ResponsesPayload,
@@ -377,6 +378,41 @@ describe("collectMediaFacts", () => {
       },
     ])
     expect(result.warnings).toEqual([])
+  })
+
+  test("collects images inside custom tool call outputs", () => {
+    const payload = {
+      input: [
+        {
+          call_id: "call_custom",
+          output: [
+            {
+              detail: "high",
+              image_url: imageDataUrl(makePng(1, 1), "image/png"),
+              type: "input_image",
+            },
+          ],
+          type: "custom_tool_call_output",
+        } satisfies ResponseCustomToolCallOutputItem,
+      ],
+      model: "gpt-test",
+    } satisfies ResponsesPayload
+
+    const result = collectMediaFacts(payload, { protocol: "responses" })
+
+    expect(
+      result.facts.map(({ carrier, detail, referenceKind }) => ({
+        carrier,
+        detail,
+        referenceKind,
+      })),
+    ).toEqual([
+      {
+        carrier: "responses.input_image.image_url",
+        detail: "high",
+        referenceKind: "data-url",
+      },
+    ])
   })
 
   test("recognizes official Chat carriers with exactly-one file variants", () => {
