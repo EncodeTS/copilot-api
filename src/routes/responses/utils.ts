@@ -180,7 +180,9 @@ export const normalizeInputImageDetails = (
       continue
     }
 
-    image.detail = "auto"
+    // Copilot rejects OpenAI's original detail, including on GPT-6. Preserve
+    // the image bytes and request the highest supported detail instead.
+    image.detail = image.detail === "original" ? "high" : "auto"
     normalizedCount += 1
   }
 
@@ -987,7 +989,7 @@ const replaceInputImageWithPlaceholder = (image: InputImageDataUrl): void => {
 
 const VALID_INPUT_IMAGE_DETAILS: ReadonlySet<
   NonNullable<ResponseInputImage["detail"]>
-> = new Set(["auto", "high", "low", "original"])
+> = new Set(["auto", "high", "low"])
 
 const createImagePayloadBudgetInstrumentation = (
   initialCloneCount?: number,

@@ -4,6 +4,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status"
 import consola from "consola"
 
 import { AuthRequestError } from "~/lib/auth-request"
+import { getUpstreamResponseMetadataHeaders } from "./upstream-response-headers"
 import { createRequestBodyErrorResponse } from "~/lib/request-body-policy"
 export interface LocalPayloadTooLargeDetails {
   payloadBytes: number
@@ -138,13 +139,10 @@ export async function forwardError(
   }
 
   if (error instanceof HTTPError) {
-    if (error.response.status === 429) {
-      for (const [name, value] of error.response.headers) {
-        const lowerName = name.toLowerCase()
-        if (lowerName === "retry-after" || lowerName.startsWith("x-")) {
-          c.header(name, value)
-        }
-      }
+    for (const [name, value] of Object.entries(
+      getUpstreamResponseMetadataHeaders(error.response.headers),
+    )) {
+      c.header(name, value)
     }
 
     const errorText = await error.response.text()

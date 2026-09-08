@@ -176,6 +176,11 @@ function applyLiveReasoningCapabilities(
   template: CodexModelInfo,
   copilotModel: Model,
 ): { model: CodexModelInfo } | { reason: "reasoning_incompatible" } {
+  // The Copilot image validator rejects detail=original even when Codex's
+  // bundled model descriptor advertises it. Other provider catalogs are separate.
+  if (template.supports_image_detail_original === true) {
+    template = { ...template, supports_image_detail_original: false }
+  }
   const hasLiveEfforts = Object.hasOwn(
     copilotModel.capabilities.supports,
     "reasoning_effort",

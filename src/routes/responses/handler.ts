@@ -25,6 +25,7 @@ import {
   type ProviderModelRouter,
 } from "~/routes/provider/model-router"
 import { state } from "~/lib/state"
+import { getUpstreamResponseMetadataHeaders } from "~/lib/upstream-response-headers"
 import {
   createCopilotTokenUsageRecorder,
   normalizeOptionalToken,
@@ -249,6 +250,13 @@ export const handleResponses = async (
       requestId,
       sessionId: fallbackSessionId,
       signal: c.req.raw.signal,
+      onResponseHeaders: (headers) => {
+        for (const [name, value] of Object.entries(
+          getUpstreamResponseMetadataHeaders(headers),
+        )) {
+          c.header(name, value)
+        }
+      },
       transport: responsesTransport,
     },
     selectedModel,

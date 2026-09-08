@@ -157,11 +157,17 @@ export const parseResponsesStreamEventData = (
   if (!isResponsesStreamEventType(parsed.type)) {
     return { kind: "unknown", parsed }
   }
-  if (!isSequenceNumber(parsed.sequence_number)) {
+  // Copilot WebSocket errors can contain only {type, error}. Use a sentinel
+  // in the parsed view; the wire envelope remains byte-for-byte unchanged.
+  const sequenceNumber =
+    parsed.type === "error" && parsed.sequence_number === undefined ?
+      0
+    : parsed.sequence_number
+  if (!isSequenceNumber(sequenceNumber)) {
     return { kind: "malformed", parsed }
   }
 
-  const { sequence_number: sequenceNumber, type } = parsed
+  const { type } = parsed
   switch (type) {
     case "response.completed":
     case "response.failed":
@@ -188,23 +194,28 @@ export const parseResponsesStreamEventData = (
         },
         kind: "event",
       }
-    case "error":
-      if (typeof parsed.message !== "string") {
+    case "error": {
+      if (!isOptionalErrorDetails(parsed.error)) {
         return { kind: "malformed", parsed }
       }
-      if (!isOptionalErrorDetails(parsed.error)) {
+      const message =
+        typeof parsed.message === "string" ?
+          parsed.message
+        : parsed.error?.message
+      if (typeof message !== "string") {
         return { kind: "malformed", parsed }
       }
       return {
         event: {
           ...parsed,
           error: parsed.error,
-          message: parsed.message,
+          message,
           sequence_number: sequenceNumber,
           type,
         },
         kind: "event",
       }
+    }
     default:
       return {
         event: {

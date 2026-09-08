@@ -111,6 +111,7 @@ describe("Codex client models", () => {
         { effort: "ultra", description: "Maximum with delegation" },
       ],
       tool_mode: "retained-client-policy",
+      supports_image_detail_original: true,
     }
     codexClientModelsDependencies.loadBundledCatalog = () =>
       Promise.resolve({
@@ -125,7 +126,11 @@ describe("Codex client models", () => {
       { id: "gpt-6-astra", reasoningEfforts: ["low", "max"] },
     )
     const response = await createCodexModelsResponse("0.153.4", [model])
-    expect(response.models[0]).toEqual(descriptor)
+    expect(response.models[0]).toEqual({
+      ...descriptor,
+      supports_image_detail_original: false,
+    })
+    expect(descriptor.supports_image_detail_original).toBe(true)
     expect(descriptor).not.toHaveProperty("auto_compact_token_limit")
 
     model.capabilities.supports.reasoning_effort = ["high"]

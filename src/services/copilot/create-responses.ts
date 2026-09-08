@@ -730,6 +730,7 @@ type ResponsesStreamChunk = {
 }
 
 interface ResponsesRequestOptions {
+  onResponseHeaders?: (headers: Headers) => void
   allowHttpFallback?: boolean
   fetcher?: UpstreamFetch
   vision: boolean
@@ -789,6 +790,7 @@ export const createResponses = async (
     transport = "http",
     wireArtifact,
     wireSerializationObserver,
+    onResponseHeaders,
   }: ResponsesRequestOptions,
 ): Promise<CreateResponsesReturn> => {
   const timeouts = getUpstreamTimeouts(requestedTimeouts)
@@ -940,6 +942,7 @@ export const createResponses = async (
       websocketStream,
       {
         allowHttpFallback,
+        onResponseHeaders,
         fetcher,
         headers,
         reasoningRecoveryScope,
@@ -955,6 +958,7 @@ export const createResponses = async (
 
   if (payload.stream === true) {
     const httpOptions = {
+      onResponseHeaders,
       fetcher,
       headers,
       reasoningRecoveryScope,
@@ -983,6 +987,7 @@ export const createResponses = async (
   }
 
   return await createHttpResponses(headers, {
+    onResponseHeaders,
     fetcher,
     reasoningRecoveryScope,
     signal,
@@ -1001,6 +1006,7 @@ export {
 } from "~/services/copilot/responses-wire-artifact"
 
 interface HttpResponsesOptions {
+  onResponseHeaders?: (headers: Headers) => void
   fetcher?: UpstreamFetch
   reasoningRecoveryAttempted?: boolean
   reasoningRecoveryScope?: ReasoningRecoveryScope | null
@@ -1137,6 +1143,7 @@ const createHttpResponses = async (
     )
   }
 
+  options.onResponseHeaders?.(response.headers)
   if (payload.stream) {
     return createRecoverableHttpResponsesStream(
       events(response),
@@ -1337,6 +1344,7 @@ const createRetryableResponsesWebSocketStream = async function* (
             options.headers,
             {
               fetcher: options.fetcher,
+              onResponseHeaders: options.onResponseHeaders,
               reasoningRecoveryScope: options.reasoningRecoveryScope,
               retryBudget: options.retryBudget,
               signal: options.signal,
@@ -1415,6 +1423,7 @@ const createHttpResponsesStream = async (
   options: HttpResponsesStreamOptions,
 ): Promise<AsyncIterable<ResponsesStreamChunk>> => {
   const response = await createHttpResponses(options.headers, {
+    onResponseHeaders: options.onResponseHeaders,
     fetcher: options.fetcher,
     reasoningRecoveryAttempted: options.reasoningRecoveryAttempted,
     reasoningRecoveryScope: options.reasoningRecoveryScope,

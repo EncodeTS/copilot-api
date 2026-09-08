@@ -14,6 +14,8 @@
 
 本 fork 的 CLI 发布在 npm 的 `@encodets/copilot-api` scope 下。预发布版本使用 `rc` dist-tag，稳定版本使用 `latest`。
 
+Copilot 原生 Responses 的兼容规则以实际端点验证为依据：目前上游拒绝 `service_tier`，因此继续剥离；图片 `detail: original` 转为 `high`，保留图片字节，并收窄 Codex 模型目录的能力声明。成功和失败的 HTTP 响应保留允许的请求追踪、重试及限流响应头；不带序号的 Copilot 错误事件正常终止，不再额外生成 EOF 错误。详情见[验证报告](COPILOT_PROTOCOL_VALIDATION.md)。
+
 ## 重要说明
 
 > [!IMPORTANT]

@@ -249,11 +249,22 @@ describe("responses handler token usage", () => {
       const fetchMock = mock((_input: unknown, init?: RequestInit) => {
         if (typeof init?.body !== "string")
           throw new Error("Expected serialized upstream request")
-        const body = JSON.parse(init.body) as { tools: unknown; input: unknown }
+        const body = JSON.parse(init.body) as {
+          tools: unknown
+          input: unknown
+        }
         upstreamRequests.push({ tools: body.tools, input: body.input })
         const output = outputs[upstreamRequests.length - 1]
         const result = { ...createResponsesResult("gpt-test"), output }
-        if (!stream) return Promise.resolve(Response.json(result))
+        const upstreamHeaders = {
+          "x-request-id": "upstream-native-test",
+          "x-ratelimit-remaining-requests": "17",
+          "set-cookie": "private=value",
+        }
+        if (!stream)
+          return Promise.resolve(
+            Response.json(result, { headers: upstreamHeaders }),
+          )
         const events = [
           {
             type: "response.created",
@@ -294,7 +305,12 @@ describe("responses handler token usage", () => {
                   `event: ${event.type}\ndata: ${JSON.stringify({ ...event, sequence_number })}\n\n`,
               )
               .join(""),
-            { headers: { "content-type": "text/event-stream" } },
+            {
+              headers: {
+                ...upstreamHeaders,
+                "content-type": "text/event-stream",
+              },
+            },
           ),
         )
       })
@@ -315,6 +331,13 @@ describe("responses handler token usage", () => {
           body: JSON.stringify({ model: "gpt-test", input, tools, stream }),
         })
         expect(response.status).toBe(200)
+        expect(response.headers.get("x-request-id")).toBe(
+          "upstream-native-test",
+        )
+        expect(response.headers.get("x-ratelimit-remaining-requests")).toBe(
+          "17",
+        )
+        expect(response.headers.has("set-cookie")).toBe(false)
         if (stream) {
           const body = await response.text()
           const events = body
@@ -340,7 +363,9 @@ describe("responses handler token usage", () => {
             })
           }
         } else {
-          expect(await response.json()).toMatchObject({ output: outputs[turn] })
+          expect(await response.json()).toMatchObject({
+            output: outputs[turn],
+          })
         }
       }
       expect(fetchMock).toHaveBeenCalledTimes(3)
