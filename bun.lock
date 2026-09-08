@@ -45,7 +45,7 @@
     },
   },
   "overrides": {
-    "fast-uri": "3.1.5",
+    "fast-uri": "3.1.6",
     "hono": "4.12.31",
     "ip-address": "10.3.1",
   },
@@ -438,7 +438,7 @@
 
     "fast-levenshtein": ["fast-levenshtein@2.0.6", "https://packagefeedproxy.microsoft.io/npm/fast-levenshtein/-/fast-levenshtein-2.0.6.tgz", {}, ""],
 
-    "fast-uri": ["fast-uri@3.1.5", "", {}, "sha512-gHwA1O9LDIcKunMKhObS/HimwtehO1nPUECKAu5TpKgaO19fcWEl4bliWe1jWxVFvIXztJjjQ4L8XQ1EU9f7Jw=="],
+    "fast-uri": ["fast-uri@3.1.6", "https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/fast-uri/-/fast-uri-3.1.6.tgz", {}, "sha1-v90wjvdj+DX+0Fnzxskl9wjjPjo="],
 
     "fastq": ["fastq@1.19.1", "https://packagefeedproxy.microsoft.io/npm/fastq/-/fastq-1.19.1.tgz", { "dependencies": { "reusify": "^1.0.4" } }, ""],
 
