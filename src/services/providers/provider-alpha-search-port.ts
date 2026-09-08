@@ -1,8 +1,6 @@
+import { fetchWithConfiguredUpstreamLifecycle as fetchWithUpstreamLifecycle } from "~/lib/configured-upstream"
 import type { ResolvedProviderConfig } from "~/lib/config"
-import {
-  fetchWithUpstreamLifecycle,
-  type UpstreamLifecycleTimeouts,
-} from "~/lib/upstream-lifecycle"
+import { type UpstreamLifecycleTimeouts } from "~/lib/upstream-lifecycle"
 import {
   dispatchCodexAlphaSearch,
   getAlphaSearchFetchBody,

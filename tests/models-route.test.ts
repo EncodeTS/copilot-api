@@ -595,9 +595,9 @@ describe("model routes", () => {
 
     const model = body.models[0]
     expect(model?.slug).toBe("gpt-5.6-sol")
-    expect(model?.context_window).toBe(1_050_000)
-    expect(model?.max_context_window).toBe(1_050_000)
-    expect(model?.auto_compact_token_limit).toBe(890_000)
+    expect(model?.context_window).toBe(372_000)
+    expect(model?.max_context_window).toBe(372_000)
+    expect(model?.auto_compact_token_limit).toBeNull()
     expect(model?.effective_context_window_percent).toBe(95)
     expect(model?.tool_mode).toBe("code_mode_only")
     expect(model?.multi_agent_version).toBe("v2")
@@ -606,7 +606,7 @@ describe("model routes", () => {
       (model?.supported_reasoning_levels as Array<{ effort: string }>).map(
         ({ effort }) => effort,
       ),
-    ).toEqual(["low", "max"])
+    ).toEqual(["low", "max", "ultra"])
     expect(fetchMock).not.toHaveBeenCalled()
   })
 

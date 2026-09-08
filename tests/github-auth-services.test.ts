@@ -10,6 +10,36 @@ import { getDeviceCode } from "../src/services/github/get-device-code"
 import { getGitHubUser } from "../src/services/github/get-user"
 
 describe("GitHub auth services", () => {
+  test("retains the token endpoint and rejects malformed or insecure endpoint metadata", async () => {
+    const request = (api: unknown) =>
+      getCopilotToken({
+        fetch: () =>
+          Promise.resolve(
+            Response.json({
+              expires_at: 10_000,
+              refresh_in: 1_800,
+              token: "test-token",
+              endpoints: { api },
+            }),
+          ),
+      })
+    const api = "https://api.enterprise.githubcopilot.com"
+    expect((await request(api)).endpoints?.api).toBe(api)
+    for (const invalid of [
+      "bad-url",
+      "http://api.example",
+      "https://user:secret@api.example",
+      "https://api.example?token=secret",
+      "https://api.example#fragment",
+      42,
+      null,
+    ]) {
+      const error = await request(invalid).catch((error: unknown) => error)
+      expect(error).toMatchObject({
+        message: "GitHub Copilot token API endpoint is invalid",
+      })
+    }
+  })
   test("all auth service requests receive a finite abort signal", async () => {
     const signals: Array<AbortSignal | null | undefined> = []
 

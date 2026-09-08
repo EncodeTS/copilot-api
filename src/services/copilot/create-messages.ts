@@ -1,3 +1,4 @@
+import { fetchWithConfiguredUpstreamLifecycle as fetchWithUpstreamLifecycle } from "~/lib/configured-upstream"
 import consola from "consola"
 import { events } from "fetch-event-stream"
 
@@ -18,10 +19,7 @@ import {
 import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
 import { state } from "~/lib/state"
-import {
-  fetchWithUpstreamLifecycle,
-  type UpstreamLifecycleTimeouts,
-} from "~/lib/upstream-lifecycle"
+import { type UpstreamLifecycleTimeouts } from "~/lib/upstream-lifecycle"
 import { parseUserIdMetadata } from "~/lib/utils"
 import { prepareNativeMessagesOutbound } from "~/services/copilot/native-messages-outbound"
 

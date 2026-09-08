@@ -441,6 +441,7 @@ describe("token manager", () => {
           expires_at: 10_000,
           refresh_in: 1_800,
           token: "single-copilot-token",
+          endpoints: { api: "https://api.enterprise.githubcopilot.com/" },
         })
       },
     })
@@ -451,6 +452,9 @@ describe("token manager", () => {
 
     expect(requestCount).toBe(1)
     expect(harness.runtimeState.copilotToken).toBe("single-copilot-token")
+    expect(harness.runtimeState.copilotApiUrl).toBe(
+      "https://api.enterprise.githubcopilot.com",
+    )
   })
 
   test("Copilot stop aborts an in-flight request and ignores its stale result", async () => {
@@ -458,6 +462,7 @@ describe("token manager", () => {
       expires_at: number
       refresh_in: number
       token: string
+      endpoints?: { api: string }
     }>()
     let requestSignal: AbortSignal | undefined
     const harness = createHarness({
@@ -478,9 +483,11 @@ describe("token manager", () => {
       expires_at: 10_000,
       refresh_in: 1_800,
       token: "stale-copilot-token",
+      endpoints: { api: "https://stale.example" },
     })
     await setup
     expect(harness.runtimeState.copilotToken).toBeUndefined()
+    expect(harness.runtimeState.copilotApiUrl).toBeUndefined()
   })
 
   test("setup joins an in-flight background Copilot refresh", async () => {
@@ -490,6 +497,7 @@ describe("token manager", () => {
       expires_at: number
       refresh_in: number
       token: string
+      endpoints?: { api: string }
     }>()
     const signals: Array<AbortSignal | undefined> = []
     const harness = createHarness({
@@ -502,6 +510,7 @@ describe("token manager", () => {
             expires_at: 10_000,
             refresh_in: 1,
             token: "initial-copilot-token",
+            endpoints: { api: "https://api.business.githubcopilot.com" },
           })
         }
         return backgroundRequest.promise
@@ -515,6 +524,9 @@ describe("token manager", () => {
 
     await harness.manager.setupCopilotToken()
     await waitFor(() => requestCount === 2)
+    expect(harness.runtimeState.copilotApiUrl).toBe(
+      "https://api.business.githubcopilot.com",
+    )
     const joinedSetup = harness.manager.setupCopilotToken()
     await new Promise((resolve) => setTimeout(resolve, 0))
 
@@ -524,9 +536,13 @@ describe("token manager", () => {
       expires_at: 20_000,
       refresh_in: 1_800,
       token: "current-copilot-token",
+      endpoints: { api: "https://api.enterprise.githubcopilot.com" },
     })
     await joinedSetup
     expect(harness.runtimeState.copilotToken).toBe("current-copilot-token")
+    expect(harness.runtimeState.copilotApiUrl).toBe(
+      "https://api.enterprise.githubcopilot.com",
+    )
     harness.manager.stopCopilotRefreshLoop()
   })
 

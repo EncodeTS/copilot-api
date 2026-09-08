@@ -1,9 +1,7 @@
+import { fetchWithConfiguredUpstreamLifecycle as fetchWithUpstreamLifecycle } from "~/lib/configured-upstream"
 import consola from "consola"
 import type { ResolvedProviderConfig } from "~/lib/config"
-import {
-  fetchWithUpstreamLifecycle,
-  type UpstreamLifecycleTimeouts,
-} from "~/lib/upstream-lifecycle"
+import { type UpstreamLifecycleTimeouts } from "~/lib/upstream-lifecycle"
 import type { AnthropicMessagesPayload } from "~/routes/messages/anthropic-types"
 import type { ChatCompletionsPayload } from "~/services/copilot/create-chat-completions"
 import type { ResponsesPayload } from "~/services/copilot/create-responses"

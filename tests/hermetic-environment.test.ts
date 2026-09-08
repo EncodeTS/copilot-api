@@ -63,6 +63,9 @@ test("a caller-owned application and device-id home remains untouched", () => {
       cwd: path.resolve(import.meta.dir, ".."),
       env: {
         ...createHermeticTestEnvironment(callerPaths),
+        // Bun captures its disk-cache location before preload changes XDG paths.
+        // Keep compiler artifacts out of the caller-owned directory as well.
+        BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
         COPILOT_API_CALLER_ROOT: callerPaths.root,
       },
     })

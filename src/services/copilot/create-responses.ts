@@ -1,3 +1,4 @@
+import { fetchWithConfiguredUpstreamLifecycle as fetchWithUpstreamLifecycle } from "~/lib/configured-upstream"
 import consola from "consola"
 import { events, type ServerSentEventMessage } from "fetch-event-stream"
 import { createHash } from "node:crypto"
@@ -13,7 +14,10 @@ import {
   resolveInteractionInitiator,
 } from "~/lib/api-config"
 import { COMPACT_REQUEST, type CompactType } from "~/lib/compact"
-import { getResponsesWebSocketResourceLimits } from "~/lib/config"
+import {
+  getResponsesWebSocketResourceLimits,
+  getUpstreamTimeouts,
+} from "~/lib/config"
 import {
   logCopilotRateLimits,
   type CopilotQuotaSnapshot,
@@ -37,7 +41,6 @@ import {
   type StreamRetryBudget,
 } from "~/lib/stream-lifecycle"
 import {
-  fetchWithUpstreamLifecycle,
   UpstreamLifecycleTimeoutError,
   type UpstreamFetch,
   type UpstreamLifecycleTimeouts,
@@ -778,13 +781,14 @@ export const createResponses = async (
     reasoningRecoverySessionId,
     sessionId,
     signal,
-    timeouts,
+    timeouts: requestedTimeouts,
     compactType,
     transport = "http",
     wireArtifact,
     wireSerializationObserver,
   }: ResponsesRequestOptions,
 ): Promise<CreateResponsesReturn> => {
+  const timeouts = getUpstreamTimeouts(requestedTimeouts)
   if (!state.copilotToken) throw new Error("Copilot token not found")
   const initiator = resolveInteractionInitiator({
     compactType,
@@ -1175,7 +1179,7 @@ export const prepareResponsesWebSocketRequest = (
       websocketHeaders,
     }),
     signal: options.signal,
-    timeouts: options.timeouts,
+    timeouts: getUpstreamTimeouts(options.timeouts),
     frame: wireArtifact.websocketFrame,
     resourceLimits: getResponsesWebSocketResourceLimits(),
     url: buildResponsesWebSocketUrl(copilotBaseUrl(state)),

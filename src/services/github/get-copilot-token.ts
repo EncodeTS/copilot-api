@@ -49,6 +49,30 @@ export const getCopilotToken = async (options?: AuthRequestOptions) => {
     )
   }
 
+  const apiEndpoint = payload.endpoints?.api
+  if (apiEndpoint !== undefined) {
+    let endpoint: URL
+    try {
+      endpoint = new URL(apiEndpoint)
+    } catch {
+      throw new AuthProtocolError(
+        "GitHub Copilot token API endpoint is invalid",
+      )
+    }
+    if (
+      typeof apiEndpoint !== "string"
+      || endpoint.protocol !== "https:"
+      || endpoint.username
+      || endpoint.password
+      || endpoint.search
+      || endpoint.hash
+    ) {
+      throw new AuthProtocolError(
+        "GitHub Copilot token API endpoint is invalid",
+      )
+    }
+  }
+
   return payload as GetCopilotTokenResponse
 }
 
@@ -57,4 +81,5 @@ export interface GetCopilotTokenResponse {
   expires_at: number
   refresh_in: number
   token: string
+  endpoints?: { api?: string }
 }

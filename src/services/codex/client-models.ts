@@ -121,24 +121,53 @@ function applyCopilotCapabilities(
 ):
   | { model: CodexModelInfo }
   | { reason: "reasoning_incompatible" | "target_context_invalid" } {
-  const contextWindow = asPositiveInteger(
-    copilotModel.capabilities.limits.max_context_window_tokens,
+  const limits = copilotModel.capabilities.limits
+  const totalTokens = asPositiveInteger(limits.max_context_window_tokens)
+  const outputTokens = asPositiveInteger(limits.max_output_tokens) ?? 0
+  const promptTokens = asPositiveInteger(limits.max_prompt_tokens)
+  const inputLimit = Math.min(
+    promptTokens ?? Infinity,
+    totalTokens === undefined ? Infinity : (
+      Math.max(1, totalTokens - outputTokens)
+    ),
   )
-  if (!contextWindow) {
+  if (!Number.isFinite(inputLimit)) {
     if (requireContextWindow) {
       return { reason: "target_context_invalid" }
     }
     return applyLiveReasoningCapabilities(template, copilotModel)
   }
 
+  // Codex's default window is a client policy; the service's total token
+  // capacity is not a replacement for it (nor for its maximum input window).
+  const bundledContext = asPositiveInteger(template.context_window)
+  const maxContextWindow = Math.min(
+    asPositiveInteger(template.max_context_window)
+      ?? bundledContext
+      ?? inputLimit,
+    inputLimit,
+  )
+  const contextWindow = Math.min(bundledContext ?? inputLimit, maxContextWindow)
+  const compactLimit = asPositiveInteger(template.auto_compact_token_limit)
+  const needsCompactClamp =
+    bundledContext === undefined || contextWindow < bundledContext
   const model = {
     ...template,
     context_window: contextWindow,
-    max_context_window: contextWindow,
-    auto_compact_token_limit: resolveAutoCompactTokenLimit(
-      copilotModel,
-      contextWindow,
-    ),
+    max_context_window: maxContextWindow,
+    ...(compactLimit !== undefined || needsCompactClamp ?
+      {
+        auto_compact_token_limit: Math.min(
+          compactLimit ?? Infinity,
+          needsCompactClamp ?
+            resolveAutoCompactTokenLimit(copilotModel, contextWindow)
+          : Math.min(
+              contextWindow,
+              Math.max(1, inputLimit - CODEX_AUTO_COMPACT_HEADROOM_TOKENS),
+            ),
+        ),
+      }
+    : {}),
   }
   return applyLiveReasoningCapabilities(model, copilotModel)
 }
@@ -161,7 +190,14 @@ function applyLiveReasoningCapabilities(
   const supportedReasoningLevels = descriptorLevels.filter((level) => {
     if (!isRecord(level)) return false
     const effort = normalizeGatewayReasoningEffort(level.effort)
-    return effort !== null && (!hasLiveEfforts || liveEfforts.includes(effort))
+    // Ultra belongs to Codex's orchestration policy. Its model calls use max;
+    // retain the descriptor without inventing Ultra for clients lacking it.
+    return (
+      effort !== null
+      && (!hasLiveEfforts
+        || liveEfforts.includes(effort)
+        || (effort === "ultra" && liveEfforts.includes("max")))
+    )
   })
   const rawDefaultEffort =
     typeof template.default_reasoning_effort === "string" ?

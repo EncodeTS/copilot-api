@@ -1,3 +1,4 @@
+import { fetchWithConfiguredUpstreamLifecycle as fetchWithUpstreamLifecycle } from "~/lib/configured-upstream"
 import { createHash } from "node:crypto"
 
 import { events, type ServerSentEventMessage } from "fetch-event-stream"
@@ -16,14 +17,12 @@ import type {
 
 import {
   getResponsesWebSocketResourceLimits,
+  getUpstreamTimeouts,
   isResponsesApiWebSocketEnabled as isConfiguredResponsesApiWebSocketEnabled,
 } from "~/lib/config"
 import { HTTPError } from "~/lib/error"
 import { isResponsesStreamTerminalData } from "~/lib/responses-stream-protocol"
-import {
-  fetchWithUpstreamLifecycle,
-  type UpstreamLifecycleTimeouts,
-} from "~/lib/upstream-lifecycle"
+import { type UpstreamLifecycleTimeouts } from "~/lib/upstream-lifecycle"
 import { state } from "~/lib/state"
 import {
   createPooledWebSocketIdentity,
@@ -262,7 +261,7 @@ export function prepareCodexResponsesWebSocketRequest(
     payload: buildCodexResponsesWebSocketPayload(payload),
     resourceLimits: getResponsesWebSocketResourceLimits(),
     signal: options.signal,
-    timeouts: options.timeouts,
+    timeouts: getUpstreamTimeouts(options.timeouts),
     url: buildCodexResponsesWebSocketUrl(baseUrl),
   }
 }
@@ -309,6 +308,7 @@ export async function dispatchCodexResponses(
     transport?: ResponsesTransport
   } = {},
 ): Promise<CodexResponsesDispatch> {
+  options = { ...options, timeouts: getUpstreamTimeouts(options.timeouts) }
   consola.log(`<-- model: ${payload.model}`)
   const transport = resolveCodexResponsesTransport(options.transport)
   if (payload.stream && transport === "websocket") {

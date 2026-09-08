@@ -1,7 +1,5 @@
-import {
-  fetchWithUpstreamLifecycle,
-  type UpstreamLifecycleTimeouts,
-} from "~/lib/upstream-lifecycle"
+import { fetchWithConfiguredUpstreamLifecycle as fetchWithUpstreamLifecycle } from "~/lib/configured-upstream"
+import { type UpstreamLifecycleTimeouts } from "~/lib/upstream-lifecycle"
 import {
   buildCodexRequestHeaders,
   CODEX_API_BASE_URL,

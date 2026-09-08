@@ -1,3 +1,4 @@
+import { fetchWithConfiguredUpstreamLifecycle as fetchWithUpstreamLifecycle } from "~/lib/configured-upstream"
 import consola from "consola"
 import { events } from "fetch-event-stream"
 
@@ -14,10 +15,7 @@ import { logCopilotRateLimits } from "~/lib/copilot-rate-limit"
 import { HTTPError } from "~/lib/error"
 import type { GatewayReasoningEffort } from "~/lib/reasoning-effort"
 import { state } from "~/lib/state"
-import {
-  fetchWithUpstreamLifecycle,
-  type UpstreamLifecycleTimeouts,
-} from "~/lib/upstream-lifecycle"
+import { type UpstreamLifecycleTimeouts } from "~/lib/upstream-lifecycle"
 
 export const createChatCompletions = async (
   payload: ChatCompletionsPayload,

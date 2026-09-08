@@ -5,6 +5,12 @@ import { isDeepStrictEqual } from "node:util"
 
 import { PATHS } from "./paths"
 import {
+  migrateUpstreamTimeouts,
+  resolveConfiguredUpstreamTimeouts,
+  type UpstreamTimeoutConfig,
+} from "./upstream-timeout-config"
+import type { UpstreamLifecycleTimeouts } from "./upstream-lifecycle"
+import {
   atomicWriteProtectedFileSync,
   ensurePrivateDirectorySync,
   repairPrivateFileSync,
@@ -32,7 +38,7 @@ export type {
   ModelMappingsValidationOutcome,
 } from "../../shared-types/model-mappings"
 
-export interface AppConfig {
+export interface AppConfig extends UpstreamTimeoutConfig {
   configSchemaVersion?: number
   migrationState?: ConfigMigrationState
   auth?: {
@@ -438,6 +444,12 @@ function createPersistedConfig(
     removeDeprecatedRequestRewriteConfig(source)
   const persistedRecord = persisted as unknown as Record<string, unknown>
   persisted.configSchemaVersion = config.configSchemaVersion
+  if (config.upstreamTimeouts) {
+    persisted.upstreamTimeouts = {
+      ...source.upstreamTimeouts,
+      ...config.upstreamTimeouts,
+    }
+  }
   persisted.auth = {
     ...source.auth,
     adminApiKey: config.auth?.adminApiKey,
@@ -648,6 +660,14 @@ export function mergeDefaultConfig(config: AppConfig): {
   const hasResponsesImageConfigChanges =
     missingResponsesImageConfigKeys.length > 0
     || hasLegacyResponsesPayloadConfigDefaults
+  const migratedTimeouts = migrateUpstreamTimeouts(config)
+  const upstreamTimeouts = migratedTimeouts && {
+    ...config.upstreamTimeouts,
+    ...migratedTimeouts,
+  }
+  const hasTimeoutChanges =
+    upstreamTimeouts !== undefined
+    && !isDeepStrictEqual(upstreamTimeouts, config.upstreamTimeouts)
 
   if (
     !hasExtraPromptChanges
@@ -658,6 +678,7 @@ export function mergeDefaultConfig(config: AppConfig): {
     && !hasResponsesImageConfigChanges
     && !hasMigrationStateChanges
     && !hasConfigSchemaVersionChanges
+    && !hasTimeoutChanges
   ) {
     return { mergedConfig: config, changed: false }
   }
@@ -665,6 +686,9 @@ export function mergeDefaultConfig(config: AppConfig): {
   return {
     mergedConfig: {
       ...normalizedConfig,
+      ...(upstreamTimeouts && {
+        upstreamTimeouts,
+      }),
       configSchemaVersion,
       ...(Object.keys(migrationState).length > 0 ?
         { migrationState }
@@ -1252,6 +1276,12 @@ export function getNativeMessagesOutboundAdmissionProfile(): NativeMessagesOutbo
 export function isResponsesApiWebSocketEnabled(): boolean {
   const config = getConfig()
   return config.useResponsesApiWebSocket ?? true
+}
+
+export function getUpstreamTimeouts(
+  overrides?: UpstreamLifecycleTimeouts,
+): Required<UpstreamLifecycleTimeouts> {
+  return resolveConfiguredUpstreamTimeouts(getConfig(), overrides)
 }
 
 export function getResponsesWebSocketResourceLimits(): ResponsesWebSocketResourceLimits {

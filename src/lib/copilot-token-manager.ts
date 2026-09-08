@@ -74,7 +74,7 @@ export class CopilotTokenManager {
         .waitFor(refreshFlight.promise, options.signal)
         .then((result) => {
           this.lifecycle.assertCurrent(refreshFlight.lease)
-          this.runtimeState.copilotToken = result.token
+          this.applyTokenResponse(result)
         })
     }
     if (this.lifecycle.getActiveLease() && this.runtimeState.copilotToken) {
@@ -102,7 +102,7 @@ export class CopilotTokenManager {
 
     const result = await this.fetchOnce(lease)
     this.lifecycle.assertCurrent(lease)
-    this.runtimeState.copilotToken = result.token
+    this.applyTokenResponse(result)
     this.logger.debug("GitHub Copilot token fetched successfully")
     if (this.runtimeState.showToken) {
       this.logger.info("Copilot token:", result.token)
@@ -119,6 +119,18 @@ export class CopilotTokenManager {
     return this.lifecycle.runRefresh(lease, () =>
       this.getCopilotTokenRequest({ signal: lease.signal }),
     )
+  }
+
+  private applyTokenResponse(result: GetCopilotTokenResponse): void {
+    this.runtimeState.copilotToken = result.token
+    // The issued token's endpoint takes precedence over account/usage metadata.
+    // Callers must hold a current lifecycle lease before applying either field.
+    if (result.endpoints?.api) {
+      this.runtimeState.copilotApiUrl = result.endpoints.api.replace(
+        /\/+$/u,
+        "",
+      )
+    }
   }
 
   private startRefreshLoop(
@@ -151,7 +163,7 @@ export class CopilotTokenManager {
       try {
         const result = await this.fetchOnce(lease)
         this.lifecycle.assertCurrent(lease)
-        this.runtimeState.copilotToken = result.token
+        this.applyTokenResponse(result)
         refreshAtMs = getRefreshDeadlineMs(result.refresh_in, this.now())
         retryAttempt = 0
         this.logger.debug("Copilot token refreshed")

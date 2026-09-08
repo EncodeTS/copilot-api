@@ -100,6 +100,100 @@ afterEach(() => {
 })
 
 describe("Codex client models", () => {
+  test("preserves Astra client defaults and Ultra when the wire supports max", async () => {
+    const descriptor = {
+      slug: "gpt-6-astra",
+      context_window: 272_000,
+      max_context_window: 872_000,
+      default_reasoning_level: "ultra",
+      supported_reasoning_levels: [
+        { effort: "max", description: "Maximum" },
+        { effort: "ultra", description: "Maximum with delegation" },
+      ],
+      tool_mode: "retained-client-policy",
+    }
+    codexClientModelsDependencies.loadBundledCatalog = () =>
+      Promise.resolve({
+        models: [descriptor],
+      })
+    const model = createCopilotModel(
+      {
+        max_context_window_tokens: 1_000_000,
+        max_prompt_tokens: 872_000,
+        max_output_tokens: 128_000,
+      },
+      { id: "gpt-6-astra", reasoningEfforts: ["low", "max"] },
+    )
+    const response = await createCodexModelsResponse("0.153.4", [model])
+    expect(response.models[0]).toEqual(descriptor)
+    expect(descriptor).not.toHaveProperty("auto_compact_token_limit")
+
+    model.capabilities.supports.reasoning_effort = ["high"]
+    expect(
+      (await createCodexModelsResponse("0.153.4", [model])).models,
+    ).toEqual([])
+  })
+
+  test("caps client windows and explicit compaction against the real input budget", async () => {
+    codexClientModelsDependencies.loadBundledCatalog = () =>
+      Promise.resolve({
+        models: [
+          {
+            slug: "gpt-6-astra",
+            context_window: 272_000,
+            max_context_window: 872_000,
+            auto_compact_token_limit: 250_000,
+          },
+        ],
+      })
+    const model = createCopilotModel(
+      {
+        max_context_window_tokens: 300_000,
+        max_output_tokens: 100_000,
+        max_prompt_tokens: 280_000,
+      },
+      { id: "gpt-6-astra" },
+    )
+    expect(
+      (await createCodexModelsResponse("0.153.4", [model])).models[0],
+    ).toMatchObject({
+      context_window: 200_000,
+      max_context_window: 200_000,
+      auto_compact_token_limit: 180_000,
+    })
+    model.capabilities.limits = { max_prompt_tokens: 100_000 }
+    expect(
+      (await createCodexModelsResponse("0.153.4", [model])).models[0],
+    ).toMatchObject({
+      context_window: 100_000,
+      max_context_window: 100_000,
+      auto_compact_token_limit: 68_000,
+    })
+  })
+
+  test("does not invent Ultra or expand a smaller explicit compaction policy", async () => {
+    const descriptor = {
+      slug: "gpt-6-astra",
+      context_window: 272_000,
+      max_context_window: 872_000,
+      auto_compact_token_limit: 150_000,
+      supported_reasoning_levels: [{ effort: "max" }],
+    }
+    codexClientModelsDependencies.loadBundledCatalog = () =>
+      Promise.resolve({
+        models: [descriptor],
+      })
+    const model = createCopilotModel(
+      { max_prompt_tokens: 872_000 },
+      {
+        id: "gpt-6-astra",
+        reasoningEfforts: ["max"],
+      },
+    )
+    expect(
+      (await createCodexModelsResponse("0.153.4", [model])).models[0],
+    ).toEqual(descriptor)
+  })
   test("parses the client version without trusting malformed query values", () => {
     expect(
       getCodexClientVersion(
@@ -168,9 +262,8 @@ describe("Codex client models", () => {
       models: [
         {
           ...bundledCatalog.models[0],
-          auto_compact_token_limit: 945_000,
-          context_window: 1_050_000,
-          max_context_window: 1_050_000,
+          context_window: 372_000,
+          max_context_window: 372_000,
         },
       ],
     })
@@ -195,8 +288,8 @@ describe("Codex client models", () => {
         {
           ...bundledCatalog.models[0],
           auto_compact_token_limit: 240_000,
-          context_window: 400_000,
-          max_context_window: 400_000,
+          context_window: 272_000,
+          max_context_window: 272_000,
         },
       ],
     })
@@ -228,11 +321,11 @@ describe("Codex client models", () => {
     expect(result.catalog.models).toHaveLength(2)
     expect(result.catalog.models[0]).toEqual({
       ...aliasCatalog.models[1],
-      auto_compact_token_limit: 890_000,
-      context_window: 1_050_000,
+      auto_compact_token_limit: 829_800,
+      context_window: 922_000,
       description: "Mini description",
       display_name: "GPT-5.4 Mini",
-      max_context_window: 1_050_000,
+      max_context_window: 922_000,
       priority: 10,
       slug: "gpt-5.4-mini",
       supported_reasoning_levels: [
@@ -278,7 +371,7 @@ describe("Codex client models", () => {
     expect(result.catalog.models[0]).toMatchObject({
       auto_compact_token_limit: 240_000,
       base_instructions: "mini instructions",
-      context_window: 400_000,
+      context_window: 272_000,
       display_name: "GPT-5.4 Mini",
       slug: "gpt-5.4-mini",
       tool_mode: "mini_tools",
