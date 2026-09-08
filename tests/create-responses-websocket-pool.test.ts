@@ -307,6 +307,42 @@ const connectionOwnershipErrorResponse = (): Response =>
     { status: 400 },
   )
 
+const encryptedHistoryError = {
+  code: "invalid_request_body",
+  message:
+    "The encrypted content gAAA...Slbo could not be verified. Reason: Encrypted content could not be decrypted or parsed.",
+}
+
+const recoverySseResponse = (
+  ...values: Array<Record<string, unknown>>
+): Response =>
+  new Response(
+    values
+      .map(
+        (value) =>
+          `event: ${String(value.type)}\ndata: ${JSON.stringify(value)}\n\n`,
+      )
+      .join(""),
+    { headers: { "content-type": "text/event-stream" } },
+  )
+
+const recoveryCompletedEvent = (): Record<string, unknown> => ({
+  response: createResponsesResult("gpt-test", "resp-recovered"),
+  type: "response.completed",
+})
+
+const recoveryFailedEvent = (): Record<string, unknown> => ({
+  response: {
+    ...createResponsesResult("gpt-test"),
+    error: encryptedHistoryError,
+    status: "failed",
+  },
+  type: "response.failed",
+})
+
+const recoveryErrorResponse = (): Response =>
+  Response.json({ error: encryptedHistoryError }, { status: 400 })
+
 const createHttpTestResponse = (
   input: Array<ResponseInputItem>,
   requestId: string,
@@ -2409,6 +2445,462 @@ test("Responses HTTP recovers incompatible reasoning history once", async () => 
   expect(chunks).toHaveLength(1)
   expect(chunks[0]?.event).toBe("response.completed")
   expect(chunks[0]?.data).toContain('"id":"resp-http-reasoning-recovery"')
+})
+
+test.each([
+  ["HTTP validation", () => recoveryErrorResponse()],
+  [
+    "HTTP encrypted content code",
+    () =>
+      Response.json(
+        {
+          error: {
+            code: "invalid_encrypted_content",
+            message: "Invalid encrypted content",
+          },
+        },
+        { status: 422 },
+      ),
+  ],
+  [
+    "SSE error",
+    () => recoverySseResponse({ ...encryptedHistoryError, type: "error" }),
+  ],
+  ["SSE response.failed", () => recoverySseResponse(recoveryFailedEvent())],
+] satisfies Array<[string, () => Response]>)(
+  "Responses recovers %s and retains only new reasoning on the next turn",
+  async (_name, reject) => {
+    const requests: Array<ReturnType<typeof parseRequestBody>> = []
+    const fetchMock = mock((_input: unknown, init?: RequestInit) => {
+      requests.push(parseRequestBody(init))
+      return Promise.resolve(
+        requests.length === 1 ?
+          reject()
+        : recoverySseResponse(recoveryCompletedEvent()),
+      )
+    })
+    ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+      fetchMock as unknown as typeof fetch
+    const retained: Array<ResponseInputItem> = [
+      { encrypted_content: "compressed-history", type: "compaction" },
+      {
+        role: "assistant",
+        content: [{ type: "output_text", text: "Previous answer" }],
+        type: "message",
+      },
+      {
+        arguments: "{}",
+        call_id: "call-1",
+        name: "read_file",
+        type: "function_call",
+      },
+      {
+        call_id: "call-1",
+        output: "file contents",
+        type: "function_call_output",
+      },
+      userHistoryInput(),
+    ]
+    const old: ResponseInputItem = {
+      encrypted_content: "old-reasoning",
+      type: "reasoning",
+    }
+    const fresh: ResponseInputItem = {
+      encrypted_content: "fresh-reasoning",
+      type: "reasoning",
+    }
+    const options = {
+      initiator: "user" as const,
+      reasoningRecoverySessionId: "encrypted-recovery-session",
+      requestId: "encrypted-recovery-first",
+      transport: "http" as const,
+      vision: false,
+    }
+    const first = await createResponses(
+      { input: [old, ...retained], model: "gpt-test", stream: true },
+      options,
+    )
+    const chunks = await collectStreamChunks(first as AsyncIterable<unknown>)
+    expect(chunks.map((chunk) => chunk.event)).toEqual(["response.completed"])
+    const second = await createResponses(
+      { input: [old, fresh, ...retained], model: "gpt-test", stream: true },
+      { ...options, requestId: "encrypted-recovery-next" },
+    )
+    await collectStreamChunks(second as AsyncIterable<unknown>)
+    expect<unknown>(requests.map((body) => body.input)).toEqual([
+      [old, ...retained],
+      retained,
+      [fresh, ...retained],
+    ])
+  },
+)
+
+test.each(["error", "response.failed"])(
+  "Responses websocket recovers encrypted %s before output",
+  async (type) => {
+    MockWebSocket.autoComplete = false
+    const fetchMock = mock((_input: unknown, init?: RequestInit) => {
+      expect<unknown>(parseRequestBody(init).input).toEqual([
+        userHistoryInput(),
+      ])
+      return Promise.resolve(recoverySseResponse(recoveryCompletedEvent()))
+    })
+    ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+      fetchMock as unknown as typeof fetch
+    const response = await createResponses(
+      { input: reasoningHistoryInput(), model: "gpt-test", stream: true },
+      {
+        allowHttpFallback: true,
+        initiator: "user",
+        requestId: `encrypted-ws-${type}`,
+        transport: "websocket",
+        vision: false,
+      },
+    )
+    const chunksPromise = collectStreamChunks(
+      response as AsyncIterable<unknown>,
+    )
+    await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+    MockWebSocket.instances[0]?.emitMessage(
+      JSON.stringify(
+        type === "error" ?
+          { error: encryptedHistoryError, type }
+        : recoveryFailedEvent(),
+      ),
+    )
+    expect((await chunksPromise).map((chunk) => chunk.event)).toEqual([
+      "response.completed",
+    ])
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  },
+)
+
+test.each([
+  ["repeated HTTP error", () => recoveryErrorResponse()],
+  ["SSE response.failed", () => recoverySseResponse(recoveryFailedEvent())],
+  [
+    "SSE incomplete",
+    () =>
+      recoverySseResponse({
+        response: { status: "incomplete" },
+        type: "response.incomplete",
+      }),
+  ],
+  ["SSE disconnect", () => recoverySseResponse({ type: "response.created" })],
+  [
+    "inconsistent completion",
+    () =>
+      recoverySseResponse({
+        response: { status: "failed" },
+        type: "response.completed",
+      }),
+  ],
+] satisfies Array<[string, () => Response]>)(
+  "Responses does not persist rejected history after recovery ends in %s",
+  async (_name, recoveryResponse) => {
+    const requests: Array<ReturnType<typeof parseRequestBody>> = []
+    const fetchMock = mock((_input: unknown, init?: RequestInit) => {
+      requests.push(parseRequestBody(init))
+      const response =
+        requests.length === 1 ? recoveryErrorResponse()
+        : requests.length === 2 ? recoveryResponse()
+        : recoverySseResponse(recoveryCompletedEvent())
+      return Promise.resolve(response)
+    })
+    ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+      fetchMock as unknown as typeof fetch
+    const payload = {
+      input: reasoningHistoryInput(),
+      model: "gpt-test",
+      stream: true,
+    }
+    const options = {
+      initiator: "user" as const,
+      reasoningRecoverySessionId: "failed-recovery-session",
+      requestId: "failed-recovery-first",
+      transport: "http" as const,
+      vision: false,
+    }
+    await captureError(async () => {
+      const first = await createResponses(payload, options)
+      await collectStreamChunks(first as AsyncIterable<unknown>)
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const next = await createResponses(payload, {
+      ...options,
+      requestId: "failed-recovery-next",
+    })
+    await collectStreamChunks(next as AsyncIterable<unknown>)
+    expect<unknown>(requests.map((body) => body.input)).toEqual([
+      reasoningHistoryInput(),
+      [userHistoryInput()],
+      reasoningHistoryInput(),
+    ])
+  },
+)
+
+test.each(["completed", "incomplete", "failed"] as const)(
+  "Responses nonstream recovery caches only completed results: %s",
+  async (status) => {
+    const requests: Array<ReturnType<typeof parseRequestBody>> = []
+    const fetchMock = mock((_input: unknown, init?: RequestInit) => {
+      requests.push(parseRequestBody(init))
+      return Promise.resolve(
+        requests.length === 1 ?
+          recoveryErrorResponse()
+        : Response.json({ ...createResponsesResult("gpt-test"), status }),
+      )
+    })
+    ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+      fetchMock as unknown as typeof fetch
+    const payload = {
+      input: reasoningHistoryInput(),
+      model: "gpt-test",
+      stream: false,
+    }
+    const options = {
+      initiator: "user" as const,
+      reasoningRecoverySessionId: "nonstream-recovery-session",
+      requestId: "nonstream-recovery-first",
+      transport: "http" as const,
+      vision: false,
+    }
+    await createResponses(payload, options)
+    await createResponses(payload, {
+      ...options,
+      requestId: "nonstream-recovery-next",
+    })
+    expect<unknown>(requests.map((body) => body.input)).toEqual([
+      reasoningHistoryInput(),
+      [userHistoryInput()],
+      status === "completed" ? [userHistoryInput()] : reasoningHistoryInput(),
+    ])
+  },
+)
+
+test.each([
+  [400, "invalid_request_body", "invalid request body"],
+  [
+    400,
+    "invalid_request_body",
+    "Tool output mentions: The encrypted content could not be verified",
+  ],
+  [400, "unrelated_error", encryptedHistoryError.message],
+  [401, "invalid_encrypted_content", encryptedHistoryError.message],
+  [404, "invalid_request_body", encryptedHistoryError.message],
+  [500, "invalid_encrypted_content", encryptedHistoryError.message],
+] satisfies Array<[number, string, string]>)(
+  "Responses does not strip reasoning for unrelated rejection %s %s %s",
+  async (status, code, message) => {
+    const fetchMock = mock(() =>
+      Promise.resolve(Response.json({ error: { code, message } }, { status })),
+    )
+    ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+      fetchMock as unknown as typeof fetch
+    expect(
+      await captureError(() =>
+        createHttpTestResponse(
+          reasoningHistoryInput(),
+          "unrelated-encrypted-error",
+        ),
+      ),
+    ).toBeInstanceOf(Error)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  },
+)
+
+test("Responses leaves compaction-only history intact on encrypted rejection", async () => {
+  const fetchMock = mock(() => Promise.resolve(recoveryErrorResponse()))
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+  expect(
+    await captureError(() =>
+      createHttpTestResponse(
+        [
+          { encrypted_content: "compressed-history", type: "compaction" },
+          userHistoryInput(),
+        ],
+        "encrypted-compaction-only",
+      ),
+    ),
+  ).toBeInstanceOf(Error)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+})
+
+test.each(["response.created", "response.output_text.delta"])(
+  "Responses HTTP does not replay after forwarding %s",
+  async (type) => {
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        recoverySseResponse(
+          { delta: "partial output", type },
+          recoveryFailedEvent(),
+        ),
+      ),
+    )
+    ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+      fetchMock as unknown as typeof fetch
+    const response = await createHttpTestResponse(
+      reasoningHistoryInput(),
+      "encrypted-after-output",
+    )
+    const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
+    expect(chunks.map((chunk) => chunk.event)).toEqual([
+      type,
+      "response.failed",
+    ])
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  },
+)
+
+test("Responses SSE encrypted recovery retries at most once", async () => {
+  const fetchMock = mock(() =>
+    Promise.resolve(recoverySseResponse(recoveryFailedEvent())),
+  )
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+  const response = await createHttpTestResponse(
+    reasoningHistoryInput(),
+    "encrypted-sse-once",
+  )
+  const chunks = await collectStreamChunks(response as AsyncIterable<unknown>)
+  expect(chunks.map((chunk) => chunk.event)).toEqual(["response.failed"])
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+})
+
+test("Responses does not persist reasoning recovery when the caller cancels before completion", async () => {
+  const requests: Array<ReturnType<typeof parseRequestBody>> = []
+  const fetchMock = mock((_input: unknown, init?: RequestInit) => {
+    requests.push(parseRequestBody(init))
+    return Promise.resolve(
+      requests.length === 1 ?
+        recoveryErrorResponse()
+      : recoverySseResponse(
+          { type: "response.created" },
+          recoveryCompletedEvent(),
+        ),
+    )
+  })
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+  const controller = new AbortController()
+  const payload = {
+    input: reasoningHistoryInput(),
+    model: "gpt-test",
+    stream: true,
+  }
+  const options = {
+    initiator: "user" as const,
+    reasoningRecoverySessionId: "cancelled-recovery-session",
+    requestId: "cancelled-recovery-first",
+    transport: "http" as const,
+    vision: false,
+  }
+  const response = await createResponses(payload, {
+    ...options,
+    signal: controller.signal,
+  })
+  const iterator = (response as AsyncIterable<{ event?: string }>)[
+    Symbol.asyncIterator
+  ]()
+  const first = await iterator.next()
+  if (first.done) throw new Error("Expected the recovery stream to start")
+  expect(first.value.event).toBe("response.created")
+  controller.abort()
+  await iterator.return?.()
+  const next = await createResponses(payload, {
+    ...options,
+    requestId: "cancelled-recovery-next",
+  })
+  await collectStreamChunks(next as AsyncIterable<unknown>)
+  expect<unknown>(requests.map((body) => body.input)).toEqual([
+    reasoningHistoryInput(),
+    [userHistoryInput()],
+    reasoningHistoryInput(),
+  ])
+})
+
+test("Responses does not retry an encrypted SSE error after caller cancellation", async () => {
+  const controller = new AbortController()
+  const fetchMock = mock(() =>
+    Promise.resolve(recoverySseResponse(recoveryFailedEvent())),
+  )
+  ;(globalThis as unknown as { fetch: typeof fetch }).fetch =
+    fetchMock as unknown as typeof fetch
+  const response = await createResponses(
+    { input: reasoningHistoryInput(), model: "gpt-test", stream: true },
+    {
+      initiator: "user",
+      requestId: "cancelled-encrypted-sse",
+      signal: controller.signal,
+      transport: "http",
+      vision: false,
+    },
+  )
+  controller.abort()
+  await collectStreamChunks(response as AsyncIterable<unknown>)
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+})
+
+test("Responses websocket preserves async declarations, pending calls, and output after a call", async () => {
+  MockWebSocket.autoComplete = false
+  const tool = {
+    type: "function" as const,
+    name: "lookup",
+    async: true,
+    strict: true,
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  }
+  const pending = {
+    type: "function_call" as const,
+    name: "lookup",
+    async: true,
+    arguments: "{}",
+    call_id: "pending-call",
+  }
+  const input = [pending, userHistoryInput()]
+  const response = await createResponses(
+    { input, model: "gpt-test", stream: true, tools: [tool] },
+    {
+      initiator: "user",
+      requestId: "native-async-ws",
+      transport: "websocket",
+      vision: false,
+    },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  const websocket = MockWebSocket.instances[0]
+  expect(JSON.parse(String(websocket.sent[0]))).toMatchObject({
+    type: "response.create",
+    input,
+    tools: [tool],
+  })
+  const events = [
+    {
+      type: "response.output_item.done",
+      sequence_number: 0,
+      output_index: 0,
+      item: { ...pending, call_id: "new-call" },
+    },
+    {
+      type: "response.output_text.delta",
+      sequence_number: 1,
+      output_index: 1,
+      delta: "Independent answer before tool completion",
+    },
+    {
+      type: "response.completed",
+      sequence_number: 2,
+      response: createResponsesResult("gpt-test"),
+    },
+  ]
+  for (const event of events) websocket.emitMessage(JSON.stringify(event))
+  const chunks = await chunksPromise
+  expect(
+    chunks.map((chunk) => JSON.parse(chunk.data ?? "null") as unknown),
+  ).toEqual(events)
+  expect(websocket.sent).toHaveLength(1)
 })
 
 test("Responses remembers rejected reasoning and preserves new reasoning next turn", async () => {

@@ -3,6 +3,9 @@ import { Hono } from "hono"
 
 import type {
   createResponses as createCopilotResponses,
+  FunctionTool,
+  ResponseFunctionToolCallItem,
+  ResponseOutputFunctionCall,
   ResponseStreamEvent,
 } from "../src/services/copilot/create-responses"
 
@@ -153,6 +156,200 @@ afterEach(async () => {
 })
 
 describe("responses handler token usage", () => {
+  test.each([false, true])(
+    "native Responses preserves async tools across delayed results (stream=%s)",
+    async (stream) => {
+      const asyncTool: FunctionTool = {
+        type: "function",
+        name: "lookup",
+        async: true,
+        strict: true,
+        parameters: {
+          type: "object",
+          properties: {},
+          additionalProperties: false,
+        },
+      }
+      const tools = [
+        asyncTool,
+        { ...asyncTool, name: "wait_for_tasks", async: false },
+        {
+          type: "function",
+          name: "sync_default",
+          strict: true,
+          parameters: asyncTool.parameters,
+        },
+        {
+          type: "custom",
+          name: "custom_lookup",
+          async: true,
+          format: { type: "text" },
+        },
+      ]
+      const call = {
+        type: "function_call",
+        id: "item-added",
+        name: "lookup",
+        arguments: "{}",
+        call_id: "original-async-call",
+        async: true,
+        status: "completed",
+      } satisfies ResponseOutputFunctionCall & ResponseFunctionToolCallItem
+      const customCall = {
+        type: "custom_tool_call",
+        id: "custom-item",
+        name: "custom_lookup",
+        input: "demo",
+        call_id: "original-custom-call",
+        async: true,
+        status: "completed",
+      }
+      const answer = (text: string) => ({
+        type: "message",
+        id: "message-1",
+        role: "assistant",
+        status: "completed",
+        content: [{ type: "output_text", text }],
+      })
+      const outputs = [
+        [
+          call,
+          customCall,
+          answer("Independent work while both tools are pending"),
+        ],
+        [answer("Another turn with both results still pending")],
+        [answer("Received both delayed results")],
+      ]
+      const inputs: Array<Array<Record<string, unknown>>> = [
+        [{ role: "user", content: "Start both lookups and continue working." }],
+        [
+          { role: "user", content: "Start both lookups and continue working." },
+          ...outputs[0],
+          {
+            role: "user",
+            content: "Continue without waiting for either result.",
+          },
+        ],
+      ]
+      inputs.push([
+        ...inputs[1],
+        ...outputs[1],
+        {
+          type: "function_call_output",
+          call_id: call.call_id,
+          output: "function result",
+        },
+        {
+          type: "custom_tool_call_output",
+          call_id: customCall.call_id,
+          output: "custom result",
+        },
+      ])
+      const upstreamRequests: Array<{ tools: unknown; input: unknown }> = []
+      const fetchMock = mock((_input: unknown, init?: RequestInit) => {
+        if (typeof init?.body !== "string")
+          throw new Error("Expected serialized upstream request")
+        const body = JSON.parse(init.body) as { tools: unknown; input: unknown }
+        upstreamRequests.push({ tools: body.tools, input: body.input })
+        const output = outputs[upstreamRequests.length - 1]
+        const result = { ...createResponsesResult("gpt-test"), output }
+        if (!stream) return Promise.resolve(Response.json(result))
+        const events = [
+          {
+            type: "response.created",
+            response: { ...result, output: [], status: "in_progress" },
+          },
+          ...(upstreamRequests.length === 1 ?
+            [
+              {
+                type: "response.output_item.added",
+                output_index: 0,
+                item: call,
+              },
+              {
+                type: "response.output_item.done",
+                output_index: 0,
+                item: { ...call, id: "item-done" },
+              },
+              {
+                type: "response.output_item.done",
+                output_index: 1,
+                item: customCall,
+              },
+            ]
+          : []),
+          {
+            type: "response.output_text.delta",
+            output_index: 2,
+            item_id: "message-1",
+            delta: "Continuing after the async call",
+          },
+          { type: "response.completed", response: result },
+        ]
+        return Promise.resolve(
+          new Response(
+            events
+              .map(
+                (event, sequence_number) =>
+                  `event: ${event.type}\ndata: ${JSON.stringify({ ...event, sequence_number })}\n\n`,
+              )
+              .join(""),
+            { headers: { "content-type": "text/event-stream" } },
+          ),
+        )
+      })
+      responsesHandlerDependencies.createResponses = (payload, options) =>
+        defaultResponsesHandlerDependencies.createResponses(payload, {
+          ...options,
+          fetcher: fetchMock as unknown as typeof fetch,
+        })
+      responsesApiWebSocketEnabled = false
+      const app = createApp()
+      for (const [turn, input] of inputs.entries()) {
+        const response = await app.request("/v1/responses", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "session-id": "async-native-session",
+          },
+          body: JSON.stringify({ model: "gpt-test", input, tools, stream }),
+        })
+        expect(response.status).toBe(200)
+        if (stream) {
+          const body = await response.text()
+          const events = body
+            .split("\n")
+            .filter((line) => line.startsWith("data: "))
+            .map((line) => JSON.parse(line.slice(6)) as Record<string, unknown>)
+          expect(events.at(-1)).toMatchObject({
+            type: "response.completed",
+            response: { output: outputs[turn] },
+          })
+          if (turn === 0) {
+            expect(events[2]).toMatchObject({
+              type: "response.output_item.done",
+              item: { ...call, id: "item-added" },
+            })
+            expect(events[3]).toMatchObject({
+              type: "response.output_item.done",
+              item: customCall,
+            })
+            expect(events[4]).toMatchObject({
+              type: "response.output_text.delta",
+              delta: "Continuing after the async call",
+            })
+          }
+        } else {
+          expect(await response.json()).toMatchObject({ output: outputs[turn] })
+        }
+      }
+      expect(fetchMock).toHaveBeenCalledTimes(3)
+      expect(upstreamRequests).toEqual(
+        inputs.map((input) => ({ tools, input })),
+      )
+    },
+  )
+
   test("keeps original native Responses wire data when stream IDs do not change", () => {
     const data =
       '{ "type": "response.output_text.delta", "sequence_number": 1, "output_index": 0, "item_id": "message-1", "delta": "hello" }'

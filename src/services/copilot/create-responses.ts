@@ -129,6 +129,7 @@ export type Tool =
   | Record<string, unknown>
 
 export interface FunctionTool {
+  async?: boolean
   name: string
   parameters: { [key: string]: unknown } | null
   strict: boolean | null
@@ -185,6 +186,7 @@ export interface ResponseInputMessage {
 }
 
 export interface ResponseFunctionToolCallItem {
+  async?: boolean
   type: "function_call"
   call_id: string
   name: string
@@ -403,6 +405,7 @@ export interface ResponseReasoningBlock {
 }
 
 export interface ResponseOutputFunctionCall {
+  async?: boolean
   id?: string
   type: "function_call"
   call_id: string
@@ -1135,7 +1138,11 @@ const createHttpResponses = async (
   }
 
   if (payload.stream) {
-    return events(response)
+    return createRecoverableHttpResponsesStream(
+      events(response),
+      headers,
+      options,
+    )
   }
 
   return (await response.json()) as ResponsesResult
@@ -1329,6 +1336,7 @@ const createRetryableResponsesWebSocketStream = async function* (
             recoveryPlan,
             options.headers,
             {
+              fetcher: options.fetcher,
               reasoningRecoveryScope: options.reasoningRecoveryScope,
               retryBudget: options.retryBudget,
               signal: options.signal,
@@ -1407,6 +1415,7 @@ const createHttpResponsesStream = async (
   options: HttpResponsesStreamOptions,
 ): Promise<AsyncIterable<ResponsesStreamChunk>> => {
   const response = await createHttpResponses(options.headers, {
+    fetcher: options.fetcher,
     reasoningRecoveryAttempted: options.reasoningRecoveryAttempted,
     reasoningRecoveryScope: options.reasoningRecoveryScope,
     retryBudget: options.retryBudget,
@@ -1419,6 +1428,41 @@ const createHttpResponsesStream = async (
     throw new Error("Streaming HTTP attempt returned a non-streaming response")
   }
   return response
+}
+
+const createRecoverableHttpResponsesStream = async function* (
+  source: AsyncIterable<ResponsesStreamChunk>,
+  headers: Record<string, string>,
+  options: HttpResponsesOptions,
+): AsyncGenerator<ResponsesStreamChunk, void, unknown> {
+  let forwardedChunk = false
+  for await (const chunk of source) {
+    const plan = planResponsesReasoningHistoryRecovery({
+      attempted: options.reasoningRecoveryAttempted ?? false,
+      canRetryHttp: true,
+      failure: parseResponsesStreamFailure(chunk),
+      forwardedChunk,
+      payload: options.wireArtifact.payload,
+      signalAborted: options.signal?.aborted ?? false,
+      sourceTransport: "http",
+    })
+    if (plan) {
+      const recovery = await executeResponsesReasoningHistoryRecovery(
+        plan,
+        headers,
+        options,
+      )
+      if (!isResponsesStream(recovery)) {
+        throw new Error(
+          "Streaming reasoning recovery returned a non-streaming response",
+        )
+      }
+      yield* recovery
+      return
+    }
+    forwardedChunk = true
+    yield chunk
+  }
 }
 
 const createSupervisedHttpResponsesStream = (
@@ -1477,7 +1521,11 @@ const normalizeResponsesUpstreamFailure = (
     return null
   }
 
-  const error = isRecord(value.error) ? value.error : value
+  const envelope =
+    value.type === "response.failed" && isRecord(value.response) ?
+      value.response
+    : value
+  const error = isRecord(envelope.error) ? envelope.error : envelope
   if (typeof error.message !== "string" || error.message.length === 0) {
     return null
   }
@@ -1486,6 +1534,31 @@ const normalizeResponsesUpstreamFailure = (
     code: typeof error.code === "string" ? error.code : null,
     message: error.message,
   }
+}
+
+const isIncompatibleReasoningFailure = (
+  failure: ResponsesUpstreamFailure | null,
+): boolean => {
+  if (
+    !failure
+    || (failure.status !== undefined
+      && failure.status !== 400
+      && failure.status !== 422)
+  ) {
+    return false
+  }
+  if (failure.message === CONNECTION_OWNERSHIP_ERROR) {
+    return true
+  }
+  if (failure.code === "invalid_encrypted_content") {
+    return true
+  }
+  return (
+    failure.code === "invalid_request_body"
+    && /^(?:the )?encrypted content\b.*\bcould not be (?:verified|decrypted|parsed)\b/iu.test(
+      failure.message,
+    )
+  )
 }
 
 const planResponsesReasoningHistoryRecovery = ({
@@ -1510,7 +1583,7 @@ const planResponsesReasoningHistoryRecovery = ({
     || !canRetryHttp
     || forwardedChunk
     || signalAborted
-    || failure?.message !== CONNECTION_OWNERSHIP_ERROR
+    || !isIncompatibleReasoningFailure(failure)
   ) {
     return null
   }
@@ -1538,10 +1611,14 @@ const executeResponsesReasoningHistoryRecovery = async (
   headers: Record<string, string>,
   options: HttpResponsesOptions,
 ): Promise<CreateResponsesReturn> => {
-  responsesReasoningRecoveryRegistry.rememberRejected(
-    options.reasoningRecoveryScope ?? null,
-    plan.rejectedInput,
-  )
+  const rememberRecoveredHistory = (): void => {
+    if (!options.signal?.aborted) {
+      responsesReasoningRecoveryRegistry.rememberRejected(
+        options.reasoningRecoveryScope ?? null,
+        plan.rejectedInput,
+      )
+    }
+  }
   consola.warn("responses.reasoning_history_recovery", {
     reason: plan.reason,
     removedReasoningItems: plan.removedReasoningItems,
@@ -1565,13 +1642,46 @@ const executeResponsesReasoningHistoryRecovery = async (
     wireArtifact: recoveryWireArtifact,
   }
   if (recoveryWireArtifact.payload.stream === true) {
-    if (plan.sourceTransport === "http") {
-      const primaryStream = await createHttpResponsesStream(recoveryOptions)
-      return createSupervisedHttpResponsesStream(recoveryOptions, primaryStream)
-    }
-    return createSupervisedHttpResponsesStream(recoveryOptions)
+    const primaryStream =
+      plan.sourceTransport === "http" ?
+        await createHttpResponsesStream(recoveryOptions)
+      : undefined
+    return rememberCompletedReasoningRecovery(
+      createSupervisedHttpResponsesStream(recoveryOptions, primaryStream),
+      rememberRecoveredHistory,
+    )
   }
-  return await createHttpResponses(headers, recoveryOptions)
+  const response = await createHttpResponses(headers, recoveryOptions)
+  if (!isResponsesStream(response) && response.status === "completed") {
+    rememberRecoveredHistory()
+  }
+  return response
+}
+
+const rememberCompletedReasoningRecovery = async function* (
+  source: AsyncIterable<ResponsesStreamChunk>,
+  remember: () => void,
+): AsyncGenerator<ResponsesStreamChunk, void, unknown> {
+  for await (const chunk of source) {
+    if ((!chunk.event || chunk.event === "response.completed") && chunk.data) {
+      let value: unknown
+      try {
+        value = JSON.parse(chunk.data)
+      } catch {
+        // Malformed terminal events do not confirm a successful recovery.
+      }
+      if (
+        isRecord(value)
+        && value.type === "response.completed"
+        && isRecord(value.response)
+        && value.response.status === "completed"
+        && !value.response.error
+      ) {
+        remember()
+      }
+    }
+    yield chunk
+  }
 }
 
 const createFailedResponsesStream = (
