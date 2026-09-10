@@ -156,6 +156,82 @@ afterEach(async () => {
 })
 
 describe("responses handler token usage", () => {
+  test.each([
+    { stream: false, transport: "http" },
+    { stream: true, transport: "http" },
+    { stream: true, transport: "websocket" },
+  ] as const)(
+    "declares server-accounted reasoning without changing usage (%j)",
+    async ({ stream, transport }) => {
+      state.models!.data[0].supported_endpoints =
+        transport === "websocket" ?
+          ["/responses", "ws:/responses"]
+        : ["/responses"]
+      responsesApiWebSocketEnabled = transport === "websocket"
+      const usage = {
+        input_tokens: 576,
+        input_tokens_details: { cached_tokens: 0 },
+        output_tokens: 5,
+        output_tokens_details: { reasoning_tokens: 0 },
+        total_tokens: 581,
+      }
+      const result = { ...createResponsesResult("gpt-test"), usage }
+      createResponses.mockImplementation(() =>
+        Promise.resolve(
+          stream ?
+            streamChunks([
+              {
+                data: JSON.stringify({
+                  type: "response.completed",
+                  sequence_number: 0,
+                  response: result,
+                }),
+                event: "response.completed",
+              },
+            ])
+          : result,
+        ),
+      )
+
+      const response = await createApp().request("/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "gpt-test", input: "hello", stream }),
+      })
+
+      expect(response.status).toBe(200)
+      expect(response.headers.get("x-reasoning-included")).toBe("true")
+      expect(createResponses.mock.calls[0]?.[1].transport).toBe(transport)
+      if (stream) {
+        expect(await response.text()).toContain(JSON.stringify(usage))
+      } else {
+        expect(await response.json()).toEqual(result)
+      }
+    },
+  )
+
+  test.each([400, 503])(
+    "does not declare successful reasoning accounting for HTTP %s",
+    async (status) => {
+      const error = { error: { code: "upstream_error", message: "test" } }
+      createResponses.mockRejectedValue(
+        new HTTPError("test", Response.json(error, { status })),
+      )
+      const response = await createApp().request("/v1/responses", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-test",
+          input: "hello",
+          stream: true,
+        }),
+      })
+      expect(response.status).toBe(status)
+      expect(response.headers.has("x-reasoning-included")).toBe(false)
+      expect(await response.json()).toEqual(error)
+    },
+  )
+
   test.each([false, true])(
     "native Responses preserves async tools across delayed results (stream=%s)",
     async (stream) => {
@@ -338,6 +414,7 @@ describe("responses handler token usage", () => {
           "17",
         )
         expect(response.headers.has("set-cookie")).toBe(false)
+        expect(response.headers.get("x-reasoning-included")).toBe("true")
         if (stream) {
           const body = await response.text()
           const events = body

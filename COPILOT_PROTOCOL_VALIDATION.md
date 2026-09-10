@@ -1,5 +1,26 @@
 # Copilot 原生 Responses 转发验证（2026-09-08）
 
+## 2026-09-10：历史 reasoning 用量计数
+
+在 `v2.0.0-rc.28` 基线上，通过凭据签发的 Copilot 上游端点进行合成历史对照。
+共 13 次模型请求：7 次直接 Astra 请求、2 次运行中代理 Astra 请求、2 次直接 Luna 请求、2 次修复后源码完整路由 Luna 请求。没有回放真实用户历史，也没有更新或重启已安装的桌面应用。
+
+| 对照 | 带历史 reasoning 的输入 token | 去掉 reasoning 的输入 token | Codex 额外 reasoning 估算 |
+| --- | ---: | ---: | ---: |
+| Astra，一轮历史 | 412 | 134 | 1,043 |
+| Astra，多轮历史 | 576 | 176 | 1,207 |
+| Luna，修复后完整路由 | 985 | 402 | 未计算 |
+
+Astra 两组种子响应的 reasoning 输出分别为 276、398 token；重放输入差值分别为 278、400。Luna 的 reasoning 输出为 581，重放输入差值为 583。这证明 Copilot 的输入统计已经包含历史 reasoning；上游响应均未携带 `x-reasoning-included`。运行中代理与直接 Astra 请求的输入用量差值为 0。
+
+Codex 在缺少该标记时会把历史 reasoning 的本地估算再次加到最近用量上，导致长会话提前达到自动压缩阈值。修复在 Copilot 原生 Responses 成功返回处设置 `x-reasoning-included: true`，不改动响应体、usage 数值、模型窗口或压缩阈值。第三方 provider 提前路由返回和 HTTP 错误路径不注入此标记；上游 WebSocket 由同一成功返回路径覆盖。
+
+修复后的源码完整路由连接真实 Luna 上游，流式和非流式均为 HTTP 200/completed，均返回该标记，输入用量均为 985。WebSocket 路径通过本地测试验证，本次没有新增真实 WebSocket 探测。
+
+验证：5 个相关测试文件共 112 passed、0 failed；新增可执行行覆盖率 100%（1/1）；ESLint、TypeScript、CLI build、desktop server build 均通过。本次修复不处理后台记忆提取任务的输入预算超限。
+
+## 2026-09-08 验证记录
+
 验证时间：2026-09-08。基线：`v2.0.0-rc.27` / `59521de0`。
 
 使用 GitHub Copilot 凭据签发的 `https://api.enterprise.githubcopilot.com`，模型为 `gpt-6-astra`。共执行 22 次合成 Responses HTTP 请求、1 次 WebSocket 错误探测；模型目录读取及令牌交换不计入这个数量。没有请求 OpenAI 的模型服务，没有回放用户的真实会话，没有安装或重启当前桌面服务。凭据仅在进程内使用；保存的报告不包含令牌、完整 item ID 或加密历史正文。

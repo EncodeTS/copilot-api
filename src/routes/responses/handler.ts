@@ -262,6 +262,10 @@ export const handleResponses = async (
     selectedModel,
   })
 
+  // Copilot input_tokens already includes historical reasoning. Without this
+  // marker Codex adds its own estimate again and compacts long sessions early.
+  c.header("x-reasoning-included", "true")
+
   if (isStreamingRequested(payload) && isAsyncIterable(response)) {
     logger.debug("Forwarding native Responses stream")
     return streamSSE(c, async (stream) => {

@@ -954,6 +954,7 @@ describe("versioned provider Responses route", () => {
     })
 
     expect(response.status).toBe(201)
+    expect(response.headers.has("x-reasoning-included")).toBe(false)
     expect(await response.json()).toEqual(createResponsesResult("gpt-test"))
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
