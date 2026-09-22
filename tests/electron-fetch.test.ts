@@ -38,14 +38,14 @@ describe("electron fetch binding", () => {
 
   test("keeps credentialed requests on Node fetch", async () => {
     const calls: Array<string> = []
-    const nodeFetch = (() => {
+    const nodeFetch = () => {
       calls.push("node")
       return Promise.resolve(new Response("node"))
-    }) as typeof fetch
-    const netFetch = (() => {
+        }
+        const netFetch = () => {
       calls.push("net")
       return Promise.resolve(new Response("net"))
-    }) as typeof fetch
+        }
     const fetch = createBoundElectronFetch(nodeFetch, netFetch)
 
     await fetch("https://api.github.com/user", {

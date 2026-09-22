@@ -1,15 +1,19 @@
 import consola from "consola"
 import { createRequire } from "node:module"
 
+type FetchHeaders = Headers | Array<[string, string]> | Record<string, string>
+type FetchInput = string | URL | Request
+type BoundFetch = (input: FetchInput, init?: RequestInit) => Promise<Response>
+
 type ElectronModule = {
   net?: {
-    fetch?: typeof fetch
+    fetch?: BoundFetch
   }
 }
 
 const require = createRequire(import.meta.url)
 
-function authorizationHeader(headers: HeadersInit | undefined): string | null {
+function authorizationHeader(headers: FetchHeaders | undefined): string | null {
   if (!headers) return null
   if (headers instanceof Headers) return headers.get("authorization")
   if (Array.isArray(headers)) {
@@ -26,10 +30,12 @@ function authorizationHeader(headers: HeadersInit | undefined): string | null {
 }
 
 export function requestCarriesAuthorization(
-  input: RequestInfo | URL,
+  input: FetchInput,
   init?: RequestInit,
 ): boolean {
-  if (authorizationHeader(init?.headers)) return true
+  if (authorizationHeader(init?.headers as FetchHeaders | undefined)) {
+    return true
+  }
   return input instanceof Request && Boolean(input.headers.get("authorization"))
 }
 
@@ -38,15 +44,14 @@ export function requestCarriesAuthorization(
 // Keep Chromium fetch for unauthenticated calls, but send credentialed calls
 // through Node's fetch so the token actually leaves the process.
 export function createBoundElectronFetch(
-  nodeFetch: typeof fetch,
-  netFetch: typeof fetch,
-): typeof fetch {
-  const boundFetch: typeof fetch = (input, init) => {
+  nodeFetch: BoundFetch,
+  netFetch: BoundFetch,
+): BoundFetch {
+  return (input, init) => {
     const fetcher =
       requestCarriesAuthorization(input, init) ? nodeFetch : netFetch
     return fetcher(input, init)
   }
-  return boundFetch
 }
 
 export function bindElectronFetch(): boolean {
@@ -62,7 +67,7 @@ export function bindElectronFetch(): boolean {
     globalThis.fetch = createBoundElectronFetch(
       nodeFetch,
       netFetch.bind(electronModule.net),
-    )
+        ) as typeof fetch
     consola.log("Successfully bound Electron's net.fetch to global fetch.")
     return true
   } catch {
