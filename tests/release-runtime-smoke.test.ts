@@ -283,6 +283,9 @@ describe("Docker artifact runtime smoke", () => {
     expect(createCommand).toContain(volumeMount)
     expect(createCommand?.at(-1)).toBe("--desktop-auth-mode=provider")
     expect(createCommand).not.toContain("--user")
+    expect(commands.find(([command]) => command === "exec")).toContain(
+      "--api-home=/tmp/copilot-api-smoke-debug",
+    )
     expect(commands.flat().join(" ")).not.toContain("GH_TOKEN")
     expect(JSON.parse(runtimeConfig)).toMatchObject({
       providers: {

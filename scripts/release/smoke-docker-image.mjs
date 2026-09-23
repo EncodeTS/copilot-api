@@ -245,7 +245,7 @@ export async function smokeDockerImage(
           "bun",
           "run",
           "/app/dist/main.js",
-          "--api-home=/app/copilot-api-smoke-debug",
+          "--api-home=/tmp/copilot-api-smoke-debug",
           "debug",
           "--json",
         ],
