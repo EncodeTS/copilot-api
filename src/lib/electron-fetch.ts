@@ -67,7 +67,7 @@ export function bindElectronFetch(): boolean {
     globalThis.fetch = createBoundElectronFetch(
       nodeFetch,
       netFetch.bind(electronModule.net),
-        ) as typeof fetch
+    ) as typeof fetch
     consola.log("Successfully bound Electron's net.fetch to global fetch.")
     return true
   } catch {

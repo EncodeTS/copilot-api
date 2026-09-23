@@ -41,11 +41,11 @@ describe("electron fetch binding", () => {
     const nodeFetch = () => {
       calls.push("node")
       return Promise.resolve(new Response("node"))
-        }
-        const netFetch = () => {
+    }
+    const netFetch = () => {
       calls.push("net")
       return Promise.resolve(new Response("net"))
-        }
+    }
     const fetch = createBoundElectronFetch(nodeFetch, netFetch)
 
     await fetch("https://api.github.com/user", {
