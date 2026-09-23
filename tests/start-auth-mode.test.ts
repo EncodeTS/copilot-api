@@ -4,6 +4,7 @@ import {
   assertProviderSetupAllowed,
   launchStartupAuthentication,
   parseDesktopStartupAuthMode,
+  readEnvironmentGitHubToken,
   resolveStartupAuthentication,
   selectStartupAuthentication,
 } from "../src/lib/start-auth-mode"
@@ -14,10 +15,15 @@ describe("server startup authentication mode", () => {
       selectStartupAuthentication({
         desktopAuthMode: "copilot",
         enabledProviderCount: 2,
+        environmentGitHubToken: undefined,
         explicitGitHubToken: undefined,
         storedGitHubToken: "current-file-token",
       }),
-    ).toEqual({ githubToken: "current-file-token", kind: "copilot" })
+    ).toEqual({
+      githubToken: "current-file-token",
+      kind: "copilot",
+      source: "file",
+    })
   })
 
   test("provider-only Desktop startup ignores GitHub credentials", () => {
@@ -25,6 +31,7 @@ describe("server startup authentication mode", () => {
       selectStartupAuthentication({
         desktopAuthMode: "provider",
         enabledProviderCount: 1,
+        environmentGitHubToken: "inherited-token",
         explicitGitHubToken: undefined,
         storedGitHubToken: "must-not-be-used",
       }),
@@ -36,6 +43,7 @@ describe("server startup authentication mode", () => {
       selectStartupAuthentication({
         desktopAuthMode: "copilot",
         enabledProviderCount: 1,
+        environmentGitHubToken: undefined,
         explicitGitHubToken: undefined,
         storedGitHubToken: null,
       }),
@@ -44,6 +52,7 @@ describe("server startup authentication mode", () => {
       selectStartupAuthentication({
         desktopAuthMode: "provider",
         enabledProviderCount: 0,
+        environmentGitHubToken: "ignored-environment-token",
         explicitGitHubToken: undefined,
         storedGitHubToken: "ignored-token",
       }),
@@ -55,6 +64,7 @@ describe("server startup authentication mode", () => {
       selectStartupAuthentication({
         desktopAuthMode: undefined,
         enabledProviderCount: 0,
+        environmentGitHubToken: undefined,
         explicitGitHubToken: undefined,
         storedGitHubToken: null,
       }),
@@ -80,14 +90,20 @@ describe("server startup authentication mode", () => {
       await resolveStartupAuthentication({
         desktopAuthMode: "copilot",
         enabledProviderCount: 0,
+        environmentGitHubToken: undefined,
         explicitGitHubToken: undefined,
         readStoredGitHubToken,
       }),
-    ).toEqual({ githubToken: "stored-token", kind: "copilot" })
+    ).toEqual({
+      githubToken: "stored-token",
+      kind: "copilot",
+      source: "file",
+    })
     expect(
       await resolveStartupAuthentication({
         desktopAuthMode: "provider",
         enabledProviderCount: 1,
+        environmentGitHubToken: "ignored-token",
         explicitGitHubToken: undefined,
         readStoredGitHubToken,
       }),
@@ -100,6 +116,7 @@ describe("server startup authentication mode", () => {
     const authentication = await resolveStartupAuthentication({
       desktopAuthMode: undefined,
       enabledProviderCount: 0,
+      environmentGitHubToken: "environment-token",
       explicitGitHubToken: " explicit-token ",
       readStoredGitHubToken: () => {
         reads += 1
@@ -109,15 +126,53 @@ describe("server startup authentication mode", () => {
     expect(authentication).toEqual({
       githubToken: "explicit-token",
       kind: "copilot",
+      source: "cli",
     })
     expect(reads).toBe(0)
+  })
+
+  test("environment variables prefer the namespaced token and ignore empty values", () => {
+    expect(
+      readEnvironmentGitHubToken({
+        COPILOT_API_GITHUB_TOKEN: " preferred ",
+        GH_TOKEN: "legacy",
+      }),
+    ).toBe("preferred")
+    expect(
+      readEnvironmentGitHubToken({
+        COPILOT_API_GITHUB_TOKEN: " ",
+        GH_TOKEN: " legacy ",
+      }),
+    ).toBe("legacy")
+    expect(
+      readEnvironmentGitHubToken({
+        COPILOT_API_GITHUB_TOKEN: " ",
+        GH_TOKEN: "",
+      }),
+    ).toBeUndefined()
+  })
+
+  test("environment token beats the protected file without reading it", async () => {
+    const result = await resolveStartupAuthentication({
+      desktopAuthMode: undefined,
+      enabledProviderCount: 1,
+      environmentGitHubToken: " environment-token ",
+      explicitGitHubToken: " ",
+      readStoredGitHubToken: () =>
+        Promise.reject(new Error("protected file must not be read")),
+    })
+    expect(result).toEqual({
+      githubToken: "environment-token",
+      kind: "copilot",
+      source: "environment",
+    })
   })
 
   test("launches exactly the selected startup adapter", async () => {
     const calls: string[] = []
     const handlers = {
-      startCopilot: (token: string) => {
-        calls.push(`copilot:${token}`)
+      startCopilot: (token: string, source: string) => {
+        calls.push(`copilot:${source}:${token}`)
         return Promise.resolve()
       },
       startProvider: (allowInteractiveSetup: boolean) => {
@@ -126,14 +181,14 @@ describe("server startup authentication mode", () => {
       },
     }
     await launchStartupAuthentication(
-      { githubToken: "current-token", kind: "copilot" },
+      { githubToken: "current-token", kind: "copilot", source: "cli" },
       handlers,
     )
     await launchStartupAuthentication(
       { allowInteractiveSetup: false, kind: "provider" },
       handlers,
     )
-    expect(calls).toEqual(["copilot:current-token", "provider:false"])
+    expect(calls).toEqual(["copilot:cli:current-token", "provider:false"])
   })
 
   test("provider-only mode is the only non-interactive missing-provider error", () => {

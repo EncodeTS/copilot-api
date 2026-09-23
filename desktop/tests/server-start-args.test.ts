@@ -15,6 +15,7 @@ describe('Desktop server start policy', () => {
       ANTHROPIC_API_KEY: 'provider-key-remains-available',
       COPILOT_API_HOME: '/tmp/copilot-home',
       COPILOT_API_SQLITE_DB_PATH: '/tmp/copilot-home/copilot-api.sqlite',
+      COPILOT_API_GITHUB_TOKEN: secret,
       GH_TOKEN: secret,
       GITHUB_TOKEN: secret,
       NODE_ENV: 'development',
@@ -36,6 +37,7 @@ describe('Desktop server start policy', () => {
       NODE_ENV: 'production',
     })
     expect(env.GH_TOKEN).toBeUndefined()
+    expect(env.COPILOT_API_GITHUB_TOKEN).toBeUndefined()
     expect(env.GITHUB_TOKEN).toBeUndefined()
   })
 
@@ -48,6 +50,7 @@ describe('Desktop server start policy', () => {
       Github_Copilot_Token: secret,
       Github_Enterprise_Token: secret,
       copilot_Github_token: secret,
+      copilot_api_Github_token: secret,
       SAFE_TOKEN_BUDGET: '2000',
     })
 

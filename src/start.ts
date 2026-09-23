@@ -28,8 +28,10 @@ import {
   assertProviderSetupAllowed,
   launchStartupAuthentication,
   parseDesktopStartupAuthMode,
+  readEnvironmentGitHubToken,
   resolveStartupAuthentication,
   type DesktopStartupAuthMode,
+  type StartupAuthentication,
 } from "./lib/start-auth-mode"
 import { state } from "./lib/state"
 import { logUser, setupCopilotToken } from "./lib/token"
@@ -74,15 +76,15 @@ export async function refreshCodexStartupCatalog(
 
 async function setupCopilotMode(
   githubToken: string,
-  fromCli: boolean,
+  source: Extract<StartupAuthentication, { kind: "copilot" }>["source"],
   serverUrl: string,
   claudeCode: boolean,
 ): Promise<void> {
   state.githubToken = githubToken
   consola.info(
-    fromCli ?
-      "Using provided GitHub token"
-    : "Using GitHub token from local file",
+    source === "file" ? "Using GitHub token from local file"
+    : source === "environment" ? "Using GitHub token from environment"
+    : "Using provided GitHub token",
   )
 
   await logUser()
@@ -175,7 +177,7 @@ export async function setupProviderMode(
   await runProviderSetup()
 
   if (state.githubToken) {
-    await setupCopilotMode(state.githubToken, false, serverUrl, claudeCode)
+    await setupCopilotMode(state.githubToken, "file", serverUrl, claudeCode)
     return
   }
 
@@ -189,6 +191,7 @@ export async function setupProviderMode(
 }
 
 export interface StartupAuthenticationDependencies {
+  readEnvironmentGitHubToken: () => string | undefined
   readStoredGitHubToken: () => Promise<string | null>
   startCopilot: typeof setupCopilotMode
   startProvider: typeof setupProviderMode
@@ -196,6 +199,7 @@ export interface StartupAuthenticationDependencies {
 
 const defaultStartupAuthenticationDependencies: StartupAuthenticationDependencies =
   {
+    readEnvironmentGitHubToken: () => readEnvironmentGitHubToken(process.env),
     readStoredGitHubToken: readGitHubToken,
     startCopilot: setupCopilotMode,
     startProvider: setupProviderMode,
@@ -213,14 +217,18 @@ export async function startSelectedAuthentication(
   const authentication = await resolveStartupAuthentication({
     desktopAuthMode: options.desktopAuthMode,
     enabledProviderCount,
+    environmentGitHubToken:
+      options.desktopAuthMode === "provider" ?
+        undefined
+      : dependencies.readEnvironmentGitHubToken(),
     explicitGitHubToken: options.githubToken,
     readStoredGitHubToken: dependencies.readStoredGitHubToken,
   })
   await launchStartupAuthentication(authentication, {
-    startCopilot: (githubToken) =>
+    startCopilot: (githubToken, source) =>
       dependencies.startCopilot(
         githubToken,
-        Boolean(options.githubToken),
+        source,
         serverUrl,
         options.claudeCode,
       ),
@@ -311,7 +319,7 @@ export const start = defineCommand({
       alias: "g",
       type: "string",
       description:
-        "Provide GitHub token directly (must be generated using the `auth` subcommand)",
+        "Provide GitHub token directly (overrides COPILOT_API_GITHUB_TOKEN, GH_TOKEN, and the protected file; visible in process arguments)",
     },
     "claude-code": {
       alias: "c",

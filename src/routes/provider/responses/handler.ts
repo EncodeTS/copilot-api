@@ -311,13 +311,14 @@ const streamProviderResponses = async (
     recordUsage: TokenUsageRecorder
   },
 ): Promise<Response> => {
-  applyProviderResponsesStreamMetadata(c, dispatched)
+  // Codex WebSocket response headers arrive before the first streamed event.
   const prefetched = await prefetchResponsesStreamSession({
     observeFrame: (frame) =>
       observeProviderResponsesFrame(frame, dispatched, options.provider),
     signal: dispatched.signal,
     source: dispatched.source,
   })
+  applyProviderResponsesStreamMetadata(c, dispatched)
 
   if (prefetched.kind === "settled") {
     await dispatched.cancel(

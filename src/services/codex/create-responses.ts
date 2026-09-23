@@ -41,6 +41,10 @@ import consola from "consola"
 
 export const CODEX_API_BASE_URL = "https://chatgpt.com/backend-api"
 
+const CODEX_RESPONSE_METADATA_EVENT = "codex.response.metadata"
+const MAX_PRE_RESPONSE_EVENTS = 128
+const MAX_PRE_RESPONSE_BYTES = 1024 * 1024
+
 type CodexResponsesWebSocketPayload = ResponsesPayload & {
   type: "response.create"
 }
@@ -271,6 +275,7 @@ export async function forwardCodexResponses(
   requestHeaders: Headers,
   baseUrl: string = CODEX_API_BASE_URL,
   options: {
+    onResponseHeaders?: (headers: Headers) => void
     signal?: AbortSignal
     timeouts?: UpstreamLifecycleTimeouts
     transport?: ResponsesTransport
@@ -303,6 +308,7 @@ export async function dispatchCodexResponses(
   requestHeaders: Headers,
   baseUrl: string = CODEX_API_BASE_URL,
   options: {
+    onResponseHeaders?: (headers: Headers) => void
     signal?: AbortSignal
     timeouts?: UpstreamLifecycleTimeouts
     transport?: ResponsesTransport
@@ -339,6 +345,7 @@ export async function dispatchCodexResponses(
       timeouts: options.timeouts,
     },
   )
+  if (response.ok) options.onResponseHeaders?.(response.headers)
 
   return {
     kind: "http",
@@ -522,6 +529,7 @@ const forwardCodexResponsesOverWebSocket = (
   requestHeaders: Headers,
   baseUrl: string,
   options: {
+    onResponseHeaders?: (headers: Headers) => void
     signal?: AbortSignal
     timeouts?: UpstreamLifecycleTimeouts
   },
@@ -533,24 +541,117 @@ const forwardCodexResponsesOverWebSocket = (
     options,
   )
 
-  return createCodexResponsesWebSocketStream(websocketRequest)
+  return createCodexResponsesWebSocketStream(
+    websocketRequest,
+    options.onResponseHeaders,
+  )
 }
 
 const createCodexResponsesWebSocketStream = (
   request: CodexResponsesWebSocketRequest,
+  onResponseHeaders?: (headers: Headers) => void,
 ): ResponsesStream =>
   createCodexResponsesSafeStream(
-    createPooledWebSocketStream(request, {
-      createChunk: createCodexResponsesWebSocketStreamChunk,
-      isReusableTerminalChunk: (chunk) => chunk.event !== "error",
-      isTerminalChunk: isTerminalCodexResponsesWebSocketChunk,
-      openErrorMessage: "Failed to create codex responses websocket",
-      streamErrorMessage: "Codex responses websocket stream error",
-      terminalChunkMissingMessage:
-        "Codex responses websocket ended without a terminal response",
-    }),
+    filterCodexResponsesWebSocketMetadata(
+      createPooledWebSocketStream(request, {
+        createChunk: createCodexResponsesWebSocketStreamChunk,
+        isReusableTerminalChunk: (chunk) => chunk.event !== "error",
+        isTerminalChunk: isTerminalCodexResponsesWebSocketChunk,
+        openErrorMessage: "Failed to create codex responses websocket",
+        streamErrorMessage: "Codex responses websocket stream error",
+        terminalChunkMissingMessage:
+          "Codex responses websocket ended without a terminal response",
+      }),
+      onResponseHeaders,
+    ),
     request.signal,
   )
+
+const filterCodexResponsesWebSocketMetadata = async function* (
+  source: AsyncIterable<ServerSentEventChunk>,
+  onResponseHeaders?: (headers: Headers) => void,
+): AsyncGenerator<ServerSentEventChunk, void, unknown> {
+  const pendingChunks: Array<ServerSentEventChunk> = []
+  let pendingBytes = 0
+  let responseStarted = false
+
+  for await (const chunk of source) {
+    if (chunk.event === CODEX_RESPONSE_METADATA_EVENT) {
+      if (!responseStarted) {
+        onResponseHeaders?.(parseCodexResponseMetadataHeaders(chunk.data ?? ""))
+      }
+      continue
+    }
+
+    if (!responseStarted) {
+      if (
+        chunk.event === "response.created"
+        || chunk.event === "error"
+        || !chunk.event
+        || chunk.data === "[DONE]"
+        || isTerminalCodexResponsesWebSocketChunk(chunk)
+      ) {
+        responseStarted = true
+        for (const pending of pendingChunks) yield pending
+        pendingChunks.length = 0
+      } else {
+        const nextBytes = Buffer.byteLength(chunk.data ?? "", "utf8")
+        if (
+          pendingChunks.length >= MAX_PRE_RESPONSE_EVENTS
+          || pendingBytes + nextBytes > MAX_PRE_RESPONSE_BYTES
+        ) {
+          throw new Error(
+            "Codex WebSocket exceeded the pre-response event limit",
+          )
+        }
+        pendingChunks.push(chunk)
+        pendingBytes += nextBytes
+        continue
+      }
+    }
+    yield chunk
+  }
+
+  for (const pending of pendingChunks) yield pending
+}
+
+const parseCodexResponseMetadataHeaders = (data: string): Headers => {
+  const headers = new Headers()
+  let payload: unknown
+  try {
+    payload = JSON.parse(data) as unknown
+  } catch {
+    consola.warn("Ignoring malformed Codex response metadata")
+    return headers
+  }
+  if (
+    !payload
+    || typeof payload !== "object"
+    || !("headers" in payload)
+    || !payload.headers
+    || typeof payload.headers !== "object"
+    || Array.isArray(payload.headers)
+  ) {
+    consola.warn("Ignoring invalid Codex response metadata headers")
+    return headers
+  }
+  let ignoredInvalidHeader = false
+  for (const [name, value] of Object.entries(payload.headers)) {
+    if (typeof value !== "string") {
+      ignoredInvalidHeader = true
+      continue
+    }
+    try {
+      headers.set(name, value)
+    } catch {
+      ignoredInvalidHeader = true
+    }
+  }
+  if (ignoredInvalidHeader) {
+    consola.warn("Ignoring invalid Codex response metadata headers")
+  }
+  return headers
+}
 
 const createCodexResponsesSafeStream = async function* (
   source: AsyncIterable<ServerSentEventChunk>,

@@ -37,6 +37,9 @@ const { state } = await import("../src/lib/state")
 const { createProviderResponsesHandler } = await import(
   "../src/routes/provider/responses/handler"
 )
+const { createProviderResponsesPort } = await import(
+  "../src/services/providers/provider-responses-port"
+)
 const { createProviderModelRouter } = await import(
   "../src/routes/provider/model-router"
 )
@@ -118,8 +121,9 @@ const fetchMock = mock((_url: string | URL | Request, init?: RequestInit) => {
   )
 })
 
-const createApp = () => {
+const createApp = (portFactory?: typeof createProviderResponsesPort) => {
   const providerResponses = createProviderResponsesHandler({
+    createProviderResponsesPort: portFactory,
     createProviderTokenUsageRecorder: () => noopTokenUsageRecorder,
     loadCodexProviderModels,
   })
@@ -168,6 +172,129 @@ afterEach(() => {
 })
 
 describe("provider Responses context management", () => {
+  test("forwards only safe Codex websocket metadata before committing SSE headers", async () => {
+    providerConfig = {
+      apiKey: "unused",
+      authType: "oauth2",
+      baseUrl: "https://chatgpt.com/backend-api",
+      name: "codex",
+      type: "openai-responses",
+    }
+    state.codexAccessToken = "codex-token"
+    state.codexAccountId = "codex-account"
+
+    const app = createApp((config) =>
+      createProviderResponsesPort(config, {
+        dispatchCodexResponses: (_payload, _headers, _baseUrl, options) =>
+          Promise.resolve({
+            kind: "stream",
+            source: (async function* () {
+              await Promise.resolve()
+              options?.onResponseHeaders?.(
+                new Headers({
+                  authorization: "secret",
+                  "set-cookie": "session=secret",
+                  "x-ratelimit-remaining": "17",
+                  "x-request-id": "codex-request",
+                }),
+              )
+              yield {
+                data: JSON.stringify({ type: "codex.rate_limits" }),
+                event: "codex.rate_limits",
+              }
+              yield {
+                data: JSON.stringify({ type: "response.created" }),
+                event: "response.created",
+              }
+              yield {
+                data: JSON.stringify({
+                  response: createResponsesResult("gpt-test"),
+                  type: "response.completed",
+                }),
+                event: "response.completed",
+              }
+            })(),
+            transport: "websocket",
+          }),
+      }),
+    )
+
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        input: "hello",
+        model: "codex/gpt-test",
+        stream: true,
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get("x-request-id")).toBe("codex-request")
+    expect(response.headers.get("x-ratelimit-remaining")).toBe("17")
+    expect(response.headers.get("authorization")).toBeNull()
+    expect(response.headers.get("set-cookie")).toBeNull()
+    const body = await response.text()
+    expect(body.indexOf("codex.rate_limits")).toBeLessThan(
+      body.indexOf("response.created"),
+    )
+    expect(body).toContain("response.completed")
+  })
+
+  test("preserves safe Codex websocket metadata on a prefetched error", async () => {
+    providerConfig = {
+      apiKey: "unused",
+      authType: "oauth2",
+      baseUrl: "https://chatgpt.com/backend-api",
+      name: "codex",
+      type: "openai-responses",
+    }
+    state.codexAccessToken = "codex-token"
+    state.codexAccountId = "codex-account"
+    const app = createApp((config) =>
+      createProviderResponsesPort(config, {
+        dispatchCodexResponses: (_payload, _headers, _baseUrl, options) =>
+          Promise.resolve({
+            kind: "stream",
+            source: (async function* () {
+              await Promise.resolve()
+              options?.onResponseHeaders?.(
+                new Headers({
+                  "retry-after": "2",
+                  "set-cookie": "session=secret",
+                  "x-request-id": "failed-codex-request",
+                }),
+              )
+              yield {
+                data: JSON.stringify({
+                  message: "Upstream rejected the request",
+                  status_code: 429,
+                  type: "error",
+                }),
+                event: "error",
+              }
+            })(),
+            transport: "websocket",
+          }),
+      }),
+    )
+
+    const response = await app.request("/v1/responses", {
+      body: JSON.stringify({
+        input: "hello",
+        model: "codex/gpt-test",
+        stream: true,
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    })
+
+    expect(response.status).toBe(429)
+    expect(response.headers.get("retry-after")).toBe("2")
+    expect(response.headers.get("x-request-id")).toBe("failed-codex-request")
+    expect(response.headers.get("set-cookie")).toBeNull()
+  })
+
   test("loads bounded Codex provider truth before direct Responses generation", async () => {
     providerConfig = {
       apiKey: "unused",

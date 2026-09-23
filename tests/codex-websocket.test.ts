@@ -231,6 +231,7 @@ afterEach(() => {
 
 test("forwardCodexResponses falls back to HTTP for non-streaming responses", async () => {
   mockFetchJsonResponse(createResponsesResult("gpt-5.4", "resp-http"))
+  const responseHeaders: Array<Headers> = []
 
   const response = await forwardCodexResponses(
     {
@@ -242,11 +243,14 @@ test("forwardCodexResponses falls back to HTTP for non-streaming responses", asy
     }),
     undefined,
     {
+      onResponseHeaders: (headers) => responseHeaders.push(headers),
       transport: "websocket",
     },
   )
 
   expect(fetchMock).toHaveBeenCalledTimes(1)
+  expect(responseHeaders).toHaveLength(1)
+  expect(responseHeaders[0]?.get("content-type")).toContain("application/json")
   expect(response).toMatchObject({
     id: "resp-http",
     model: "gpt-5.4",
@@ -427,6 +431,172 @@ test("forwardCodexResponses reuses the websocket after response.completed", asyn
   expect(firstChunks[0]?.data).toContain('"type":"response.completed"')
   expect(secondChunks).toHaveLength(1)
   expect(secondChunks[0]?.event).toBe("response.completed")
+})
+
+test("Codex websocket forwards metadata before replaying pre-response events", async () => {
+  MockWebSocket.autoComplete = false
+  const forwardedHeaders: Array<Headers> = []
+  const response = await forwardCodexResponses(
+    { input: "hello", model: "gpt-5.4", stream: true },
+    new Headers(),
+    undefined,
+    {
+      onResponseHeaders: (headers) => forwardedHeaders.push(headers),
+      transport: "websocket",
+    },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  const socket = MockWebSocket.instances[0]
+  if (!socket) throw new Error("Expected a Codex websocket")
+
+  socket.emitMessage(JSON.stringify({ type: "codex.rate_limits" }))
+  socket.emitMessage(JSON.stringify({ type: "test.pre_response" }))
+  socket.emitMessage(
+    JSON.stringify({
+      headers: { "x-request-id": "codex-request" },
+      type: "codex.response.metadata",
+    }),
+  )
+  socket.emitMessage(JSON.stringify({ type: "response.created" }))
+  socket.completeLatestResponse()
+
+  const chunks = await chunksPromise
+  expect(forwardedHeaders).toHaveLength(1)
+  expect(forwardedHeaders[0]?.get("x-request-id")).toBe("codex-request")
+  expect(chunks.map((chunk) => chunk.event)).toEqual([
+    "codex.rate_limits",
+    "test.pre_response",
+    "response.created",
+    "response.completed",
+  ])
+  expect(
+    chunks.some((chunk) => chunk.event === "codex.response.metadata"),
+  ).toBe(false)
+})
+
+test("Codex websocket reports an excessive pre-response event sequence", async () => {
+  MockWebSocket.autoComplete = false
+  const response = await forwardCodexResponses(
+    { input: "hello", model: "gpt-5.4", stream: true },
+    new Headers(),
+    undefined,
+    { transport: "websocket" },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  for (let index = 0; index <= 128; index += 1) {
+    MockWebSocket.instances[0]?.emitMessage(
+      JSON.stringify({ type: "test.pre_response" }),
+    )
+  }
+
+  const chunks = await chunksPromise
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("error")
+  expect(chunks[0]?.data).toContain("pre-response event limit")
+  expect(
+    responsesWebSocketModule.getPooledWebSocketDiagnostics().activeRequests,
+  ).toBe(0)
+})
+
+test("Codex websocket bounds the bytes held before response.created", async () => {
+  MockWebSocket.autoComplete = false
+  const response = await forwardCodexResponses(
+    { input: "hello", model: "gpt-5.4", stream: true },
+    new Headers(),
+    undefined,
+    { transport: "websocket" },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  const frame = JSON.stringify({
+    data: "x".repeat(400_000),
+    type: "test.pre_response",
+  })
+  for (let index = 0; index < 3; index += 1) {
+    MockWebSocket.instances[0]?.emitMessage(frame)
+  }
+
+  const chunks = await chunksPromise
+  expect(chunks).toHaveLength(1)
+  expect(chunks[0]?.event).toBe("error")
+  expect(chunks[0]?.data).toContain("pre-response event limit")
+  expect(chunks[0]?.data).not.toContain("x".repeat(100))
+})
+
+test("Codex websocket ignores invalid and late response metadata", async () => {
+  MockWebSocket.autoComplete = false
+  const forwardedHeaders: Array<Headers> = []
+  const response = await forwardCodexResponses(
+    { input: "hello", model: "gpt-5.4", stream: true },
+    new Headers(),
+    undefined,
+    {
+      onResponseHeaders: (headers) => forwardedHeaders.push(headers),
+      transport: "websocket",
+    },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  const socket = MockWebSocket.instances[0]
+  if (!socket) throw new Error("Expected a Codex websocket")
+
+  socket.emitMessage(
+    JSON.stringify({
+      headers: {
+        "invalid header name": "ignored",
+        "x-request-id": 42,
+      },
+      type: "codex.response.metadata",
+    }),
+  )
+  socket.emitMessage(
+    JSON.stringify({
+      headers: [],
+      type: "codex.response.metadata",
+    }),
+  )
+  socket.emitMessage(JSON.stringify({ type: "response.created" }))
+  socket.emitMessage(
+    JSON.stringify({
+      headers: { "x-request-id": "too-late" },
+      type: "codex.response.metadata",
+    }),
+  )
+  socket.completeLatestResponse()
+
+  const chunks = await chunksPromise
+  expect(forwardedHeaders).toHaveLength(2)
+  expect(forwardedHeaders.every((headers) => [...headers].length === 0)).toBe(
+    true,
+  )
+  expect(chunks.map((chunk) => chunk.event)).toEqual([
+    "response.created",
+    "response.completed",
+  ])
+})
+
+test("Codex websocket flushes pre-response events if creation is omitted", async () => {
+  MockWebSocket.autoComplete = false
+  const response = await forwardCodexResponses(
+    { input: "hello", model: "gpt-5.4", stream: true },
+    new Headers(),
+    undefined,
+    { transport: "websocket" },
+  )
+  const chunksPromise = collectStreamChunks(response as AsyncIterable<unknown>)
+  await waitFor(() => MockWebSocket.instances[0]?.sent.length === 1)
+  MockWebSocket.instances[0]?.emitMessage(
+    JSON.stringify({ type: "codex.rate_limits" }),
+  )
+  MockWebSocket.instances[0]?.completeLatestResponse()
+
+  const chunks = await chunksPromise
+  expect(chunks.map((chunk) => chunk.event)).toEqual([
+    "codex.rate_limits",
+    "response.completed",
+  ])
 })
 
 test("forwardCodexResponses keeps websocket health after an internal error terminal", async () => {

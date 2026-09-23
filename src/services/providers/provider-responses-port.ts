@@ -3,6 +3,7 @@ import { events } from "fetch-event-stream"
 import { logCodexRateLimitsEvent } from "~/lib/codex-rate-limit"
 import type { ResolvedProviderConfig } from "~/lib/config"
 import type { StreamTransport } from "~/lib/stream-lifecycle"
+import { getUpstreamResponseMetadataHeaders } from "~/lib/upstream-response-headers"
 import type { UpstreamLifecycleTimeouts } from "~/lib/upstream-lifecycle"
 import {
   dispatchCodexResponses,
@@ -107,11 +108,18 @@ export const createProviderResponsesPort = (
       const control = createDispatchControl(request.signal)
       try {
         if (adapter === "codex") {
+          const responseHeaders: Record<string, string> = {}
           const dispatched = await dependencies.dispatchCodexResponses(
             request.payload,
             request.requestHeaders,
             providerConfig.baseUrl,
             {
+              onResponseHeaders: (headers) => {
+                Object.assign(
+                  responseHeaders,
+                  getUpstreamResponseMetadataHeaders(headers),
+                )
+              },
               signal: control.signal,
               timeouts: request.timeouts,
               transport: request.transport,
@@ -120,6 +128,7 @@ export const createProviderResponsesPort = (
           return await adaptCodexDispatch(dispatched, {
             control,
             observer,
+            responseHeaders,
           })
         }
 
@@ -154,13 +163,14 @@ const adaptCodexDispatch = async (
   options: {
     control: ProviderResponsesDispatchControl
     observer: ProviderResponsesObserver
+    responseHeaders: Readonly<Record<string, string>>
   },
 ): Promise<ProviderResponsesDispatch> => {
   if (dispatched.kind === "stream") {
     return createManagedStreamDispatch(dispatched.source, {
       adapter: "codex",
       control: options.control,
-      headers: Object.freeze({}),
+      headers: options.responseHeaders,
       normalizeSseEventNames: true,
       observer: options.observer,
       signal: options.control.signal,

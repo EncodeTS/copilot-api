@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process"
-import fs from "node:fs"
-import os from "node:os"
+import { randomUUID } from "node:crypto"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { parseArgs } from "node:util"
@@ -12,6 +11,7 @@ export function createDockerRunner(spawn = spawnSync) {
     run(arguments_, options = {}) {
       const result = spawn("docker", arguments_, {
         encoding: "utf8",
+        input: options.input,
         timeout: options.timeoutMs ?? 120_000,
       })
       return {
@@ -58,7 +58,7 @@ function defaultSleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
 
-const CONTAINER_SMOKE_HOME = "/tmp/copilot-api-smoke"
+const CONTAINER_SMOKE_HOME = "/home/bun/.local/share/copilot-api"
 const DOCKER_SMOKE_CONFIG = {
   configSchemaVersion: 2,
   providers: {
@@ -126,6 +126,20 @@ function removeDockerContainerIfPresent(dockerRunner, container) {
   )
 }
 
+function removeDockerVolumeIfPresent(dockerRunner, volume) {
+  const arguments_ = ["volume", "rm", volume]
+  const result = dockerRunner.run(arguments_, { timeoutMs: 30_000 })
+  if (result.error?.code === "ETIMEDOUT") {
+    throw new Error("docker volume rm timed out")
+  }
+  if (result.error) throw result.error
+  if (result.status === 0) return
+  if (/No such volume/iu.test(`${result.stdout}\n${result.stderr}`)) return
+  throw new Error(
+    `docker ${arguments_.join(" ")} exited with ${result.status}${result.stderr ? `: ${result.stderr.trim()}` : ""}`,
+  )
+}
+
 export async function smokeDockerImage(
   { configDigest, image, timeoutMs = 60_000, version },
   dependencies = {},
@@ -134,9 +148,9 @@ export async function smokeDockerImage(
   const clock = dependencies.clock ?? Date
   const sleep = dependencies.sleep ?? defaultSleep
   const output = dependencies.output ?? console
-  const fileSystem = dependencies.fileSystem ?? fs
   const processId = dependencies.processId ?? process.pid
   const container = `copilot-api-release-smoke-${processId}`
+  const volume = `${container}-data-${randomUUID()}`
 
   const loadedConfigDigest = runChecked(
     dockerRunner,
@@ -149,19 +163,37 @@ export async function smokeDockerImage(
     )
   }
 
-  const runtimeHome = fileSystem.mkdtempSync(
-    path.join(os.tmpdir(), "copilot-api-docker-smoke-"),
-  )
   let containerCleanupRequired = false
+  let volumeCleanupRequired = false
   let containerCreated = false
   let primaryError
   let cleanupError
   let health = "starting"
   try {
-    fileSystem.writeFileSync(
-      path.join(runtimeHome, "config.json"),
-      `${JSON.stringify(DOCKER_SMOKE_CONFIG, null, 2)}\n`,
-      { mode: 0o600 },
+    runChecked(
+      dockerRunner,
+      ["volume", "create", volume],
+      { timeoutMs: 30_000 },
+    )
+    volumeCleanupRequired = true
+    runChecked(
+      dockerRunner,
+      [
+        "run",
+        "--rm",
+        "-i",
+        "--mount",
+        `type=volume,source=${volume},target=${CONTAINER_SMOKE_HOME}`,
+        "--entrypoint",
+        "sh",
+        image,
+        "-c",
+        'umask 077; cat > "$COPILOT_API_HOME/config.json"',
+      ],
+      {
+        input: `${JSON.stringify(DOCKER_SMOKE_CONFIG, null, 2)}\n`,
+        timeoutMs: 30_000,
+      },
     )
     containerCleanupRequired = true
     runChecked(
@@ -171,9 +203,7 @@ export async function smokeDockerImage(
         "--name",
         container,
         "--mount",
-        `type=bind,source=${runtimeHome},target=${CONTAINER_SMOKE_HOME}`,
-        "--env",
-        `COPILOT_API_HOME=${CONTAINER_SMOKE_HOME}`,
+        `type=volume,source=${volume},target=${CONTAINER_SMOKE_HOME}`,
         image,
         "--desktop-auth-mode=provider",
       ],
@@ -215,7 +245,7 @@ export async function smokeDockerImage(
           "bun",
           "run",
           "/app/dist/main.js",
-          "--api-home=/tmp/copilot-api-debug",
+          "--api-home=/app/copilot-api-smoke-debug",
           "debug",
           "--json",
         ],
@@ -240,10 +270,12 @@ export async function smokeDockerImage(
         cleanupError = error
       }
     }
-    try {
-      fileSystem.rmSync(runtimeHome, { force: true, recursive: true })
-    } catch (error) {
-      cleanupError = combineFailure(cleanupError, error)
+    if (volumeCleanupRequired) {
+      try {
+        removeDockerVolumeIfPresent(dockerRunner, volume)
+      } catch (error) {
+        cleanupError = combineFailure(cleanupError, error)
+      }
     }
   }
 

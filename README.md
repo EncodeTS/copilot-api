@@ -122,22 +122,74 @@ Build the image:
 docker build -t copilot-api .
 ```
 
-Run the container with a bind mount so auth data survives restarts. Because a
-published container port is a LAN-facing listener, first set at least one
-non-empty `auth.apiKeys` entry in `copilot-data/config.json`, then pass `--lan`:
+The image runs as `bun` (UID/GID 1000) with a private `0700` data directory at
+`/home/bun/.local/share/copilot-api`. Use a named volume to retain auth data,
+provider configuration, and other gateway state across container restarts:
+
+```sh
+docker volume create copilot-api-data
+docker run --rm -it -v copilot-api-data:/home/bun/.local/share/copilot-api copilot-api --auth login --provider copilot
+```
+
+Before publishing the port, configure at least one non-empty `auth.apiKeys`
+entry in the volume's `config.json`. A published container port needs the
+explicit LAN listener:
+
+```sh
+docker run -p 4141:4141 -v copilot-api-data:/home/bun/.local/share/copilot-api copilot-api --lan
+```
+
+For a bind mount instead, prepare a host directory owned by UID/GID 1000, with
+private permissions. Set `auth.apiKeys` in `copilot-data/config.json` before
+starting with `--lan`:
 
 ```sh
 mkdir -p ./copilot-data
-docker run -p 4141:4141 -v $(pwd)/copilot-data:/root/.local/share/copilot-api copilot-api --lan
+sudo chown -R 1000:1000 ./copilot-data
+sudo find ./copilot-data -type d -exec chmod 700 {} +
+sudo find ./copilot-data -type f -exec chmod 600 {} +
+docker run -p 4141:4141 -v "$(pwd)/copilot-data:/home/bun/.local/share/copilot-api" copilot-api --lan
 ```
 
-This stores GitHub auth data, provider config, and other gateway state in `./copilot-data` on the host, mapped to `/root/.local/share/copilot-api` in the container.
+To upgrade a previous bind-mounted installation, keep the same host
+`./copilot-data` directory, change its ownership/permissions as above, and
+remount it at the new `/home/bun/.local/share/copilot-api` path. Do not point
+new containers at the old `/root/.local/share/copilot-api` path: it is no
+longer the API home. If your data is in an old anonymous volume, copy it to a
+named volume or bind directory before starting the new image. The entrypoint
+fails with a permissions hint rather than changing mounted data with unsafe
+ownership or modes. Existing data directories must be `0700` and managed
+sensitive files `0600`, even when UID 1000 already owns them.
+It checks the selected home and the gateway's managed credential, config,
+catalog, and database files (including backups/SQLite sidecars), not every
+unrelated file in a large volume. An inaccessible managed file fails early;
+files outside that inventory are not inspected.
 
-Or pass a GitHub token directly:
+`copilot-api --lan` implicitly runs `start`; explicit `copilot-api start --lan`
+and `copilot-api auth login --provider copilot` also work. The older
+`copilot-api --auth login --provider copilot` form remains supported. If you
+pass a CLI `--api-home=/data` (before or after `start`/`auth`), mount writable
+data at `/data` instead: preflight checks that effective path, even when
+`COPILOT_API_HOME` points elsewhere. Avoid passing `--api-home` twice.
 
 ```sh
-docker run -p 4141:4141 -e GH_TOKEN=your_github_token_here -v $(pwd)/copilot-data:/root/.local/share/copilot-api copilot-api --lan
+docker run -p 4141:4141 -v "$(pwd)/copilot-data:/data" copilot-api --api-home=/data start --lan
 ```
+
+Alternatively, export a token in the host environment and pass its *name* (not
+its value) to Docker, with the same volume:
+
+```sh
+docker run -p 4141:4141 -e COPILOT_API_GITHUB_TOKEN -v copilot-api-data:/home/bun/.local/share/copilot-api copilot-api --lan
+```
+
+`GH_TOKEN` remains a fallback; `COPILOT_API_GITHUB_TOKEN` takes precedence.
+For `start`, an explicit `--github-token` wins over either environment variable,
+which wins over the protected credential file. The entrypoint never puts an
+environment token in the process arguments. Explicit CLI tokens are visible
+in process arguments, and Docker environment values are visible to users
+with Docker access; prefer `--auth login` with a persistent private volume.
+Provider-only startup does not use a GitHub environment token.
 
 Without `--lan`, the process binds explicitly to `127.0.0.1` inside the
 container and the published port is intentionally unreachable from the host.
@@ -520,7 +572,7 @@ The following command line options are available for the `start` command:
 | --port           | Port to listen on                                                             | 4141    | -p    |
 | --lan            | Listen on all interfaces; requires at least one `auth.apiKeys` entry          | false   | none  |
 | --verbose        | Enable structured diagnostic logging (payload content omitted by default)     | false   | -v    |
-| --github-token   | Provide GitHub token directly (must be generated using the `auth` subcommand) | none    | -g    |
+| --github-token   | Provide GitHub token directly (overrides environment and file; visible in process arguments) | none    | -g    |
 | --claude-code    | Generate a command to launch Claude Code with Copilot API config              | false   | -c    |
 | --show-token     | Show GitHub and Copilot tokens on fetch and refresh                           | false   | none  |
 | --proxy-env      | Initialize proxy from environment variables                                   | false   | none  |
@@ -668,6 +720,7 @@ Use `copilot-api auth login --provider custom` to add or update another third-pa
 - **Responses WebSocket resource limits:** The pool is process-wide and bounded. `responsesWebSocketGlobalConnectionLimit` defaults to `128`; `responsesWebSocketPerCapacityKeyConnectionLimit` defaults to `32` per upstream origin/account fingerprint; `responsesWebSocketIdleConnectionLimit` defaults to `32`; and `responsesWebSocketDedicatedConnectionLimit` defaults to `64`. Only idle (`requestCount=0`) pooled connections may be LRU-evicted. `responsesWebSocketCapacityWaitMs` defaults to `250` and applies only before a request is sent; exhausted capacity is otherwise a typed not-sent failure, and the pool never chooses HTTP fallback. `responsesWebSocketIdleTimeoutMs` defaults to `60000`.
   - Receive queues use `responsesWebSocketMaxQueuedFrames` (`4096`), `responsesWebSocketMaxFrameBytes` (`33554432`), and `responsesWebSocketMaxQueuedBytes` (`67108864`). Strings are measured as UTF-8 bytes and binary frames by `byteLength`. Overflow closes only that socket with code `1009`, emits one terminal error without frame content, and releases its pool, active, and queue accounting.
   - `GET /admin/config/responses-websocket` returns effective limits, content-free process counters, and the current transport-health cooldown. After a known network or proxy change, call `POST /admin/config/responses-websocket/clear` with `{"reason":"network_change"}` or `{"reason":"proxy_change"}`; the clear also starts a 30-second cooldown. If a request disconnects after `send()` but before the first frame, that sent-unknown request is not replayed: its connection is retired, other idle pooled connections are cleared without interrupting active streams, and new dual-endpoint requests prefer HTTP during the cooldown. WebSocket-only models still open a fresh socket, and normal WebSocket selection resumes when the cooldown expires.
+- **Codex WebSocket responses:** Internal `codex.response.metadata` events are removed from the downstream SSE stream. Before the first event is sent, the gateway forwards only safe request, retry, and rate-limit response headers. Events preceding `response.created` are replayed in order once it arrives (or before a terminal event if it is omitted). This pre-response buffer is limited to 128 events and 1 MiB; exceeding either limit returns a stream error instead of buffering indefinitely.
 - **Old-session reasoning recovery:** If Copilot rejects replayed reasoning with `input item does not belong to this connection`, `invalid_encrypted_content`, or an `invalid_request_body` error explicitly reporting encrypted content verification/decryption failure, the gateway removes only historical `reasoning` input items and retries once over HTTP. Recovery handles HTTP 400/422 errors and HTTP/WebSocket stream `error` or `response.failed` events before any event has been forwarded to the client. Messages, tool calls/results, and encrypted compaction items remain intact. After the retry completes successfully, requests with a stable recovery session ID filter that rejected reasoning history while preserving newly generated reasoning. Failed, incomplete, or cancelled recovery attempts do not record new filters; unrelated errors and errors after output do not trigger recovery.
   - With a stable session ID, the gateway keeps only SHA-256 fingerprints of the rejected reasoning in a process-local cache. Later turns prefilter those known incompatible items while preserving newly generated reasoning. The cache is limited to 256 scopes, 2,048 fingerprints per scope, and a 24-hour idle TTL; a process restart may require one relearning turn.
 - **Stream lifecycle hardening:** Streaming Responses failures are classified as client cancellation, upstream disconnect, or timeout and recorded once as `stream.lifecycle` with safe transport diagnostics. Real upstream disconnects and timeouts remain visible in the Desktop App log panel and the persisted App logs; expected client cancellations are DEBUG-level. Generic HTTP fallback is gated by WebSocket send state: only a WebSocket attempt that failed before `send()` may fall back once. A WebSocket failure after `send()` and every HTTP transport failure are terminal even before the first downstream event, avoiding duplicate generations and billing. Two narrow application-level recoveries remain: the exact old-session ownership error above receives one sanitized HTTP attempt, and an initial `internal_error` terminal received before semantic output receives one HTTP attempt. Neither rule replays a generic sent-unknown disconnect.

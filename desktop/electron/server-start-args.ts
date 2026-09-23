@@ -13,6 +13,7 @@ export type DesktopServerStartDecision =
   | { ok: false; reason: 'auth_required' }
 
 const GITHUB_CREDENTIAL_ENV_KEYS = [
+  'COPILOT_API_GITHUB_TOKEN',
   'COPILOT_GITHUB_TOKEN',
   'GH_TOKEN',
   'GH_ENTERPRISE_TOKEN',

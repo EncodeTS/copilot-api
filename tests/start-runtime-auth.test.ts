@@ -16,6 +16,7 @@ describe("start runtime Desktop authentication seam", () => {
       "http://localhost:4510",
       0,
       {
+        readEnvironmentGitHubToken: () => undefined,
         readStoredGitHubToken: () => Promise.resolve("stored-token"),
         startCopilot,
         startProvider,
@@ -24,7 +25,7 @@ describe("start runtime Desktop authentication seam", () => {
 
     expect(startCopilot).toHaveBeenCalledWith(
       "stored-token",
-      false,
+      "file",
       "http://localhost:4510",
       false,
     )
@@ -33,6 +34,7 @@ describe("start runtime Desktop authentication seam", () => {
 
   test("dispatches provider-only without reading a GitHub credential", async () => {
     const readStoredGitHubToken = mock(() => Promise.resolve("must-not-read"))
+    const readEnvironmentGitHubToken = mock(() => "inherited-token")
     const startCopilot = mock(() => Promise.resolve())
     const startProvider = mock(() => Promise.resolve())
 
@@ -40,14 +42,67 @@ describe("start runtime Desktop authentication seam", () => {
       { claudeCode: true, desktopAuthMode: "provider" },
       "http://localhost:4511",
       1,
-      { readStoredGitHubToken, startCopilot, startProvider },
+      {
+        readEnvironmentGitHubToken,
+        readStoredGitHubToken,
+        startCopilot,
+        startProvider,
+      },
     )
 
+    expect(readEnvironmentGitHubToken).not.toHaveBeenCalled()
     expect(readStoredGitHubToken).not.toHaveBeenCalled()
     expect(startCopilot).not.toHaveBeenCalled()
     expect(startProvider).toHaveBeenCalledWith(
       "http://localhost:4511",
       true,
+      false,
+    )
+  })
+
+  test("uses the environment source without reading a protected file", async () => {
+    const startCopilot = mock(() => Promise.resolve())
+    const readStoredGitHubToken = mock(() =>
+      Promise.reject(new Error("should not read protected file")),
+    )
+    await startSelectedAuthentication(
+      { claudeCode: false },
+      "http://localhost:4512",
+      0,
+      {
+        readEnvironmentGitHubToken: () => "from-env",
+        readStoredGitHubToken,
+        startCopilot,
+        startProvider: mock(() => Promise.resolve()),
+      },
+    )
+    expect(readStoredGitHubToken).not.toHaveBeenCalled()
+    expect(startCopilot).toHaveBeenCalledWith(
+      "from-env",
+      "environment",
+      "http://localhost:4512",
+      false,
+    )
+  })
+
+  test("explicit CLI token wins over inherited environment", async () => {
+    const startCopilot = mock(() => Promise.resolve())
+    await startSelectedAuthentication(
+      { claudeCode: false, githubToken: "from-cli" },
+      "http://localhost:4513",
+      0,
+      {
+        readEnvironmentGitHubToken: () => "from-env",
+        readStoredGitHubToken: () =>
+          Promise.reject(new Error("should not read protected file")),
+        startCopilot,
+        startProvider: mock(() => Promise.resolve()),
+      },
+    )
+    expect(startCopilot).toHaveBeenCalledWith(
+      "from-cli",
+      "cli",
+      "http://localhost:4513",
       false,
     )
   })

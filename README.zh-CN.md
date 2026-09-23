@@ -124,20 +124,64 @@ npx @encodets/copilot-api@rc start
 docker build -t copilot-api .
 ```
 
-通过 bind mount 运行容器，让认证数据在重启后保留。发布容器端口属于 LAN 监听；请先在 `copilot-data/config.json` 中配置至少一个非空 `auth.apiKeys`，再显式传入 `--lan`：
+镜像以 `bun` 用户（UID/GID 1000）运行，私有数据目录为
+`/home/bun/.local/share/copilot-api`（权限 `0700`）。建议使用具名卷保存认证数据、
+provider 配置及其他状态：
+
+```sh
+docker volume create copilot-api-data
+docker run --rm -it -v copilot-api-data:/home/bun/.local/share/copilot-api copilot-api --auth login --provider copilot
+```
+
+发布容器端口属于 LAN 监听；请先在卷里的 `config.json` 中配置至少一个非空
+`auth.apiKeys`，再显式传入 `--lan`：
+
+```sh
+docker run -p 4141:4141 -v copilot-api-data:/home/bun/.local/share/copilot-api copilot-api --lan
+```
+
+如需 bind mount，请先让宿主目录归 UID/GID 1000 所有并保持私有权限；通过
+`--lan` 启动前须在 `copilot-data/config.json` 配置 `auth.apiKeys`：
 
 ```sh
 mkdir -p ./copilot-data
-docker run -p 4141:4141 -v $(pwd)/copilot-data:/root/.local/share/copilot-api copilot-api --lan
+sudo chown -R 1000:1000 ./copilot-data
+sudo find ./copilot-data -type d -exec chmod 700 {} +
+sudo find ./copilot-data -type f -exec chmod 600 {} +
+docker run -p 4141:4141 -v "$(pwd)/copilot-data:/home/bun/.local/share/copilot-api" copilot-api --lan
 ```
 
-这会把宿主机上的 `./copilot-data` 映射到容器内的 `/root/.local/share/copilot-api`，用于持久化 GitHub 认证数据、provider 配置和其他 gateway 状态。
+升级旧版 bind mount 时保留原来的宿主目录 `./copilot-data`，按上述步骤调整所有权和
+权限，改挂载到 `/home/bun/.local/share/copilot-api`。旧版的
+`/root/.local/share/copilot-api` 已不再是 API home；如果数据在旧匿名卷里，请先复制到
+新具名卷或宿主目录。挂载数据的所有权或权限不安全时，入口脚本会给出提示，不会自动修改
+数据。现有数据目录必须是 `0700`，受管敏感文件必须是 `0600`，即使它们已归 UID 1000 所有。
+入口脚本只检查有效数据目录和网关受管的凭据、配置、目录及数据库文件（含备份和 SQLite
+附属文件），不会递归扫描大型卷中的无关文件；不可访问的受管文件会及早报错，无关文件
+不在预检范围内。
 
-也可以直接通过环境变量传入 GitHub token：
+`copilot-api --lan` 隐式执行 `start`；也支持显式 `copilot-api start --lan` 和
+`copilot-api auth login --provider copilot`。旧的
+`copilot-api --auth login --provider copilot` 形式保持兼容。如果传入 CLI
+`--api-home=/data`（放在 `start` / `auth` 前后皆可），请将可写数据挂载到 `/data`：
+即使 `COPILOT_API_HOME` 指向其他目录，预检也会检查实际指定的目录。不要重复传入
+`--api-home`。
 
 ```sh
-docker run -p 4141:4141 -e GH_TOKEN=your_github_token_here -v $(pwd)/copilot-data:/root/.local/share/copilot-api copilot-api --lan
+docker run -p 4141:4141 -v "$(pwd)/copilot-data:/data" copilot-api --api-home=/data start --lan
 ```
+
+也可以在宿主机环境中设置 token，仅将变量名传给 Docker：
+
+```sh
+docker run -p 4141:4141 -e COPILOT_API_GITHUB_TOKEN -v copilot-api-data:/home/bun/.local/share/copilot-api copilot-api --lan
+```
+
+`GH_TOKEN` 仍可作为回退变量；`COPILOT_API_GITHUB_TOKEN` 优先。`start` 的凭据来源
+顺序为显式 `--github-token`、环境变量、受保护的凭据文件。入口脚本不会把环境 token
+写入进程参数；显式 CLI token 会出现在进程参数中，而有 Docker 访问权限的用户能看到
+容器环境变量。建议优先使用持久私有卷中的 `--auth login`；provider-only 启动不会使用
+GitHub 环境 token。
 
 未传 `--lan` 时，进程只监听容器内的 `127.0.0.1`，宿主机无法通过 published port 访问。
 
@@ -504,7 +548,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
 | --port         | 监听端口                                             | 4141   | -p   |
 | --lan          | 监听所有网络接口；要求至少一个 `auth.apiKeys`       | false  | 无   |
 | --verbose      | 启用结构化诊断日志（默认省略 payload 内容）          | false  | -v   |
-| --github-token | 直接提供 GitHub token（必须通过 `auth` 子命令生成）  | 无     | -g   |
+| --github-token | 直接提供 GitHub token（优先于环境及文件；会出现在进程参数中） | 无 | -g |
 | --claude-code  | 生成一个使用 Copilot API 配置启动 Claude Code 的命令 | false  | -c   |
 | --show-token   | 在获取和刷新时显示 GitHub 与 Copilot token           | false  | 无   |
 | --proxy-env    | 从环境变量初始化代理                                 | false  | 无   |
@@ -649,6 +693,7 @@ Copilot API 现在使用子命令结构，主要命令包括：
 - **Responses WebSocket 资源上限：** 连接池是进程级且有硬边界。`responsesWebSocketGlobalConnectionLimit` 默认 `128`；`responsesWebSocketPerCapacityKeyConnectionLimit` 按上游 origin/account 指纹默认 `32`；`responsesWebSocketIdleConnectionLimit` 默认 `32`；`responsesWebSocketDedicatedConnectionLimit` 默认 `64`。LRU 只会淘汰 `requestCount=0` 的空闲池连接。`responsesWebSocketCapacityWaitMs` 默认 `250`，而且只允许在请求发送前等待；容量耗尽会返回 typed not-sent failure，底层连接池本身绝不会决定 HTTP fallback。`responsesWebSocketIdleTimeoutMs` 默认 `60000`。
   - 接收队列分别受 `responsesWebSocketMaxQueuedFrames`（`4096`）、`responsesWebSocketMaxFrameBytes`（`33554432`）和 `responsesWebSocketMaxQueuedBytes`（`67108864`）限制。字符串按 UTF-8 字节计算，二进制 frame 按 `byteLength` 计算。溢出时只关闭对应 socket（code `1009`），输出一次不含 frame 内容的 terminal error，并清理 pool、active 和 queue 计数。
   - `GET /admin/config/responses-websocket` 返回有效上限、不含内容的进程级计数和当前 transport-health cooldown。已知网络或代理变化后，可向 `POST /admin/config/responses-websocket/clear` 发送 `{"reason":"network_change"}` 或 `{"reason":"proxy_change"}`；清池会同时启动 30 秒 cooldown。如果请求在 `send()` 后、首帧前断开，当前 sent-unknown 请求不会重放：失败连接会退役，其他空闲池连接会被清理且不会中断活跃流；cooldown 内新的双端点请求优先走 HTTP。只有 WebSocket 的模型仍会新建 socket，cooldown 到期后恢复正常 WebSocket 选择。
+- **Codex WebSocket 响应：** 内部 `codex.response.metadata` 事件不会进入下游 SSE 流；网关会在首个事件发送前只转发安全的请求追踪、重试和限流响应头。`response.created` 之前的事件会在它到达后按原顺序重放；若上游没有发送该事件，则在终止事件前重放。预响应缓存上限为 128 个事件、1 MiB，超限会返回流错误，不会无限缓存。
 - **旧会话 reasoning 恢复：** 如果 Copilot 在重放 reasoning 时返回 `input item does not belong to this connection`、`invalid_encrypted_content`，或明确报告加密内容校验/解密失败的 `invalid_request_body`，gateway 会只移除历史 `reasoning` 输入项，并通过 HTTP 重试一次。支持 HTTP 400/422 错误，以及尚未向客户端转发任何事件时的 HTTP/WebSocket 流式 `error`、`response.failed` 事件。消息、工具调用及结果、加密的 compaction 压缩上下文均保留。只有重试成功完成后，带有稳定 recovery session ID 的后续请求才会过滤那批旧 reasoning，并保留新生成的 reasoning。恢复失败、未完成或被取消时不会记录新的过滤项；无关错误或已经转发事件后的错误不会触发恢复。
   - 如果请求带有稳定 session ID，gateway 只会在进程内缓存被拒绝 reasoning 的 SHA-256 指纹。后续 turn 会预先移除这些已知不兼容项，同时保留新生成的 reasoning。缓存限制为 256 个 scope、每个 scope 2,048 个指纹、24 小时空闲 TTL；进程重启后可能需要重新学习一次。
 - **Stream lifecycle 加固：** Responses stream failure 会被分类为 client cancellation、upstream disconnect 或 timeout，并通过不含敏感数据的 transport diagnostics 仅记录一次 `stream.lifecycle`。通用 HTTP fallback 严格受 WebSocket send state 约束：只有在 `send()` 前失败的 WebSocket attempt 才能 fallback 一次；WebSocket 在 `send()` 后发生的 failure，以及所有 HTTP transport failure，即使尚未产生首个 downstream event 也会直接终止，从而避免重复生成与重复计费。保留两个窄范围应用层恢复：上面的旧会话精确 ownership error 可执行一次净化后的 HTTP recovery；首个 terminal 为 `internal_error` 且尚未产生语义输出时可执行一次 HTTP recovery。两者都不会把普通 sent-unknown 断开重新发送。

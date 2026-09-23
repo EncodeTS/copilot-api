@@ -229,13 +229,13 @@ function dockerResult(
 }
 
 describe("Docker artifact runtime smoke", () => {
-  test("binds the running image config digest and cleans the container", async () => {
+  test("seeds a private volume as the image user and cleans it with the container", async () => {
     const commands: string[][] = []
     let runtimeConfig = ""
-    let runtimeHomeRemoved = false
     const dockerRunner = {
-      run(arguments_: string[]): DockerRunResult {
+      run(arguments_: string[], options?: { input?: string }): DockerRunResult {
         commands.push(arguments_)
+        if (arguments_[0] === "run") runtimeConfig = options?.input ?? ""
         if (arguments_[0] === "image") return dockerResult("sha256:config\n")
         if (arguments_[0] === "create") return dockerResult("container-id\n")
         if (arguments_[0] === "inspect") return dockerResult("healthy\n")
@@ -254,23 +254,6 @@ describe("Docker artifact runtime smoke", () => {
       },
       {
         dockerRunner,
-        fileSystem: {
-          mkdtempSync(): string {
-            return "/tmp/copilot-api-docker-smoke-fixture"
-          },
-          rmSync(): void {
-            runtimeHomeRemoved = true
-          },
-          writeFileSync(
-            _path: fs.PathOrFileDescriptor,
-            data: string | NodeJS.ArrayBufferView,
-          ): void {
-            if (typeof data !== "string") {
-              throw new TypeError("expected string Docker smoke config")
-            }
-            runtimeConfig = data
-          },
-        },
         processId: 42,
       },
     )
@@ -281,12 +264,26 @@ describe("Docker artifact runtime smoke", () => {
       version: "2.0.0-rc.14",
     })
     const createCommand = commands.find(([command]) => command === "create")
-    expect(createCommand).toContain("--mount")
-    expect(createCommand).toContain(
-      "type=bind,source=/tmp/copilot-api-docker-smoke-fixture,target=/tmp/copilot-api-smoke",
+    const seedCommand = commands.find(([command]) => command === "run")
+    const volumeName =
+      commands.find(
+        ([command, action]) => command === "volume" && action === "create",
+      )?.[2] ?? ""
+    expect(volumeName).toMatch(
+      /^copilot-api-release-smoke-42-data-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
     )
+    const volumeMount = `type=volume,source=${volumeName},target=/home/bun/.local/share/copilot-api`
+    expect(seedCommand).toContain("--entrypoint")
+    expect(seedCommand).toContain("sh")
+    expect(seedCommand).toContain("-i")
+    expect(seedCommand).not.toContain("--user")
+    expect(seedCommand).toContain(volumeMount)
+    expect(seedCommand?.join(" ")).not.toContain("docker-smoke-only")
+    expect(createCommand).toContain("--mount")
+    expect(createCommand).toContain(volumeMount)
     expect(createCommand?.at(-1)).toBe("--desktop-auth-mode=provider")
-    expect(createCommand?.join(" ")).not.toContain("GH_TOKEN")
+    expect(createCommand).not.toContain("--user")
+    expect(commands.flat().join(" ")).not.toContain("GH_TOKEN")
     expect(JSON.parse(runtimeConfig)).toMatchObject({
       providers: {
         smoke: {
@@ -297,8 +294,73 @@ describe("Docker artifact runtime smoke", () => {
         },
       },
     })
-    expect(commands.at(-1)?.slice(0, 2)).toEqual(["rm", "--force"])
-    expect(runtimeHomeRemoved).toBe(true)
+    expect(commands.at(-2)?.slice(0, 2)).toEqual(["rm", "--force"])
+    expect(commands.at(-1)).toEqual(["volume", "rm", volumeName])
+  })
+
+  test("uses a fresh volume for separate runs with the same process ID", async () => {
+    const volumes: string[] = []
+    const dockerRunner = {
+      run(arguments_: string[]): DockerRunResult {
+        if (arguments_[0] === "image") return dockerResult("sha256:config")
+        if (arguments_.slice(0, 2).join(" ") === "volume create") {
+          volumes.push(arguments_[2])
+        }
+        if (arguments_[0] === "inspect") return dockerResult("healthy")
+        if (arguments_[0] === "exec") {
+          return dockerResult(JSON.stringify({ version: "2.0.0-rc.14" }))
+        }
+        return dockerResult()
+      },
+    }
+    const options = {
+      configDigest: "sha256:config",
+      image: "candidate:amd64",
+      version: "2.0.0-rc.14",
+    }
+    const dependencies = {
+      dockerRunner,
+      output: { log(): void {} },
+      processId: 42,
+    }
+    await smokeDockerImage(options, dependencies)
+    await smokeDockerImage(options, dependencies)
+    expect(volumes).toHaveLength(2)
+    expect(volumes[0]).not.toBe(volumes[1])
+  })
+
+  test("never removes a pre-existing volume when creation fails", async () => {
+    const commands: string[][] = []
+    const error = await rejectionOf(
+      smokeDockerImage(
+        {
+          configDigest: "sha256:config",
+          image: "candidate:amd64",
+          version: "2.0.0-rc.14",
+        },
+        {
+          dockerRunner: {
+            run(arguments_: string[]): DockerRunResult {
+              commands.push(arguments_)
+              if (arguments_[0] === "image") {
+                return dockerResult("sha256:config")
+              }
+              if (arguments_.slice(0, 2).join(" ") === "volume create") {
+                return dockerResult("", {
+                  status: 1,
+                  stderr: "volume already exists",
+                })
+              }
+              return dockerResult()
+            },
+          },
+        },
+      ),
+    )
+    expect(error.message).toContain("volume already exists")
+    expect(commands.map(([command, action]) => `${command} ${action}`)).toEqual(
+      ["image inspect", "volume create"],
+    )
   })
 
   test("times out deterministically and still removes the container", async () => {
@@ -370,10 +432,11 @@ describe("Docker artifact runtime smoke", () => {
         ?.length,
     ).toBeLessThanOrEqual(4_100)
     expect(removed).toBe(true)
+    expect(commands.at(-1)?.slice(0, 2)).toEqual(["volume", "rm"])
   })
 
-  test("cleans the synthetic home when provider config setup fails", async () => {
-    let runtimeHomeRemoved = false
+  test("cleans the named volume when provider config setup fails", async () => {
+    let volumeRemoved = false
     const error = await rejectionOf(
       smokeDockerImage(
         {
@@ -387,18 +450,16 @@ describe("Docker artifact runtime smoke", () => {
               if (arguments_[0] === "image") {
                 return dockerResult("sha256:config")
               }
+              if (arguments_[0] === "run") {
+                return dockerResult("", {
+                  status: 1,
+                  stderr: "config write refused",
+                })
+              }
+              if (arguments_.slice(0, 2).join(" ") === "volume rm") {
+                volumeRemoved = true
+              }
               return dockerResult()
-            },
-          },
-          fileSystem: {
-            mkdtempSync(): string {
-              return "/tmp/copilot-api-docker-smoke-fixture"
-            },
-            rmSync(): void {
-              runtimeHomeRemoved = true
-            },
-            writeFileSync(): never {
-              throw new Error("config write refused")
             },
           },
         },
@@ -406,12 +467,12 @@ describe("Docker artifact runtime smoke", () => {
     )
 
     expect(error.message).toContain("config write refused")
-    expect(runtimeHomeRemoved).toBe(true)
+    expect(volumeRemoved).toBe(true)
   })
 
   test("removes a named container when docker create times out", async () => {
     let containerRemoved = false
-    let runtimeHomeRemoved = false
+    let volumeRemoved = false
     const timeout = Object.assign(new Error("create timeout"), {
       code: "ETIMEDOUT",
     })
@@ -432,17 +493,11 @@ describe("Docker artifact runtime smoke", () => {
                 return dockerResult("", { error: timeout, status: null })
               }
               if (arguments_[0] === "rm") containerRemoved = true
+              if (arguments_.slice(0, 2).join(" ") === "volume rm") {
+                volumeRemoved = true
+              }
               return dockerResult()
             },
-          },
-          fileSystem: {
-            mkdtempSync(): string {
-              return "/tmp/copilot-api-docker-smoke-fixture"
-            },
-            rmSync(): void {
-              runtimeHomeRemoved = true
-            },
-            writeFileSync(): void {},
           },
         },
       ),
@@ -450,7 +505,7 @@ describe("Docker artifact runtime smoke", () => {
 
     expect(error.message).toContain("docker create timed out")
     expect(containerRemoved).toBe(true)
-    expect(runtimeHomeRemoved).toBe(true)
+    expect(volumeRemoved).toBe(true)
   })
 
   test("rejects malformed runtime output and surfaces cleanup failure", async () => {
