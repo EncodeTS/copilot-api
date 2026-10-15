@@ -37,9 +37,35 @@ const coverageRunner = join(
 
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
-    rmSync(directory, { force: true, recursive: true })
+    removeTemporaryDirectory(directory)
   }
 })
+
+// Windows CI (Defender/AV scans, lingering handles) can transiently refuse
+// to delete a temp tree right after subprocesses ran inside it. Retry a few
+// times on lock errors before failing the test on cleanup.
+function isRetryableRemoveError(error: unknown): boolean {
+  return (
+    error instanceof Error
+    && "code" in error
+    && (error.code === "EPERM" || error.code === "EBUSY")
+  )
+}
+
+function removeTemporaryDirectory(directory: string): void {
+  const backoffs = [100, 250, 500]
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      rmSync(directory, { force: true, recursive: true })
+      return
+    } catch (error) {
+      if (attempt >= backoffs.length || !isRetryableRemoveError(error)) {
+        throw error
+      }
+      Bun.sleepSync(backoffs[attempt])
+    }
+  }
+}
 
 function runGit(repository: string, ...arguments_: string[]): string {
   const result = spawnSync("git", arguments_, {
@@ -50,6 +76,11 @@ function runGit(repository: string, ...arguments_: string[]): string {
     throw new Error(result.stderr || result.stdout)
   }
   return result.stdout.trim()
+}
+
+async function drainPipe(stream: ReadableStream | null): Promise<string> {
+  if (!stream) return ""
+  return await new Response(stream).text()
 }
 
 function writeFixtureFile(
@@ -1219,13 +1250,29 @@ describe("coverage attestation", () => {
       ],
       { stderr: "pipe", stdout: "pipe" },
     )
+    // Drain piped stdio while the children run. An unconsumed pipe can
+    // deadlock a child on Windows once the OS pipe buffer fills, and the
+    // captured output makes a future failure diagnosable from CI logs.
+    const [rootStdout, rootStderr, desktopStdout, desktopStderr] =
+      await Promise.all([
+        drainPipe(rootProcess.stdout),
+        drainPipe(rootProcess.stderr),
+        drainPipe(desktopProcess.stdout),
+        drainPipe(desktopProcess.stderr),
+      ])
     const [rootExit, desktopExit] = await Promise.all([
       rootProcess.exited,
       desktopProcess.exited,
     ])
 
-    expect(rootExit).toBe(0)
-    expect(desktopExit).toBe(0)
+    expect(
+      rootExit,
+      `concurrent root coverage failed.\nstdout:\n${rootStdout}\nstderr:\n${rootStderr}`,
+    ).toBe(0)
+    expect(
+      desktopExit,
+      `concurrent Desktop coverage failed.\nstdout:\n${desktopStdout}\nstderr:\n${desktopStderr}`,
+    ).toBe(0)
     const result = checkDiffCoverage({
       base,
       coverage: [
