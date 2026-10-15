@@ -27,9 +27,35 @@ const hostileFilenameTest = process.platform === "win32" ? test.skip : test
 
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
-    rmSync(directory, { force: true, recursive: true })
+    removeTemporaryDirectory(directory)
   }
 })
+
+// Windows CI (Defender/AV scans, lingering handles) can transiently refuse
+// to delete a temp tree right after subprocesses ran inside it. Retry a few
+// times on lock errors before failing the test on cleanup.
+function isRetryableRemoveError(error: unknown): boolean {
+  return (
+    error instanceof Error
+    && "code" in error
+    && (error.code === "EPERM" || error.code === "EBUSY")
+  )
+}
+
+function removeTemporaryDirectory(directory: string): void {
+  const backoffs = [100, 250, 500]
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      rmSync(directory, { force: true, recursive: true })
+      return
+    } catch (error) {
+      if (attempt >= backoffs.length || !isRetryableRemoveError(error)) {
+        throw error
+      }
+      Bun.sleepSync(backoffs[attempt])
+    }
+  }
+}
 
 function runGit(repository: string, ...arguments_: string[]): string {
   const result = spawnSync("git", arguments_, {
